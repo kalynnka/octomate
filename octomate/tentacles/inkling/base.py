@@ -38,6 +38,7 @@ from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
 from rich.style import Style
 
 from octomate.capabilities import UserScopedCapability
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import (
     DeclineResolver,
@@ -54,6 +55,7 @@ from octomate.capabilities.harness.react import (
     StartTurn,
     iter_react_graph_events,
 )
+from octomate.capabilities.mcp import tentacles_capability
 from octomate.config.agents import AgentRouteModelName
 from octomate.managers.conversation import ConversationManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -726,6 +728,21 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         )
 
         capabilities = list(capabilities or [])
+        # The MCP tentacles the host holds act as the person the turn is for, which
+        # is what the gateway session carries; a run without one has nobody for
+        # them to act as.
+        gateway_session = next(
+            (
+                capability.session
+                for capability in capabilities
+                if isinstance(capability, GatewayCapability)
+            ),
+            None,
+        )
+        if gateway_session is not None and self.octomate.mcps:
+            capabilities.append(
+                tentacles_capability(gateway_session, list(self.octomate.mcps.values()))
+            )
         # The react graph carries only the thread/agent identity; each node fetches
         # the live conversation (and its history) from the ConversationManager, the
         # single source of truth — no message-history copy is threaded here. A

@@ -7,7 +7,7 @@ the person of its turn.
 from __future__ import annotations
 
 from base64 import urlsafe_b64encode
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
@@ -18,13 +18,22 @@ from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_headers
 from pydantic import AnyHttpUrl, SecretStr
+from pydantic_ai import RunContext
+from pydantic_ai.exceptions import ModelRetry
+from pydantic_ai.messages import ModelMessage
+from pydantic_ai.models import Model
+from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
+from pydantic_ai.usage import RunUsage
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
 from octomate.config import BareMcpConfig, GitHubMcpConfig, LinearMcpConfig
 from octomate.config.users import UserConfig
 from octomate.database import async_session
@@ -33,6 +42,7 @@ from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
@@ -49,7 +59,7 @@ from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.linear import LinearTentacle
 from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle, build_mcp
 from tests.channels.slack.test_mcp import into
-from tests.support.managers import fixed_session
+from tests.support.managers import FakeConversationManager, fixed_session
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 LINEAR_URL = "https://mcp.linear.app/mcp"
@@ -160,6 +170,25 @@ async def proxied(
         )
         async with Client(server) as client:
             yield client
+
+
+def an_inkling(
+    octomate: Octomate,
+    *,
+    model: Model | None = None,
+    toolsets: Sequence[AbstractToolset[None]] = (),
+) -> InklingTentacle:
+    """An Inkling on `octomate`, its conversations kept in memory."""
+    agent: Agent[None, InklingOutput] = Agent(
+        model or TestModel(),
+        deps_type=type(None),
+        name="octomate-inkling",
+        output_type=[str, list[MessageSegment], DeferredToolRequests],
+        toolsets=list(toolsets),
+    )
+    return InklingTentacle(
+        "inkling", octomate, agent=agent, conversation_manager=FakeConversationManager()
+    )
 
 
 async def test_a_bare_server_speaks_the_operator_credential_for_everyone() -> None:
@@ -302,6 +331,106 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
     assert seen == []
 
 
+async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn() -> (
+    None
+):
+    _host, tentacle, profile = await a_linked_host()
+    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
+
+    capability = tentacles_capability(a_turn(profile), [tentacle])
+    toolset = capability.get_toolset()
+    assert toolset is not None
+    tools = await toolset.get_tools(ctx)
+    instructions = await toolset.get_instructions(ctx)
+
+    # Deferred behind a catalog line, so a listing that differs per person never
+    # touches the prompt prefix; before the link, the linking pair and nothing of
+    # the provider's, under the served contract.
+    assert capability.defer_loading
+    assert capability.id == "tentacles"
+    assert "Provider" in str(capability.description)
+    assert isinstance(instructions, str)
+    assert "## Linking accounts" in instructions
+    assert "The provider's own contract." in instructions
+    assert set(tools) == {CONNECT_TOOL, CONFIRM_TOOL}
+
+
+async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retry() -> (
+    None
+):
+    host, tentacle, profile = await a_linked_host()
+    upstream, seen = an_upstream("list_repos")
+    ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
+
+    async with upstream_of(upstream) as transport:
+        toolset = TentaclesToolset(
+            tentacles_mcp(
+                fixed_session(a_turn(profile)),
+                [tentacle],
+                httpx_client_factory=into(transport),
+            )
+        )
+        before = await toolset.get_tools(ctx)
+        with pytest.raises(ModelRetry, match=f"`{CONNECT_TOOL}` with `gh`"):
+            await toolset.call_tool("gh_list_repos", {}, ctx, before[CONNECT_TOOL])
+        await host.oauth.start(profile, "gh")
+        await host.oauth.complete_latest(profile, "gh")
+        after = await toolset.get_tools(ctx)
+        answer = await toolset.call_tool(
+            "gh_list_repos", {}, ctx, after["gh_list_repos"]
+        )
+
+    # No client between the run and the server: a refusal is the retry Inkling
+    # corrects from, worded as every other runtime reads it; once linked, the
+    # call goes as the person and what comes back is what the provider said.
+    assert "gh_list_repos" not in before
+    assert (
+        after["gh_list_repos"].tool_def.description
+        == "What the provider says of its tool."
+    )
+    assert answer == "answered"
+    assert seen == ["Bearer github-user-token"]
+
+
+async def test_a_run_mounts_the_tentacles_for_its_gateway_session() -> None:
+    host, _tentacle, profile = await a_linked_host()
+    offered: list[tuple[dict[str, bool], str | None]] = []
+
+    async def reply(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        offered.append(
+            (
+                {tool.name: tool.defer_loading for tool in info.function_tools},
+                info.instructions,
+            )
+        )
+        yield "noted"
+
+    inkling = an_inkling(
+        host, model=FunctionModel(stream_function=reply, model_name="scripted")
+    )
+    async with inkling.run_stream_events(
+        "hello",
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="slack", chat_type="dm", chat_id="D1", user_id="U1"
+        ),
+        thread_id=uuid7(),
+        capabilities=[GatewayCapability(session=a_turn(profile))],
+    ) as stream:
+        async for _event in stream:
+            pass
+
+    # The tentacles reach the model deferred, for the session its gateway
+    # capability carries: the catalog line, the tool that loads them, and their
+    # tools flagged so the model layer keeps them off the wire until discovered.
+    [(tools, instructions)] = offered
+    assert tools["load_capability"] is False
+    assert (tools[CONNECT_TOOL], tools[CONFIRM_TOOL]) == (True, True)
+    assert instructions is not None
+    assert "- tentacles: The tools of Provider" in instructions
+
+
 class SpyToolset(FunctionToolset[None]):
     """Counts how many times the agent enters/exits it, standing in for an MCP
     server's warm session without a real connection."""
@@ -341,21 +470,9 @@ class FailingToolset(FunctionToolset[None]):
         return None
 
 
-def _tentacle_with(toolset: AbstractToolset[None]) -> InklingTentacle:
-    octomate = Octomate()
-    agent: Agent[None, InklingOutput] = Agent(
-        TestModel(),
-        deps_type=type(None),
-        name="octomate-inkling",
-        output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=[toolset],
-    )
-    return InklingTentacle("inkling", octomate, agent=agent)
-
-
 async def test_entering_tentacle_enters_agent_toolsets_once() -> None:
     spy = SpyToolset()
-    tentacle = _tentacle_with(spy)
+    tentacle = an_inkling(Octomate(), toolsets=[spy])
 
     async with tentacle:
         # Warming runs behind the enter; the warm state is what the task settles.
@@ -367,7 +484,7 @@ async def test_entering_tentacle_enters_agent_toolsets_once() -> None:
 
 
 async def test_warm_up_failure_does_not_abort_startup() -> None:
-    tentacle = _tentacle_with(FailingToolset())
+    tentacle = an_inkling(Octomate(), toolsets=[FailingToolset()])
 
     # A transient MCP `initialize` failure while warming must not propagate out of
     # tentacle startup or its background warm task; the agent is left unentered so
