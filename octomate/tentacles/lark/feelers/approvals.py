@@ -37,10 +37,10 @@ class LarkApprovalFeeler(ApprovalFeeler):
     ) -> dict[UUID, IMMessageID | None]:
         if not actions:
             return {}
-        reply_to = (
+        channel_thread_id = (
             address.channel_thread_id
             if address.channel_thread_id and address.channel_thread_id.startswith("om_")
-            else None
+            else address.chat_id or address.user_id
         )
         message_ids: dict[UUID, IMMessageID | None] = {}
         for action in actions:
@@ -53,8 +53,8 @@ class LarkApprovalFeeler(ApprovalFeeler):
                         content=approval_card(action),
                     )
                 ],
-                reply_to,
-                reply_in_thread=reply_to is not None,
+                channel_thread_id=channel_thread_id,
+                reply_in_thread=channel_thread_id is not None,
             )
         return message_ids
 

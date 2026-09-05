@@ -41,7 +41,9 @@ class SlackOAuthFeeler(OAuthFeeler[SlackOutboundMessage]):
                     blocks=authorization_blocks(event),
                 )
             ],
-            address.channel_thread_id or None,
+            channel_thread_id=(
+                address.channel_thread_id or address.chat_id or address.user_id
+            ),
         )
 
 

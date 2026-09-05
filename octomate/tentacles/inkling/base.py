@@ -35,6 +35,7 @@ from pydantic_ai.toolsets import AbstractToolset, ApprovalRequiredToolset
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
+from rich.style import Style
 
 from octomate.capabilities import UserScopedCapability
 from octomate.capabilities.harness.agent import Agent
@@ -143,6 +144,8 @@ class InklingDeferrals:
 @dataclass
 class InklingTentacle(AgentTentacle[InklingOutput, None]):
     """Inkling agent wrapper with pydantic-ai-style run entrypoints."""
+
+    brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
 
     agent: Agent[None, InklingOutput] = field(init=False)
     # Held on the tentacle, not baked into the Agent: every run decides what to

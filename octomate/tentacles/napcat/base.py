@@ -5,6 +5,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar, Self
 
 from pydantic import SecretStr
+from rich.style import Style
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
+    brand_color: ClassVar[Style | None] = Style(color="#6A828B", bold=True)
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(direct_message=True)
 
     ws_url: str

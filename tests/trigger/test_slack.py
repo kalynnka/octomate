@@ -1,7 +1,7 @@
 """Live replay against a real Slack workspace (`pytest tests/trigger/test_slack.py`).
 
 Each test replays a canonical scenario script through the real SlackTentacle
-into the chat configured under `trigger.slack` in octomate.yaml; pass/fail only
+into the chat configured under `trigger.slack` in trigger.yaml; pass/fail only
 checks that something was posted and no render failed — the human inspects the
 rendering in Slack. Every test of one pytest run posts into the SAME thread:
 a session fixture opens it with a fresh, visible header message in the DM
@@ -17,7 +17,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config import OctomateConfig
+from octomate.config import OctomateConfig, SlackChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.slack import SlackTentacle
 from tests.support.channels import drive
@@ -44,8 +44,14 @@ def slack_run_thread(
 ) -> tuple[SlackTentacle, ChannelAddress]:
     """One tentacle and one freshly opened thread, shared by the whole run."""
     config = live_config.channels.get("slack")
-    if config is None or not config.enabled or trigger_targets.slack is None:
-        pytest.skip("slack credentials/trigger target not configured in octomate.yaml")
+    if (
+        not isinstance(config, SlackChannelConfig)
+        or not config.enabled
+        or trigger_targets.slack is None
+    ):
+        pytest.skip(
+            "slack channel/trigger target not configured in channels.yaml/trigger.yaml"
+        )
     target = trigger_targets.slack
     channel = SlackTentacle("slack", Octomate(), config=config)
     main_key = ChannelAddress(

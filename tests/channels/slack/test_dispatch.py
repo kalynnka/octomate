@@ -140,7 +140,7 @@ async def test_open_dm_threads_off_the_opener_a_moving_turn_brings() -> None:
     assert address.shared is False
     assert [
         message.text
-        for _chat, _type, messages, _reply in ink.sent
+        for _chat, _type, messages, _reply, _channel_thread in ink.sent
         for message in messages
     ] == ["Finish the migration write-up."]
 

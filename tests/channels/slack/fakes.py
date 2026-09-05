@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import cast
+from typing import Unpack, cast
 
 from pydantic import SecretStr
 from slack_sdk.models.messages.chunk import Chunk
@@ -30,7 +30,11 @@ from octomate.tentacles.slack.feelers.oauth import SlackOAuthFeeler
 from octomate.tentacles.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.slack.feelers.questions import SlackAskQuestionFeeler
 from octomate.tentacles.slack.ink import SlackInk as SlackInkType
-from octomate.tentacles.slack.schema import SlackBlock, SlackOutboundMessage
+from octomate.tentacles.slack.schema import (
+    SlackBlock,
+    SlackOutboundMessage,
+    SlackPostMessageKwargs,
+)
 from octomate.types.json import JsonObject
 
 
@@ -50,7 +54,7 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
     stops: list[str | None] = field(default_factory=list)
     finals: list[dict[str, str | None]] = field(default_factory=list)
     statuses: list[str] = field(default_factory=list)
-    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
+    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None, str]] = field(
         default_factory=list
     )
     uploads: list[tuple[str, bytes, str, str | None]] = field(default_factory=list)
@@ -189,10 +193,12 @@ class FakeSlackInk(Ink[SlackOutboundMessage]):
         chat_id: str,
         chat_type: str,
         messages: list[SlackOutboundMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> str:
-        self.sent.append((chat_id, chat_type, messages, reply_to))
+        self.sent.append((chat_id, chat_type, messages, reply_to, channel_thread_id))
         return "fallback-ts"
 
 
@@ -201,7 +207,7 @@ class FakeSlackBlocksInk:
     """The lighter ink the block-kit feelers tests need: sends + card updates,
     with an optional shared `events` log to assert update/kick ordering."""
 
-    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
+    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None, str]] = field(
         default_factory=list
     )
     updates: list[tuple[str, str, str, list[SlackBlock]]] = field(default_factory=list)
@@ -212,9 +218,12 @@ class FakeSlackBlocksInk:
         chat_id: str,
         chat_type: str,
         messages: list[SlackOutboundMessage],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
+        reply_in_thread: bool = False,
     ) -> str:
-        self.sent.append((chat_id, chat_type, messages, reply_to))
+        self.sent.append((chat_id, chat_type, messages, reply_to, channel_thread_id))
         return f"slack-{len(self.sent)}"
 
     async def update_message(
@@ -294,6 +303,13 @@ class FakeSlackClient:
     def __init__(self) -> None:
         self.streams: list[JsonObject] = []
         self.uploads: list[JsonObject] = []
+        self.messages: list[SlackPostMessageKwargs] = []
+
+    async def chat_postMessage(
+        self, **kwargs: Unpack[SlackPostMessageKwargs]
+    ) -> JsonObject:
+        self.messages.append(kwargs)
+        return {"ts": f"message-{len(self.messages)}"}
 
     async def chat_stream(
         self,

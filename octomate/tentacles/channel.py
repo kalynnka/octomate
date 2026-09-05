@@ -31,6 +31,7 @@ from uuid_utils import uuid7
 from octomate.config import ChannelConfig
 from octomate.config.channels import (
     ChannelConfigVariant,
+    DiscordChannelConfig,
     LarkChannelConfig,
     NapcatChannelConfig,
     SlackChannelConfig,
@@ -157,10 +158,18 @@ class Ink(ABC, Generic[MessageT]):
         chat_id: str,
         chat_type: str,
         messages: list[MessageT],
+        *,
+        channel_thread_id: str,
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
-        """Send platform-native message payloads."""
+        """Send platform-native message payloads to a conversation destination.
+
+        `channel_thread_id` is the platform's external destination id: the thread
+        id on a thread surface, otherwise the chat id. `reply_to` references a
+        message within that destination. Platforms where thread and reply are the
+        same native field collapse them in their ink implementation.
+        """
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The chat id of this bot's 1:1 with `user_id`, opening it if needed.
@@ -313,6 +322,7 @@ class ChannelTentacle(
                 thread = await self.octomate.thread_manager.ensure(address)
                 addressed = (
                     event.is_at(self.self_profile.channel_user_id)
+                    or event.replies_to(self.self_profile.channel_user_id)
                     or thread.active_agent_tentacle_id is not None
                 )
                 if not addressed:
@@ -462,6 +472,10 @@ def build_channel(
             from octomate.tentacles.lark import LarkTentacle
 
             return LarkTentacle(id, octomate, config=config)
+        case DiscordChannelConfig():
+            from octomate.tentacles.discord import DiscordTentacle
+
+            return DiscordTentacle(id, octomate, config=config)
         case NapcatChannelConfig():
             from octomate.tentacles.napcat import NapcatTentacle
 

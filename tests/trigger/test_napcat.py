@@ -1,7 +1,7 @@
 """Live replay against a real Napcat endpoint (`pytest tests/trigger/test_napcat.py`).
 
 Each test replays a canonical scenario script through the real NapcatTentacle
-into the chat configured under `trigger.napcat` in octomate.yaml; pass/fail
+into the chat configured under `trigger.napcat` in trigger.yaml; pass/fail
 only checks that something was posted and no render failed — the human
 inspects the rendering in QQ. Napcat has no streaming transport or threads:
 a session fixture posts the run notice once, then each test's reply lands as
@@ -16,7 +16,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config import OctomateConfig
+from octomate.config import NapcatChannelConfig, OctomateConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.napcat import NapcatTentacle
 from tests.support.channels import drive
@@ -39,8 +39,14 @@ def napcat_run(
 ) -> tuple[NapcatTentacle, ChannelAddress]:
     """One tentacle and one run notice, shared by the whole run (no threads)."""
     config = live_config.channels.get("napcat")
-    if config is None or not config.enabled or trigger_targets.napcat is None:
-        pytest.skip("napcat credentials/trigger target not configured in octomate.yaml")
+    if (
+        not isinstance(config, NapcatChannelConfig)
+        or not config.enabled
+        or trigger_targets.napcat is None
+    ):
+        pytest.skip(
+            "napcat channel/trigger target not configured in channels.yaml/trigger.yaml"
+        )
     target = trigger_targets.napcat
     channel = NapcatTentacle("napcat", Octomate(), config=config)
     address = ChannelAddress(

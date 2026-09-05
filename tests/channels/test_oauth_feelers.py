@@ -81,7 +81,7 @@ def _address(
 
 @dataclass
 class RecordingSlackInk:
-    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None]] = field(
+    sent: list[tuple[str, str, list[SlackOutboundMessage], str | None, str]] = field(
         default_factory=list
     )
     # What `open_dm` answers, so a test says whether this platform has anywhere
@@ -98,9 +98,12 @@ class RecordingSlackInk:
         chat_id: str,
         chat_type: str,
         messages: list[SlackOutboundMessage],
-        thread_ts: str | None = None,
+        *,
+        channel_thread_id: str,
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
     ) -> str:
-        self.sent.append((chat_id, chat_type, messages, thread_ts))
+        self.sent.append((chat_id, chat_type, messages, reply_to, channel_thread_id))
         return f"slack-{len(self.sent)}"
 
 
@@ -127,7 +130,16 @@ async def test_lark_feeler_sends_a_card_carrying_the_authorization() -> None:
     )
 
     assert message_id == "lark-1"
-    [(_chat_id, _chat_type, messages, _reply_to, _in_thread)] = ink.sent
+    [
+        (
+            _chat_id,
+            _chat_type,
+            messages,
+            _reply_to,
+            _in_thread,
+            _channel_thread_id,
+        )
+    ] = ink.sent
     card = _obj(json.loads(messages[0].content))
     assert (
         _text(_obj(_obj(card["header"])["title"])["content"]) == "GitHub Device OAuth"
@@ -152,7 +164,7 @@ async def test_slack_feeler_sends_blocks_carrying_the_authorization() -> None:
         _address("slack"), AUTHORIZATION
     )
 
-    [(_chat_id, _chat_type, messages, _thread)] = ink.sent
+    [(_chat_id, _chat_type, messages, _reply_to, _channel_thread_id)] = ink.sent
     blocks = _objs(cast(JsonValue, messages[0].blocks))
     assert "ABCD-EFGH" in _text(_obj(blocks[1]["text"])["text"])
     [open_button] = _objs(blocks[2]["elements"])
@@ -171,9 +183,19 @@ async def test_a_group_request_delivers_the_code_to_the_user_dm() -> None:
     # The code authorizes one person's account; the group it was asked from does
     # not get to read it.
     assert ink.opened == ["U1"]
-    [(chat_id, chat_type, _messages, reply_to, _in_thread)] = ink.sent
+    [
+        (
+            chat_id,
+            chat_type,
+            _messages,
+            reply_to,
+            _in_thread,
+            channel_thread_id,
+        )
+    ] = ink.sent
     assert (chat_id, chat_type) == ("D1", "dm")
     assert reply_to is None
+    assert channel_thread_id == "D1"
 
 
 async def test_a_private_thread_keeps_the_code_where_it_was_asked_for() -> None:
@@ -187,8 +209,9 @@ async def test_a_private_thread_keeps_the_code_where_it_was_asked_for() -> None:
     )
 
     assert ink.opened == []
-    [(chat_id, chat_type, _messages, thread_ts)] = ink.sent
-    assert (chat_id, chat_type, thread_ts) == ("C1", "thread", "1700.1")
+    [(chat_id, chat_type, _messages, reply_to, channel_thread_id)] = ink.sent
+    assert (chat_id, chat_type, reply_to) == ("C1", "thread", None)
+    assert channel_thread_id == "1700.1"
 
 
 async def test_every_channel_routes_a_group_request_the_same_way() -> None:
@@ -206,10 +229,10 @@ async def test_every_channel_routes_a_group_request_the_same_way() -> None:
     )
 
     assert slack.opened == ["U1"]
-    [(chat_id, chat_type, _messages, _thread)] = slack.sent
+    [(chat_id, chat_type, _messages, _reply_to, _channel_thread_id)] = slack.sent
     assert (chat_id, chat_type) == ("D1", "dm")
     assert plain_ink.opened == ["U1"]
-    [(address, _text_)] = markdown.calls
+    [(address, _)] = markdown.calls
     assert (address.chat_id, address.chat_type) == ("D2", "dm")
 
 
@@ -231,7 +254,7 @@ async def test_plain_text_feeler_asks_for_nothing_a_link_flow_cannot_give() -> N
         _address("napcat"), LINK_AUTHORIZATION
     )
 
-    [(_address_, text)] = markdown.calls
+    [(_, text)] = markdown.calls
     assert "http://127.0.0.1:8000/oauth/linear/start/0198-op" in text
     # No code to type and nothing to come back for: the callback finishes it.
     assert "Code:" not in text
@@ -245,7 +268,16 @@ async def test_lark_card_drops_the_code_line_for_a_link_flow() -> None:
         _address("lark"), LINK_AUTHORIZATION
     )
 
-    [(_chat_id, _chat_type, messages, _reply_to, _in_thread)] = ink.sent
+    [
+        (
+            _chat_id,
+            _chat_type,
+            messages,
+            _reply_to,
+            _in_thread,
+            _channel_thread_id,
+        )
+    ] = ink.sent
     card = _obj(json.loads(messages[0].content))
     assert _text(_obj(_obj(card["header"])["title"])["content"]) == "Linear OAuth"
     elements = _objs(card["elements"])
@@ -260,7 +292,7 @@ async def test_slack_blocks_drop_the_code_block_for_a_link_flow() -> None:
         _address("slack"), LINK_AUTHORIZATION
     )
 
-    [(_chat_id, _chat_type, messages, _thread)] = ink.sent
+    [(_chat_id, _chat_type, messages, _reply_to, _channel_thread_id)] = ink.sent
     blocks = _objs(cast(JsonValue, messages[0].blocks))
     # Body then actions, with no code section wedged between them.
     assert len(blocks) == 2
