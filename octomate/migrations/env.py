@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from octomate.config.database import database_settings
 from octomate.models import (
-    Base,  # noqa: F401 — registers all ORM tables on Base.metadata
+    Base,
 )
 
 # this is the Alembic Config object, which provides
@@ -24,7 +24,7 @@ config.set_main_option("sqlalchemy.url", database_settings.db_url.replace("%", "
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.
-if config.config_file_name is not None:
+if config.config_file_name is not None and config.get_section("loggers") is not None:
     fileConfig(config.config_file_name)
 
 # add your model's MetaData object here

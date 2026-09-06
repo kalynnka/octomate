@@ -10,15 +10,22 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.request import Request, urlopen
 
 import typer
 from octomate_protocol.deployment import DatabaseBackup
 from pydantic import BaseModel, ConfigDict, Field
 
-# Config, the database and the agent working directories are all resolved relative
-# to the process's working directory, so serving is already a from-here operation
-# and the factory can be named as a plain import path.
-APP = "main:create_app"
+APP = "octomate.app:create_app"
+RELEASE_URL = "https://api.github.com/repos/kalynnka/octomate/releases/latest"
+
+
+class Release(BaseModel):
+    """The stable GitHub release selected for a manual service upgrade."""
+
+    tag_name: str = Field(pattern=r"^v[0-9]+\.[0-9]+\.[0-9]+$")
+    draft: Literal[False]
+    prerelease: Literal[False]
 
 
 PlistFile = Annotated[
@@ -110,7 +117,7 @@ class PlistService(BaseModel):
 def manage_plist_service(plist: Path, *, upgrade: bool) -> None:
     """Back up, migrate and start the launchd service defined by a plist.
 
-    With upgrade enabled, also pull main and sync dependencies before migration.
+    With upgrade enabled, install the latest stable release before migration.
     """
     if sys.platform != "darwin":
         raise typer.BadParameter("Server service commands require launchd.")
@@ -163,29 +170,55 @@ def manage_plist_service(plist: Path, *, upgrade: bool) -> None:
                 service.report("The server is already loaded; no migration was run.")
                 return
             if upgrade:
-                branch = subprocess.check_output(
-                    ["git", "branch", "--show-current"],
-                    cwd=service.directory,
-                    env=service.process_environment,
-                    text=True,
-                ).strip()
                 dirty = subprocess.check_output(
                     ["git", "status", "--porcelain", "--untracked-files=no"],
                     cwd=service.directory,
                     env=service.process_environment,
                     text=True,
                 ).strip()
-                if branch != "main" or dirty:
-                    raise ValueError(
-                        "Upgrade requires main with no tracked local changes."
-                    )
+                if dirty:
+                    raise ValueError("Upgrade requires no tracked local changes.")
                 previous = subprocess.check_output(
                     ["git", "rev-parse", "HEAD"],
                     cwd=service.directory,
                     env=service.process_environment,
                     text=True,
                 ).strip()
-                service.report(f"Upgrading from {previous}.")
+                request = Request(
+                    RELEASE_URL,
+                    headers={"Accept": "application/vnd.github+json"},
+                )
+                with urlopen(request, timeout=30) as response:
+                    release = Release.model_validate_json(response.read())
+                subprocess.run(
+                    ["git", "fetch", "origin", f"refs/tags/{release.tag_name}"],
+                    cwd=service.directory,
+                    env=service.process_environment,
+                    check=True,
+                )
+                revision = subprocess.check_output(
+                    ["git", "rev-parse", "FETCH_HEAD^{commit}"],
+                    cwd=service.directory,
+                    env=service.process_environment,
+                    text=True,
+                ).strip()
+                if previous == revision:
+                    service.report(f"Already at {release.tag_name}; no update needed.")
+                    return
+                ancestor = subprocess.check_output(
+                    ["git", "merge-base", previous, revision],
+                    cwd=service.directory,
+                    env=service.process_environment,
+                    text=True,
+                ).strip()
+                if ancestor != previous:
+                    raise ValueError(
+                        "The latest release does not contain the installed commit; "
+                        "refusing a downgrade or divergent history."
+                    )
+                service.report(
+                    f"Upgrading from {previous} to {release.tag_name} ({revision})."
+                )
 
             service.launchctl("disable", service.target)
             changed_service = True
@@ -195,33 +228,16 @@ def manage_plist_service(plist: Path, *, upgrade: bool) -> None:
             service.report(f"Database: {backup.database}; backup: {backup.backup}.")
             if upgrade:
                 subprocess.run(
-                    ["git", "pull", "--ff-only", "origin", "main"],
+                    ["git", "checkout", "--detach", revision],
                     cwd=service.directory,
                     env=service.process_environment,
                     check=True,
                 )
-                revision = subprocess.check_output(
-                    ["git", "rev-parse", "HEAD"],
-                    cwd=service.directory,
-                    env=service.process_environment,
-                    text=True,
-                ).strip()
-                fetched = subprocess.check_output(
-                    ["git", "rev-parse", "FETCH_HEAD"],
-                    cwd=service.directory,
-                    env=service.process_environment,
-                    text=True,
-                ).strip()
-                if revision != fetched:
-                    raise ValueError(
-                        "Local main differs from the fetched main; refusing to deploy it."
-                    )
-                service.report(f"Updating to {revision}.")
                 subprocess.run(
                     [
                         "uv",
                         "sync",
-                        "--frozen",
+                        "--locked",
                         "--no-dev",
                         "--project",
                         str(service.directory),
@@ -356,6 +372,7 @@ def serve(
     try:
         import uvicorn
 
+        import octomate
         from octomate.config import OctomateConfig  # heavy; only when the CLI serves
     except ImportError as error:
         typer.secho(
@@ -378,10 +395,8 @@ def serve(
         host=str(config.host) if host is None else host,
         port=config.port if port is None else port,
         reload=reload,
-        # Only the package. The working directory also holds `.octomate/`, whose
-        # SQLite database is written on every turn and would restart the server
-        # out from under itself; editing `main.py` needs a manual restart.
-        reload_dirs=["octomate"],
+        # Watch application code without watching the deployment's mutable data.
+        reload_dirs=[str(Path(octomate.__file__).parent)],
         log_level=config.logging.level.lower(),
     )
 
@@ -396,6 +411,8 @@ def upgrade(plist: PlistFile = DEFAULT_PLIST) -> None:
     Omit --plist to use /Library/LaunchDaemons/io.octomate.server.plist, or run:
     octomate upgrade --plist /absolute/path/to/server.plist
 
-    Pull latest main, sync dependencies, migrate and restart that service.
+    Install the latest stable release, sync locked dependencies, migrate and restart.
+    An already current checkout is left running. Local changes, divergent history,
+    and downgrades are refused before stopping the service.
     """
     manage_plist_service(plist, upgrade=True)

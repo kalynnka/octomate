@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fcntl
+import io
 import os
 import plistlib
 import pwd
@@ -9,11 +10,13 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from unittest.mock import patch
+from urllib.error import URLError
 
 import pytest
 from octomate_cli.main import app
-from octomate_cli.serve import PlistService
+from octomate_cli.serve import PlistService, Release
 from octomate_protocol.deployment import DatabaseBackup
+from pydantic import ValidationError
 from typer.testing import CliRunner
 
 
@@ -22,7 +25,7 @@ class Operations:
     database: Path
     loaded: bool = False
     dirty: bool = False
-    branch: str = "main"
+    current: bool = False
     ahead: bool = False
     fail: str | None = None
     events: list[str] = field(default_factory=list)
@@ -53,13 +56,13 @@ class Operations:
         assert text
         assert "OCTOMATE_DB_URL" in env
         assert "GIT_INDEX_FILE" not in env
-        if arguments[1] == "branch":
-            return self.branch
         if arguments[1] == "status":
-            return " M main.py" if self.dirty else ""
+            return " M octomate/app.py" if self.dirty else ""
+        if arguments[1] == "merge-base":
+            return "older-commit" if self.ahead else "previous-commit"
         assert arguments[1] == "rev-parse"
-        if arguments[2] == "FETCH_HEAD" and self.ahead:
-            return "remote-commit"
+        if arguments[2] == "FETCH_HEAD^{commit}" and not self.current:
+            return "released-commit"
         return "previous-commit"
 
     def run(
@@ -72,13 +75,15 @@ class Operations:
     ) -> subprocess.CompletedProcess[str]:
         assert cwd.is_dir()
         assert check
-        if arguments == ["git", "pull", "--ff-only", "origin", "main"]:
-            step = "pull"
+        if arguments == ["git", "fetch", "origin", "refs/tags/v0.0.2"]:
+            step = "fetch"
+        elif arguments == ["git", "checkout", "--detach", "released-commit"]:
+            step = "checkout"
         else:
             assert arguments == [
                 "uv",
                 "sync",
-                "--frozen",
+                "--locked",
                 "--no-dev",
                 "--project",
                 str(cwd),
@@ -119,6 +124,12 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Oper
         )
     )
     operations = Operations(database=database)
+    monkeypatch.setattr(
+        "octomate_cli.serve.urlopen",
+        lambda request, timeout: io.BytesIO(
+            b'{"tag_name":"v0.0.2","draft":false,"prerelease":false}'
+        ),
+    )
     monkeypatch.setattr(sys, "platform", "darwin")
     monkeypatch.setattr(PlistService, "loaded", lambda self: operations.loaded)
     monkeypatch.setattr(
@@ -182,7 +193,7 @@ def test_managed_serve_refuses_foreground_options(
     assert operations.events == []
 
 
-def test_upgrade_orders_stop_backup_pull_sync_migrate_start(
+def test_upgrade_fetches_release_before_stop_backup_checkout_sync_migrate_start(
     service: tuple[Path, Operations],
 ) -> None:
     plist, operations = service
@@ -191,10 +202,11 @@ def test_upgrade_orders_stop_backup_pull_sync_migrate_start(
     assert result.exit_code == 0, result.output
     assert operations.events == [
         "check",
+        "fetch",
         "disable",
         "bootout",
         "backup",
-        "pull",
+        "checkout",
         "sync",
         "migrate",
         "enable",
@@ -203,7 +215,7 @@ def test_upgrade_orders_stop_backup_pull_sync_migrate_start(
     ]
 
 
-@pytest.mark.parametrize("failure", ["backup", "pull", "sync", "migrate", "verify"])
+@pytest.mark.parametrize("failure", ["backup", "checkout", "sync", "migrate", "verify"])
 def test_failed_upgrade_stays_disabled(
     service: tuple[Path, Operations], failure: str
 ) -> None:
@@ -220,14 +232,12 @@ def test_failed_upgrade_stays_disabled(
     )
 
 
-@pytest.mark.parametrize(("dirty", "branch"), [(True, "main"), (False, "feature")])
 def test_upgrade_refuses_unreviewed_checkout(
-    service: tuple[Path, Operations], dirty: bool, branch: str
+    service: tuple[Path, Operations],
 ) -> None:
     plist, operations = service
     operations.loaded = True
-    operations.dirty = dirty
-    operations.branch = branch
+    operations.dirty = True
     result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
     assert result.exit_code == 1
     assert operations.events == ["check"]
@@ -255,9 +265,73 @@ def test_upgrade_refuses_local_commits_ahead_of_remote(
     operations.ahead = True
     result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
     assert result.exit_code == 1
-    assert "differs from the fetched main" in result.output
+    assert "refusing a downgrade" in result.output
+    assert "disable" not in operations.events
     assert "sync" not in operations.events
     assert "migrate" not in operations.events
+
+
+@pytest.mark.parametrize("loaded", [True, False])
+def test_current_release_does_not_change_service(
+    service: tuple[Path, Operations], loaded: bool
+) -> None:
+    plist, operations = service
+    operations.loaded = loaded
+    operations.current = True
+    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    assert result.exit_code == 0, result.output
+    assert "Already at v0.0.2" in result.output
+    assert operations.events == ["check", "fetch"]
+    assert operations.loaded == loaded
+
+
+def test_failed_release_fetch_keeps_service_running(
+    service: tuple[Path, Operations],
+) -> None:
+    plist, operations = service
+    operations.loaded = True
+    operations.fail = "fetch"
+    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    assert result.exit_code == 1
+    assert operations.events == ["check", "fetch"]
+    assert operations.loaded
+
+
+def test_release_lookup_failure_keeps_service_running(
+    service: tuple[Path, Operations],
+) -> None:
+    plist, operations = service
+    operations.loaded = True
+    with patch("octomate_cli.serve.urlopen", side_effect=URLError("unavailable")):
+        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    assert result.exit_code == 1
+    assert "unavailable" in result.output
+    assert operations.events == ["check"]
+    assert operations.loaded
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        '{"tag_name":"v0.0.2","draft":true,"prerelease":false}',
+        '{"tag_name":"v0.0.2","draft":false,"prerelease":true}',
+        '{"tag_name":"--upload-pack=command","draft":false,"prerelease":false}',
+        '{"tag_name":"v0.0.2rc1","draft":false,"prerelease":false}',
+    ],
+)
+def test_upgrade_accepts_only_stable_version_tags(payload: str) -> None:
+    with pytest.raises(ValidationError):
+        Release.model_validate_json(payload)
+
+
+def test_version_reports_installed_packages() -> None:
+    result = CliRunner().invoke(app, ["--version"])
+    assert result.exit_code == 0, result.output
+    assert {line.split()[0] for line in result.output.splitlines()} == {
+        "octomate",
+        "octomate-cli",
+        "octomate-protocol",
+    }
 
 
 def test_foreground_run_passes_bind_and_reload_options(
@@ -271,7 +345,7 @@ def test_foreground_run_passes_bind_and_reload_options(
         )
     assert result.exit_code == 0, result.output
     run.assert_called_once()
-    assert run.call_args.args == ("main:create_app",)
+    assert run.call_args.args == ("octomate.app:create_app",)
     assert run.call_args.kwargs["factory"] is True
     assert run.call_args.kwargs["host"] == "127.0.0.1"
     assert run.call_args.kwargs["port"] == 9000

@@ -40,7 +40,7 @@ def create_app() -> FastAPI:
     All setup lives here, not at import time, so that uvicorn's reload supervisor
     and worker processes can import this module without re-running logfire
     instrumentation, channel auth, and the rest. Only the process that actually
-    serves calls the factory (`uvicorn main:create_app --factory`).
+    serves calls the factory (`uvicorn octomate.app:create_app --factory`).
     """
     logfire.configure(
         service_name=config.logfire.service_name,

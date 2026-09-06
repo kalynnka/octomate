@@ -16,7 +16,7 @@ Three things, in that order:
   surfaces — searchable mid-run, resumable later, handed to a different agent when the
   one that started is not the one that should finish.
 
-> ⚠️ **Early development** (v0.0.1) — APIs and architecture are subject to change.
+> ⚠️ **Early development** — APIs and architecture are subject to change.
 
 ---
 
@@ -196,9 +196,19 @@ annotation, so a transition is written where it happens. A run ends either with 
 or suspended on a batch of actions that has not come back yet — and a suspended run is a
 row, which is why restarts are survivable.
 
+## Installation
+
+Install the client CLI with `pip install octomate-cli`, or install the server and
+CLI together with `pip install octomate`. Both include the matching
+`octomate-protocol` package. `octomate --version` reports installed versions.
+
+For supervised server setup, migrations and manual release upgrades, follow the
+[deployment guide](docs/server-deployment.md). Package publishing is described in
+[the release guide](docs/releases.md).
+
 ## Quickstart
 
-**Requirements:** Python 3.13+, [uv](https://docs.astral.sh/uv/). The database is a
+**Requirements:** Python 3.12+ (development uses 3.13), [uv](https://docs.astral.sh/uv/). The database is a
 SQLite file under `.octomate/`, so there is nothing to stand up first.
 
 ### 1. Collect your own sessions
@@ -333,9 +343,10 @@ or other supervisors.
 
 `serve --plist <path>` backs up and migrates the configured SQLite database before
 starting the service. It uses the service definition's configuration and cannot be
-combined with foreground or tmux options. `upgrade` stops it, backs up, pulls the
-latest `main`, syncs locked
-dependencies, migrates and restarts. Pending migrations are rehearsed on a copy;
+combined with foreground or tmux options. `upgrade` fetches the latest stable
+release and exits when already current. Otherwise it stops the service, backs up,
+checks out the release, syncs locked dependencies, migrates and restarts. Pending
+migrations are rehearsed on a copy;
 a failure leaves the service disabled for recovery. These management commands
 currently use a launchd service adapter. See the
 [server deployment guide](docs/server-deployment.md) for its required service
@@ -446,9 +457,10 @@ Unlike the hooks — whose scripts resolve the address and credential each time 
 
 ```
 .
-+-- main.py                    # Builds the FastAPI app - wires agents and channels
 +-- octomate/
 |   +-- base.py                # Octomate: the coordinator every tentacle is connected to
+|   +-- app.py                 # Installed FastAPI application factory
+|   +-- migrations/            # Packaged Alembic revisions and runtime configuration
 |   +-- reflex/                # The run graph - nodes, state, and the suspender
 |   +-- tentacles/
 |   |   +-- agents/             # claude, codex, deepseek, inkling - adapters, ingest, tailers, hooks
@@ -471,7 +483,6 @@ Unlike the hooks — whose scripts resolve the address and credential each time 
 |   +-- stream.py              # Transcript stream messages and protocol version
 |   `-- deployment.py          # Backup record exchanged during maintenance
 +-- trunkline/                 # The web console (React + Vite)
-+-- migrations/                # Alembic
 `-- tests/
 ```
 

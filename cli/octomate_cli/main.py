@@ -8,6 +8,9 @@ than vanishing.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version
+from typing import Annotated
+
 import typer
 
 from octomate_cli.config import configure
@@ -25,6 +28,25 @@ app.command("configure")(configure)
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")
 app.add_typer(deepseek_typer, name="deepseek")
+
+
+@app.callback(invoke_without_command=True)
+def options(
+    show_version: Annotated[
+        bool,
+        typer.Option(
+            "--version", is_eager=True, help="Show installed package versions."
+        ),
+    ] = False,
+) -> None:
+    if show_version:
+        for package in ("octomate-cli", "octomate-protocol", "octomate"):
+            try:
+                installed = version(package)
+            except PackageNotFoundError:
+                continue
+            typer.echo(f"{package} {installed}")
+        raise typer.Exit()
 
 
 if __name__ == "__main__":

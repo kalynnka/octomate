@@ -27,6 +27,8 @@ from sqlalchemy.engine import make_url
 from octomate.config import OctomateConfig
 from octomate.config.database import database_settings
 
+ALEMBIC_INI = Path(__file__).parent / "migrations" / "alembic.ini"
+
 
 def database_path() -> Path:
     explicit = os.environ.get("OCTOMATE_DB_URL")
@@ -86,7 +88,7 @@ def migrate(backup: DatabaseBackup) -> None:
         raise ValueError(
             "The database target changed after backup; refusing to migrate."
         )
-    ini = Path.cwd() / "alembic.ini"
+    ini = ALEMBIC_INI
     head = ScriptDirectory.from_config(Config(str(ini))).get_current_head()
     if head is None:
         raise ValueError("No Alembic migration head exists.")
@@ -197,8 +199,6 @@ def main() -> None:
         raise ValueError(
             "Register a user's bearer in users.yaml before starting the server."
         )
-    if not (Path.cwd() / "alembic.ini").is_file():
-        raise ValueError("The service working directory must contain alembic.ini.")
     if action == "backup":
         deadline = time.monotonic() + 30
         while True:

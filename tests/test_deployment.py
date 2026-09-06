@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import errno
 import os
-import shutil
 import sqlite3
 import subprocess
 import sys
@@ -25,8 +24,6 @@ from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
 from tests.support.config import registered
 
-ROOT = Path(__file__).resolve().parents[1]
-
 
 @pytest.fixture
 def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -34,8 +31,6 @@ def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     url = f"sqlite+aiosqlite:///{path}"
     monkeypatch.setenv("OCTOMATE_DB_URL", url)
     monkeypatch.setattr(database_settings, "db_url", url)
-    shutil.copyfile(ROOT / "alembic.ini", tmp_path / "alembic.ini")
-    (tmp_path / "migrations").symlink_to(ROOT / "migrations", target_is_directory=True)
     return path
 
 
@@ -110,7 +105,7 @@ def test_nonempty_unversioned_database_is_not_initialized(database: Path) -> Non
 def test_actual_migrations_initialize_empty_database(database: Path) -> None:
     deployment.migrate(DatabaseBackup(database=database, backup=None))
     head = ScriptDirectory.from_config(
-        Config(str(ROOT / "alembic.ini"))
+        Config(str(deployment.ALEMBIC_INI))
     ).get_current_head()
     assert deployment.revisions(database) == (head,)
     before = database.read_bytes()
@@ -142,7 +137,7 @@ def test_failed_rehearsal_never_migrates_source(
 
 
 def test_actual_upgrade_rehearses_on_a_copy(database: Path) -> None:
-    script = ScriptDirectory.from_config(Config(str(ROOT / "alembic.ini")))
+    script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
     assert head is not None
     revision = script.get_revision(head)
@@ -155,7 +150,7 @@ def test_actual_upgrade_rehearses_on_a_copy(database: Path) -> None:
             "-m",
             "alembic",
             "-c",
-            str(ROOT / "alembic.ini"),
+            str(deployment.ALEMBIC_INI),
             "upgrade",
             previous,
         ],

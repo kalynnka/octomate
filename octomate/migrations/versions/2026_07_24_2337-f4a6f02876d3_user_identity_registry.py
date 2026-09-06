@@ -11,18 +11,17 @@ Create Date: 2026-07-24 23:37:35.654916
 """
 
 import json
-from typing import Sequence, Union
+from collections.abc import Sequence
 
-from alembic import op
 import sqlalchemy as sa
+from alembic import op
 from uuid_utils.compat import uuid7
-
 
 # revision identifiers, used by Alembic.
 revision: str = "f4a6f02876d3"
-down_revision: Union[str, Sequence[str], None] = "417719624acf"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | Sequence[str] | None = "417719624acf"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

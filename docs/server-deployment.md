@@ -8,7 +8,7 @@ and optionally exposing its API with a separate Tailcat setup.
 Install and run Octomate natively on the server, listening on `127.0.0.1:8000`.
 The operator uses `octomate serve --plist <path>` and `octomate upgrade`.
 Both commands apply pending Alembic migrations before starting the service;
-upgrade also pulls the latest `main` and syncs locked dependencies.
+upgrade also installs the latest stable release and syncs its locked dependencies.
 
 Tailcat is a separate networking step after the local installation works. It is
 the chosen way to expose Octomate to remote clients, with its own setup and lifecycle.
@@ -24,8 +24,8 @@ Octomate installation is complete when:
   No frontend is built or served; UI user validation is future work.
 - The application listens only on the server's loopback interface.
 - CLI start and upgrade apply pending migrations and start the service successfully.
-  Upgrade pulls the latest `main`; a failed migration prevents service startup and
-  exits with a clear error and backup location.
+  Upgrade installs the latest stable release; a failed migration prevents service
+  startup and exits with a clear error and backup location.
 - The service survives SSH disconnection and recovers from process failure.
   Reboot recovery is demonstrated.
 
@@ -75,7 +75,7 @@ Create a new deployment tree without modifying existing development checkouts:
 
 ```text
 /absolute/path/to/octomate/
-  app/                     one Git checkout on main, including cli/, migrations/, .venv/
+  app/                     one Git checkout at a release, including cli/, protocol/, .venv/
   shared/config/           production server YAML
   shared/.env              production secrets
   shared/octomate.db       designated production database
@@ -87,9 +87,10 @@ Create a new deployment tree without modifying existing development checkouts:
 ```
 
 Replace `/absolute/path/to/octomate` with the chosen deployment directory.
-At bootstrap, clone the source repository into `app/` on `main`, with `origin`
-pointing to that repository. Link `app/.octomate` to `../shared` and `app/.env`
-to `../shared/.env`.
+At bootstrap, clone the source repository into `app/` at the latest stable
+GitHub release tag, with `origin` pointing to that repository. Keep the checkout
+detached at its release commit; the upgrade command advances it to a newer release.
+Link `app/.octomate` to `../shared` and `app/.env` to `../shared/.env`.
 Keep production configuration and persistent state outside the checkout. Existing
 code keeps derived state under `.octomate`; preserve that directory as a unit.
 
@@ -111,10 +112,12 @@ Do not infer that the old development database is disposable. Database selection
 production agents/models, user registrations and any enabled IM channels are
 operator-supplied values; the CLI commands must not guess them.
 
-Use Python 3.13, matching `.python-version`. Include `cli/` because it is a uv
-workspace dependency, and retain migrations and `alembic.ini`. Runtime dependencies
-are installed with `uv sync --frozen --no-dev`. Launch `app/.venv/bin/octomate serve`
-with `app/` as the working directory. [uv synchronization](https://docs.astral.sh/uv/concepts/projects/sync/).
+Use Python 3.13, matching `.python-version`; the packages also support Python 3.12.
+Include both `cli/` and `protocol/`, which are uv workspace dependencies. Runtime
+dependencies are installed with `uv sync --locked --no-dev`. The application factory
+and Alembic resources ship inside the `octomate` package. Launch
+`app/.venv/bin/octomate serve` with `app/` as the working directory.
+[uv synchronization](https://docs.astral.sh/uv/concepts/projects/sync/).
 
 There is no frontend build, Node/pnpm deployment step, Vite process, static-file
 server, or Docker requirement. Provider CLIs may still have their own runtime
@@ -150,7 +153,7 @@ The Typer CLI exposes two top-level server commands:
 | --- | --- |
 | `octomate serve` | Run the API in the foreground; supports `--host`, `--port`, `--reload` and `--tmux`. Does not update code or run migrations. |
 | `octomate serve --plist <path>` | Check the configured deployment, back up and apply pending migrations, then start the service and verify it. Does not download code. |
-| `octomate upgrade` | **Launchd/plist services only.** Stop the service, back up, pull the latest main, sync dependencies, apply migrations, restart and verify. |
+| `octomate upgrade` | **Launchd/plist services only.** Find and fetch the latest stable release, stop the service, back up, install the release and locked dependencies, migrate, restart and verify. An already current checkout is unchanged. |
 
 Run these commands on the server using the CLI installed in `app/.venv/`; bootstrap
 makes that executable available on the operator's PATH.
@@ -207,20 +210,23 @@ octomate upgrade --plist /absolute/path/to/server.plist
 ```
 
 The default is `/Library/LaunchDaemons/io.octomate.server.plist`. The checkout named
-by the plist must be on `main` with no tracked local changes. Upgrade pulls the
-latest `main`; changes should be reviewed and checked before merging.
+by the plist must have no tracked local changes.
 
-1. Acquire the operation lock. Check that `app/` is on `main` with no tracked
-   local changes, and validate the deployment configuration. Refuse unexpected state;
-   do not stash or reset it. Record the previous commit automatically.
-2. Disable and unload the backend job, wait for its listening port to close, and take a consistent
-   database backup. Run updates during a quiet window: requests and streams can
-   be interrupted.
-3. Run `git pull --ff-only origin main`, require HEAD to match the fetched revision,
-   and run `uv sync --frozen --no-dev` against `app/.venv/`.
-4. Apply pending migrations from the updated checkout, then start and verify the
-   backend using the same migration and startup policy as `serve --plist <path>`.
-5. Record the resulting commit, migration revision, backup location and outcome.
+1. Acquire the operation lock and validate the deployment configuration. Resolve
+   the latest non-draft, non-prerelease GitHub release and fetch its version tag
+   from `origin`. An unavailable release or failed fetch leaves the service running.
+2. Compare the fetched commit with the installed commit. If they match, report
+   the release and exit without changing the service or database. Otherwise require
+   the installed commit to be an ancestor of the release; refuse downgrades and
+   divergent local history before stopping the service.
+3. Disable and unload the backend job, wait for its listening port to close, and
+   take a consistent database backup. Run updates during a quiet window: requests
+   and streams can be interrupted.
+4. Check out the fetched commit in detached HEAD mode, then run
+   `uv sync --locked --no-dev` against `app/.venv/`. Apply pending migrations from
+   that version, then start and verify the backend.
+5. Record the release tag, previous and resulting commits, migration revision,
+   backup location and outcome.
 
 The orchestration is Python CLI code, invoking Git, uv, Alembic and launchctl directly
 with argument lists. Maintenance runs in a fresh `app/.venv/bin/python` process
@@ -228,7 +234,7 @@ using the job's environment, so migrations load the updated code and dependencie
 The existing [CLI registration](../cli/octomate_cli/main.py) and
 [foreground runner](../cli/octomate_cli/serve.py) define the integration points.
 
-A failed backup, pull, dependency sync or migration ends the command with a nonzero
+A failed backup, checkout, dependency sync or migration ends the command with a nonzero
 exit code and leaves the backend disabled. If startup verification fails, disable
 and unload the backend job and report the failed check. The disabled state persists
 across reboot. After resolving the failure, run `serve --plist <path>` to migrate and enable
@@ -239,9 +245,9 @@ agent work before upgrading, then use startup logs and authenticated protocol ch
 to confirm recovery. Do not use Trunkline's constant health response or promise
 lossless hook delivery during the outage.
 
-If release-based updates become useful later, add a GitHub workflow that publishes
-a release when a version tag is pushed. `octomate upgrade` can then resolve
-the latest stable release automatically. The initial setup needs only `main`.
+Release Please creates version PRs and GitHub releases; publishing remains separate
+from deployment. See [release preparation and account setup](releases.md).
+Merging a release PR never invokes this host's upgrade command.
 
 ## 6. Integrated migrations and recovery
 
@@ -257,12 +263,12 @@ production database, apply the initial migrations at the configured path.
 
 The CLI then runs the equivalent of `alembic upgrade head` against the designated
 production database while the backend is stopped, and verifies the resulting revision
-before service startup. Use the checkout's absolute `alembic.ini` path and the same
+before service startup. Use the installed package's absolute `migrations/alembic.ini` path and the same
 database configuration as the app. [Alembic command interface](https://alembic.sqlalchemy.org/en/latest/api/commands.html).
 
 Run copy and production migrations in separate fresh processes, each with an explicit
 `OCTOMATE_DB_URL` set before importing server code. The current
-[migration environment](../migrations/env.py) resolves the database from application
+[migration environment](../octomate/migrations/env.py) resolves the database from application
 settings and overrides the URL in Alembic's configuration; changing only that
 configuration would not redirect a rehearsal away from production.
 

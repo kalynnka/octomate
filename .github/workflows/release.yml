@@ -1,0 +1,96 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - uses: actions/checkout@v4
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+      - uses: astral-sh/setup-uv@v10
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          version: "0.8.13"
+      - name: Synchronize the release PR lockfile
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          uv lock
+          if ! git diff --quiet -- uv.lock; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add uv.lock
+            git commit -m 'chore: sync release lockfile'
+            git push
+          fi
+
+  checks:
+    needs: release
+    if: needs.release.outputs.created == 'true'
+    uses: ./.github/workflows/checks.yml
+    with:
+      ref: ${{ needs.release.outputs.tag }}
+
+  publish:
+    needs: [release, checks]
+    if: needs.release.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Group packages in dependency order
+        run: |
+          mkdir -p packages/protocol packages/cli packages/server
+          mv dist/octomate_protocol-* packages/protocol/
+          mv dist/octomate_cli-* packages/cli/
+          mv dist/octomate-* packages/server/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/protocol/
+          skip-existing: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/cli/
+          skip-existing: true
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/server/
+          skip-existing: true
+      - name: Attach distributions to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" packages/*/* --clobber
