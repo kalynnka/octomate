@@ -242,11 +242,13 @@ def calls_of(method: str) -> list[JsonValue]:
 class FakeFeelers:
     batch: FakePresentedBatch
     requests: list[object] = field(default_factory=list)
+    presented: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def present_actions(
         self, *, requests: object, **_: object
     ) -> FakePresentedBatch:
         self.requests.append(requests)
+        self.presented.set()
         return self.batch
 
 
@@ -309,12 +311,11 @@ def bridge_context(
     )
 
 
-async def wait_for_pending(tentacle: DeepseekTentacle) -> uuid.UUID:
-    for _ in range(10000):
-        if tentacle.pending:
-            return next(iter(tentacle.pending))
-        await asyncio.sleep(0)
-    raise AssertionError("no dsh deferred batch was parked")
+async def wait_for_pending(
+    tentacle: DeepseekTentacle, feelers: FakeFeelers
+) -> uuid.UUID:
+    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
+    return next(iter(tentacle.pending))
 
 
 def interaction_octomate(
@@ -690,7 +691,7 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
         run = asyncio.ensure_future(
             tentacle.run("dangerous", conversation_address=KEY, thread_id=_THREAD)
         )
-        batch_id = await wait_for_pending(tentacle)
+        batch_id = await wait_for_pending(tentacle, feelers)
         await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
@@ -701,6 +702,7 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
     assert result.output == "released"
     assert len(feelers.requests) == 1
     [(rpc_id, response)] = FakeDeepseekApi.responds
+    assert rpc_id == "rpc-2"
     assert isinstance(response, OkResult)
     assert response.value == {
         "sessionId": "sess-1",
@@ -732,7 +734,7 @@ async def test_a_declined_approval_answers_rejected() -> None:
     )
 
     task = asyncio.create_task(tentacle.answer_interaction("rpc-9", frame))
-    batch_id = await wait_for_pending(tentacle)
+    batch_id = await wait_for_pending(tentacle, feelers)
     await octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
     )
@@ -775,6 +777,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
     await tentacle.answer_interaction("rpc-9", frame)
 
     [(rpc_id, response)] = FakeDeepseekApi.responds
+    assert rpc_id == "rpc-9"
     assert isinstance(response, ErrResult)
     assert response.error.code == "cancelled"
     assert deferred_actions.marked
@@ -804,7 +807,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     )
 
     task = asyncio.create_task(tentacle.answer_interaction("rpc-1", frame))
-    batch_id = await wait_for_pending(tentacle)
+    batch_id = await wait_for_pending(tentacle, feelers)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
@@ -922,7 +925,7 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     )
 
     task = asyncio.create_task(tentacle.answer_interaction("rpc-9", frame))
-    batch_id = await wait_for_pending(tentacle)
+    batch_id = await wait_for_pending(tentacle, feelers)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,

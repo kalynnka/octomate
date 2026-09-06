@@ -1,0 +1,21 @@
+[project]
+name = "octomate-protocol"
+version = "0.0.1"
+description = "Shared stream and deployment contracts for Octomate and its CLI."
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.12.5"]
+
+[project.urls]
+Repository = "https://github.com/kalynnka/octomate"
+Documentation = "https://github.com/kalynnka/octomate/blob/main/protocol/README.md"
+Issues = "https://github.com/kalynnka/octomate/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["octomate_protocol"]

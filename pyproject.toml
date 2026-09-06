@@ -1,16 +1,15 @@
 [project]
 name = "octomate"
 version = "0.0.1"
-description = "Add your description here"
+description = "Server for collecting coding agent sessions and sharing their history and tools across chat channels."
 readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 dependencies = [
-    # The server imports one module from it — `octomate_cli.stream`, the wire
-    # protocol — and nothing else. The distribution edge also hands a server
-    # install the `octomate` console script.
-    "octomate-cli",
+    # Include the CLI so server installs provide the `octomate` console script.
+    "octomate-cli>=0.0.1,<0.1",
+    "octomate-protocol>=0.0.1,<0.1",
     "anyio>=4",
     "httpx>=0.28.1",
     "pydantic>=2.12.5",
@@ -41,6 +40,7 @@ dependencies = [
     "rich>=13",
     "openai-codex>=0.1.0b3",
     "typer>=0.25.1",
+    "typing-extensions>=4.10",
     "email-validator",
     # The gateway's own MCP server (`octomate.mcp.gateway`) and, in time, the
     # streamable-HTTP app it is served as. The client half already arrives with
@@ -48,6 +48,11 @@ dependencies = [
     # dependencies.
     "fastmcp-slim[server]>=3.4",
 ]
+
+[project.urls]
+Repository = "https://github.com/kalynnka/octomate"
+Documentation = "https://github.com/kalynnka/octomate/blob/main/README.md"
+Issues = "https://github.com/kalynnka/octomate/issues"
 
 [build-system]
 requires = ["hatchling"]
@@ -57,16 +62,17 @@ build-backend = "hatchling.build"
 packages = ["octomate"]
 
 [tool.uv.workspace]
-members = ["cli"]
+members = ["cli", "protocol"]
 
 [tool.uv.sources]
 octomate-cli = { workspace = true }
+octomate-protocol = { workspace = true }
 
 [tool.ruff]
 # The whole tree is `ruff format`ed at this width. Pinned rather than left implicit so
-# a ruff upgrade cannot reflow every file at once; `target-version` stays inferred from
-# `requires-python`.
+# a ruff upgrade cannot reflow every file at once.
 line-length = 88
+target-version = "py312"
 
 [tool.ruff.lint]
 # Ruff is the gate: what it accepts is what the tree is allowed to contain. Pylance
@@ -88,7 +94,7 @@ select = [
     "PIE",    # statements with no effect
     "PT",     # pytest idiom: composite asserts, fixture returns, bare `raises`
     "RUF",    # ruff's own, incl. RUF012 mutable class defaults — AGENTS.md Typing 1
-    "UP",     # syntax this `requires-python` has made redundant
+    "UP",     # modern syntax supported by the configured target
 ]
 ignore = [
     # Deprecated by ruff itself: `isinstance(x, A | B)` is not recommended practice, it
@@ -110,6 +116,12 @@ dev = [
     "httpx>=0.28.1",
     "pytest-env>=1.1",
 ]
+
+[tool.pyright]
+typeCheckingMode = "basic"
+venvPath = "."
+venv = ".venv"
+extraPaths = [".", "cli", "protocol"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

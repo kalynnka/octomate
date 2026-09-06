@@ -17,9 +17,6 @@ from threading import Thread
 
 import pytest
 from octomate_cli import emit as emit_module
-from octomate_cli.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
-from octomate_cli.codex import EMIT_SCRIPT
-from octomate_cli.codex import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
 from octomate_cli.config import CLISettings, project_config_path, user_config_path
 from octomate_cli.emit import (
     CODEX_HOOK_PATH,
@@ -28,6 +25,9 @@ from octomate_cli.emit import (
     OCTOMATE_URL_ENV,
     SECRET_ENV,
 )
+from octomate_cli.tentacles.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
+from octomate_cli.tentacles.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
+from octomate_cli.tentacles.hooks import EMIT_SCRIPT
 
 from octomate.tentacles.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
 

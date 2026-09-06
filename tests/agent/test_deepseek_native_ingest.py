@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from octomate_cli.stream import SESSION_FILE
+from octomate_protocol.stream import SESSION_FILE
 from pydantic_ai.messages import ModelRequest, ModelResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
 

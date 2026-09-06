@@ -14,10 +14,10 @@ from pathlib import Path
 
 import pytest
 from octomate_cli import launch as launch_module
-from octomate_cli.claude import CLAUDE_HOOK_PATH
 from octomate_cli.config import CLISettings, project_config_path, user_config_path
-from octomate_cli.hooks import LAUNCH_SCRIPT
 from octomate_cli.launch import OCTOMATE_URL_ENV as LAUNCH_URL_ENV
+from octomate_cli.tentacles.claude import CLAUDE_HOOK_PATH
+from octomate_cli.tentacles.hooks import LAUNCH_SCRIPT
 
 STREAM_URL = "ws://127.0.0.1:9999/hooks/claude/stream"
 EVENT = {

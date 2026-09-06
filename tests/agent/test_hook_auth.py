@@ -11,9 +11,9 @@ from contextlib import asynccontextmanager
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from octomate_cli.claude import CLAUDE_HOOK_PATH
-from octomate_cli.codex import CODEX_HOOK_PATH
-from octomate_cli.deepseek import DEEPSEEK_HOOK_PATH
+from octomate_cli.tentacles.claude import CLAUDE_HOOK_PATH
+from octomate_cli.tentacles.codex import CODEX_HOOK_PATH
+from octomate_cli.tentacles.deepseek import DEEPSEEK_HOOK_PATH
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 

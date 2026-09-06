@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from octomate_cli.stream import (
+from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,

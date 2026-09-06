@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    outputs:
+      created: ${{ steps.release.outputs.releases_created }}
+      packages: ${{ steps.packages.outputs.matrix }}
+      sha: ${{ steps.release.outputs.sha || steps.release.outputs['cli--sha'] || steps.release.outputs['protocol--sha'] }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+      - name: Verify releases share the checked commit
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          SERVER_SHA: ${{ steps.release.outputs.sha }}
+          CLI_SHA: ${{ steps.release.outputs['cli--sha'] }}
+          PROTOCOL_SHA: ${{ steps.release.outputs['protocol--sha'] }}
+        run: |
+          release_sha="${SERVER_SHA:-${CLI_SHA:-$PROTOCOL_SHA}}"
+          for sha in "$SERVER_SHA" "$CLI_SHA" "$PROTOCOL_SHA"; do
+            if [ -n "$sha" ]; then test "$sha" = "$release_sha"; fi
+          done
+      - name: Select released packages
+        id: packages
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          SERVER_TAG: ${{ steps.release.outputs.tag_name }}
+          CLI_TAG: ${{ steps.release.outputs['cli--tag_name'] }}
+          PROTOCOL_TAG: ${{ steps.release.outputs['protocol--tag_name'] }}
+        run: |
+          matrix=$(jq -cn \
+            --arg server "$SERVER_TAG" --arg cli "$CLI_TAG" --arg protocol "$PROTOCOL_TAG" \
+            '{include: [
+              {package: "protocol", distribution: "octomate_protocol", tag: $protocol},
+              {package: "cli", distribution: "octomate_cli", tag: $cli},
+              {package: "server", distribution: "octomate", tag: $server}
+            ] | map(select(.tag != ""))}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          ref: ${{ fromJSON(steps.release.outputs.pr).headBranchName }}
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        if: steps.release.outputs.prs_created == 'true'
+        with:
+          version: "0.8.13"
+      - name: Synchronize the release PR lockfile
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          uv lock
+          if ! git diff --quiet -- uv.lock; then
+            git config user.name 'github-actions[bot]'
+            git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+            git add uv.lock
+            git commit -m 'chore: sync release lockfile'
+            git push
+          fi
+
+  checks:
+    needs: release
+    if: needs.release.outputs.created == 'true'
+    uses: ./.github/workflows/checks.yml
+    with:
+      ref: ${{ needs.release.outputs.sha }}
+
+  publish:
+    name: Publish ${{ matrix.package }}
+    needs: [release, checks]
+    if: needs.release.outputs.created == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.release.outputs.packages) }}
+    environment: pypi-${{ matrix.package }}
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: distributions
+          path: dist
+      - name: Select package distributions
+        env:
+          DISTRIBUTION: ${{ matrix.distribution }}
+        run: |
+          mkdir package
+          mv dist/"$DISTRIBUTION"-* package/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: package/
+          skip-existing: true
+      - name: Attach package to its release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ matrix.tag }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release upload "$RELEASE_TAG" package/* --clobber
