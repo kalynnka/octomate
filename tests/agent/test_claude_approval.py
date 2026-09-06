@@ -70,11 +70,13 @@ _THREAD = uuid7()
 class FakeFeelers:
     batch: FakePresentedBatch
     requests: list[object] = field(default_factory=list)
+    presented: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def present_actions(
         self, *, requests: object, **_: object
     ) -> FakePresentedBatch:
         self.requests.append(requests)
+        self.presented.set()
         return self.batch
 
 
@@ -234,12 +236,11 @@ async def _drain(tentacle: ClaudeCodeTentacle) -> None:
             pass
 
 
-async def _wait_for_pending(tentacle: ClaudeCodeTentacle) -> uuid.UUID:
-    for _ in range(10000):
-        if tentacle.pending:
-            return next(iter(tentacle.pending))
-        await asyncio.sleep(0)
-    raise AssertionError("no deferred batch was parked")
+async def _wait_for_pending(
+    tentacle: ClaudeCodeTentacle, feelers: FakeFeelers
+) -> uuid.UUID:
+    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
+    return next(iter(tentacle.pending))
 
 
 async def test_approval_allow_lets_the_tool_run(
@@ -253,7 +254,7 @@ async def test_approval_allow_lets_the_tool_run(
     tentacle, dam, feelers = _build(FakePresentedBatch(approvals=[approval]))
 
     task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle)
+    batch_id = await _wait_for_pending(tentacle, feelers)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: True})
     )
@@ -272,10 +273,10 @@ async def test_approval_deny_feeds_reason_back(
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
     )
-    tentacle, _dam, _feelers = _build(FakePresentedBatch(approvals=[approval]))
+    tentacle, _dam, feelers = _build(FakePresentedBatch(approvals=[approval]))
 
     task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle)
+    batch_id = await _wait_for_pending(tentacle, feelers)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
     )
@@ -297,7 +298,7 @@ async def test_allow_session_suppresses_repeat_prompts(
     tentacle, _dam, feelers = _build(FakePresentedBatch(approvals=[approval]))
 
     task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle)
+    batch_id = await _wait_for_pending(tentacle, feelers)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
@@ -343,12 +344,12 @@ async def test_permission_mode_drives_the_sdk(
         position=0,
         args={"question": "Pick one", "choices": ["A"], "hint": "choose"},
     )
-    tentacle, _dam, _feelers = _build(
+    tentacle, _dam, feelers = _build(
         FakePresentedBatch(questions=[question]), conversation=seeded
     )
 
     task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle)
+    batch_id = await _wait_for_pending(tentacle, feelers)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
     )
@@ -440,7 +441,7 @@ async def test_ask_user_question_hook_feeds_answer_back(
     tentacle, _dam, feelers = _build(FakePresentedBatch(questions=[question]))
 
     task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle)
+    batch_id = await _wait_for_pending(tentacle, feelers)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
     )
@@ -474,7 +475,7 @@ async def test_ask_user_question_truncates_choices_to_cap(
     tentacle, _dam, feelers = _build(FakePresentedBatch(questions=[question]))
 
     task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle)
+    batch_id = await _wait_for_pending(tentacle, feelers)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
     )

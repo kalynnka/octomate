@@ -14,6 +14,7 @@ from unittest.mock import patch
 from urllib.error import URLError
 
 import pytest
+from click import unstyle
 from octomate_cli.main import app
 from octomate_cli.serve import PlistService, latest_server_release
 from octomate_protocol.deployment import DatabaseBackup
@@ -189,7 +190,7 @@ def test_managed_serve_refuses_foreground_options(
     plist, operations = service
     result = CliRunner().invoke(app, ["serve", "--plist", str(plist), *options])
     assert result.exit_code == 2
-    assert "--plist uses the service configuration" in result.output
+    assert "--plist uses the service configuration" in unstyle(result.output)
     assert operations.events == []
 
 

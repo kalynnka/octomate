@@ -16,8 +16,27 @@ permissions:
   contents: read
 
 jobs:
-  check:
-    name: Python ${{ matrix.python }}
+  lint:
+    name: Ruff and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.8.13"
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Check changed Python files
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+        run: uv run --no-sync python .github/checks/changed.py "$BASE_SHA"
+
+  test:
+    name: Unit tests (Python ${{ matrix.python }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -27,19 +46,33 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.ref || github.sha }}
-          fetch-depth: 0
       - uses: astral-sh/setup-uv@v10.0.1
         with:
           version: "0.8.13"
           python-version: ${{ matrix.python }}
           enable-cache: true
       - run: uv sync --locked
-      - name: Check changed Python files
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before || github.sha }}
-        run: uv run --no-sync python .github/checks/changed.py "$BASE_SHA"
-      - name: Test
+      - name: Run unit tests
         run: uv run --no-sync pytest -q
+
+  packages:
+    name: Packages (Python ${{ matrix.python }})
+    needs: [lint, test]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          version: "0.8.13"
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+      - run: uv sync --locked
       - name: Build all distributions
         run: uv build --all-packages --no-sources
       - name: Validate distribution metadata

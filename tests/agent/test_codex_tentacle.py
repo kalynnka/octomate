@@ -345,11 +345,13 @@ class ApprovalFakeThread(FakeThread):
 class FakeFeelers:
     batch: FakePresentedBatch
     requests: list[object] = field(default_factory=list)
+    presented: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def present_actions(
         self, *, requests: object, **_: object
     ) -> FakePresentedBatch:
         self.requests.append(requests)
+        self.presented.set()
         return self.batch
 
 
@@ -420,12 +422,9 @@ def codex_bridge_context(
     )
 
 
-async def wait_for_pending(tentacle: CodexTentacle) -> uuid.UUID:
-    for _ in range(10000):
-        if tentacle.pending:
-            return next(iter(tentacle.pending))
-        await asyncio.sleep(0)
-    raise AssertionError("no Codex deferred batch was parked")
+async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uuid.UUID:
+    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
+    return next(iter(tentacle.pending))
 
 
 async def test_run_stream_events_starts_thread_proxies_events_and_persists(
@@ -672,7 +671,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
 
     async with tentacle:
         task = asyncio.ensure_future(drain())
-        batch_id = await wait_for_pending(tentacle)
+        batch_id = await wait_for_pending(tentacle, feelers)
         await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
@@ -720,7 +719,7 @@ async def test_question_requests_bridge_to_cards() -> None:
             },
         )
     )
-    batch_id = await wait_for_pending(tentacle)
+    batch_id = await wait_for_pending(tentacle, feelers)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -769,7 +768,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
     )
-    batch_id = await wait_for_pending(tentacle)
+    batch_id = await wait_for_pending(tentacle, feelers)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -839,7 +838,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
     )
-    batch_id = await wait_for_pending(tentacle)
+    batch_id = await wait_for_pending(tentacle, feelers)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -1105,7 +1104,7 @@ def a_kicker(octomate: Octomate, secret: str = "lu-token") -> UserProfile:
     """`lu`, registered with `secret` on their row, as the sender profile the
     driven turn's session carries — cached so the bearer resolves without a
     database."""
-    lu = User(username="lu", name="lu", secret=secret)
+    lu = User(username="lu", name="lu", secret=SecretStr(secret))
     octomate.users.cache_user(lu)
     return UserProfile(channel_tentacle_id="im", channel_user_id="alice", user_id=lu.id)
 

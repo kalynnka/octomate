@@ -204,12 +204,15 @@ async def test_a_symlinked_root_resolves(tmp_path: Path) -> None:
     assert manager.resolve(real / "octomate") == "inky"
 
 
-async def test_a_root_reached_through_a_symlinked_tmp_resolves() -> None:
-    # /tmp is a symlink to /private/tmp on macOS: the exact miss the ticket names.
-    manager = await a_registry(a_project(Path("/tmp"), name="scratch"))
+async def test_a_root_reached_through_a_symlinked_tmp_resolves(tmp_path: Path) -> None:
+    real = tmp_path / "private" / "tmp"
+    real.mkdir(parents=True)
+    link = tmp_path / "tmp"
+    link.symlink_to(real, target_is_directory=True)
+    manager = await a_registry(a_project(link, name="scratch"))
 
-    assert manager.resolve(Path("/tmp/whatever")) == "scratch"
-    assert manager.resolve(Path("/private/tmp/whatever")) == "scratch"
+    assert manager.resolve(link / "whatever") == "scratch"
+    assert manager.resolve(real / "whatever") == "scratch"
 
 
 async def test_a_root_that_is_not_on_disk_still_resolves(tmp_path: Path) -> None:
