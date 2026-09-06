@@ -309,15 +309,40 @@ cd trunkline && pnpm install && pnpm dev   # http://localhost:5173
 
 ### Running it
 
-`octomate serve --tmux` serves in a detached tmux session and attaches to it, creating
-it if it is not already running — so the same command is both "start" and "go look at
+`octomate serve` runs the API in the foreground. Add `--tmux` to run in a
+detached tmux session and attach to it, creating it if it is not already running —
+so the same command is both "start" and "go look at
 it". Octomate is meant to outlive the terminal that started it: channels hold their
 sockets open, and the tailers keep watching for native sessions started somewhere else
 entirely. `--reload` restarts on changes under `octomate/`.
 
-Run it on the machine you work on. The tailers read transcript files off local disk and
-agents run in your checkouts, so Octomate is not a service you host away from your
-filesystem.
+**`octomate upgrade` currently supports launchd services defined by a plist only.**
+Prepare and install the service definition first, then run these commands as its
+configured service user, without sudo:
+
+```bash
+octomate serve --plist /Library/LaunchDaemons/io.octomate.server.plist
+octomate upgrade
+```
+
+`upgrade` uses `/Library/LaunchDaemons/io.octomate.server.plist` by default. For a
+different installed definition, run `octomate upgrade --plist /absolute/path/to/server.plist`.
+Omitting `--plist` still requires that default file; it does not enable a general
+update mode. The command does not manage foreground `serve` processes, tmux sessions
+or other supervisors.
+
+`serve --plist <path>` backs up and migrates the configured SQLite database before
+starting the service. It uses the service definition's configuration and cannot be
+combined with foreground or tmux options. `upgrade` stops it, backs up, pulls the
+latest `main`, syncs locked
+dependencies, migrates and restarts. Pending migrations are rehearsed on a copy;
+a failure leaves the service disabled for recovery. These management commands
+currently use a launchd service adapter. See the
+[server deployment guide](docs/server-deployment.md) for its required service
+definition and configuration. Tailcat setup is a separate networking step.
+
+Server-hosted agents need their checkouts and credentials on the server. Native
+transcript tailers stay on the client machine whose local files they read.
 
 ## Configuration
 
