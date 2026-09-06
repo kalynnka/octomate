@@ -42,8 +42,8 @@ merging the release workflow into `main`.
    The workflow requires the configured token so release PRs and the lockfile
    commit trigger normal PR checks; it does not fall back to `GITHUB_TOKEN`.
 2. Enable Actions for the repository and allow GitHub Actions to create pull
-   requests under Settings → Actions → General. Create the GitHub environment
-   `pypi`. The publishing job uses that environment.
+   requests under Settings → Actions → General. Create the GitHub environments
+   `pypi-protocol`, `pypi-cli`, and `pypi-server`.
 3. Sign in to PyPI and configure a Trusted Publisher for **each** of these names:
    `octomate-protocol`, `octomate-cli`, and `octomate`. If a project does not exist,
    use a pending publisher under account Publishing to create it on first upload.
@@ -54,10 +54,19 @@ merging the release workflow into `main`.
    | Owner | `kalynnka` |
    | Repository | `octomate` |
    | Workflow filename | `release.yml` |
-   | Environment | `pypi` |
 
-   These are the same for all three project registrations. No PyPI API token is
-   needed: the publishing job obtains short-lived credentials through OIDC.
+   Use the matching environment for each project:
+
+   | PyPI project | Environment |
+   | --- | --- |
+   | `octomate-protocol` | `pypi-protocol` |
+   | `octomate-cli` | `pypi-cli` |
+   | `octomate` | `pypi-server` |
+
+   PyPI requires distinct publisher configurations for pending projects. Separate
+   environments let all three projects be created by their first automated release.
+   No PyPI API token is needed: each publishing job obtains short-lived credentials
+   through OIDC.
 4. Use Conventional Commit PR titles and squash merges so the release version
    reflects the merged changes. Require the PR title and both Python check jobs
    in the repository's branch rules once they have run successfully.
@@ -90,17 +99,18 @@ After the release PR is merged:
 3. The installation check rebuilds every source distribution, confirms internal
    dependency compatibility, verifies the client has no server dependencies, and runs
    the installed server with a disposable database and authenticated MCP check.
-4. The publishing job uploads only released packages to PyPI, in dependency order:
-   protocol, CLI, server. Each package's wheel and source distribution are attached
-   to its own GitHub release. Building unchanged packages for checks does not publish
-   them or change their versions.
+4. A publishing job runs for each released package, using its matching environment.
+   Packages upload independently; wait for all publishing jobs to finish before
+   installing a release that needs newly released dependencies. Each package's wheel
+   and source distribution are attached to its own GitHub release. Building unchanged
+   packages for checks does not publish them or change their versions.
 
 Ruff and Pyright check changed Python files. The full test suite runs for every
 check job; live trigger tests remain skipped. Repository-wide lint cleanup is
 separate from this release preparation.
 
 The GitHub release is created before PyPI publishing completes. Wait for the
-publishing job to succeed before announcing package availability. If publishing
+publishing jobs to succeed before announcing package availability. If publishing
 fails partway through, rerun the failed jobs in that workflow run: they reuse the
 checked artifacts, and already uploaded distributions are skipped. Running a new
 workflow dispatch after the tag exists does not recreate its publication jobs.

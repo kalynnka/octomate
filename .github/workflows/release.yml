@@ -21,9 +21,7 @@ jobs:
       issues: write
     outputs:
       created: ${{ steps.release.outputs.releases_created }}
-      server_tag: ${{ steps.release.outputs.tag_name }}
-      cli_tag: ${{ steps.release.outputs['cli--tag_name'] }}
-      protocol_tag: ${{ steps.release.outputs['protocol--tag_name'] }}
+      packages: ${{ steps.packages.outputs.matrix }}
       sha: ${{ steps.release.outputs.sha || steps.release.outputs['cli--sha'] || steps.release.outputs['protocol--sha'] }}
     steps:
       - uses: googleapis/release-please-action@v4
@@ -43,6 +41,22 @@ jobs:
           for sha in "$SERVER_SHA" "$CLI_SHA" "$PROTOCOL_SHA"; do
             if [ -n "$sha" ]; then test "$sha" = "$release_sha"; fi
           done
+      - name: Select released packages
+        id: packages
+        if: steps.release.outputs.releases_created == 'true'
+        env:
+          SERVER_TAG: ${{ steps.release.outputs.tag_name }}
+          CLI_TAG: ${{ steps.release.outputs['cli--tag_name'] }}
+          PROTOCOL_TAG: ${{ steps.release.outputs['protocol--tag_name'] }}
+        run: |
+          matrix=$(jq -cn \
+            --arg server "$SERVER_TAG" --arg cli "$CLI_TAG" --arg protocol "$PROTOCOL_TAG" \
+            '{include: [
+              {package: "protocol", distribution: "octomate_protocol", tag: $protocol},
+              {package: "cli", distribution: "octomate_cli", tag: $cli},
+              {package: "server", distribution: "octomate", tag: $server}
+            ] | map(select(.tag != ""))}')
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         if: steps.release.outputs.prs_created == 'true'
         with:
@@ -72,10 +86,14 @@ jobs:
       ref: ${{ needs.release.outputs.sha }}
 
   publish:
+    name: Publish ${{ matrix.package }}
     needs: [release, checks]
     if: needs.release.outputs.created == 'true'
     runs-on: ubuntu-latest
-    environment: pypi
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.release.outputs.packages) }}
+    environment: pypi-${{ matrix.package }}
     permissions:
       contents: write
       id-token: write
@@ -84,41 +102,19 @@ jobs:
         with:
           name: distributions
           path: dist
-      - name: Group packages in dependency order
+      - name: Select package distributions
+        env:
+          DISTRIBUTION: ${{ matrix.distribution }}
         run: |
-          mkdir -p packages/protocol packages/cli packages/server
-          mv dist/octomate_protocol-* packages/protocol/
-          mv dist/octomate_cli-* packages/cli/
-          mv dist/octomate-* packages/server/
+          mkdir package
+          mv dist/"$DISTRIBUTION"-* package/
       - uses: pypa/gh-action-pypi-publish@release/v1
-        if: needs.release.outputs.protocol_tag != ''
         with:
-          packages-dir: packages/protocol/
+          packages-dir: package/
           skip-existing: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        if: needs.release.outputs.cli_tag != ''
-        with:
-          packages-dir: packages/cli/
-          skip-existing: true
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        if: needs.release.outputs.server_tag != ''
-        with:
-          packages-dir: packages/server/
-          skip-existing: true
-      - name: Attach each package to its release
+      - name: Attach package to its release
         env:
           GH_TOKEN: ${{ github.token }}
-          SERVER_TAG: ${{ needs.release.outputs.server_tag }}
-          CLI_TAG: ${{ needs.release.outputs.cli_tag }}
-          PROTOCOL_TAG: ${{ needs.release.outputs.protocol_tag }}
+          RELEASE_TAG: ${{ matrix.tag }}
           GH_REPO: ${{ github.repository }}
-        run: |
-          if [ -n "$PROTOCOL_TAG" ]; then
-            gh release upload "$PROTOCOL_TAG" packages/protocol/* --clobber
-          fi
-          if [ -n "$CLI_TAG" ]; then
-            gh release upload "$CLI_TAG" packages/cli/* --clobber
-          fi
-          if [ -n "$SERVER_TAG" ]; then
-            gh release upload "$SERVER_TAG" packages/server/* --clobber
-          fi
+        run: gh release upload "$RELEASE_TAG" package/* --clobber
