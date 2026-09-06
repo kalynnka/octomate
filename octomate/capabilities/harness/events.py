@@ -253,6 +253,7 @@ class ActionBatchEvent(BaseModel):
 
 
 # The stream a consumer matches on, generic over the run's output type.
+# (TypeAliasType backports PEP 695's generic alias to the project's 3.11 floor.)
 StreamEvents = TypeAliasType(
     "StreamEvents",
     AgentStreamEvent

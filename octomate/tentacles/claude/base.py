@@ -72,7 +72,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
-from octomate.mcp.gateway import GATEWAY_SERVER_NAME
+from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -91,12 +91,9 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.claude.gateway import (
-    GATEWAY_MCP_INSTRUCTION,
-    gateway_mcp_server,
-)
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
+from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.claude.transcript import relocate_session
 from octomate.tentacles.hooks import hook_guard, hook_sender
@@ -663,7 +660,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
         # project". Setting it to ["project"] would be the same behavior spelled
         # loudly; setting it to [] would silently drop a repo's instructions.
-        gateway_session = next(
+        octomate_session = next(
             (
                 capability.session
                 for capability in capabilities or ()
@@ -671,20 +668,21 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             ),
             None,
         )
-        # The turn's gateway, mounted in process with the session closed over —
-        # identity by closure, nothing on the wire names it. Its spells take the
+        # The turn's server, mounted in process with the session closed over —
+        # identity by closure, nothing on the wire names it. Its tools take the
         # normal tool-approval route like any other MCP tool; deliberately
         # nothing goes into `allowed_tools`.
         mcp_servers: dict[str, McpServerConfig] = {}
-        if gateway_session is not None:
-            mcp_servers[GATEWAY_SERVER_NAME] = await gateway_mcp_server(
-                gateway_session, self.octomate.thread_manager
+        served = list(self.octomate.mcps.values())
+        if octomate_session is not None:
+            mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
+                octomate_session, self.octomate.thread_manager, served
             )
         appended = "\n\n".join(
             part
             for part in (
                 instructions if isinstance(instructions, str) else None,
-                GATEWAY_MCP_INSTRUCTION if gateway_session is not None else None,
+                octomate_instructions(served) if octomate_session is not None else None,
             )
             if part
         )
@@ -796,8 +794,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         yield event
                     if (
                         not interrupted
-                        and gateway_session is not None
-                        and isinstance(gateway_session.decision, TeleportDecision)
+                        and octomate_session is not None
+                        and isinstance(octomate_session.decision, TeleportDecision)
                     ):
                         # Moving mid-run: the move is the graph's to perform, and
                         # this process is still where it was, so the turn ends now
@@ -844,7 +842,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     source_thread,
                     source_message_ids[-1],
                 )
-            moving = gateway_session.decision if gateway_session is not None else None
+            moving = octomate_session.decision if octomate_session is not None else None
             if isinstance(moving, TeleportDecision):
                 if deferred_suspender is None:
                     raise RuntimeError(

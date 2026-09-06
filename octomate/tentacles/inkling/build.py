@@ -2,13 +2,13 @@
 
 The counterpart to `build_channel`, and it does more than dispatch because inkling is
 the one agent assembled rather than handed a config: its models come from the provider
-registry, its toolsets from the MCP block, and its capability stack from three
-different config sections. That assembly is the thing worth having in one place — a
-launcher should ask for the tentacle, not know how one is made.
+registry and its capability stack from its own config. That assembly is the thing
+worth having in one place — a launcher should ask for the tentacle, not know how one
+is made. The providers — Slack, Linear, a vendor's server — reach it per run, from
+the host's tentacles, not from here.
 
 Imports sit inside the function because the capability stack pulls in pydantic-ai's
-harness and every configured integration's SDK, and importing this module must not
-cost that.
+harness, and importing this module must not cost that.
 """
 
 from __future__ import annotations
@@ -21,8 +21,6 @@ from octomate.config.agents import (
     SummarizeAction,
     TruncateAction,
 )
-from octomate.config.integrations import IntegrationConfig
-from octomate.config.mcp import McpServerConfig
 from octomate.tentacles.inkling.base import InklingTentacle
 
 if TYPE_CHECKING:
@@ -36,15 +34,11 @@ def build_inkling(
     octomate: Octomate,
     *,
     registry: ProviderRegistry,
-    mcp: dict[str, McpServerConfig],
-    integrations: dict[str, IntegrationConfig],
 ) -> InklingTentacle:
-    """The inkling tentacle, with its models, toolsets and capability stack.
+    """The inkling tentacle, with its models and capability stack.
 
     `registry` builds the models rather than pydantic-ai resolving their names, so a
-    model here means what `providers.yaml` says it means. `integrations` become
-    capabilities on this agent alone — they exist to give it tools — and each run
-    mounts its own copy of one, bound to the user that run is answering.
+    model here means what `providers.yaml` says it means.
     """
     from pydantic_ai import AgentCapability
     from pydantic_ai_harness.tool_output_limits import (
@@ -60,9 +54,7 @@ def build_inkling(
     from octomate.capabilities.history import HistoryCapability
     from octomate.capabilities.todos import TodoCapability
     from octomate.capabilities.tools import ToolFailureCapability
-    from octomate.integrations import build_integration
     from octomate.managers.spills import SpillStore
-    from octomate.tentacles.inkling.mcp import build_mcp_toolsets
     from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 
     capabilities: list[AgentCapability[None]] = [
@@ -84,12 +76,6 @@ def build_inkling(
             defer_loading=True,
         ),
     ]
-    capabilities.extend(
-        build_integration(name, integration, octomate.oauth)
-        for name, integration in integrations.items()
-        if integration.enabled
-    )
-
     # An MCP server answers with whatever it answers with, and a tool return persists
     # in history, so one oversized reply is re-sent on every later request for the rest
     # of the conversation. Spill and summarize each fall back to truncation, which is
@@ -123,7 +109,6 @@ def build_inkling(
         permission_mode=config.permission_mode,
         request_limit=config.request_limit,
         gateway=config.gateway,
-        toolsets=build_mcp_toolsets(mcp),
         capabilities=capabilities,
         system_prompt=SYSTEM_PROMPT,
     )

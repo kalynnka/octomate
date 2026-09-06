@@ -20,7 +20,6 @@ from typing import cast
 
 import pytest
 from fastmcp import Client
-from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -31,14 +30,19 @@ from octomate.config.mirrors import MirrorsConfig
 from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
-from octomate.managers.gateway import GatewayRefusal, GatewaySession
+from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import HERE_TARGET, ProjectSummary, TeleportDecision
 from octomate.schemas.user import UserProfile
-from tests.support.managers import FakeThreadManager, a_project, a_registry
+from tests.support.managers import (
+    FakeThreadManager,
+    a_project,
+    a_registry,
+    fixed_session,
+)
 
 CHAT = ThreadKey("im", "thread", "c", "t1")
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -51,7 +55,7 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 
 @dataclass
 class Harness:
-    session: GatewaySession
+    session: OctomateSession
     workspaces: WorkspaceManager
     threads: ThreadManager
     thread: Thread
@@ -93,7 +97,7 @@ async def a_harness(
     users, profile = await a_registered_profile()
     threads = ThreadManager(users=users)
     thread = await threads.ensure(key)
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={},
         current_agent_id="inkling",
         users=users,
@@ -271,7 +275,7 @@ async def test_a_native_session_may_list_but_neither_move_nor_dispel(
 
 async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
     users, profile = await a_registered_profile()
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={}, current_agent_id="inkling", users=users, user_profile=profile
     )
 
@@ -321,21 +325,21 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
     tmp_path: Path,
 ) -> None:
     harness = await a_harness(tmp_path)
-    server = octomate_mcp(Depends(lambda: harness.session), FakeThreadManager())
+    server = octomate_mcp(fixed_session(harness.session), FakeThreadManager())
 
     async with Client(server) as client:
-        listed = await client.call_tool("scry", {"reveal": "projects"})
+        listed = await client.call_tool("gateway_scry", {"reveal": "projects"})
         with pytest.raises(ToolError, match=r"Available: inky\."):
             await client.call_tool(
-                "teleport",
+                "gateway_teleport",
                 {"hint": "h", "destination": {"kind": "here"}, "project": "kraken"},
             )
         with pytest.raises(ToolError, match="about no project"):
-            await client.call_tool("dispel", {})
+            await client.call_tool("gateway_dispel", {})
         project = harness.workspaces.projects.get("inky")
         assert project is not None
         await harness.threads.bind(harness.thread.id, project)
-        dispelled = await client.call_tool("dispel", {})
+        dispelled = await client.call_tool("gateway_dispel", {})
 
     assert listed.data == "- inky"
     assert harness.session.dispelling

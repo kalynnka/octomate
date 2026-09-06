@@ -59,7 +59,7 @@ its backing API in a later change before enabling the production console.
 FastAPI's `/docs` and `/openapi.json` remain available on the local application
 port. OAuth routes follow the application's existing connector registration.
 
-Keep `mcp_path: /mcp`, matching the CLI's existing gateway URL. Current ownership
+The MCP endpoint is `/octomate/mcp`, matching the CLI's installed URL. Current ownership
 is in [application assembly](../octomate/base.py),
 [hook authentication](../octomate/tentacles/hooks.py) and the
 [CLI gateway address](../cli/octomate_cli/tentacles/mcp.py).

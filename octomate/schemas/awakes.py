@@ -48,7 +48,7 @@ class DeferredActionBatchResponse(BaseModel):
 class GatewayHandoffSignal:
     """A native session's summon or scheme, kicked as its own turn.
 
-    A driven turn's decision is read off its gateway session when the run ends; an
+    A driven turn's decision is read off its Octomate session when the run ends; an
     anonymous native session has no run in the graph, so the served spell hands its
     validated decision straight to the graph instead.
     """

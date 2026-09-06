@@ -4,7 +4,7 @@ The provider half of the GitHub integration — device-code request, token excha
 and the account lookup that names the connection. It knows nothing about agents,
 capabilities or MCP: application bootstrap composes this flow into an
 `OAuthConnector`, registers it on the `OAuthManager`, and hands that connector to
-`GitHubCapability`, which is what turns a connection into tools.
+`GitHubTentacle`, which is what turns a connection into tools.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 from pydantic import BaseModel, SecretStr, TypeAdapter
 
-from octomate.config.integrations import GitHubScope
+from octomate.config.mcp.github import GitHubScope
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,

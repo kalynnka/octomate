@@ -26,6 +26,7 @@ from sqlalchemy.engine import make_url
 
 from octomate.config import OctomateConfig
 from octomate.config.database import database_settings
+from octomate.mcp.server import OCTOMATE_MCP_PATH
 
 ALEMBIC_INI = Path(__file__).parent / "migrations" / "alembic.ini"
 
@@ -165,7 +166,7 @@ async def verify(config: OctomateConfig) -> None:
     )
     url = f"http://127.0.0.1:{config.port}"
     transport = StreamableHttpTransport(
-        f"{url}/gateway/mcp",
+        f"{url}{OCTOMATE_MCP_PATH}",
         auth=secret.get_secret_value(),
         httpx_client_factory=local_http_client,
     )
@@ -176,7 +177,7 @@ async def verify(config: OctomateConfig) -> None:
             if (await client.get(path)).status_code != 404:
                 raise ValueError(f"The console route {path} is still registered.")
     print(
-        f"Verified local gateway MCP ({len(tools)} tools) and disabled console routes."
+        f"Verified local Octomate MCP ({len(tools)} tools) and disabled console routes."
     )
 
 
@@ -186,10 +187,8 @@ def main() -> None:
     action = parser.parse_args().action
     config = OctomateConfig()
     database = database_path()
-    if str(config.host) != "127.0.0.1" or config.mcp_path != "/mcp":
-        raise ValueError(
-            "The managed server requires host 127.0.0.1 and mcp_path /mcp."
-        )
+    if str(config.host) != "127.0.0.1":
+        raise ValueError("The managed server requires host 127.0.0.1.")
     if any(
         channel.enabled and channel.type == "trunkline"
         for channel in config.channels.values()

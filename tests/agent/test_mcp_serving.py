@@ -1,9 +1,9 @@
-"""Octomate serving its MCP servers: each tool family at `/<name>/mcp`, every one
-behind the registered users' own secrets — the only bearers there are, so a
-deployment with no registered user serves its endpoints locked outright.
+"""Octomate serving its MCP server: one endpoint, `/octomate/mcp`, behind the
+registered users' own secrets — the only bearers there are, so a deployment with
+no registered user serves it locked outright.
 
 Spoken to over the wire — through the mounted app, bearer and all — which is how a
-driven Codex turn or a native session reaches them; the gateway's own tools are
+driven Codex turn or a native session reaches it; the gateway's own tools are
 pinned in memory by `test_gateway_tools`.
 """
 
@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from fastmcp import Client, FastMCP
+from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -27,24 +27,28 @@ from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import AgentModelConfig, ChannelConfig
 from octomate.config.users import UserConfig
-from octomate.managers.gateway import GatewaySession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
-from octomate.mcp.gateway import (
-    CLIENT_HEADER,
-    CONVERSATION_HEADER,
-    GATEWAY_SERVER_NAME,
-    GATEWAY_SPELLS,
+from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.server import (
+    OCTOMATE_MCP_PATH,
+    gateway_tool,
+    history_tool,
+    octomate_instructions,
 )
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
-from octomate.tentacles.mcp import McpTentacle
+from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
 
-SERVED = [server.name for server in Octomate().mcp_servers()]
 LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+
+# Octomate's own families, in the order the server lists them.
+OCTOMATE_TOOLS = [*map(gateway_tool, GATEWAY_SPELLS), *map(history_tool, HISTORY_TOOLS)]
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +60,7 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 async def served(
     octomate: Octomate | None = None,
 ) -> AsyncIterator[tuple[Octomate, FastAPI]]:
-    """Octomate's app with its MCP servers up: their transports live in the app
+    """Octomate's app with its MCP server up: the transport lives in the app
     lifespan, which Starlette never runs for a mounted app on its own. A context
     rather than a fixture because the transport's task group must be left from
     the task that entered it, and a fixture's teardown runs in another."""
@@ -66,14 +70,8 @@ async def served(
         yield octomate, app
 
 
-def over(
-    octomate: Octomate,
-    app: FastAPI,
-    headers: dict[str, str],
-    server: str = GATEWAY_SERVER_NAME,
-) -> Client:
-    """An MCP client speaking streamable HTTP into `app` without a socket, at the
-    named server's mount."""
+def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
+    """An MCP client speaking streamable HTTP into `app` without a socket."""
 
     def asgi(
         headers: dict[str, str] | None = None,
@@ -92,7 +90,7 @@ def over(
 
     return Client(
         StreamableHttpTransport(
-            f"http://octomate/{server}{octomate.mcp_path}",
+            f"http://octomate{OCTOMATE_MCP_PATH}",
             headers=headers,
             httpx_client_factory=asgi,
         )
@@ -120,10 +118,10 @@ def a_driven_deployment() -> Octomate:
     )
 
 
-async def a_driven_turn(octomate: Octomate) -> GatewaySession:
+async def a_driven_turn(octomate: Octomate) -> OctomateSession:
     """A turn at the gateway, as React registers one: the session a served call
     naming its conversation runs against, kicked by `lu`'s reconciled account."""
-    session = GatewaySession(
+    session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="codex",
         channels={"im": FakeChannelTentacle()},
@@ -142,44 +140,82 @@ async def a_driven_turn(octomate: Octomate) -> GatewaySession:
     return session
 
 
-def test_the_gateway_is_one_of_the_served_servers() -> None:
-    assert "gateway" in SERVED
+class ToolsTentacle(FakeChannelTentacle, OAuthMcpTentacle):
+    """A channel composing the MCP component: a provider the link tools know by
+    its id, acting as the person who linked it — nobody has, so it lists
+    nothing."""
+
+    label = "Tools"
+    upstream = "https://tools.example/mcp"
+    instructions = "## Tools\n\nA fake provider's own contract.\n"
+    prefix = None
 
 
-class ToolsTentacle(FakeChannelTentacle, McpTentacle):
-    """A channel composing the MCP component: served beside the gateway, once
-    per type however many instances are connected."""
-
-    @classmethod
-    def mcp(cls, resolve_session: Callable[[], Awaitable[GatewaySession]]) -> FastMCP:
-        return FastMCP("tools")
-
-
-def test_a_tentacle_composing_mcp_is_served_once_per_type() -> None:
+def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once() -> (
+    None
+):
     octomate = Octomate()
     octomate.connect(ToolsTentacle(id="a"))
     octomate.connect(ToolsTentacle(id="b"))
 
-    assert [server.name for server in octomate.mcp_servers()] == ["gateway", "tools"]
+    tentacles = list(octomate.mcps.values())
+    instructions = octomate_instructions(tentacles)
+
+    assert list(octomate.mcps) == ["a", "b"]
+    assert f"`{CONNECT_TOOL}` with the provider's id (`a`, `b`)" in instructions
+    assert instructions.count("A fake provider's own contract.") == 1
+    assert instructions.count("## Linking accounts") == 1
+
+
+def test_the_instructions_carry_the_linking_contract_only_with_a_provider() -> None:
+    bare = octomate_instructions([])
+    with_tools = octomate_instructions([ToolsTentacle(id="a")])
+
+    assert "## Linking accounts" not in bare
+    assert "## Linking accounts" in with_tools
+    assert "Tools — are listed here" in with_tools
+    assert "A fake provider's own contract." in with_tools
+
+
+async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> None:
+    # Nobody has linked the fake, so its proxy lists nothing; what a caller
+    # sees is the linking pair, after Octomate's own families — and the pair
+    # knows only the tentacles served here.
+    octomate = a_driven_deployment()
+    octomate.connect(ToolsTentacle(id="a"))
+    async with served(octomate) as (octomate, app):
+        session = await a_driven_turn(octomate)
+        async with over(
+            octomate,
+            app,
+            {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
+        ) as client:
+            tools = await client.list_tools()
+            with pytest.raises(ToolError, match="No provider with id 'nope'"):
+                await client.call_tool(CONNECT_TOOL, {"provider": "nope"})
+
+    assert [tool.name for tool in tools] == [
+        *OCTOMATE_TOOLS,
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+    ]
 
 
 async def test_a_bare_deployment_is_served_locked() -> None:
-    # No registered user: the endpoints still exist, and nothing at all opens
-    # them — every bearer there is names a person, and none is registered.
-    async with served() as (octomate, app):
+    # No registered user: the endpoint still exists, and nothing at all opens
+    # it — every bearer there is names a person, and none is registered.
+    async with served() as (_, app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://octomate"
         ) as http:
-            for name in SERVED:
-                response = await http.post(
-                    f"/{name}{octomate.mcp_path}",
-                    json=LIST_TOOLS,
-                    headers={"Accept": "application/json, text/event-stream"},
-                )
-                assert response.status_code == 401
+            response = await http.post(
+                OCTOMATE_MCP_PATH,
+                json=LIST_TOOLS,
+                headers={"Accept": "application/json, text/event-stream"},
+            )
+            assert response.status_code == 401
 
 
-@pytest.mark.parametrize("name", SERVED)
 @pytest.mark.parametrize(
     "headers",
     [
@@ -188,17 +224,17 @@ async def test_a_bare_deployment_is_served_locked() -> None:
         pytest.param({"Authorization": "the-hook-secret"}, id="bare-secret-no-scheme"),
     ],
 )
-async def test_every_server_refuses_an_unauthenticated_call(
-    name: str, headers: dict[str, str]
+async def test_the_server_refuses_an_unauthenticated_call(
+    headers: dict[str, str],
 ) -> None:
     async with (
-        served() as (octomate, app),
+        served() as (_, app),
         httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://octomate"
         ) as http,
     ):
         response = await http.post(
-            f"/{name}{octomate.mcp_path}",
+            OCTOMATE_MCP_PATH,
             json=LIST_TOOLS,
             headers={"Accept": "application/json, text/event-stream", **headers},
         )
@@ -212,7 +248,7 @@ async def test_a_user_secret_opens_the_six_spells_and_the_history_tools() -> Non
         async with over(octomate, app, DRIVEN_BEARER) as client:
             tools = await client.list_tools()
 
-    assert [tool.name for tool in tools] == [*GATEWAY_SPELLS, *HISTORY_TOOLS]
+    assert [tool.name for tool in tools] == OCTOMATE_TOOLS
 
 
 async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:
@@ -223,7 +259,7 @@ async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:
             app,
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
         ) as client:
-            result = await client.call_tool("scry", {"reveal": "destinations"})
+            result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
 
     assert result.data == "\n".join(
         str(one) for one in await session.scry("destinations")
@@ -257,7 +293,7 @@ async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
             octomate, app, {"Authorization": "Bearer hui-token", **header}
         ) as client:
             with pytest.raises(ToolError, match="not this bearer's to drive"):
-                await client.call_tool("scry", {"reveal": "routes"})
+                await client.call_tool("gateway_scry", {"reveal": "routes"})
 
 
 async def test_a_call_naming_no_turn_is_refused() -> None:
@@ -266,17 +302,17 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
 
         async with over(octomate, app, DRIVEN_BEARER) as client:
             with pytest.raises(ToolError, match="names no identity"):
-                await client.call_tool("scry", {"reveal": "routes"})
+                await client.call_tool("gateway_scry", {"reveal": "routes"})
 
         stray = {**DRIVEN_BEARER, CONVERSATION_HEADER: "not-a-uuid"}
         async with over(octomate, app, stray) as client:
             with pytest.raises(ToolError, match="not a conversation id"):
-                await client.call_tool("scry", {"reveal": "routes"})
+                await client.call_tool("gateway_scry", {"reveal": "routes"})
 
         unknown = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(uuid.uuid4())}
         async with over(octomate, app, unknown) as client:
             with pytest.raises(ToolError, match="No turn of conversation"):
-                await client.call_tool("scry", {"reveal": "routes"})
+                await client.call_tool("gateway_scry", {"reveal": "routes"})
 
 
 def a_native_deployment() -> FakeOctomate:
@@ -326,36 +362,13 @@ async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
             octomate, app, {**USER_BEARER, CLIENT_HEADER: "emacs-native"}
         ) as client:
             with pytest.raises(ToolError, match="names no native runtime"):
-                await client.call_tool("scry", {"reveal": "routes"})
-
-
-async def test_a_native_call_needs_its_runtime_flag_on() -> None:
-    # Un-configured runtime and switched-off flag refuse with the same sentence:
-    # from the session's side there is no difference, and both are fixed in the
-    # deployment config. This refusal is the only real control — a static MCP
-    # install puts the tools in every session.
-    registered = {"luhui": {"secret": "luhui-token"}}
-    unconfigured = OctomateConfig.model_validate({"users": registered})
-    off = OctomateConfig.model_validate(
-        {
-            "agents": {"claude": {"models": ["opus"], "native_gateway": False}},
-            "users": registered,
-        }
-    )
-    for config in (unconfigured, off):
-        octomate = Octomate(config=config)
-        async with served(octomate) as (octomate, app):
-            async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
-                with pytest.raises(
-                    ToolError, match="not offered to claude-native sessions"
-                ):
-                    await client.call_tool("scry", {"reveal": "routes"})
+                await client.call_tool("gateway_scry", {"reveal": "routes"})
 
 
 async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
     async with served(a_native_deployment()) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
-            result = await client.call_tool("scry", {"reveal": "destinations"})
+            result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
 
     # The bearer named luhui, so their linked account's crossing is on offer, and
     # nothing was ever registered: the session lived exactly one call.
@@ -368,7 +381,7 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
     async with served(octomate) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
             result = await client.call_tool(
-                "summon",
+                "gateway_summon",
                 {
                     "agent_id": "other",
                     "model": "test",

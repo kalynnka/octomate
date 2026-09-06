@@ -43,9 +43,8 @@ from pydantic_settings import (
 )
 
 from octomate.config.agents import AgentsConfig
-from octomate.config.channels import ChannelConfigVariant
-from octomate.config.integrations import IntegrationConfig
-from octomate.config.mcp import McpServerConfig
+from octomate.config.channels import ChannelConfigVariant, SlackChannelConfig
+from octomate.config.mcp import McpConfigVariant, OAuthMcpConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
@@ -58,7 +57,7 @@ from octomate.schemas.project import Project
 OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 
 # One file per subsystem, in the order they are read. `octomate.yaml` carries the
-# host's own settings (host, port, mcp_path, db_url) and comes first so a later
+# host's own settings (host, port, db_url) and comes first so a later
 # file cannot be shadowed by it.
 CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
@@ -67,7 +66,6 @@ CONFIG_FILES: tuple[str, ...] = (
     "users.yaml",
     "projects.yaml",
     "providers.yaml",
-    "integrations.yaml",
     "mcp.yaml",
     "observability.yaml",
     "oauth.yaml",
@@ -121,14 +119,6 @@ class OctomateConfig(BaseSettings):
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
-    mcp_path: Annotated[
-        str,
-        Field(
-            description="The MCP endpoint under each served server's mount: the "
-            "gateway answers at `/gateway` followed by this path."
-        ),
-    ] = "/mcp"
-
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     logfire: LogfireConfig = Field(default_factory=LogfireConfig)
@@ -142,21 +132,14 @@ class OctomateConfig(BaseSettings):
         ),
     )
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
-    mcp: dict[str, McpServerConfig] = Field(
+    mcp: dict[str, McpConfigVariant] = Field(
         default_factory=dict,
         description=(
-            "Bare vendor MCP servers mounted process-wide, each connected with one "
-            "operator credential. The key names the server: its MCP session id, and "
-            "the prefix its tools are exposed under."
-        ),
-    )
-    integrations: dict[str, IntegrationConfig] = Field(
-        default_factory=dict,
-        description=(
-            "Per-user OAuth integrations, each authorizing its own account from the "
-            "channel. The key names the integration: its connector id, the capability "
-            "the model loads, and the prefix its tools carry; `type` selects the "
-            "provider that builds it, so one vendor can be mounted once per account."
+            "MCP tentacles keyed by instance id, `type` selecting the provider — a "
+            "vendor's server on one operator credential, or a person's own account "
+            "linked through the provider's OAuth flow. The key is the tentacle id "
+            "throughout: the prefix its tools carry, and the connector its tokens "
+            "live under, so one vendor can be mounted once per account."
         ),
     )
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
@@ -210,12 +193,20 @@ class OctomateConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_oauth_configuration(self) -> Self:
-        """Every enabled integration stores credentials, so one of them needs the key."""
-        enabled = [name for name, it in self.integrations.items() if it.enabled]
+        """Every enabled linked-account MCP tentacle stores credentials, and so does
+        a Slack channel with an OAuth client: one of them needs the key."""
+        enabled = [
+            f"mcp.{name}"
+            for name, server in self.mcp.items()
+            if isinstance(server, OAuthMcpConfig) and server.enabled
+        ] + [
+            f"channels.{name}.oauth"
+            for name, channel in self.channels.items()
+            if isinstance(channel, SlackChannelConfig) and channel.oauth is not None
+        ]
         if enabled and self.oauth.encryption_key is None:
-            names = ", ".join(f"integrations.{name}" for name in enabled)
             raise ValueError(
-                f"oauth.encryption_key is required when {names} is enabled"
+                f"oauth.encryption_key is required when {', '.join(enabled)} is enabled"
             )
         return self
 

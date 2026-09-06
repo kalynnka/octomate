@@ -170,13 +170,13 @@ async def test_verification_checks_authenticated_mcp_and_console_routes(
     console_enabled: bool,
 ) -> None:
     config = registered("test-bearer")
-    server = FastMCP("gateway", auth=KnownBearers(config.users))
+    server = FastMCP("octomate", auth=KnownBearers(config.users))
 
     @server.tool
     def hello() -> str:
         return "hello"
 
-    api = server.http_app(path="/gateway/mcp", stateless_http=True)
+    api = server.http_app(path="/octomate/mcp", stateless_http=True)
 
     async def console(request: Request) -> Response:
         return Response("console")

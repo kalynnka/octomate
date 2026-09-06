@@ -1,4 +1,4 @@
-"""Install and manage the codex tentacle's gateway MCP configuration."""
+"""Install and manage the codex tentacle's MCP configuration."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ from octomate_cli.config import CLISettings
 from octomate_cli.tentacles.mcp import (
     CLIENT_HEADER,
     CODEX_NATIVE_CLIENT,
-    GATEWAY_SERVER_KEY,
-    gateway_secret,
-    gateway_url,
+    OCTOMATE_SERVER_KEY,
+    octomate_secret,
+    octomate_url,
 )
 
 mcp_typer = typer.Typer(
-    help="Manage the gateway MCP entry for native Codex sessions.",
+    help="Manage the Octomate MCP entry for native Codex sessions.",
     no_args_is_help=True,
 )
 
@@ -54,9 +54,9 @@ def mcp_install(
     ] = None,
     config_file: McpConfigOption = None,
 ) -> None:
-    """Point native Codex sessions at the served gateway.
+    """Point native Codex sessions at the served MCP server.
 
-    Writes the `mcp_servers.gateway` table — the gateway's URL, the bearer, and
+    Writes the `mcp_servers.octomate` table — the server's URL, the bearer, and
     the runtime attribution header — preserving the operator's comments and every
     other table. The credential is embedded, as it is for the other runtimes:
     naming an environment variable instead would put one person's bearer in every
@@ -65,8 +65,8 @@ def mcp_install(
     as. Rotating means re-running install. A driven turn pins this entry by name
     for the length of its process, so nothing here reaches it.
     """
-    target = gateway_url(url)
-    secret = gateway_secret()
+    target = octomate_url(url)
+    secret = octomate_secret()
     path = mcp_config_file(config_file)
     document = load_toml(path)
     servers = document.get("mcp_servers")
@@ -81,10 +81,10 @@ def mcp_install(
     headers["Authorization"] = f"Bearer {secret}"
     headers[CLIENT_HEADER] = CODEX_NATIVE_CLIENT
     entry["http_headers"] = headers
-    servers[GATEWAY_SERVER_KEY] = entry
+    servers[OCTOMATE_SERVER_KEY] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(tomlkit.dumps(document))
-    typer.echo(f"Installed the gateway MCP entry → {target}")
+    typer.echo(f"Installed the Octomate MCP entry → {target}")
     typer.echo(f"  file:   {path}")
     typer.echo(f"  client: {CODEX_NATIVE_CLIENT}")
     typer.echo(
@@ -95,33 +95,33 @@ def mcp_install(
 
 @mcp_typer.command("uninstall")
 def mcp_uninstall(config_file: McpConfigOption = None) -> None:
-    """Remove the gateway MCP entry, leaving the operator's comments and every
+    """Remove the Octomate MCP entry, leaving the operator's comments and every
     other server."""
     path = mcp_config_file(config_file)
     document = load_toml(path)
     servers = document.get("mcp_servers")
-    if not isinstance(servers, Table) or GATEWAY_SERVER_KEY not in servers:
-        typer.echo(f"No gateway MCP entry in {path}")
+    if not isinstance(servers, Table) or OCTOMATE_SERVER_KEY not in servers:
+        typer.echo(f"No Octomate MCP entry in {path}")
         raise typer.Exit()
-    del servers[GATEWAY_SERVER_KEY]
+    del servers[OCTOMATE_SERVER_KEY]
     if len(servers) == 0:
         del document["mcp_servers"]
     path.write_text(tomlkit.dumps(document))
-    typer.echo(f"Removed the gateway MCP entry from {path}")
+    typer.echo(f"Removed the Octomate MCP entry from {path}")
 
 
 @mcp_typer.command("show")
 def mcp_show(config_file: McpConfigOption = None) -> None:
-    """Show the gateway MCP entry, credential masked."""
+    """Show the Octomate MCP entry, credential masked."""
     path = mcp_config_file(config_file)
     servers = load_toml(path).get("mcp_servers")
-    entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, Table) else None
+    entry = servers.get(OCTOMATE_SERVER_KEY) if isinstance(servers, Table) else None
     if not isinstance(entry, Table):
-        typer.echo(f"No gateway MCP entry in {path}")
+        typer.echo(f"No Octomate MCP entry in {path}")
         raise typer.Exit()
     headers = entry.get("http_headers")
     client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
-    typer.echo(f"Gateway MCP entry in {path}:")
+    typer.echo(f"Octomate MCP entry in {path}:")
     typer.echo(f"  url:    {entry.get('url')}")
     typer.echo(f"  client: {client}")
     typer.echo("  auth:   Bearer ***")

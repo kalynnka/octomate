@@ -68,7 +68,8 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import CodexConfig
-from octomate.mcp.gateway import CONVERSATION_HEADER, GATEWAY_SERVER_NAME
+from octomate.mcp.gateway import CONVERSATION_HEADER
+from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -159,7 +160,7 @@ CODEX_PERMISSION_PLANS: dict[CodexPermissionMode, CodexPermissionPlan] = {
 # its own config, so this opens the network without widening what a command may write.
 NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
 
-# How a driven turn's Codex process is told to reach the gateway MCP server: the
+# How a driven turn's Codex process is told to reach Octomate's MCP server: the
 # launch config names these variables, and `new_client` fills them per conversation,
 # so the identity the header asserts is the launch config's and never the model's.
 # The token is the kicking user's own secret — the turn speaks as the human it
@@ -550,7 +551,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
-            # Either way the launch config says what `mcp_servers.gateway` is for
+            # Either way the launch config says what `mcp_servers.octomate` is for
             # this process, because `~/.codex/config.toml` may already hold one:
             # the operator's own native entry, carrying the credential of whoever
             # ran `octomate codex mcp install` there. An app-server is a child of
@@ -561,39 +562,36 @@ class CodexTentacle(AgentTentacle[str, None]):
             if gateway_bearer is None:
                 overrides = (
                     *overrides,
-                    f"mcp_servers.{GATEWAY_SERVER_NAME}.enabled=false",
+                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=false",
                 )
             else:
                 # The turn's session is at the gateway, so the launch config wires
                 # the process to the served MCP endpoint and asserts the turn's own
                 # conversation id — the model never chooses the header. The url is
-                # the deployment config's port and path over loopback: the bind is
-                # uvicorn's rather than the app's, and the app-server is a child
-                # of the host being served.
+                # the deployment config's port over loopback: the bind is uvicorn's
+                # rather than the app's, and the app-server is a child of the host
+                # being served.
                 deployment = self.octomate.config
                 if deployment is None:
                     raise RuntimeError(
-                        "this turn's gateway session is registered, but the host "
+                        "this turn's Octomate session is registered, but the host "
                         "cannot name the served MCP endpoint to wire it to: "
                         "Octomate.config must be set"
                     )
                 env[GATEWAY_TOKEN_ENV] = gateway_bearer.get_secret_value()
                 env[GATEWAY_CONVERSATION_ENV] = str(conversation_id)
-                url = (
-                    f"http://127.0.0.1:{deployment.port}"
-                    f"/{GATEWAY_SERVER_NAME}{deployment.mcp_path}"
-                )
+                url = f"http://127.0.0.1:{deployment.port}{OCTOMATE_MCP_PATH}"
                 overrides = (
                     *overrides,
-                    f"mcp_servers.{GATEWAY_SERVER_NAME}.enabled=true",
-                    f"mcp_servers.{GATEWAY_SERVER_NAME}.url={url}",
-                    f"mcp_servers.{GATEWAY_SERVER_NAME}.bearer_token_env_var="
+                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=true",
+                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.url={url}",
+                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.bearer_token_env_var="
                     f"{GATEWAY_TOKEN_ENV}",
                     # Emptied rather than left alone: the native entry's own
                     # `Authorization` lives here, and it would outrank the bearer
                     # this turn just named.
-                    f"mcp_servers.{GATEWAY_SERVER_NAME}.http_headers={{}}",
-                    f"mcp_servers.{GATEWAY_SERVER_NAME}.env_http_headers="
+                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.http_headers={{}}",
+                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.env_http_headers="
                     f'{{"{CONVERSATION_HEADER}" = "{GATEWAY_CONVERSATION_ENV}"}}',
                 )
             runtime = replace(self.config.runtime, env=env, config_overrides=overrides)
