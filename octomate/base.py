@@ -12,6 +12,7 @@ from itertools import count
 from typing import TypeVar
 
 from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
@@ -48,6 +49,7 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.mcp import McpTentacle
+from octomate.tentacles.trunkline.base import TrunklineTentacle
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)
@@ -416,5 +418,17 @@ class Octomate:
         # below, this path is the tail of `OCTOMATE_MCP_PATH`.
         mcp_app = mcp.http_app(path="/mcp", stateless_http=True)
         app.mount(f"/{mcp.name}", mcp_app, name=mcp.name)
+
+        for channel in self.channels.values():
+            if (
+                isinstance(channel, TrunklineTentacle)
+                and channel.config.static_dir is not None
+            ):
+                app.mount(
+                    "/",
+                    StaticFiles(directory=channel.config.static_dir, html=True),
+                    name=channel.id,
+                )
+                break
 
         return app

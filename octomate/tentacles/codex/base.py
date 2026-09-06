@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from httpx import URL
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -568,9 +569,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 # The turn's session is at the gateway, so the launch config wires
                 # the process to the served MCP endpoint and asserts the turn's own
                 # conversation id — the model never chooses the header. The url is
-                # the deployment config's port over loopback: the bind is uvicorn's
-                # rather than the app's, and the app-server is a child of the host
-                # being served.
+                # the deployment's bind address and port. An unspecified bind is
+                # reached over loopback by the app-server running on this host.
                 deployment = self.octomate.config
                 if deployment is None:
                     raise RuntimeError(
@@ -580,7 +580,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                     )
                 env[GATEWAY_TOKEN_ENV] = gateway_bearer.get_secret_value()
                 env[GATEWAY_CONVERSATION_ENV] = str(conversation_id)
-                url = f"http://127.0.0.1:{deployment.port}{OCTOMATE_MCP_PATH}"
+                url = URL(
+                    scheme="http",
+                    host="127.0.0.1"
+                    if deployment.host.is_unspecified
+                    else str(deployment.host),
+                    port=deployment.port,
+                    path=OCTOMATE_MCP_PATH,
+                )
                 overrides = (
                     *overrides,
                     f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=true",
