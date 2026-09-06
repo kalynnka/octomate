@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 # The route path, registered events, and hook timeout are the client-side contract,
-# and live with the installer that writes them: `octomate_cli.codex`.
+# and live with the installer that writes them: `octomate_cli.tentacles.codex`.
 DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
 
 

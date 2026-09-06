@@ -20,6 +20,7 @@ resolution-markers = [
 members = [
     "octomate",
     "octomate-cli",
+    "octomate-protocol",
 ]
 
 [[package]]
@@ -1742,6 +1743,7 @@ dependencies = [
     { name = "lark-oapi" },
     { name = "logfire", extra = ["httpx", "sqlalchemy"] },
     { name = "octomate-cli" },
+    { name = "octomate-protocol" },
     { name = "openai-codex" },
     { name = "pydantic" },
     { name = "pydantic-ai", extra = ["bedrock"] },
@@ -1786,6 +1788,7 @@ requires-dist = [
     { name = "lark-oapi", specifier = ">=1.4.8" },
     { name = "logfire", extras = ["httpx", "sqlalchemy"], specifier = ">=4.29.0" },
     { name = "octomate-cli", editable = "cli" },
+    { name = "octomate-protocol", editable = "protocol" },
     { name = "openai-codex", specifier = ">=0.1.0b3" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-ai", extras = ["bedrock"], specifier = ">=2.20.0" },
@@ -1817,6 +1820,7 @@ name = "octomate-cli"
 version = "0.0.1"
 source = { editable = "cli" }
 dependencies = [
+    { name = "octomate-protocol" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "rich" },
@@ -1828,6 +1832,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "octomate-protocol", editable = "protocol" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "rich", specifier = ">=13" },
@@ -1836,6 +1841,17 @@ requires-dist = [
     { name = "watchfiles", specifier = ">=1.1.1" },
     { name = "websockets", specifier = ">=15" },
 ]
+
+[[package]]
+name = "octomate-protocol"
+version = "0.0.1"
+source = { editable = "protocol" }
+dependencies = [
+    { name = "pydantic" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "pydantic", specifier = ">=2.12.5" }]
 
 [[package]]
 name = "openai"

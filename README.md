@@ -462,6 +462,14 @@ Unlike the hooks — whose scripts resolve the address and credential each time 
 |   |   `-- defaults/           # Packaged defaults - commented reference for every key
 |   `-- oauth/                 # Device and authorization-code flows, per user
 +-- cli/octomate_cli/          # `octomate ...` - the client half, installable alone
+|   +-- tentacles/             # claude, codex, deepseek - commands, hooks and MCP config
+|   +-- streaming/             # File tails and the dsh gateway stream
+|   +-- serve.py               # Server startup and plist service upgrades
+|   +-- emit.py                # Stable hook entry point: forward an event
+|   `-- launch.py              # Stable hook entry point: launch a transcript tail
++-- protocol/octomate_protocol/ # Shared contracts; depends only on Pydantic
+|   +-- stream.py              # Transcript stream messages and protocol version
+|   `-- deployment.py          # Backup record exchanged during maintenance
 +-- trunkline/                 # The web console (React + Vite)
 +-- migrations/                # Alembic
 `-- tests/

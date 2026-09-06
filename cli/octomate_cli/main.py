@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import typer
 
-from octomate_cli.claude import claude_typer
-from octomate_cli.codex import codex_typer
 from octomate_cli.config import configure
-from octomate_cli.deepseek import deepseek_typer
 from octomate_cli.serve import serve, upgrade
+from octomate_cli.tentacles.claude import claude_typer
+from octomate_cli.tentacles.codex import codex_typer
+from octomate_cli.tentacles.deepseek import deepseek_typer
 
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
 app.command("serve")(serve)

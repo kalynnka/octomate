@@ -36,12 +36,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import monotonic
 
-from watchfiles import awatch
-from websockets.asyncio.client import ClientConnection, connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
-
-from octomate_cli.config import CLISettings, cli_settings
-from octomate_cli.stream import (
+from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
@@ -51,6 +46,11 @@ from octomate_cli.stream import (
     StreamWelcome,
     server_message_adapter,
 )
+from watchfiles import awatch
+from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
+
+from octomate_cli.config import CLISettings, cli_settings
 
 # Mirror the server tailer's cadence: the watch wakes at least this often, and a
 # session quiet this long is drained and closed out.
@@ -317,7 +317,8 @@ async def run_tail(
         except (OSError, InvalidHandshake, TimeoutError):
             attempt += 1
         try:
-            quiet = time.time() - transcript_path.stat().st_mtime
+            # This single metadata probe stays synchronous in reconnect bookkeeping.
+            quiet = time.time() - transcript_path.stat().st_mtime  # noqa: ASYNC240
         except FileNotFoundError:
             return  # the transcript is gone: nothing left to ship
         if quiet > IDLE_TIMEOUT:

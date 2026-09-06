@@ -11,13 +11,13 @@ from typing import Any
 
 import pytest
 import yaml
-from octomate_cli import mcp as cli_mcp
-from octomate_cli.claude import claude_typer
-from octomate_cli.codex import codex_typer
 from octomate_cli.config import CLISettings, user_config_path
-from octomate_cli.deepseek import deepseek_typer
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
 from octomate_cli.main import app
+from octomate_cli.tentacles import mcp as cli_mcp
+from octomate_cli.tentacles.claude import claude_typer
+from octomate_cli.tentacles.codex import codex_typer
+from octomate_cli.tentacles.deepseek import deepseek_typer
+from octomate_cli.tentacles.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
 from typer.testing import CliRunner
 
 from octomate.config.base import OctomateConfig
@@ -668,25 +668,23 @@ def test_deepseek_install_without_a_bridge_link_warns(tmp_path: Path) -> None:
     assert "--bridge" in result.output
 
 
-def test_reaching_the_deepseek_commands_costs_no_websocket_stack() -> None:
-    """Why `deepseek` is a package: the tail speaks websockets and the installers
-    never do, so `base` defers that import into the one command that tails and the
-    package re-exports `base` alone. A convenience re-export of `tail` in
-    `__init__` would undo it silently — nothing about an install would look
-    slower, and every `octomate deepseek hooks install` would pay for it.
+@pytest.mark.parametrize("tentacle", ["claude", "codex", "deepseek"])
+def test_tentacle_commands_defer_streaming_imports(tentacle: str) -> None:
+    """Loading command groups must not import transcript clients or the server.
 
     A subprocess because `sys.modules` is process-global: this suite has imported
     websockets long before this runs.
     """
     probe = (
-        "import sys; import octomate_cli.deepseek as ds;"
-        "print(ds.DEEPSEEK_HOOK_PATH, 'websockets' in sys.modules)"
+        f"import sys; import octomate_cli.tentacles.{tentacle};"
+        "print([name for name in ('websockets', 'watchfiles', 'octomate') "
+        "if name in sys.modules])"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
 
-    assert result.stdout.strip() == "/hooks/deepseek False"
+    assert result.stdout.strip() == "[]"
 
 
 def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:

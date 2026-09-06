@@ -62,7 +62,7 @@ port. OAuth routes follow the application's existing connector registration.
 Keep `mcp_path: /mcp`, matching the CLI's existing gateway URL. Current ownership
 is in [application assembly](../octomate/base.py),
 [hook authentication](../octomate/tentacles/hooks.py) and the
-[CLI gateway address](../cli/octomate_cli/mcp.py).
+[CLI gateway address](../cli/octomate_cli/tentacles/mcp.py).
 
 Authorization-code OAuth browser flows remain outside the first rollout. Leave
 integrations requiring those callbacks disabled unless an existing authorized

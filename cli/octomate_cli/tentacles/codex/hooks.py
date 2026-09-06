@@ -1,5 +1,4 @@
-"""`octomate codex ...` — the client-side contract with a native Codex session and
-the commands that install it."""
+"""Install and manage the codex tentacle's native hooks."""
 
 from __future__ import annotations
 
@@ -10,31 +9,25 @@ from enum import Enum
 from pathlib import Path
 from typing import Annotated
 
-import tomlkit
 import typer
-from tomlkit.items import Table
 
-from octomate_cli.config import CLISettings, cli_settings
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
-from octomate_cli.jsontypes import JsonObject
-from octomate_cli.mcp import (
-    CLIENT_HEADER,
-    CODEX_NATIVE_CLIENT,
-    GATEWAY_SERVER_KEY,
-    gateway_secret,
-    gateway_url,
-)
+from octomate_cli.config import CLISettings
+from octomate_cli.tentacles.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
+from octomate_cli.tentacles.types import JsonObject
 
 # Bound so a wedged or slow Octomate can never freeze someone's Codex session.
 HOOK_TIMEOUT = 10
+
 
 # The hook route's path as clients address it; the server inlines the literal in its
 # route, and the tests that speak to it keep the two matching.
 CODEX_HOOK_PATH = "/hooks/codex"
 
+
 # The transcript stream's path, likewise: a tail connects to
 # `ws://<host>:<port>{CODEX_STREAM_PATH}` bearing the same hook credential.
 CODEX_STREAM_PATH = "/hooks/codex/stream"
+
 
 # The events the emit command forwards; unlike Claude's http handlers, Codex delivers
 # SessionStart to command hooks, so it is registered too.
@@ -46,22 +39,21 @@ HANDLED_HOOK_EVENTS = (
     "SubagentStop",
 )
 
+
 # Where the transcript-stream launcher rides. The session events spawn the tail; the
 # stop event is the one whose `agent_transcript_path` names a child rollout — the tail
 # cannot tell which sibling file is a child of its session, so the hook that knows
 # hands it the path. `SubagentStart` carries no path, so it spawns nothing new.
 LAUNCHER_HOOK_EVENTS = ("SessionStart", "UserPromptSubmit", "SubagentStop")
 
-codex_typer = typer.Typer(
-    help="Operate the native Codex integration.", no_args_is_help=True
-)
+
 hooks_typer = typer.Typer(
     help="Manage the Codex hook pipe into Octomate.", no_args_is_help=True
 )
-codex_typer.add_typer(hooks_typer, name="hooks")
 
 
-class Scope(str, Enum):
+# Preserve the existing enum stringification used by CLI option defaults.
+class Scope(str, Enum):  # noqa: UP042
     user = "user"
     project = "project"
 
@@ -237,166 +229,3 @@ def uninstall(
             document.pop("hooks", None)
     write(target, document)
     typer.echo(f"Removed Octomate Codex hooks from {target}")
-
-
-@codex_typer.command("tail")
-def tail(
-    session: Annotated[str, typer.Option(help="Native session id to stream.")],
-    path: Annotated[
-        Path, typer.Option(help="The session's rollout path on this machine.")
-    ],
-    url: Annotated[
-        str | None,
-        typer.Option(
-            help="Octomate stream URL (ws://<host>:<port>/hooks/codex/stream); "
-            f"defaults to one derived from ${CLISettings.env('url')}."
-        ),
-    ] = None,
-    cwd: Annotated[
-        str,
-        typer.Option(
-            help="Directory the session runs in; files its thread under a project."
-        ),
-    ] = "",
-    agent_path: Annotated[
-        Path | None,
-        typer.Option(
-            help="A child rollout to spool for the session's tail — what the "
-            "launcher passes through from a SubagentStop hook."
-        ),
-    ] = None,
-) -> None:
-    """Stream a native Codex session's rollout to Octomate, raw lines over one socket.
-
-    Spawned per session by the launcher hook; safe to run by hand for a backfill —
-    committed turns are skipped server-side, so re-running never duplicates. Reads
-    the hook credential — and, absent `--url`, the server's address — from the
-    environment, like every hook client does.
-    """
-    if url is None:
-        base = cli_settings().url
-        if base is None:
-            raise typer.BadParameter(
-                f"no --url given, {CLISettings.env('url')} is unset, and no cli.toml "
-                "names a url — one of them must say where Octomate is"
-            )
-        url = stream_url_for(base.rstrip("/") + CODEX_HOOK_PATH)
-    from octomate_cli.tail import main, spool_path  # watchfiles; only when tailing
-
-    main(
-        session_id=session,
-        transcript_path=path,
-        url=url,
-        cwd=cwd,
-        spool=spool_path(session),
-        agent_path=agent_path,
-    )
-
-
-mcp_typer = typer.Typer(
-    help="Manage the gateway MCP entry for native Codex sessions.",
-    no_args_is_help=True,
-)
-codex_typer.add_typer(mcp_typer, name="mcp")
-
-McpConfigOption = Annotated[
-    Path | None,
-    typer.Option(
-        "--config-file",
-        help="Explicit config.toml path; defaults to ~/.codex/config.toml.",
-    ),
-]
-
-
-def mcp_config_file(path: Path | None) -> Path:
-    return path if path is not None else Path.home() / ".codex" / "config.toml"
-
-
-def load_toml(path: Path) -> tomlkit.TOMLDocument:
-    """The whole document, comments and all — tomlkit's round-trip is what keeps
-    the operator's file theirs."""
-    return tomlkit.parse(path.read_text()) if path.exists() else tomlkit.document()
-
-
-@mcp_typer.command("install")
-def mcp_install(
-    url: Annotated[
-        str | None,
-        typer.Option(
-            help="Octomate's base URL (http://host:port) to write; defaults to "
-            f"${CLISettings.env('url')}, then cli.toml."
-        ),
-    ] = None,
-    config_file: McpConfigOption = None,
-) -> None:
-    """Point native Codex sessions at the served gateway.
-
-    Writes the `mcp_servers.gateway` table — the gateway's URL, the bearer, and
-    the runtime attribution header — preserving the operator's comments and every
-    other table. The credential is embedded, as it is for the other runtimes:
-    naming an environment variable instead would put one person's bearer in every
-    process launched from that shell, this deployment's Codex app-servers
-    included, where each turn's own kicker is the only identity a spell may run
-    as. Rotating means re-running install. A driven turn pins this entry by name
-    for the length of its process, so nothing here reaches it.
-    """
-    target = gateway_url(url)
-    secret = gateway_secret()
-    path = mcp_config_file(config_file)
-    document = load_toml(path)
-    servers = document.get("mcp_servers")
-    if servers is None:
-        servers = tomlkit.table(is_super_table=True)
-        document["mcp_servers"] = servers
-    if not isinstance(servers, Table):
-        raise typer.BadParameter(f"{path} has a non-table 'mcp_servers' section")
-    entry = tomlkit.table()
-    entry["url"] = target
-    headers = tomlkit.inline_table()
-    headers["Authorization"] = f"Bearer {secret}"
-    headers[CLIENT_HEADER] = CODEX_NATIVE_CLIENT
-    entry["http_headers"] = headers
-    servers[GATEWAY_SERVER_KEY] = entry
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(tomlkit.dumps(document))
-    typer.echo(f"Installed the gateway MCP entry → {target}")
-    typer.echo(f"  file:   {path}")
-    typer.echo(f"  client: {CODEX_NATIVE_CLIENT}")
-    typer.echo(
-        "  auth:   embedded — the file holds the literal credential; rotation "
-        "means re-running install"
-    )
-
-
-@mcp_typer.command("uninstall")
-def mcp_uninstall(config_file: McpConfigOption = None) -> None:
-    """Remove the gateway MCP entry, leaving the operator's comments and every
-    other server."""
-    path = mcp_config_file(config_file)
-    document = load_toml(path)
-    servers = document.get("mcp_servers")
-    if not isinstance(servers, Table) or GATEWAY_SERVER_KEY not in servers:
-        typer.echo(f"No gateway MCP entry in {path}")
-        raise typer.Exit()
-    del servers[GATEWAY_SERVER_KEY]
-    if len(servers) == 0:
-        del document["mcp_servers"]
-    path.write_text(tomlkit.dumps(document))
-    typer.echo(f"Removed the gateway MCP entry from {path}")
-
-
-@mcp_typer.command("show")
-def mcp_show(config_file: McpConfigOption = None) -> None:
-    """Show the gateway MCP entry, credential masked."""
-    path = mcp_config_file(config_file)
-    servers = load_toml(path).get("mcp_servers")
-    entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, Table) else None
-    if not isinstance(entry, Table):
-        typer.echo(f"No gateway MCP entry in {path}")
-        raise typer.Exit()
-    headers = entry.get("http_headers")
-    client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
-    typer.echo(f"Gateway MCP entry in {path}:")
-    typer.echo(f"  url:    {entry.get('url')}")
-    typer.echo(f"  client: {client}")
-    typer.echo("  auth:   Bearer ***")

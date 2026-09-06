@@ -1,13 +1,7 @@
-"""`octomate claude ...` — the client-side contract with a native Claude Code session
-and the commands that install it.
-
-The hook-path scripts beside this module (`launch.py`, `emit.py`) stay stdlib-only
-and are run by path, because a hook pays their startup on every fire.
-"""
+"""Install and manage the claude tentacle's native hooks."""
 
 from __future__ import annotations
 
-import json
 import shlex
 import sys
 from enum import Enum
@@ -16,19 +10,10 @@ from typing import Annotated, Literal
 
 import typer
 
-from octomate_cli.config import (
-    CLISettings,
-    cli_settings,
-)
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
-from octomate_cli.jsontypes import JsonObject, JsonValue
-from octomate_cli.mcp import (
-    CLAUDE_NATIVE_CLIENT,
-    CLIENT_HEADER,
-    GATEWAY_SERVER_KEY,
-    gateway_secret,
-    gateway_url,
-)
+from octomate_cli.config import CLISettings
+from octomate_cli.tentacles.claude.config import load_settings, write_settings
+from octomate_cli.tentacles.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
+from octomate_cli.tentacles.types import JsonObject, JsonValue
 
 # The events the hook pipe registers and the server acts on. `UserPromptSubmit` and
 # `Stop` carry the turn's prompt and answer — the whole human ledger — while
@@ -45,6 +30,8 @@ HandledHookEvent = Literal[
     "SubagentStart",
     "SubagentStop",
 ]
+
+
 HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
     "UserPromptSubmit",
     "Stop",
@@ -53,29 +40,30 @@ HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
     "SubagentStop",
 )
 
+
 # Bound so a wedged or slow Octomate can never freeze someone's Claude session: past
 # this the CLI abandons the hook and carries on.
 HOOK_TIMEOUT = 10
+
 
 # The hook route's path as clients address it: settings point at
 # `http://<host>:<port>{CLAUDE_HOOK_PATH}`. The server inlines the literal in its
 # route; the tests that speak to it are what keep the two matching.
 CLAUDE_HOOK_PATH = "/hooks/claude"
 
+
 # The transcript stream's path, likewise: a tail connects to
 # `ws://<host>:<port>{CLAUDE_STREAM_PATH}` bearing the same hook credential.
 CLAUDE_STREAM_PATH = "/hooks/claude/stream"
 
-claude_typer = typer.Typer(
-    help="Operate the native Claude Code integration.", no_args_is_help=True
-)
+
 hooks_typer = typer.Typer(
     help="Manage the Claude Code hook pipe into Octomate.", no_args_is_help=True
 )
-claude_typer.add_typer(hooks_typer, name="hooks")
 
 
-class Scope(str, Enum):
+# Preserve the existing enum stringification used by CLI option defaults.
+class Scope(str, Enum):  # noqa: UP042
     user = "user"
     project = "project"
 
@@ -86,6 +74,8 @@ ScopeOption = Annotated[
         help="Which settings file to touch: 'user' (~/.claude) or 'project' (./.claude)."
     ),
 ]
+
+
 SettingsOption = Annotated[
     Path | None,
     typer.Option(help="Explicit settings.json path; overrides --scope when given."),
@@ -179,20 +169,6 @@ def without_octomate_hooks(groups: JsonValue) -> list[JsonValue]:
             continue
         kept.append(group if remaining == handlers else {**group, "hooks": remaining})
     return kept
-
-
-def load_settings(path: Path) -> JsonObject:
-    if not path.exists() or not path.read_text().strip():
-        return {}
-    data = json.loads(path.read_text())
-    if not isinstance(data, dict):
-        raise typer.BadParameter(f"{path} is not a JSON object")
-    return data
-
-
-def write_settings(path: Path, settings: JsonObject) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
 
 
 @hooks_typer.command("install")
@@ -305,202 +281,3 @@ def show(scope: ScopeOption = Scope.user, settings: SettingsOption = None) -> No
     for event, hook in found:
         target = hook.get("url") or hook.get("command")
         typer.echo(f"  {event}: {target} (timeout {hook.get('timeout')}s)")
-
-
-@claude_typer.command("tail")
-def tail(
-    session: Annotated[str, typer.Option(help="Native session id to stream.")],
-    path: Annotated[
-        Path, typer.Option(help="The session's transcript path on this machine.")
-    ],
-    url: Annotated[
-        str | None,
-        typer.Option(
-            help="Octomate stream URL (ws://<host>:<port>/hooks/claude/stream); "
-            f"defaults to one derived from ${CLISettings.env('url')}."
-        ),
-    ] = None,
-    cwd: Annotated[
-        str,
-        typer.Option(
-            help="Directory the session runs in; files its thread under a project."
-        ),
-    ] = "",
-) -> None:
-    """Stream a native session's transcript to Octomate, raw lines over one socket.
-
-    Spawned per session by the launcher hook; safe to run by hand for a backfill —
-    the server states where each file resumes, so re-running never duplicates. Reads
-    the hook credential — and, absent `--url`, the server's address — from the
-    environment, like every hook client does.
-    """
-    if url is None:
-        base = cli_settings().url
-        if base is None:
-            raise typer.BadParameter(
-                f"no --url given, {CLISettings.env('url')} is unset, and no cli.toml "
-                "names a url — one of them must say where Octomate is"
-            )
-        url = stream_url_for(base.rstrip("/") + CLAUDE_HOOK_PATH)
-    from octomate_cli.tail import main  # watchfiles/websockets; only when tailing
-
-    main(session_id=session, transcript_path=path, url=url, cwd=cwd)
-
-
-mcp_typer = typer.Typer(
-    help="Manage the gateway MCP entry for native Claude Code sessions.",
-    no_args_is_help=True,
-)
-claude_typer.add_typer(mcp_typer, name="mcp")
-
-
-class McpScope(str, Enum):
-    """Claude's three MCP config placements. `local` — the default, since the entry
-    embeds a credential — is Claude's per-project slot inside `~/.claude.json`
-    (`projects.<cwd>.mcpServers`, the shape `claude mcp add --scope local` writes):
-    scoped to this directory without putting a secret-bearing file in the repo."""
-
-    local = "local"
-    user = "user"
-    project = "project"
-
-
-McpScopeOption = Annotated[
-    McpScope,
-    typer.Option(
-        help="Where the entry lives: 'local' (~/.claude.json, this project only), "
-        "'user' (~/.claude.json, every project), or 'project' (./.mcp.json)."
-    ),
-]
-McpFileOption = Annotated[
-    Path | None,
-    typer.Option(
-        "--file",
-        help="Explicit config path; replaces the file --scope implies, while the "
-        "scope keeps deciding where in it the entry lives.",
-    ),
-]
-
-
-def mcp_config_file(scope: McpScope, file: Path | None) -> Path:
-    if file is not None:
-        return file
-    if scope is McpScope.project:
-        return Path.cwd() / ".mcp.json"
-    return Path.home() / ".claude.json"
-
-
-@mcp_typer.command("install")
-def mcp_install(
-    url: Annotated[
-        str | None,
-        typer.Option(
-            help="Octomate's base URL (http://host:port) to write; defaults to "
-            f"${CLISettings.env('url')}, then cli.toml."
-        ),
-    ] = None,
-    scope: McpScopeOption = McpScope.local,
-    file: McpFileOption = None,
-) -> None:
-    """Point native Claude Code sessions at the served gateway.
-
-    Writes the gateway entry — the gateway's URL, the bearer, and the runtime
-    attribution header — resolved once, now: unlike the hooks, a static entry is
-    read by Claude itself, so the file holds the literal credential and rotating
-    it means re-running install. Everything else in the file is kept, and
-    re-running replaces the entry in place.
-    """
-    target = gateway_url(url)
-    secret = gateway_secret()
-    path = mcp_config_file(scope, file)
-    document = load_settings(path)
-    if scope is McpScope.local:
-        projects = document.setdefault("projects", {})
-        if not isinstance(projects, dict):
-            raise typer.BadParameter(f"{path} has a non-object 'projects' section")
-        container = projects.setdefault(str(Path.cwd()), {})
-        if not isinstance(container, dict):
-            raise typer.BadParameter(
-                f"{path} has a non-object entry for project {Path.cwd()}"
-            )
-    else:
-        container = document
-    servers = container.setdefault("mcpServers", {})
-    if not isinstance(servers, dict):
-        raise typer.BadParameter(f"{path} has a non-object 'mcpServers' section")
-    servers[GATEWAY_SERVER_KEY] = {
-        "type": "http",
-        "url": target,
-        "headers": {
-            "Authorization": f"Bearer {secret}",
-            CLIENT_HEADER: CLAUDE_NATIVE_CLIENT,
-        },
-    }
-    write_settings(path, document)
-    typer.echo(f"Installed the gateway MCP entry → {target}")
-    typer.echo(f"  file:   {path}")
-    if scope is McpScope.local:
-        typer.echo(f"  scope:  local ({Path.cwd()})")
-    typer.echo(f"  client: {CLAUDE_NATIVE_CLIENT}")
-    typer.echo(
-        "  auth:   embedded — the file holds the literal credential; rotation "
-        "means re-running install"
-    )
-
-
-@mcp_typer.command("uninstall")
-def mcp_uninstall(
-    scope: McpScopeOption = McpScope.local, file: McpFileOption = None
-) -> None:
-    """Remove the gateway MCP entry, leaving every other server and setting."""
-    path = mcp_config_file(scope, file)
-    document = load_settings(path)
-    key = str(Path.cwd())
-    projects = document.get("projects")
-    if scope is McpScope.local:
-        entry = projects.get(key) if isinstance(projects, dict) else None
-        container = entry if isinstance(entry, dict) else None
-    else:
-        container = document
-    servers = container.get("mcpServers") if container is not None else None
-    if not isinstance(servers, dict) or GATEWAY_SERVER_KEY not in servers:
-        typer.echo(f"No gateway MCP entry in {path}")
-        raise typer.Exit()
-    del servers[GATEWAY_SERVER_KEY]
-    if not servers and container is not None:
-        del container["mcpServers"]
-        # A local install into a fresh file created the project entry too; an
-        # entry emptied by this removal goes with it, a lived-in one stays.
-        if scope is McpScope.local and not container and isinstance(projects, dict):
-            del projects[key]
-            if not projects:
-                del document["projects"]
-    write_settings(path, document)
-    typer.echo(f"Removed the gateway MCP entry from {path}")
-
-
-@mcp_typer.command("show")
-def mcp_show(
-    scope: McpScopeOption = McpScope.local, file: McpFileOption = None
-) -> None:
-    """Show the gateway MCP entry, credential masked."""
-    path = mcp_config_file(scope, file)
-    document = load_settings(path)
-    if scope is McpScope.local:
-        projects = document.get("projects")
-        container = (
-            projects.get(str(Path.cwd())) if isinstance(projects, dict) else None
-        )
-    else:
-        container = document
-    servers = container.get("mcpServers") if isinstance(container, dict) else None
-    entry = servers.get(GATEWAY_SERVER_KEY) if isinstance(servers, dict) else None
-    if not isinstance(entry, dict):
-        typer.echo(f"No gateway MCP entry in {path}")
-        raise typer.Exit()
-    headers = entry.get("headers")
-    client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
-    typer.echo(f"Gateway MCP entry in {path}:")
-    typer.echo(f"  url:    {entry.get('url')}")
-    typer.echo(f"  client: {client}")
-    typer.echo("  auth:   Bearer ***")

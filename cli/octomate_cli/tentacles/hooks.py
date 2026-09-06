@@ -14,11 +14,11 @@ from octomate_cli.config import CLISettings, cli_settings, user_config_path
 # The forwarding command hook's script — it carries the event body from stdin to the
 # hook router over HTTP. Both agents' installers write commands that run it by
 # absolute path, so a hook never imports the packages (see its module docstring).
-EMIT_SCRIPT = Path(__file__).with_name("emit.py")
+EMIT_SCRIPT = Path(__file__).parent.parent / "emit.py"
 
 # The launcher command hook's script — it spawns the session's transcript tail
 # detached. Run by absolute path for the same reason.
-LAUNCH_SCRIPT = Path(__file__).with_name("launch.py")
+LAUNCH_SCRIPT = Path(__file__).parent.parent / "launch.py"
 
 
 def announce_secret() -> None:

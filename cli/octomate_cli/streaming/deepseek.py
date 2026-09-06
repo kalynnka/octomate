@@ -43,11 +43,7 @@ from pathlib import Path
 from time import monotonic
 from uuid import uuid4
 
-from websockets.asyncio.client import connect
-from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
-
-from octomate_cli.config import CLISettings, cli_settings
-from octomate_cli.stream import (
+from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
@@ -57,7 +53,11 @@ from octomate_cli.stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from octomate_cli.tail import (
+from websockets.asyncio.client import connect
+from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
+
+from octomate_cli.config import CLISettings, cli_settings
+from octomate_cli.streaming.files import (
     BACKOFF_CAP,
     CLIENT_VERSION,
     IDLE_TIMEOUT,

@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 import typer
+from octomate_protocol.deployment import DatabaseBackup
 from pydantic import BaseModel, ConfigDict, Field
 
 # Config, the database and the agent working directories are all resolved relative
@@ -30,15 +31,6 @@ PlistFile = Annotated[
     ),
 ]
 DEFAULT_PLIST = Path("/Library/LaunchDaemons/io.octomate.server.plist")
-
-
-class DatabaseBackup(BaseModel):
-    database: Path = Field(
-        description="Absolute database path resolved before the update."
-    )
-    backup: Path | None = Field(
-        description="Consistent snapshot; absent for a new database."
-    )
 
 
 class PlistService(BaseModel):

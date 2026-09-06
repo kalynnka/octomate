@@ -13,8 +13,8 @@ from pathlib import Path
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from octomate_cli.claude import CLAUDE_HOOK_PATH, CLAUDE_STREAM_PATH
-from octomate_cli.stream import (
+from octomate_cli.tentacles.claude import CLAUDE_HOOK_PATH, CLAUDE_STREAM_PATH
+from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,

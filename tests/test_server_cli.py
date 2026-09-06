@@ -12,7 +12,8 @@ from unittest.mock import patch
 
 import pytest
 from octomate_cli.main import app
-from octomate_cli.serve import DatabaseBackup, PlistService
+from octomate_cli.serve import PlistService
+from octomate_protocol.deployment import DatabaseBackup
 from typer.testing import CliRunner
 
 

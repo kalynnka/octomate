@@ -9,10 +9,10 @@ import threading
 from pathlib import Path
 from uuid import uuid4
 
-import octomate_cli.tail as tail_mod
+import octomate_cli.streaming.files as tail_mod
 import pytest
 from octomate_cli.config import CLISettings
-from octomate_cli.tail import FileCursor, SessionTail, main
+from octomate_cli.streaming.files import FileCursor, SessionTail, main
 
 
 def test_read_lines_frames_complete_lines_and_holds_the_fragment(

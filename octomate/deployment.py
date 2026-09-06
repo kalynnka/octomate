@@ -21,7 +21,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from octomate_cli.serve import DatabaseBackup
+from octomate_protocol.deployment import DatabaseBackup
 from sqlalchemy.engine import make_url
 
 from octomate.config import OctomateConfig

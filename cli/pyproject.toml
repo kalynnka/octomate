@@ -8,6 +8,7 @@ requires-python = ">=3.11"
 # Deliberately light — a client machine installs octomate-cli alone, and nothing here
 # may import the octomate server package.
 dependencies = [
+    "octomate-protocol",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.14.1",
     "rich>=13",

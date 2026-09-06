@@ -15,7 +15,7 @@ import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
-from octomate_cli.serve import DatabaseBackup
+from octomate_protocol.deployment import DatabaseBackup
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route

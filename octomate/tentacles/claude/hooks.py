@@ -5,7 +5,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 # Which events the pipe registers, the route paths, and the hook timeout are the
-# client-side contract, and live with the installer that writes them: `octomate_cli.claude`.
+# client-side contract, and live with the installer that writes them: `octomate_cli.tentacles.claude`.
 
 
 class ClaudeHookInput(BaseModel):
