@@ -19,8 +19,11 @@ the status bar shows `relay offline` and the ledger surfaces stay empty
 stand-ins). With the backend running it is an entry and a reader: every channel's threads and ledgers are read live from
 `/api/trunkline`, directives create or continue threads on the trunkline
 channel itself, and other channels' threads are read-only views. In production there is a single entry — `uvicorn
-octomate.app:create_app --factory` serves this app's `dist/` at `/` alongside the API
-(build with `pnpm build`); the Vite dev server is only for HMR.
+octomate.app:create_app --factory` serves the enabled Trunkline channel's
+`static_dir` at `/` alongside the API. Build with `pnpm build`, then set
+`static_dir` in `channels.yaml` to the compiled `dist/` directory. Leaving it unset
+keeps the console API available without static files; the Vite dev server is only
+for HMR.
 
 ## Organization
 

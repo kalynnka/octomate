@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
+from ipaddress import ip_address
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 
@@ -1109,15 +1110,26 @@ def a_kicker(octomate: Octomate, secret: str = "lu-token") -> UserProfile:
     return UserProfile(channel_tentacle_id="im", channel_user_id="alice", user_id=lu.id)
 
 
+@pytest.mark.parametrize(
+    ("host", "url_host"),
+    [
+        ("127.0.0.1", "127.0.0.1"),
+        ("192.0.2.1", "192.0.2.1"),
+        ("0.0.0.0", "127.0.0.1"),
+        ("::1", "[::1]"),
+    ],
+)
 async def test_a_registered_octomate_session_wires_the_launch_config(
     monkeypatch: pytest.MonkeyPatch,
+    host: str,
+    url_host: str,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
         conversations=conversations,
-        config=OctomateConfig(port=8123),
+        config=OctomateConfig(host=ip_address(host), port=8123),
     )
     conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
     octomate.gateway.register(
@@ -1148,7 +1160,7 @@ async def test_a_registered_octomate_session_wires_the_launch_config(
     assert config.config_overrides == (
         codex_base.NETWORK_ACCESS,
         "mcp_servers.octomate.enabled=true",
-        "mcp_servers.octomate.url=http://127.0.0.1:8123/octomate/mcp",
+        f"mcp_servers.octomate.url=http://{url_host}:8123/octomate/mcp",
         "mcp_servers.octomate.bearer_token_env_var=OCTOMATE_GATEWAY_TOKEN",
         # The native entry's own Authorization would outrank the bearer above.
         "mcp_servers.octomate.http_headers={}",

@@ -14,6 +14,7 @@ import sys
 import tempfile
 import time
 from contextlib import closing
+from ipaddress import IPv4Address
 from pathlib import Path
 
 import httpx
@@ -164,7 +165,7 @@ async def verify(config: OctomateConfig) -> None:
     secret = next(
         user.secret for user in config.users.values() if user.secret is not None
     )
-    url = f"http://127.0.0.1:{config.port}"
+    url = f"http://{config.host}:{config.port}"
     transport = StreamableHttpTransport(
         f"{url}{OCTOMATE_MCP_PATH}",
         auth=secret.get_secret_value(),
@@ -172,12 +173,22 @@ async def verify(config: OctomateConfig) -> None:
     )
     async with Client(transport, timeout=10, init_timeout=10) as client:
         tools = await client.list_tools()
+    console_enabled = any(
+        channel.enabled and channel.type == "trunkline"
+        for channel in config.channels.values()
+    )
+    expected_status = 200 if console_enabled else 404
     async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
-        for path in ("/api/trunkline", "/api/trunkline/threads"):
-            if (await client.get(path)).status_code != 404:
-                raise ValueError(f"The console route {path} is still registered.")
+        for path in ("/api/trunkline/health", "/api/trunkline/threads"):
+            status = (await client.get(path)).status_code
+            if status != expected_status:
+                raise ValueError(
+                    f"The console route {path} returned {status}; "
+                    f"expected {expected_status}."
+                )
     print(
-        f"Verified local Octomate MCP ({len(tools)} tools) and disabled console routes."
+        f"Verified local Octomate MCP ({len(tools)} tools) and "
+        f"{'enabled' if console_enabled else 'disabled'} console routes."
     )
 
 
@@ -187,13 +198,8 @@ def main() -> None:
     action = parser.parse_args().action
     config = OctomateConfig()
     database = database_path()
-    if str(config.host) != "127.0.0.1":
-        raise ValueError("The managed server requires host 127.0.0.1.")
-    if any(
-        channel.enabled and channel.type == "trunkline"
-        for channel in config.channels.values()
-    ):
-        raise ValueError("Disable Trunkline in the production configuration first.")
+    if not isinstance(config.host, IPv4Address) or config.host.is_unspecified:
+        raise ValueError("The managed server requires an explicit IPv4 bind address.")
     if not any(user.secret is not None for user in config.users.values()):
         raise ValueError(
             "Register a user's bearer in users.yaml before starting the server."
@@ -204,7 +210,7 @@ def main() -> None:
             try:
                 with socket.socket() as listener:
                     listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    listener.bind(("127.0.0.1", config.port))
+                    listener.bind((str(config.host), config.port))
                 break
             except OSError as error:
                 if error.errno != errno.EADDRINUSE:
@@ -221,7 +227,9 @@ def main() -> None:
         deadline = time.monotonic() + 30
         while True:
             try:
-                with socket.create_connection(("127.0.0.1", config.port), timeout=1):
+                with socket.create_connection(
+                    (str(config.host), config.port), timeout=1
+                ):
                     break
             except OSError:
                 if time.monotonic() >= deadline:

@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from functools import partial
+from ipaddress import IPv4Address
 from pathlib import Path
 from unittest.mock import patch
 
@@ -20,6 +21,8 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from octomate import deployment
+from octomate.config.agents import CodexConfig
+from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
 from tests.support.config import registered
@@ -164,12 +167,22 @@ def test_actual_upgrade_rehearses_on_a_copy(database: Path) -> None:
 
 
 @pytest.mark.parametrize("console_enabled", [False, True])
+@pytest.mark.parametrize("console_registered", [False, True])
+@pytest.mark.parametrize("host", ["127.0.0.1", "192.0.2.1"])
 async def test_verification_checks_authenticated_mcp_and_console_routes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
     console_enabled: bool,
+    console_registered: bool,
+    host: str,
 ) -> None:
     config = registered("test-bearer")
+    config.host = IPv4Address(host)
+    config.agents.codex = CodexConfig(models={"gpt-5.6-sol"})
+    config.channels["trunkline"] = TrunklineChannelConfig(
+        enabled=console_enabled,
+        agents=[AgentModelConfig(agent="codex", model="gpt-5.6-sol")],
+    )
     server = FastMCP("octomate", auth=KnownBearers(config.users))
 
     @server.tool
@@ -179,9 +192,11 @@ async def test_verification_checks_authenticated_mcp_and_console_routes(
     api = server.http_app(path="/octomate/mcp", stateless_http=True)
 
     async def console(request: Request) -> Response:
+        assert request.url.hostname == host
         return Response("console")
 
-    if console_enabled:
+    if console_registered:
+        api.routes.append(Route("/api/trunkline/health", console))
         api.routes.append(Route("/api/trunkline/threads", console))
     monkeypatch.setattr(
         httpx,
@@ -189,7 +204,7 @@ async def test_verification_checks_authenticated_mcp_and_console_routes(
         partial(httpx.AsyncClient, transport=httpx.ASGITransport(app=api)),
     )
     async with api.lifespan(api):
-        if console_enabled:
+        if console_enabled != console_registered:
             with pytest.raises(ValueError, match="console route"):
                 await deployment.verify(config)
         else:
@@ -197,3 +212,23 @@ async def test_verification_checks_authenticated_mcp_and_console_routes(
             output = capsys.readouterr().out
             assert "1 tools" in output
             assert "test-bearer" not in output
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0", "192.0.2.1"])
+def test_maintenance_requires_an_explicit_bind_address(
+    database: Path, monkeypatch: pytest.MonkeyPatch, host: str
+) -> None:
+    config = registered("test-bearer")
+    config.host = IPv4Address(host)
+    config.agents.codex = CodexConfig(models={"gpt-5.6-sol"})
+    config.channels["trunkline"] = TrunklineChannelConfig(
+        agents=[AgentModelConfig(agent="codex", model="gpt-5.6-sol")]
+    )
+    monkeypatch.setattr(sys, "argv", ["maintenance", "check"])
+    monkeypatch.setattr(deployment, "OctomateConfig", lambda: config)
+    if host == "0.0.0.0":
+        with pytest.raises(ValueError, match="explicit IPv4 bind address"):
+            deployment.main()
+    else:
+        deployment.main()
+    assert not database.exists()

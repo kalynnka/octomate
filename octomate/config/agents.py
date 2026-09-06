@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import AfterValidator, BaseModel, Field, field_validator
@@ -24,11 +24,11 @@ from octomate.types.permissions import (
 # pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
 # than a home directory — a root like that matches nothing and quietly stops a session
 # being ingested.
-ConfigPath: TypeAlias = Annotated[Path, AfterValidator(Path.expanduser)]
+type ConfigPath = Annotated[Path, AfterValidator(Path.expanduser)]
 
 logger = logging.getLogger(__name__)
 
-ClaudeCodeModelName: TypeAlias = Literal[
+type ClaudeCodeModelName = Literal[
     "best",
     "fable",
     "sonnet",
@@ -41,7 +41,7 @@ ClaudeCodeModelName: TypeAlias = Literal[
 ]
 # Codex takes a free-form model string in `thread_start(model=...)`; these are the
 # route-name labels the config and channel `agents` lists select from.
-CodexModelName: TypeAlias = Literal[
+type CodexModelName = Literal[
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -50,9 +50,9 @@ CodexModelName: TypeAlias = Literal[
     "gpt-5.3-codex",
     "gpt-5.1-codex-mini",
 ]
-CodexPersonality: TypeAlias = Literal["none", "friendly", "pragmatic"]
-CodexSandbox: TypeAlias = Literal["read_only", "workspace_write", "full_access"]
-CodexReasoningEffort: TypeAlias = Literal[
+type CodexPersonality = Literal["none", "friendly", "pragmatic"]
+type CodexSandbox = Literal["read_only", "workspace_write", "full_access"]
+type CodexReasoningEffort = Literal[
     "none",
     "minimal",
     "low",
@@ -60,7 +60,7 @@ CodexReasoningEffort: TypeAlias = Literal[
     "high",
     "xhigh",
 ]
-CodexReasoningSummary: TypeAlias = Literal[
+type CodexReasoningSummary = Literal[
     "auto",
     "concise",
     "detailed",
@@ -68,8 +68,8 @@ CodexReasoningSummary: TypeAlias = Literal[
 ]
 # dsh identifies a model by (provider, model id); these are the model-id labels the
 # routes select from, all under `DeepseekConfig.provider`.
-DeepseekModelName: TypeAlias = Literal["deepseek-v4-flash", "deepseek-v4-pro"]
-AgentRouteModelName: TypeAlias = (
+type DeepseekModelName = Literal["deepseek-v4-flash", "deepseek-v4-pro"]
+type AgentRouteModelName = (
     KnownModelName | ClaudeCodeModelName | CodexModelName | DeepseekModelName
 )
 
@@ -131,7 +131,7 @@ class SummarizeAction(BaseModel):
     kind: Literal["summarize"] = "summarize"
 
 
-ToolOutputAction: TypeAlias = Annotated[
+type ToolOutputAction = Annotated[
     TruncateAction | SpillAction | SummarizeAction, Field(discriminator="kind")
 ]
 

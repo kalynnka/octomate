@@ -2,6 +2,8 @@
 
 This guide covers installing Octomate's FastAPI server, managing it through the CLI,
 and optionally exposing its API with a separate Tailcat setup.
+The baseline below serves the API on loopback; the optional LAN console setup in
+section 2 enables the UI and a network listener.
 
 ## Scope and success criteria
 
@@ -50,11 +52,34 @@ Verify these prerequisites in the environment where the server will run.
 The application owns its routes and authentication. Enabled hooks and MCP retain
 their existing bearer checks. Local clients connect to `http://127.0.0.1:8000`.
 
-Disable or omit every `type: trunkline` channel in production configuration,
-regardless of its instance name, so its control API is not registered. Do not enable
-another browser-facing channel or build/serve the frontend. Validate the effective
-configuration, including environment overrides. Add user validation to the UI and
-its backing API in a later change before enabling the production console.
+For an API-only deployment, disable or omit every `type: trunkline` channel,
+regardless of its instance name, so its control API is not registered. Validate the
+effective configuration, including environment overrides.
+
+To enable the console on a trusted LAN, set the Trunkline channel's `enabled: true`
+and `static_dir: /absolute/path/to/octomate/app/trunkline/dist` in `channels.yaml`.
+Set `host:` in `octomate.yaml` to the server's LAN IPv4 address. Build the frontend
+from the service checkout, then restart the service:
+
+```sh
+cd /absolute/path/to/octomate/app/trunkline
+pnpm install --frozen-lockfile
+pnpm build
+```
+
+The same FastAPI process serves the configured `static_dir` at `/` and the console
+API at `/api/trunkline`. The directory must exist when the server starts. Relative
+paths use the server's working directory; `~` expands to the service user's home.
+Omit `static_dir` to serve only the console API, without the compiled UI.
+
+Visit `http://<server-lan-address>:8000`. The console and its API
+have no user login: anyone who can reach the listener can use them. Enabling this
+configuration exposes the listener on that LAN address. Keep it on a trusted
+network until UI authentication is implemented. Update the bind address if DHCP
+assigns the server a different address. Local clients also use that LAN address.
+
+The frontend build is a separate step; rebuild it when the checkout changes.
+Managed verification checks that console routes match their configured state.
 
 FastAPI's `/docs` and `/openapi.json` remain available on the local application
 port. OAuth routes follow the application's existing connector registration.
@@ -119,8 +144,9 @@ and Alembic resources ship inside the `octomate` package. Launch
 `app/.venv/bin/octomate serve` with `app/` as the working directory.
 [uv synchronization](https://docs.astral.sh/uv/concepts/projects/sync/).
 
-There is no frontend build, Node/pnpm deployment step, Vite process, static-file
-server, or Docker requirement. Provider CLIs may still have their own runtime
+The API-only setup needs no frontend build, Node/pnpm deployment step, Vite process,
+static-file server, or Docker. The optional console needs Node/pnpm for its build.
+Provider CLIs may still have their own runtime
 dependencies. Octomate-driven agents need project checkouts and working credentials
 on the server; laptop transcript tailers continue running on the laptop.
 
@@ -170,12 +196,14 @@ bootstrap step. It must set an absolute `WorkingDirectory`, `UserName`,
 `ProgramArguments` to `["<checkout>/.venv/bin/octomate", "serve"]`, `KeepAlive: true`,
 and explicit `PATH`, `OCTOMATE_HOME` and absolute `OCTOMATE_DB_URL` environment values.
 Use the service user's account to run the CLI. It invokes sudo only for launchd
-changes. The managed service requires SQLite, a loopback host, a registered bearer,
-and disabled Trunkline. Operation results are written to `logs/server.log`.
+changes. The managed service requires SQLite, an explicit IPv4 bind address, and
+a registered bearer. Trunkline may be enabled or disabled; verification uses the
+configured address and checks the console's configured state. Operation results
+are written to `logs/server.log`.
 
 These commands manage only Octomate, its dependencies, migrations and service.
 They do not install or invoke Tailcat, manage tunnel keys or jobs, or depend on a
-remote forward. All server verification targets `http://127.0.0.1:8000` directly.
+remote forward. Server verification targets the configured bind address directly.
 
 ### Start
 
@@ -186,7 +214,7 @@ remote forward. All server verification targets `http://127.0.0.1:8000` directly
 2. With the backend stopped, apply pending migrations using the backup and migration
    procedure in section 6. An already current database needs no migration.
 3. Enable and load the backend job. Verify local MCP initialization and tool
-   discovery with a registered bearer, and absent Trunkline routes. Inspect the
+   discovery with a registered bearer, and the configured Trunkline route state. Inspect the
    service logs separately for agent/channel startup; the protocol check does not
    establish readiness of every background component.
 
