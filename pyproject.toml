@@ -1,6 +1,6 @@
 [project]
 name = "octomate"
-version = "0.0.2"
+version = "0.0.3"
 description = "Server for collecting coding agent sessions and sharing their history and tools across chat channels."
 readme = "README.md"
 license = "AGPL-3.0-only"
