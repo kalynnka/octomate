@@ -1,6 +1,6 @@
 [project]
 name = "octomate-protocol"
-version = "0.0.1"
+version = "0.0.2"
 description = "Shared stream and deployment contracts for Octomate and its CLI."
 readme = "README.md"
 license = "AGPL-3.0-only"
