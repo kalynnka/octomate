@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-v0.0.2...octomate-v0.0.3) (2026-09-06)
+
+
+### Bug Fixes
+
+* support configurable Trunkline UI deployment ([3d6471f](https://github.com/kalynnka/octomate/commit/3d6471f454062cc11910020970f6330ac9698068))
+* support configurable Trunkline UI deployment ([2218a54](https://github.com/kalynnka/octomate/commit/2218a5474dd2a7952e61e1eaaab17ed836dab47a))
+
 ## [0.0.2](https://github.com/kalynnka/octomate/compare/octomate-v0.0.1...octomate-v0.0.2) (2026-09-06)
 
 
