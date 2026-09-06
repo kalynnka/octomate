@@ -1,6 +1,6 @@
 [project]
 name = "octomate-cli"
-version = "0.0.1"
+version = "0.0.2"
 description = "Octomate's client half: the operator CLI, native-session hook clients, and the transcript tail."
 readme = "README.md"
 license = "AGPL-3.0-only"
