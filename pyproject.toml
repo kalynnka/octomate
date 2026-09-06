@@ -8,8 +8,8 @@ license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
     # Include the CLI so server installs provide the `octomate` console script.
-    "octomate-cli==0.0.1", # x-release-please-version
-    "octomate-protocol==0.0.1", # x-release-please-version
+    "octomate-cli>=0.0.1,<0.1",
+    "octomate-protocol>=0.0.1,<0.1",
     "anyio>=4",
     "httpx>=0.28.1",
     "pydantic>=2.12.5",

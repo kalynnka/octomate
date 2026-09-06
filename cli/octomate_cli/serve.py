@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import plistlib
+import re
 import shutil
 import subprocess
 import sys
@@ -14,18 +15,48 @@ from urllib.request import Request, urlopen
 
 import typer
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 
 APP = "octomate.app:create_app"
-RELEASE_URL = "https://api.github.com/repos/kalynnka/octomate/releases/latest"
+RELEASE_URL = "https://api.github.com/repos/kalynnka/octomate/releases"
 
 
 class Release(BaseModel):
-    """The stable GitHub release selected for a manual service upgrade."""
+    """GitHub release metadata used to select a server upgrade."""
 
-    tag_name: str = Field(pattern=r"^v[0-9]+\.[0-9]+\.[0-9]+$")
-    draft: Literal[False]
-    prerelease: Literal[False]
+    tag_name: str
+    draft: bool
+    prerelease: bool
+
+
+def latest_server_release() -> Release:
+    """Find the highest stable server version across all release pages."""
+    latest: Release | None = None
+    latest_version = (0, 0, 0)
+    page = 1
+    adapter = TypeAdapter(list[Release])
+    while True:
+        request = Request(
+            f"{RELEASE_URL}?per_page=100&page={page}",
+            headers={"Accept": "application/vnd.github+json"},
+        )
+        with urlopen(request, timeout=30) as response:
+            releases = adapter.validate_json(response.read())
+        for release in releases:
+            match = re.fullmatch(
+                r"octomate-v([0-9]+)\.([0-9]+)\.([0-9]+)", release.tag_name
+            )
+            if release.draft or release.prerelease or match is None:
+                continue
+            version = tuple(int(part) for part in match.groups())
+            if latest is None or version > latest_version:
+                latest, latest_version = release, version
+        if len(releases) < 100:
+            break
+        page += 1
+    if latest is None:
+        raise ValueError("No stable octomate-vX.Y.Z server release is available.")
+    return latest
 
 
 PlistFile = Annotated[
@@ -184,12 +215,7 @@ def manage_plist_service(plist: Path, *, upgrade: bool) -> None:
                     env=service.process_environment,
                     text=True,
                 ).strip()
-                request = Request(
-                    RELEASE_URL,
-                    headers={"Accept": "application/vnd.github+json"},
-                )
-                with urlopen(request, timeout=30) as response:
-                    release = Release.model_validate_json(response.read())
+                release = latest_server_release()
                 subprocess.run(
                     ["git", "fetch", "origin", f"refs/tags/{release.tag_name}"],
                     cwd=service.directory,
@@ -411,7 +437,7 @@ def upgrade(plist: PlistFile = DEFAULT_PLIST) -> None:
     Omit --plist to use /Library/LaunchDaemons/io.octomate.server.plist, or run:
     octomate upgrade --plist /absolute/path/to/server.plist
 
-    Install the latest stable release, sync locked dependencies, migrate and restart.
+    Install the latest stable server release, sync dependencies, migrate and restart.
     An already current checkout is left running. Local changes, divergent history,
     and downgrades are refused before stopping the service.
     """

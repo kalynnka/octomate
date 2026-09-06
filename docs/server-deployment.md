@@ -213,8 +213,9 @@ The default is `/Library/LaunchDaemons/io.octomate.server.plist`. The checkout n
 by the plist must have no tracked local changes.
 
 1. Acquire the operation lock and validate the deployment configuration. Resolve
-   the latest non-draft, non-prerelease GitHub release and fetch its version tag
-   from `origin`. An unavailable release or failed fetch leaves the service running.
+   the highest stable `octomate-vX.Y.Z` GitHub release and fetch its tag from
+   `origin`. CLI/protocol releases and drafts/prereleases are ignored. An unavailable
+   server release or failed fetch leaves the service running.
 2. Compare the fetched commit with the installed commit. If they match, report
    the release and exit without changing the service or database. Otherwise require
    the installed commit to be an ancestor of the release; refuse downgrades and
@@ -298,7 +299,7 @@ Complete these stages locally with Tailcat absent or stopped.
 | --- | --- | --- |
 | 1. Production configuration | Config example and route checks | Trunkline disabled and its routes absent; no frontend served; enabled hooks and MCP retain bearer authentication. |
 | 2. Server process | Octomate service definition, state directories, credentials | Service-context startup, restart after process failure, log rotation and a loopback-only listener. |
-| 3. Server CLI | `serve --plist <path>` and `upgrade`, including Alembic | Disposable-data tests: first start migrates; repeat start is safe; upgrade pulls main and migrates before restart; dirty checkout is refused; failed sync or migration prevents startup. |
+| 3. Server CLI | `serve --plist <path>` and `upgrade`, including Alembic | Disposable-data tests: first start migrates; repeat start is safe; upgrade fetches the server release and migrates before restart; dirty checkout is refused; failed sync or migration prevents startup. |
 
 Exercise enabled hooks and MCP at `http://127.0.0.1:8000` with missing, invalid and
 valid bearers. Verify `/api/trunkline` and a real nested console action return 404
@@ -377,7 +378,8 @@ This preserves an existing resolved credential; if none exists it generates one.
 Register the user's secret in production through the existing `users.yaml` setup,
 then run that harness's `hooks install` and `mcp install` commands. Check project
 config, environment overrides and previously pinned URLs. MCP installations embed
-their URL and credential. Pin compatible CLI/server versions for each rollout.
+their URL and credential. Compatible server releases leave existing clients usable;
+update a client only when needed for new behavior or a wire protocol change.
 
 Tailcat device keys determine which computer can connect; Octomate bearers determine
 which user a request represents. Retain both checks. Revoke a device by removing its

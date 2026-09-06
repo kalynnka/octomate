@@ -13,10 +13,12 @@ octomate --version
 
 Python 3.12 or newer is required. Installing the CLI also installs
 `octomate-protocol`; it does not install the server or its dependencies.
+Package versions are independent. A compatible server update does not require
+updating the CLI; stream connections check the shared wire protocol version.
 
 All commands remain available in help. `octomate serve` needs the separately
 installed `octomate` server package. `octomate upgrade` manages an existing
-launchd/plist deployment checkout and installs the latest stable release; it
+launchd/plist deployment checkout and installs the latest stable server release; it
 does not update a client-only CLI installation. Update this package with the
 same installer used to install it, such as `pip install --upgrade octomate-cli`.
 

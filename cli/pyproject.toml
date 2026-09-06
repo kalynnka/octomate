@@ -1,6 +1,6 @@
 [project]
 name = "octomate-cli"
-version = "0.0.1" # x-release-please-version
+version = "0.0.1"
 description = "Octomate's client half: the operator CLI, native-session hook clients, and the transcript tail."
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 # Deliberately light — a client machine installs octomate-cli alone, and nothing here
 # may import the octomate server package.
 dependencies = [
-    "octomate-protocol==0.0.1", # x-release-please-version
+    "octomate-protocol>=0.0.1,<0.1",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.14.1",
     "rich>=13",

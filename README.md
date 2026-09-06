@@ -199,8 +199,9 @@ row, which is why restarts are survivable.
 ## Installation
 
 Install the client CLI with `pip install octomate-cli`, or install the server and
-CLI together with `pip install octomate`. Both include the matching
-`octomate-protocol` package. `octomate --version` reports installed versions.
+CLI together with `pip install octomate`. Both include a compatible
+`octomate-protocol` package. The packages release independently; compatible server
+updates do not require CLI upgrades. `octomate --version` reports installed versions.
 
 For supervised server setup, migrations and manual release upgrades, follow the
 [deployment guide](docs/server-deployment.md). Package publishing is described in

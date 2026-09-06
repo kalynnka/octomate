@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import fcntl
 import io
+import json
 import os
 import plistlib
 import pwd
@@ -14,9 +15,8 @@ from urllib.error import URLError
 
 import pytest
 from octomate_cli.main import app
-from octomate_cli.serve import PlistService, Release
+from octomate_cli.serve import PlistService, latest_server_release
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import ValidationError
 from typer.testing import CliRunner
 
 
@@ -75,7 +75,7 @@ class Operations:
     ) -> subprocess.CompletedProcess[str]:
         assert cwd.is_dir()
         assert check
-        if arguments == ["git", "fetch", "origin", "refs/tags/v0.0.2"]:
+        if arguments == ["git", "fetch", "origin", "refs/tags/octomate-v0.0.2"]:
             step = "fetch"
         elif arguments == ["git", "checkout", "--detach", "released-commit"]:
             step = "checkout"
@@ -127,7 +127,7 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Oper
     monkeypatch.setattr(
         "octomate_cli.serve.urlopen",
         lambda request, timeout: io.BytesIO(
-            b'{"tag_name":"v0.0.2","draft":false,"prerelease":false}'
+            b'[{"tag_name":"octomate-v0.0.2","draft":false,"prerelease":false}]'
         ),
     )
     monkeypatch.setattr(sys, "platform", "darwin")
@@ -280,7 +280,7 @@ def test_current_release_does_not_change_service(
     operations.current = True
     result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
     assert result.exit_code == 0, result.output
-    assert "Already at v0.0.2" in result.output
+    assert "Already at octomate-v0.0.2" in result.output
     assert operations.events == ["check", "fetch"]
     assert operations.loaded == loaded
 
@@ -311,17 +311,71 @@ def test_release_lookup_failure_keeps_service_running(
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("tag", "draft", "prerelease"),
     [
-        '{"tag_name":"v0.0.2","draft":true,"prerelease":false}',
-        '{"tag_name":"v0.0.2","draft":false,"prerelease":true}',
-        '{"tag_name":"--upload-pack=command","draft":false,"prerelease":false}',
-        '{"tag_name":"v0.0.2rc1","draft":false,"prerelease":false}',
+        ("octomate-v0.0.3", True, False),
+        ("octomate-v0.0.3", False, True),
+        ("--upload-pack=command", False, False),
+        ("octomate-v0.0.3rc1", False, False),
+        ("octomate-cli-v0.0.3", False, False),
+        ("octomate-protocol-v0.0.3", False, False),
     ],
 )
-def test_upgrade_accepts_only_stable_version_tags(payload: str) -> None:
-    with pytest.raises(ValidationError):
-        Release.model_validate_json(payload)
+def test_upgrade_skips_other_packages_and_unstable_tags(
+    service: tuple[Path, Operations], tag: str, draft: bool, prerelease: bool
+) -> None:
+    plist, operations = service
+    payload = json.dumps(
+        [
+            {"tag_name": tag, "draft": draft, "prerelease": prerelease},
+            {"tag_name": "octomate-v0.0.2", "draft": False, "prerelease": False},
+        ]
+    ).encode()
+    with patch("octomate_cli.serve.urlopen", return_value=io.BytesIO(payload)):
+        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    assert result.exit_code == 0, result.output
+    assert "octomate-v0.0.2" in result.output
+    assert "fetch" in operations.events
+
+
+def test_server_release_lookup_paginates_and_compares_versions() -> None:
+    pages = [
+        [{"tag_name": "octomate-cli-v0.0.9", "draft": False, "prerelease": False}]
+        * 100,
+        [
+            {"tag_name": f"octomate-v{version}", "draft": False, "prerelease": False}
+            for version in ("0.0.9", "0.0.11", "0.0.10")
+        ],
+    ]
+    with patch(
+        "octomate_cli.serve.urlopen",
+        side_effect=[io.BytesIO(json.dumps(page).encode()) for page in pages],
+    ) as request:
+        assert latest_server_release().tag_name == "octomate-v0.0.11"
+    assert [call.args[0].full_url for call in request.call_args_list] == [
+        "https://api.github.com/repos/kalynnka/octomate/releases?per_page=100&page=1",
+        "https://api.github.com/repos/kalynnka/octomate/releases?per_page=100&page=2",
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"[]",
+        b'[{"tag_name":"octomate-cli-v0.0.2","draft":false,"prerelease":false}]',
+        b'[{"tag_name":"octomate-v0.0.2"}]',
+    ],
+)
+def test_missing_or_invalid_server_release_keeps_service_running(
+    service: tuple[Path, Operations], payload: bytes
+) -> None:
+    plist, operations = service
+    operations.loaded = True
+    with patch("octomate_cli.serve.urlopen", return_value=io.BytesIO(payload)):
+        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    assert result.exit_code == 1
+    assert operations.events == ["check"]
+    assert operations.loaded
 
 
 def test_version_reports_installed_packages() -> None:

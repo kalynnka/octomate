@@ -8,12 +8,15 @@ from email import message_from_bytes
 from pathlib import Path
 from zipfile import ZipFile
 
+from packaging.requirements import Requirement
+
 root = Path(__file__).resolve().parents[2]
 dist = root / "dist"
-version = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]
-for project in ("cli", "protocol"):
-    metadata = tomllib.loads((root / project / "pyproject.toml").read_text())["project"]
-    assert metadata["version"] == version, project
+projects = [
+    tomllib.loads((root / path / "pyproject.toml").read_text())["project"]
+    for path in (".", "cli", "protocol")
+]
+versions = {project["name"]: project["version"] for project in projects}
 assert len(list(dist.glob("*.whl"))) == 3
 assert len(list(dist.glob("*.tar.gz"))) == 3
 for wheel in dist.glob("*.whl"):
@@ -22,12 +25,22 @@ for wheel in dist.glob("*.whl"):
             name for name in archive.namelist() if name.endswith("/METADATA")
         )
         metadata = message_from_bytes(archive.read(metadata_file))
-        assert metadata["Version"] == version, wheel
-        dependencies = set(metadata.get_all("Requires-Dist", []))
-        if metadata["Name"] in {"octomate", "octomate-cli"}:
-            assert f"octomate-protocol=={version}" in dependencies
+        assert metadata["Version"] == versions[metadata["Name"]], wheel
+        dependencies = {
+            dependency.name: dependency
+            for value in metadata.get_all("Requires-Dist", [])
+            if (dependency := Requirement(value)).name in versions
+        }
+        expected = {
+            "octomate": {"octomate-cli", "octomate-protocol"},
+            "octomate-cli": {"octomate-protocol"},
+            "octomate-protocol": set(),
+        }
+        assert dependencies.keys() == expected[metadata["Name"]], wheel
+        for name, dependency in dependencies.items():
+            assert versions[name] in dependency.specifier, (wheel, dependency)
+            assert all(spec.operator != "==" for spec in dependency.specifier)
         if metadata["Name"] == "octomate":
-            assert f"octomate-cli=={version}" in dependencies
             assert "octomate/app.py" in archive.namelist()
             assert "octomate/migrations/alembic.ini" in archive.namelist()
             assert any(
