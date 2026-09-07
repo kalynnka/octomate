@@ -35,6 +35,11 @@ class User(Base, TransmuterProxiedMixin):
         nullable=True,
         comment="A shorter, casual name for this human.",
     )
+    password_hash: Mapped[SecretStr | None] = mapped_column(
+        SecretString,
+        nullable=True,
+        comment="Argon2id password hash; NULL until local sign-in is enrolled.",
+    )
     secret: Mapped[SecretStr | None] = mapped_column(
         SecretString,
         nullable=True,

@@ -1,3 +1,4 @@
+from octomate.models.auth import UserApiKey, UserSession
 from octomate.models.base import Base
 from octomate.models.conversation import Conversation
 from octomate.models.deferred import (
@@ -46,5 +47,7 @@ __all__ = [
     "Todo",
     "ToolOutputSpill",
     "User",
+    "UserApiKey",
     "UserProfile",
+    "UserSession",
 ]

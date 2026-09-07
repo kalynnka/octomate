@@ -84,6 +84,12 @@ class User(BaseTransmuter):
         default=None,
         description="A shorter, casual name for this human.",
     )
+    password_hash: SecretStr | None = Field(
+        default=None,
+        exclude=True,
+        repr=False,
+        description="Argon2id password hash; None until local sign-in is enrolled.",
+    )
     secret: SecretStr | None = Field(
         default=None,
         exclude=True,

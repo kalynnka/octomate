@@ -261,8 +261,6 @@ class OAuthManager:
                 "written by an authorization-code flow"
             )
         expires_at = operation.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
         payload = DeviceOperationPayload.model_validate_json(
             cipher.decrypt(
                 operation.encrypted_data,
@@ -327,8 +325,6 @@ class OAuthManager:
             if operation.consumed_at is not None:
                 raise ValueError("OAuth operation has already been consumed")
             expires_at = operation.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=UTC)
             if expires_at <= datetime.now(UTC):
                 operation.consumed_at = datetime.now(UTC)
                 await session.commit()
@@ -555,8 +551,6 @@ class OAuthManager:
         if operation.consumed_at is not None:
             raise UnusableOAuthOperation("OAuth operation has already been consumed")
         expires_at = operation.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at <= datetime.now(UTC):
             raise UnusableOAuthOperation("OAuth operation has expired")
         return operation
@@ -741,6 +735,4 @@ class OAuthManager:
     @staticmethod
     def expiring(expires_at: datetime) -> bool:
         """Whether a credential has too little life left to start a run on."""
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
         return expires_at <= datetime.now(UTC) + TOKEN_REFRESH_LEEWAY

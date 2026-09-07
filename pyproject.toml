@@ -47,6 +47,7 @@ dependencies = [
     # pydantic-ai; the slim distribution is the same package without the CLI's
     # dependencies.
     "fastmcp-slim[server]>=3.4",
+    "argon2-cffi>=25.1.0",
 ]
 
 [project.urls]
