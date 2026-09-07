@@ -23,7 +23,6 @@ from octomate.managers.user import UserManager
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
-from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
 from tests.support.config import registered
 
 SECRET = SecretStr("the-hook-secret")
@@ -42,19 +41,19 @@ def client_for(path: str) -> TestClient:
         tentacle = ClaudeCodeTentacle(
             "claude",
             octomate,
-            config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+            config=ClaudeCodeConfig(),
         )
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
             "codex",
             octomate,
-            config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+            config=CodexConfig(permission_mode="deny_all"),
         )
     else:
         tentacle = DeepseekTentacle(
             "deepseek",
             octomate,
-            config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+            config=DeepseekConfig(),
         )
 
     # Entering the client runs the lifespan: the registered user gets their
@@ -106,7 +105,7 @@ def test_a_hook_router_refuses_to_mount_for_nobody() -> None:
     tentacle = ClaudeCodeTentacle(
         "claude",
         Octomate(),
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=ClaudeCodeConfig(),
     )
     with pytest.raises(RuntimeError, match="no registered user carries a secret"):
         tentacle.routers()

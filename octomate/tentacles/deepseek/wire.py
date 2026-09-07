@@ -350,6 +350,42 @@ class ModelRoute(BaseModel):
     model: str
 
 
+class HostDescription(BaseModel):
+    provider: str | None = None
+
+
+class ModelEffort(BaseModel):
+    id: str
+
+
+class ModelReasoning(BaseModel):
+    efforts: list[ModelEffort]
+
+
+class CatalogModel(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    reasoning: ModelReasoning | None = None
+
+
+class ModelProviderGroup(BaseModel):
+    id: str
+    name: str
+    models: list[CatalogModel]
+
+
+class ModelCatalogFailure(BaseModel):
+    id: str
+    name: str
+    message: str
+
+
+class ModelCatalog(BaseModel):
+    groups: list[ModelProviderGroup]
+    failures: list[ModelCatalogFailure]
+
+
 class MessageBody(BaseModel):
     model_config = PERMISSIVE
 

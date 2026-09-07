@@ -95,9 +95,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
         state.decision = decision
         agent = ctx.deps.agent(resolved.agent)
-        run_model = agent.models.get(model)
-        if run_model is None:
-            raise ValueError(f"agent {agent.id!r} has no configured model {model!r}")
+        run_model = agent.models[model] if model is not None else None
         thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:

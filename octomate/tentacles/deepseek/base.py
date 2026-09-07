@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 from uuid import uuid4
 
@@ -53,7 +54,7 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import DeepseekConfig
+from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
@@ -81,6 +82,8 @@ from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
     ErrResult,
+    HostDescription,
+    ModelCatalog,
     OkResult,
     QuestionRequestedFrame,
     RpcError,
@@ -139,6 +142,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     """
 
     config: DeepseekConfig = field(init=False)
+    default_provider: str | None = field(init=False)
+    effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     client: DeepseekApiClient = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
@@ -194,14 +199,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.bridge_contexts = {}
         self.interaction_tasks = set()
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
-        self.models = {model: model for model in config.models}
+        self.models = {}
+        self.default_provider = None
+        self.effort_maps = {}
         # Serializes turns per conversation: dsh queues a second prompt into a
         # live turn as steering, which would interleave two runs' frames.
         self.conversation_locks = SessionLocks()
@@ -412,6 +414,60 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
         return process
 
+    @property
+    def default_model(self) -> None:
+        # dsh owns both the live default and a resumed session's selection.
+        return None
+
+    async def discover_models(self) -> None:
+        host = HostDescription.model_validate(
+            self.unwrap(await self.client.call("host.describe", {}), "host.describe")
+        )
+        catalog = ModelCatalog.model_validate(
+            self.unwrap(await self.client.call("llm.models", {}), "llm.models")
+        )
+        for failure in catalog.failures:
+            logger.warning(
+                "dsh provider %s model discovery failed: %s",
+                failure.id,
+                failure.message,
+            )
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        effort_maps: dict[str, dict[ThinkingEffort, str]] = {}
+        for provider in catalog.groups:
+            for model in provider.models:
+                key = f"{provider.id}:{model.id}"
+                configured = self.config.claims.get(key)
+                mapping: dict[ThinkingEffort, str] = {}
+                if model.reasoning is not None:
+                    supported = {effort.id for effort in model.reasoning.efforts}
+                    for effort in ThinkingEfforts:
+                        native = (
+                            effort
+                            if effort in supported
+                            else self.config.efforts.get(effort)
+                        )
+                        if native is not None and native in supported:
+                            mapping[effort] = native
+                elif configured is not None:
+                    mapping = {
+                        effort: self.config.efforts.get(effort, effort)
+                        for effort in configured.efforts
+                    }
+                models[key] = key
+                effort_maps[key] = mapping
+                claims[key] = Claim(
+                    model.description
+                    or (configured.ability if configured else model.name),
+                    tuple(mapping),
+                )
+        if not models:
+            raise ValueError("DeepSeek Harness advertised no available models")
+        self.set_model_catalog(models, claims)
+        self.effort_maps = effort_maps
+        self.default_provider = host.provider
+
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
         await self.client.__aenter__()
@@ -422,6 +478,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         # than retrying.
         try:
             self.process = await self.attach_or_start()
+            await self.discover_models()
             socket = await self.client.open_mux()
         except BaseException:
             await self.client.__aexit__()
@@ -431,9 +488,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             raise
         self.mux_socket = socket
         self.mux_task = asyncio.create_task(self.pump_mux(self.client, socket))
-        return self
+        return await super().__aenter__()
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await super().__aexit__(exc_type, exc_value, traceback)
         self.closing = True
         self.session_ingest.shutdown()
         await self.session_tailer.shutdown()
@@ -457,7 +520,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 future.cancel()
         self.pending.clear()
         self.bridge_contexts.clear()
-        await self.client.__aexit__(*exc)
+        await self.client.__aexit__(exc_type, exc_value, traceback)
         if self.process is not None:
             await self.process.stop()
             self.process = None
@@ -714,6 +777,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        deepseek_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         client = self.client
@@ -746,13 +810,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         accumulator = DeepseekRunAccumulator()
         accumulator.begin(user_prompt)
-
-        if isinstance(model, Model):
-            deepseek_model = model.model_name
-        elif isinstance(model, str):
-            deepseek_model = model
-        else:
-            deepseek_model = None
 
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
@@ -807,13 +864,23 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     )
                     session_id = created.session_id
                 if deepseek_model is not None:
+                    provider_id, separator, model_id = deepseek_model.partition(":")
+                    provider = provider_id if separator else self.default_provider
+                    if not separator:
+                        model_id = deepseek_model
+                    if provider is None:
+                        raise ValueError(
+                            "A DeepSeek model selection must include its provider"
+                        )
                     select_payload: JsonObject = {
                         "sessionId": session_id,
-                        "provider": self.config.provider,
-                        "model": deepseek_model,
+                        "provider": provider,
+                        "model": model_id,
                     }
                     reasoning_effort = (
-                        self.config.efforts.get(effort) if effort is not None else None
+                        self.effort_maps[f"{provider}:{model_id}"][effort]
+                        if effort is not None
+                        else None
                     )
                     if reasoning_effort is not None:
                         select_payload["reasoningEffort"] = reasoning_effort

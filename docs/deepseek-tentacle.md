@@ -141,9 +141,9 @@ Not covered by CI — the unit tests fake the gateway. To smoke-test live:
    `127.0.0.1:3080`), or let octomate start one: put `dsh` on `PATH`, or set
    `agents.deepseek.executable` to a built dsh (for a monorepo checkout:
    `node <checkout>/apps/cli/lib/bin.js`, via a wrapper script).
-2. In the config home's `agents.yaml`, add an `agents.deepseek:` block with a claim
-   for `deepseek-v4-pro`, and list `- agent: deepseek / model: deepseek-v4-pro` under
-   a channel's `agents:` in `channels.yaml`.
+2. In the config home's `agents.yaml`, add `agents: {deepseek: {}}`, and list
+   `deepseek` under a channel's `agents:` in `channels.yaml`. The harness supplies
+   the model/provider catalog and its default; no model list is needed.
 3. Boot octomate and check the tentacle log for the `attached to the dsh
    serving http://127.0.0.1:3080/` line — or, when nothing was running, the
    `started dsh at http://127.0.0.1:3080/` warning with its shared-`DSH_HOME`

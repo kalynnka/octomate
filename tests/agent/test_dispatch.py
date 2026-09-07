@@ -17,7 +17,6 @@ from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.config import (
-    AgentModelConfig,
     ChannelConfig,
     ChannelStreamConfig,
 )
@@ -60,7 +59,7 @@ def _entry_config(*, stream: bool, entry: str = "inkling") -> ChannelConfig:
     return ChannelConfig(
         type="fake",
         stream=ChannelStreamConfig(enabled=stream),
-        agents=[AgentModelConfig(agent=entry, model="test")],
+        agents=[entry],
     )
 
 
@@ -69,8 +68,8 @@ def _summon_config(*, stream: bool) -> ChannelConfig:
         type="fake",
         stream=ChannelStreamConfig(enabled=stream),
         agents=[
-            AgentModelConfig(agent="inkling", model="test"),
-            AgentModelConfig(agent="claude", model="opus"),
+            "inkling",
+            "claude",
         ],
     )
 
@@ -334,9 +333,9 @@ async def test_chained_summon_updates_thread_owner() -> None:
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
             agents=[
-                AgentModelConfig(agent="inkling", model="test"),
-                AgentModelConfig(agent="first", model="test"),
-                AgentModelConfig(agent="second", model="test"),
+                "inkling",
+                "first",
+                "second",
             ],
         )
     )
@@ -467,8 +466,8 @@ async def test_reception_model_is_resolved_from_agent() -> None:
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
             agents=[
-                AgentModelConfig(agent="inkling", model="test"),
-                AgentModelConfig(agent="claude", model="openai:gpt-4o-mini"),
+                "inkling",
+                "claude",
             ],
         )
     )

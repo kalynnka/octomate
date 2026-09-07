@@ -28,7 +28,7 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
-from octomate.config import AgentModelConfig, SlackChannelConfig, SlackStreamConfig
+from octomate.config import SlackChannelConfig, SlackStreamConfig
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.config.users import UserConfig
@@ -109,7 +109,7 @@ def a_workspace(
         bot_token=SecretStr("xoxb-test"),
         app_token=SecretStr("xapp-test"),
         stream=SlackStreamConfig(flush_interval=0),
-        agents=[AgentModelConfig(agent="codex", model="test")],
+        agents=["codex"],
         mcp=True,
         oauth=SlackOAuthClientConfig(client_id="1.2", client_secret=SecretStr("shh")),
     )

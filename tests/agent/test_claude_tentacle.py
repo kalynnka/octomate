@@ -41,7 +41,7 @@ from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from tests.support.agents import CLAUDE_MODELS
+from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -85,6 +85,18 @@ class FakeClaudeClient:
     async def __aexit__(self, *exc: object) -> None:
         return None
 
+    async def get_server_info(self) -> JsonObject:
+        return {
+            "models": [
+                {
+                    "value": "a-future-model",
+                    "displayName": "Future model",
+                    "description": "Harness description",
+                }
+            ],
+            "account": {"apiProvider": "firstParty"},
+        }
+
     async def query(self, prompt: str) -> None:
         FakeClaudeClient.last_prompt = prompt
 
@@ -119,7 +131,7 @@ def _tentacle(
     return ClaudeCodeTentacle(
         "claude",
         Octomate(conversations=conversations),
-        config=config or ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=config or ClaudeCodeConfig(),
     )
 
 
@@ -370,7 +382,7 @@ async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(models={"opus"}),
+        config=ClaudeCodeConfig(),
     )
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model="opus")
@@ -405,18 +417,15 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
     }
 
 
-def test_configured_model_names_are_exposed() -> None:
-    tentacle = _tentacle(
-        FakeConversationManager(),
-        config=ClaudeCodeConfig(models={"opus", "opusplan", "fable", "opus[1m]"}),
-    )
-
-    assert tentacle.models == {
-        "opus": "opus",
-        "opusplan": "opusplan",
-        "fable": "fable",
-        "opus[1m]": "opus[1m]",
-    }
+async def test_models_are_discovered_on_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+    assert tentacle.models == {}
+    async with tentacle:
+        assert tentacle.models == {"anthropic:a-future-model": "a-future-model"}
+        assert tentacle.default_model is None
 
 
 def test_build_structured_result_validates_into_model() -> None:
@@ -543,17 +552,15 @@ async def test_completed_run_releases_its_client(
     assert len(tentacle.live_clients) == 0
 
 
-def test_claims_come_from_config_and_default_to_none() -> None:
-    """Claims are config-owned outright: a config claim is the tentacle's claim,
-    and a bare config claims nothing — an unclaimed model cannot be summoned."""
+def test_missing_metadata_can_be_configured() -> None:
     claim = Claim(ability="acme monorepo work", efforts=("high",))
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), claims={"haiku": claim}),
+        config=ClaudeCodeConfig(claims={"anthropic:haiku": claim}),
     )
 
-    assert tentacle.claims == {"haiku": claim}
-    assert ClaudeCodeConfig(models=set(CLAUDE_MODELS)).claims == {}
+    assert tentacle.claims == {"anthropic:haiku": claim}
+    assert ClaudeCodeConfig().claims == {}
 
 
 async def test_a_gateway_capability_mounts_the_in_process_server(

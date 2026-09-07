@@ -3,7 +3,7 @@ import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useConsole } from '@/state/console'
 import { usePermissionModes, useRoutes } from '@/lib/api/hooks'
-import { channelMeta, shortModel } from '@/lib/api/live'
+import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
 
@@ -35,16 +35,13 @@ function RouteSelector() {
     const byAgent = new Map<string, { id: string | null; model: string }[]>()
     for (const r of routesData?.routes ?? []) {
       const models = byAgent.get(r.agent) ?? []
-      models.push({ id: r.id, model: shortModel(r.model) })
+      models.push({ id: r.id, model: r.model ?? 'Harness default' })
       byAgent.set(r.agent, models)
     }
     return [...byAgent.entries()].map(([name, models]) => ({
       name,
       code: name.slice(0, 2).toUpperCase(),
-      // Every agent the instance runs is offered here, not only this channel's
-      // configured entry routing — so "configured route" would be a claim about
-      // half of them.
-      desc: 'registered agent',
+      desc: 'bound agent',
       models,
     }))
   }, [routesData])
@@ -87,6 +84,8 @@ function RouteSelector() {
               bottom: 'calc(100% + 6px)',
               right: 0,
               width: 302,
+              maxHeight: '60vh',
+              overflowY: 'auto',
               // Above the strip's ntMenu click-away overlay (zIndex 75), like
               // its own menus — below it, every click lands on the overlay.
               zIndex: 80,
@@ -151,12 +150,12 @@ function RouteSelector() {
                     </span>
                     <span style={{ ...mono(8), color: 'var(--fg-3)', lineHeight: 1.55, letterSpacing: '.02em' }}>{ar.desc}</span>
                     {on && (
-                      <span style={{ display: 'flex', gap: 4, paddingTop: 2 }}>
+                      <span style={{ display: 'flex', flexWrap: 'wrap', gap: 4, paddingTop: 2 }}>
                         {ar.models.map((m) => {
                           const mOn = ntModel === m.model
                           return (
                             <span
-                              key={m.model}
+                              key={m.id}
                               onClick={(e) => {
                                 e.stopPropagation()
                                 setNtRoute({ ntModel: m.model, ntRouteId: m.id })

@@ -54,7 +54,6 @@ from tests.agent.test_codex_native_ingest import (
     parent_metadata,
     subagent_activity,
 )
-from tests.support.agents import CODEX_MODELS
 from tests.support.config import registered
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -316,7 +315,7 @@ def stream_client() -> tuple[TestClient, CodexTentacle]:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     # Entering the client runs the lifespan: the registered user gets their

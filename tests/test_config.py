@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from base64 import urlsafe_b64encode
 from pathlib import Path
-from typing import get_args
+from typing import ClassVar, get_args
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
@@ -12,7 +12,9 @@ from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config import (
     AgentModelConfig,
+    AgentsConfig,
     BareMcpConfig,
+    ChannelConfig,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
@@ -35,7 +37,6 @@ from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.triage import Claim
-from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
 from tests.support.config import ISOLATED_HOME
 
 IN_MEMORY_DB_URL = "sqlite+aiosqlite:///:memory:"
@@ -127,9 +128,87 @@ def test_the_packaged_defaults_are_a_valid_deployment() -> None:
     config = OctomateConfig()
     # Nothing is turned on: no agent, no channel, no provider. Which LLM an
     # operator holds keys for is not guessable, so the defaults decline to guess.
-    assert config.agents.configured_models() == {}
+    assert config.agents.configured_agents == []
     assert config.channels == {}
     assert config.providers.deepseek is None
+
+
+def test_configured_agents_returns_enabled_config_objects() -> None:
+    claude = ClaudeCodeConfig(enabled=False)
+    codex = CodexConfig()
+    agents = AgentsConfig(claude=claude, codex=codex)
+
+    [enabled] = agents.configured_agents
+    assert enabled is codex
+    assert enabled.id == "codex"
+
+    claude.enabled = True
+    codex.enabled = False
+    [enabled] = agents.configured_agents
+    assert enabled is claude
+    assert enabled.id == "claude"
+
+
+def test_configured_agents_preserves_model_iteration_and_serialization() -> None:
+    config = OctomateConfig(
+        agents=AgentsConfig(
+            inkling=InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
+            claude=ClaudeCodeConfig(enabled=False),
+            codex=CodexConfig(),
+            deepseek=DeepseekConfig(),
+        )
+    )
+    fields = dict(config.agents)
+    assert set(fields) == {"inkling", "claude", "codex", "deepseek"}
+    assert fields["claude"] is config.agents.claude
+    serialized = config.model_dump(mode="json")
+    assert serialized["agents"]["claude"]["enabled"] is False
+    assert all("id" not in agent for agent in serialized["agents"].values())
+
+    restored = OctomateConfig.model_validate_json(config.model_dump_json())
+    assert restored.agents == config.agents
+    assert [agent.id for agent in restored.agents.configured_agents] == [
+        "inkling",
+        "codex",
+        "deepseek",
+    ]
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_agents_reject_duplicate_ids_across_harnesses(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool
+) -> None:
+    monkeypatch.setattr(CodexConfig, "id", "claude")
+    with pytest.raises(ValidationError, match="duplicate agent id 'claude'"):
+        OctomateConfig.model_validate(
+            {"agents": {"claude": {}, "codex": {"enabled": enabled}}}
+        )
+
+
+@pytest.mark.parametrize("second_id", ["claude", "another-subscription"])
+@pytest.mark.parametrize("enabled", [True, False])
+def test_additional_agent_configs_share_the_id_validation(
+    second_id: str, enabled: bool
+) -> None:
+    class SubscriptionConfig(ClaudeCodeConfig):
+        id: ClassVar[str] = second_id
+
+    class SubscriptionAgentsConfig(AgentsConfig):
+        subscription: ClaudeCodeConfig | None = None
+
+    subscription = SubscriptionConfig(enabled=enabled)
+    if second_id == "claude":
+        with pytest.raises(ValidationError, match="duplicate agent id 'claude'"):
+            SubscriptionAgentsConfig(
+                claude=ClaudeCodeConfig(), subscription=subscription
+            )
+    else:
+        agents = SubscriptionAgentsConfig(
+            claude=ClaudeCodeConfig(), subscription=subscription
+        )
+        assert [agent.id for agent in agents.configured_agents] == (
+            ["claude", second_id] if enabled else ["claude"]
+        )
 
 
 def test_channel_config_parses_supported_channels() -> None:
@@ -141,26 +220,26 @@ def test_channel_config_parses_supported_channels() -> None:
             "channels": {
                 "slack": {
                     "type": "slack",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "agents": ["inkling"],
                     "app_id": "A-test",
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
                 },
                 "lark": {
                     "type": "lark",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "agents": ["inkling"],
                     "app_id": "cli-test",
                     "app_secret": "secret",
                 },
                 "napcat": {
                     "type": "napcat",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "agents": ["inkling"],
                     "ws_url": "ws://127.0.0.1:3001",
                     "http_url": "http://127.0.0.1:3000",
                 },
                 "discord": {
                     "type": "discord",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "agents": ["inkling"],
                     "bot_token": "discord-test",
                 },
             },
@@ -197,13 +276,13 @@ def test_inkling_request_limit_must_be_positive() -> None:
         )
 
 
-def test_channel_config_parses_agent_model_routes() -> None:
+def test_channel_config_binds_agents_without_models() -> None:
     config = OctomateConfig.model_validate(
         {
             "agents": {
                 "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                "claude": {"models": ["opus"]},
-                "codex": {"models": ["gpt-5.3-codex"]},
+                "claude": {},
+                "codex": {},
             },
             "channels": {
                 "slack": {
@@ -212,9 +291,9 @@ def test_channel_config_parses_agent_model_routes() -> None:
                     "bot_token": "xoxb-test",
                     "app_token": "xapp-test",
                     "agents": [
-                        {"agent": "inkling", "model": "openai:gpt-4o"},
-                        {"agent": "claude", "model": "opus"},
-                        {"agent": "codex", "model": "gpt-5.3-codex"},
+                        "inkling",
+                        "claude",
+                        "codex",
                     ],
                 },
             },
@@ -223,44 +302,10 @@ def test_channel_config_parses_agent_model_routes() -> None:
 
     assert config.channels["slack"] is not None
     assert config.channels["slack"].agents == [
-        AgentModelConfig(agent="inkling", model="openai:gpt-4o"),
-        AgentModelConfig(agent="claude", model="opus"),
-        AgentModelConfig(agent="codex", model="gpt-5.3-codex"),
+        "inkling",
+        "claude",
+        "codex",
     ]
-
-
-def test_claude_code_config_uses_model_route_mapping() -> None:
-    config = ClaudeCodeConfig.model_validate(
-        {
-            "models": ["opus", "sonnet"],
-        }
-    )
-
-    assert config.models == {"opus", "sonnet"}
-    assert not hasattr(config, "model")
-
-
-def test_claude_code_config_requires_model_mapping() -> None:
-    with pytest.raises(ValidationError):
-        ClaudeCodeConfig.model_validate(
-            {
-                "models": [
-                    "opus",
-                    {"opus": "claude-opus-4-8"},
-                ]
-            }
-        )
-
-
-def test_claude_code_config_defaults_to_fixed_model_set() -> None:
-    config = ClaudeCodeConfig(models=set(CLAUDE_MODELS))
-
-    assert config.models == {"haiku", "sonnet[1m]", "opus[1m]", "opusplan[1m]"}
-
-
-def test_claude_code_config_validates_model_names() -> None:
-    with pytest.raises(ValidationError, match="Input should be"):
-        ClaudeCodeConfig.model_validate({"models": {"missing"}})
 
 
 def test_claude_code_config_warns_a_remote_host_is_not_honoured(
@@ -270,45 +315,16 @@ def test_claude_code_config_warns_a_remote_host_is_not_honoured(
     # nothing can make one on the host at the other end. The block is kept as
     # written — the transport that would have read it is what is parked.
     with caplog.at_level("WARNING"):
-        config = ClaudeCodeConfig(
-            models=set(CLAUDE_MODELS), ssh=ClaudeSSHConfig(host="user@box")
-        )
+        config = ClaudeCodeConfig(ssh=ClaudeSSHConfig(host="user@box"))
 
     assert config.ssh is not None
     assert "user@box" in caplog.text
     assert "stays local" in caplog.text
 
 
-def test_claude_code_config_accepts_documented_model_aliases() -> None:
-    config = ClaudeCodeConfig(models={"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"})
-
-    assert config.models == {"best", "opus[1m]", "sonnet[1m]", "opusplan[1m]"}
-
-
-def test_codex_config_defaults_to_current_model_set() -> None:
-    config = CodexConfig(models=set(CODEX_MODELS))
-
-    assert config.models == {
-        "gpt-5.6-sol",
-        "gpt-5.6-terra",
-        "gpt-5.6-luna",
-        "gpt-5.5",
-        "gpt-5.5-pro",
-        "gpt-5.3-codex",
-        "gpt-5.1-codex-mini",
-    }
-    assert config.permission_mode == "user_review"
-
-
-def test_codex_config_rejects_stale_model_aliases() -> None:
-    with pytest.raises(ValidationError, match="Input should be"):
-        CodexConfig.model_validate({"models": {"gpt-5-codex"}})
-
-
 def test_codex_config_parses_sdk_runtime_config() -> None:
     config = CodexConfig.model_validate(
         {
-            "models": ["gpt-5.5"],
             "runtime": {
                 "codex_bin": "/opt/codex",
                 "launch_args_override": [
@@ -348,13 +364,11 @@ def test_codex_config_parses_sdk_runtime_config() -> None:
 def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     config = CodexConfig.model_validate(
         {
-            "models": ["gpt-5.5"],
             "permission_mode": "auto_review",
             "sandbox": "read_only",
             "base_instructions": "stay concise",
             "developer_instructions": "work carefully",
             "ephemeral": True,
-            "model_provider": "openai",
             "personality": "pragmatic",
             "effort": "xhigh",
             "summary": "detailed",
@@ -366,14 +380,11 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     assert config.base_instructions == "stay concise"
     assert config.developer_instructions == "work carefully"
     assert config.ephemeral is True
-    assert config.model_provider == "openai"
     assert config.personality == "pragmatic"
     assert config.effort == "xhigh"
     assert config.summary == "detailed"
 
-    denied = CodexConfig.model_validate(
-        {"models": ["gpt-5.5"], "permission_mode": "deny_all"}
-    )
+    denied = CodexConfig.model_validate({"permission_mode": "deny_all"})
     assert denied.permission_mode == "deny_all"
     # The sandbox keeps its own default; no posture moves it.
     assert denied.sandbox == "workspace_write"
@@ -393,11 +404,9 @@ def test_codex_config_validates_sdk_setting_names() -> None:
 
 
 def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
-    config = DeepseekConfig(models=set(DEEPSEEK_MODELS))
+    config = DeepseekConfig()
 
-    assert config.models == {"deepseek-v4-flash", "deepseek-v4-pro"}
     assert config.permission_mode == "workspace-write"
-    assert config.provider == "deepseek-official"
     assert config.executable == "dsh"
     # dsh's own default bind, so an ordinary `dsh web` is attached to as-is.
     assert (config.host, config.port) == ("127.0.0.1", 3080)
@@ -411,11 +420,6 @@ def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
         "high": "high",
         "xhigh": "max",
     }
-
-
-def test_deepseek_config_rejects_unknown_model_labels() -> None:
-    with pytest.raises(ValidationError, match="Input should be"):
-        DeepseekConfig.model_validate({"models": {"deepseek-v3"}})
 
 
 def test_deepseek_config_rejects_a_foreign_permission_preset() -> None:
@@ -443,12 +447,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "agents": [
-                            {
-                                "agent": "ghost",
-                                "model": "deepseek:deepseek-v4-flash",
-                            }
-                        ],
+                        "agents": ["ghost"],
                     }
                 },
             }
@@ -456,7 +455,7 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
 
     [error] = exc_info.value.errors()
     assert error["type"] == "channel_agent_route"
-    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0)
     assert error["msg"] == "'ghost' does not match a configured agent tentacle"
 
 
@@ -466,7 +465,7 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
             {
                 "agents": {
                     "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "claude": {"models": ["opus"]},
+                    "claude": {},
                 },
                 "channels": {
                     "slack": {
@@ -475,9 +474,9 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
                         "agents": [
-                            {"agent": "ghost", "model": "deepseek:deepseek-v4-flash"},
-                            {"agent": "inkling", "model": "openai:gpt-5.2"},
-                            {"agent": "claude", "model": "sonnet"},
+                            "ghost",
+                            "inkling",
+                            "claude",
                         ],
                     },
                     "lark": {
@@ -486,7 +485,7 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                         "app_id": "cli-test",
                         "app_secret": "secret",
                         "agents": [
-                            {"agent": "nobody", "model": "deepseek:deepseek-v4-flash"},
+                            "nobody",
                         ],
                     },
                 },
@@ -500,28 +499,12 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
             "slack",
             "agents",
             0,
-            "agent",
         ): "'ghost' does not match a configured agent tentacle",
-        (
-            "channels",
-            "slack",
-            "agents",
-            1,
-            "model",
-        ): "'openai:gpt-5.2' is not configured in agents.inkling.models",
-        (
-            "channels",
-            "slack",
-            "agents",
-            2,
-            "model",
-        ): "'sonnet' is not configured in agents.claude.models",
         (
             "channels",
             "lark",
             "agents",
             0,
-            "agent",
         ): "'nobody' does not match a configured agent tentacle",
     }
 
@@ -537,19 +520,14 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "agents": [
-                            {
-                                "agent": "ghost",
-                                "model": "deepseek:deepseek-v4-flash",
-                            }
-                        ],
+                        "agents": ["ghost"],
                     }
                 }
             }
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0)
     assert error["msg"] == "'ghost' does not match a configured agent tentacle"
 
 
@@ -567,65 +545,15 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "agents": [{"agent": "claude", "model": "opus"}],
+                        "agents": ["claude"],
                     },
                 },
             }
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0)
     assert error["msg"] == "'claude' does not match a configured agent tentacle"
-
-
-def test_channel_routes_require_model() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
-            {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "claude": {"models": ["opus"]},
-                },
-                "channels": {
-                    "slack": {
-                        "type": "slack",
-                        "app_id": "A-test",
-                        "bot_token": "xoxb-test",
-                        "app_token": "xapp-test",
-                        "agents": [{"agent": "claude"}],
-                    },
-                },
-            },
-        )
-    [error] = exc_info.value.errors()
-    # A discriminated union stamps the resolved tag into the path, so a field error
-    # inside a channel carries its `type` between the key and the field.
-    assert error["loc"] == ("channels", "slack", "slack", "agents", 0, "model")
-    assert error["msg"] == "Field required"
-
-
-def test_channel_claude_routes_must_reference_configured_model() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
-            {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "claude": {"models": ["opus"]},
-                },
-                "channels": {
-                    "slack": {
-                        "type": "slack",
-                        "app_id": "A-test",
-                        "bot_token": "xoxb-test",
-                        "app_token": "xapp-test",
-                        "agents": [{"agent": "claude", "model": "sonnet"}],
-                    },
-                },
-            },
-        )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
-    assert error["msg"] == "'sonnet' is not configured in agents.claude.models"
 
 
 def test_channel_claude_route_requires_enabled_agent_config() -> None:
@@ -634,7 +562,9 @@ def test_channel_claude_route_requires_enabled_agent_config() -> None:
             {
                 "agents": {
                     "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "claude": {"enabled": False, "models": ["opus"]},
+                    "claude": {
+                        "enabled": False,
+                    },
                 },
                 "channels": {
                     "slack": {
@@ -642,38 +572,14 @@ def test_channel_claude_route_requires_enabled_agent_config() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "agents": [{"agent": "claude", "model": "sonnet"}],
+                        "agents": ["claude"],
                     },
                 },
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0)
     assert error["msg"] == "'claude' does not match a configured agent tentacle"
-
-
-def test_channel_codex_routes_must_reference_configured_model() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
-            {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "codex": {"models": ["gpt-5.3-codex"]},
-                },
-                "channels": {
-                    "slack": {
-                        "type": "slack",
-                        "app_id": "A-test",
-                        "bot_token": "xoxb-test",
-                        "app_token": "xapp-test",
-                        "agents": [{"agent": "codex", "model": "gpt-5.5"}],
-                    },
-                },
-            },
-        )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
-    assert error["msg"] == "'gpt-5.5' is not configured in agents.codex.models"
 
 
 def test_channel_codex_route_requires_enabled_agent_config() -> None:
@@ -682,7 +588,9 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
             {
                 "agents": {
                     "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "codex": {"enabled": False, "models": ["gpt-5.5"]},
+                    "codex": {
+                        "enabled": False,
+                    },
                 },
                 "channels": {
                     "slack": {
@@ -690,40 +598,14 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "agents": [{"agent": "codex", "model": "gpt-5.3-codex"}],
+                        "agents": ["codex"],
                     },
                 },
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0)
     assert error["msg"] == "'codex' does not match a configured agent tentacle"
-
-
-def test_channel_deepseek_routes_must_reference_configured_model() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
-            {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "deepseek": {"models": ["deepseek-v4-flash"]},
-                },
-                "channels": {
-                    "slack": {
-                        "type": "slack",
-                        "app_id": "A-test",
-                        "bot_token": "xoxb-test",
-                        "app_token": "xapp-test",
-                        "agents": [{"agent": "deepseek", "model": "deepseek-v4-pro"}],
-                    },
-                },
-            },
-        )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
-    assert (
-        error["msg"] == "'deepseek-v4-pro' is not configured in agents.deepseek.models"
-    )
 
 
 def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
@@ -732,7 +614,9 @@ def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
             {
                 "agents": {
                     "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "deepseek": {"enabled": False, "models": ["deepseek-v4-pro"]},
+                    "deepseek": {
+                        "enabled": False,
+                    },
                 },
                 "channels": {
                     "slack": {
@@ -740,35 +624,14 @@ def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
-                        "agents": [{"agent": "deepseek", "model": "deepseek-v4-pro"}],
+                        "agents": ["deepseek"],
                     },
                 },
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "agent")
+    assert error["loc"] == ("channels", "slack", "agents", 0)
     assert error["msg"] == "'deepseek' does not match a configured agent tentacle"
-
-
-def test_channel_inkling_routes_must_reference_configured_model() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
-            {
-                "agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}},
-                "channels": {
-                    "slack": {
-                        "type": "slack",
-                        "app_id": "A-test",
-                        "bot_token": "xoxb-test",
-                        "app_token": "xapp-test",
-                        "agents": [{"agent": "inkling", "model": "openai:gpt-5.2"}],
-                    }
-                },
-            }
-        )
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0, "model")
-    assert error["msg"] == "'openai:gpt-5.2' is not configured in agents.inkling.models"
 
 
 def test_a_scope_github_does_not_define_is_refused() -> None:
@@ -899,7 +762,7 @@ def test_channel_stream_config_uses_partial_defaults_from_yaml(
 channels:
   slack:
     type: slack
-    agents: [{agent: inkling, model: "openai:gpt-4o"}]
+    agents: [inkling]
     app_id: A-test
     bot_token: xoxb-test
     app_token: xapp-test
@@ -907,14 +770,14 @@ channels:
       enabled: false
   lark:
     type: lark
-    agents: [{agent: inkling, model: "openai:gpt-4o"}]
+    agents: [inkling]
     app_id: cli-test
     app_secret: secret
     stream:
       enabled: false
   napcat:
     type: napcat
-    agents: [{agent: inkling, model: "openai:gpt-4o"}]
+    agents: [inkling]
     ws_url: ws://127.0.0.1:3001
     http_url: http://127.0.0.1:3000
     stream:
@@ -961,7 +824,6 @@ def test_claim_efforts_default_matches_pydantic_ais_thinking_scale() -> None:
 def test_agent_claims_override_parses_from_config() -> None:
     config = CodexConfig.model_validate(
         {
-            "models": ["gpt-5.5"],
             "claims": {
                 "gpt-5.5": {
                     "ability": "Deep repository work in the acme monorepo.",
@@ -1006,7 +868,7 @@ def test_user_links_refuse_a_native_pseudo_channel() -> None:
     ):
         OctomateConfig.model_validate(
             {
-                "agents": {"claude": {"models": ["opus"]}},
+                "agents": {"claude": {}},
                 "users": {
                     "luhui": {
                         "profiles": {"claude-native": {"channel_user_id": "native"}}
@@ -1172,13 +1034,13 @@ def test_user_links_accept_configured_channels() -> None:
             "channels": {
                 "napcat": {
                     "type": "napcat",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "agents": ["inkling"],
                     "ws_url": "ws://x",
                     "http_url": "http://x",
                 },
                 "trunkline": {
                     "type": "trunkline",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+                    "agents": ["inkling"],
                 },
             },
             "users": {
@@ -1234,7 +1096,7 @@ def test_an_mcp_block_without_a_type_is_refused() -> None:
 def slack_channel_block(**overrides: object) -> dict[str, object]:
     return {
         "type": "slack",
-        "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
+        "agents": ["inkling"],
         "app_id": "A-test",
         "bot_token": "xoxb-test",
         "app_token": "xapp-test",
@@ -1281,3 +1143,36 @@ def test_a_slack_oauth_client_stores_tokens_and_so_needs_the_key() -> None:
     assert slack.oauth.scopes == SLACK_MCP_SCOPES
     assert "chat:write" not in slack.oauth.scopes
     assert str(slack.oauth.callback_base_uri) == "http://localhost:8000/"
+
+
+@pytest.mark.parametrize("config_type", [ClaudeCodeConfig, CodexConfig, DeepseekConfig])
+def test_harness_configs_discover_models(
+    config_type: type[ClaudeCodeConfig | CodexConfig | DeepseekConfig],
+) -> None:
+    config = config_type()
+    assert config.claims == {}
+
+
+@pytest.mark.parametrize("config_type", [ClaudeCodeConfig, CodexConfig, DeepseekConfig])
+@pytest.mark.parametrize("models", [None, ["provider:future-model"]])
+def test_harness_configs_reject_obsolete_model_lists(
+    config_type: type[ClaudeCodeConfig | CodexConfig | DeepseekConfig],
+    models: list[str] | None,
+) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        config_type.model_validate({"models": models})
+
+
+def test_channel_rejects_obsolete_model_bindings() -> None:
+    with pytest.raises(ValidationError, match="Input should be a valid string"):
+        ChannelConfig.model_validate(
+            {"type": "fake", "agents": [{"agent": "claude", "model": "opus"}]}
+        )
+
+
+def test_runtime_model_names_are_open_and_can_delegate_the_default() -> None:
+    assert (
+        AgentModelConfig(agent="codex", model="openai:a-future-model").model
+        == "openai:a-future-model"
+    )
+    assert AgentModelConfig(agent="claude", model=None).model is None

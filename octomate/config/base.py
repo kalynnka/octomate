@@ -212,47 +212,21 @@ class OctomateConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_channel_agent_routes(self) -> Self:
-        """Every channel route must name an agent that is configured, and a model
-        that agent actually offers.
-
-        Neither half names a channel or an agent: the channels are whatever the map
-        holds, and `AgentsConfig.configured_models` owns the knowledge of which
-        agents exist and where each keeps its model names. Adding a platform or an
-        agent therefore changes one place, not this one.
-        """
-        configured = self.agents.configured_models()
+        """Every channel binding must name an enabled, configured agent."""
+        configured = {agent.id for agent in self.agents.configured_agents}
         errors: list[InitErrorDetails] = []
-
         for channel_id, channel in self.channels.items():
-            for index, route in enumerate(channel.agents):
-                location = ("channels", channel_id, "agents", index)
-                models = configured.get(route.agent)
-                if models is None:
-                    # One message whether the name is a typo or an agent left
-                    # undeclared: from a route's point of view there is no
-                    # difference, and both are fixed in the same two places.
+            for index, agent_id in enumerate(channel.agents):
+                if agent_id not in configured:
                     errors.append(
                         InitErrorDetails(
                             type=PydanticCustomError(
                                 "channel_agent_route",
                                 "{agent} does not match a configured agent tentacle",
-                                {"agent": repr(route.agent)},
+                                {"agent": repr(agent_id)},
                             ),
-                            loc=(*location, "agent"),
-                            input=route.agent,
-                        )
-                    )
-                    continue
-                if route.model not in models:
-                    errors.append(
-                        InitErrorDetails(
-                            type=PydanticCustomError(
-                                "channel_agent_route",
-                                "{model} is not configured in agents.{agent}.models",
-                                {"model": repr(route.model), "agent": route.agent},
-                            ),
-                            loc=(*location, "model"),
-                            input=route.model,
+                            loc=("channels", channel_id, "agents", index),
+                            input=agent_id,
                         )
                     )
         if errors:

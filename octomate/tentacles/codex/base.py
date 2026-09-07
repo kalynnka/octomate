@@ -10,6 +10,7 @@ from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
 
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -26,11 +27,14 @@ from octomate_cli.stream import (
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
 from openai_codex._sandbox import _sandbox_mode
 from openai_codex.api import ApprovalMode, Sandbox
+from openai_codex.async_client import AsyncCodexClient
 from openai_codex.client import CodexClient
 from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApproval,
     AskForApprovalValue,
+    ConfigReadResponse,
+    ModelListResponse,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
@@ -67,7 +71,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import CodexConfig
+from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -307,6 +311,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     """
 
     config: CodexConfig = field(init=False)
+    provider: str = field(init=False)
     pool: CodexClientPool | None = field(default=None, init=False, repr=False)
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
@@ -348,14 +353,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.live_turns = {}
         self.bridge_contexts = {}
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
-        self.models = {model: model for model in config.models}
+        self.models = {}
+        self.provider = "openai"
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
             self.octomate.conversations,
@@ -540,7 +541,64 @@ class CodexTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await websocket.close()
 
+    @property
+    def default_model(self) -> None:
+        # Omission lets Codex resolve settings and an existing thread's selection.
+        return None
+
+    async def discover_models(self) -> None:
+        runtime = replace(
+            self.config.runtime,
+            config_overrides=(
+                *self.config.runtime.config_overrides,
+                f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=false",
+            ),
+        )
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        async with AsyncCodexClient(config=runtime) as client:
+            await client.initialize()
+            settings = await client.request(
+                "config/read",
+                {"includeLayers": False},
+                response_model=ConfigReadResponse,
+            )
+            provider = settings.config.model_provider or "openai"
+            cursor: str | None = None
+            while True:
+                page = await client.request(
+                    "model/list",
+                    {"includeHidden": False, "cursor": cursor},
+                    response_model=ModelListResponse,
+                )
+                for model in page.data:
+                    if model.hidden:
+                        continue
+                    key = f"{provider}:{model.model}"
+                    configured = self.config.claims.get(key)
+                    supported = {
+                        option.reasoning_effort.value
+                        for option in model.supported_reasoning_efforts
+                    }
+                    models[key] = model.model
+                    claims[key] = Claim(
+                        model.description
+                        or (configured.ability if configured else model.display_name),
+                        tuple(
+                            effort for effort in ThinkingEfforts if effort in supported
+                        ),
+                    )
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+        if not models:
+            raise ValueError("Codex advertised no available models")
+        self.set_model_catalog(models, claims)
+        self.provider = provider
+
     async def __aenter__(self) -> CodexTentacle:
+        await self.discover_models()
+
         # Only the pool is tentacle-wide shared state; each conversation's Codex
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
@@ -619,9 +677,15 @@ class CodexTentacle(AgentTentacle[str, None]):
             max_clients=self.config.max_clients,
             idle_ttl=self.config.client_idle_ttl,
         )
-        return self
+        return await super().__aenter__()
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await super().__aexit__(exc_type, exc_value, traceback)
         await self.session_tailer.shutdown()
         for turn in list(self.live_turns.values()):
             with contextlib.suppress(Exception):
@@ -962,6 +1026,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        sdk_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if self.pool is None:
@@ -1006,13 +1071,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             output_adapter = None
             output_schema: JsonObject | None = None
-
-        if isinstance(model, Model):
-            sdk_model = model.model_name
-        elif isinstance(model, str):
-            sdk_model = model
-        else:
-            sdk_model = None
 
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
@@ -1121,7 +1179,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 cwd=run_cwd,
                                 developer_instructions=developer_instructions,
                                 model=sdk_model,
-                                model_provider=self.config.model_provider,
+                                model_provider=self.provider
+                                if sdk_model is not None
+                                else None,
                                 personality=personality,
                                 sandbox=sandbox,
                             )
@@ -1134,7 +1194,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 developer_instructions=developer_instructions,
                                 ephemeral=self.config.ephemeral,
                                 model=sdk_model,
-                                model_provider=self.config.model_provider,
+                                model_provider=self.provider
+                                if sdk_model is not None
+                                else None,
                                 personality=personality,
                                 sandbox=sandbox,
                             )

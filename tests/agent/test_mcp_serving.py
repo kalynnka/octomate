@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.base import Octomate
 from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
-from octomate.config.channels import AgentModelConfig, ChannelConfig
+from octomate.config.channels import ChannelConfig
 from octomate.config.users import UserConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
@@ -325,7 +325,7 @@ def a_native_deployment() -> FakeOctomate:
     octomate = FakeOctomate(
         config=OctomateConfig.model_validate(
             {
-                "agents": {"claude": {"models": ["opus"]}},
+                "agents": {"claude": {}},
                 "users": {"luhui": {"secret": "luhui-token"}},
             }
         ),
@@ -345,7 +345,7 @@ def a_native_deployment() -> FakeOctomate:
         FakeChannelTentacle(
             config=ChannelConfig(
                 type="fake",
-                agents=[AgentModelConfig(agent="other", model="test")],
+                agents=["other"],
             )
         )
     )

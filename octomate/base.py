@@ -4,7 +4,7 @@ import asyncio
 import colorsys
 import logging
 import zlib
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import InitVar, dataclass, field
 from functools import lru_cache
@@ -280,7 +280,7 @@ class Octomate:
         # authenticates against the registered users' own secrets — which locks
 
         @asynccontextmanager
-        async def lifespan(app: FastAPI):
+        async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             with sqlalchemy_materia():
                 # The identity registry reconciles before any tentacle starts, so
                 # YAML users and their declared profiles exist from the first
@@ -325,29 +325,21 @@ class Octomate:
                                 tentacle.id,
                             )
 
-                    async def start_all() -> None:
-                        # Everything at once: channels must not queue behind agent
-                        # warmup, which is an optimization, not a precondition — a
-                        # message landing before its agent finished warming enters
-                        # the cold toolsets inside its own run (reference-counted)
-                        # and pays the listing latency once.
-                        await asyncio.gather(
-                            *(
-                                start(
-                                    channel_stack
-                                    if isinstance(tentacle, ChannelTentacle)
-                                    else outer_stack,
-                                    tentacle,
-                                )
-                                for tentacle in self.tentacles.values()
-                            )
+                    # Model discovery is required before a channel accepts a turn.
+                    await asyncio.gather(
+                        *(
+                            start(outer_stack, tentacle)
+                            for tentacle in self.tentacles.values()
+                            if not isinstance(tentacle, ChannelTentacle)
                         )
-
-                    # Serve immediately: MCP warms and channel sockets proceed in
-                    # the background so a console connects the moment uvicorn
-                    # binds. `start` already isolates and time-bounds each entry,
-                    # so this task settles on its own and never raises.
-                    starting = asyncio.create_task(start_all())
+                    )
+                    await asyncio.gather(
+                        *(
+                            start(channel_stack, tentacle)
+                            for tentacle in self.tentacles.values()
+                            if isinstance(tentacle, ChannelTentacle)
+                        )
+                    )
                     # Mirrors in the background too: a first clone takes as long
                     # as the repository is big, and serving must not wait on it.
                     # `reconcile` isolates per-project failures itself.
@@ -360,12 +352,6 @@ class Octomate:
                     try:
                         yield
                     finally:
-                        # Join before the enclosing stack exits — on every path.
-                        # An error thrown into the yield would otherwise unwind
-                        # the stack while `start_all` is still pushing entries
-                        # onto it. `start` bounds each entry, so this wait is
-                        # bounded too; on a normal shutdown it is a no-op.
-                        await starting
                         # Cancelled rather than awaited: a mirror sync is not
                         # bounded the way `start` is, and creation cleans up
                         # after a cancellation, so shutdown stays prompt.

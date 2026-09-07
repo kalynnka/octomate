@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, get_args, overload
 
 from pydantic_ai import (
@@ -304,7 +305,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # enters the cold toolsets inside its own run (reference-counted) and pays
         # the listing latency once.
         self.warm_task = asyncio.create_task(self.warm())
-        return self
+        return await super().__aenter__()
 
     async def warm(self) -> None:
         # Warm the operator MCP toolsets, all concurrently — cost is the slowest
@@ -373,7 +374,13 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                 exc_info=True,
             )
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await super().__aexit__(exc_type, exc_value, traceback)
         # Settle warming before the stack unwinds: an exit racing a half-opened
         # toolset would close sessions the warm task is still entering.
         if self.warm_task is not None:

@@ -47,7 +47,6 @@ from tests.agent.test_claude_tailer import (
     runs_of,
     subagent_runs_of,
 )
-from tests.support.agents import CLAUDE_MODELS
 from tests.support.config import registered
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -248,7 +247,7 @@ def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=ClaudeCodeConfig(),
     )
 
     # Entering the client runs the lifespan: the registered user gets their

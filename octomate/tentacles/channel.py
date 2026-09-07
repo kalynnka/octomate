@@ -249,6 +249,11 @@ class ChannelTentacle(
             oauth=oauth_feeler,
         )
 
+    @property
+    def agent_ids(self) -> list[str]:
+        """Agent tentacles this channel exposes, in entry order."""
+        return self.config.agents
+
     async def probe(self) -> None:
         """Resolve the channel's own identity from the platform. Awaited by the
         host before the channel is served, so `self.self_profile` is set before any

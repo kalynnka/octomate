@@ -47,7 +47,7 @@ TELEPORT_DEFER_KIND = "teleport"
 
 class AgentRouteKey(NamedTuple):
     agent_id: str
-    model: AgentRouteModelName
+    model: AgentRouteModelName | None  # None preserves the harness's native default.
 
 
 class SpellTarget(BaseModel):
@@ -211,7 +211,9 @@ class SummonDecision(BaseModel):
     action: Literal["summon"] = "summon"
     reason: str
     agent_id: str
-    model: AgentRouteModelName
+    model: AgentRouteModelName | None = Field(
+        description="Selected model, or null to use the harness's native default."
+    )
     destination: SummonLanding = Field(
         default_factory=ThreadLanding,
         description="Where the handoff lands, resolved by the gateway. The model names "

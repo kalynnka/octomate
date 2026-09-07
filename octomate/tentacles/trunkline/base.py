@@ -413,27 +413,27 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
 
         return (build_trunkline_router(self.octomate, channel_id=self.id),)
 
-    def routable_agents(self) -> list[AgentModelConfig]:
-        """Every agent-model route the console can open a thread on.
+    @property
+    def agent_ids(self) -> list[str]:
+        """All registered agents, with the configured entry order first."""
+        return list(dict.fromkeys([*self.config.agents, *self.octomate.agents]))
 
-        Wider than this channel's `agents:` list, which is the entry routing a
-        chat platform needs: nobody walks into the console, so the operator picking
-        an agent should see every model every registered tentacle runs. The
-        channel's own entries come first all the same, so the picker's default is
-        still this channel's entry agent.
-        """
-        declared = [
-            agent_config
-            for agent_config in self.config.agents
-            if agent_config.agent in self.octomate.agents
-        ]
-        seen = {(agent_config.agent, agent_config.model) for agent_config in declared}
-        return declared + [
-            AgentModelConfig(agent=agent_id, model=model)
-            for agent_id, agent in self.octomate.agents.items()
-            for model in agent.models
-            if (agent_id, model) not in seen
-        ]
+    def routable_agents(self) -> list[AgentModelConfig]:
+        """Every agent's models, with only the configured entry agent's default."""
+        routes: list[AgentModelConfig] = []
+        agents = self.octomate.agents
+        for agent_id in self.agent_ids:
+            agent = agents.get(agent_id)
+            if agent is None or not agent.models:
+                continue
+            default_model: str | None = None
+            if agent_id == self.config.agents[0]:
+                default_model = agent.default_model
+                routes.append(AgentModelConfig(agent=agent_id, model=default_model))
+            for model in agent.models:
+                if model != default_model:
+                    routes.append(AgentModelConfig(agent=agent_id, model=model))
+        return routes
 
     def chosen_project(self, name: str | None) -> Project | None:
         """The registered project a directive named, or None when it named none.
@@ -459,9 +459,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         if thread.active_agent_tentacle_id is not None:
             if selected_model is None:
                 return
-            active = (
-                f"{thread.active_agent_tentacle_id}{ROUTE_SEP}{thread.active_model}"
-            )
+            active = f"{thread.active_agent_tentacle_id}{ROUTE_SEP}{thread.active_model or ''}"
             if selected_model == active:
                 return
             raise RouteLockedError(
@@ -474,7 +472,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             (
                 agent_config
                 for agent_config in self.routable_agents()
-                if f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}"
+                if f"{agent_config.agent}{ROUTE_SEP}{agent_config.model or ''}"
                 == selected_model
             ),
             None,

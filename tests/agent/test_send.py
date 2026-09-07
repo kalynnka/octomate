@@ -24,7 +24,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.todos import TodoCapability
-from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config import ChannelConfig
 from octomate.config.users import UserConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
@@ -356,17 +356,13 @@ async def test_the_gate_works_out_where_else_the_asker_is(
 
     lark = FakeChannelTentacle(
         id="lark",
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="other", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["other"]),
     )
     # Routes only to an agent this gate does not have, so it is not offered
     # however reachable it looks.
     mute = FakeChannelTentacle(
         id="mute",
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="absent", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["absent"]),
     )
 
     session = _gate().session

@@ -173,13 +173,6 @@ class ReflexDeps:
             raise ValueError(f"unknown agent {agent_id!r}")
         return agent
 
-    def agent_configs(self, channel_id: str) -> list[AgentModelConfig]:
-        return [
-            agent_config
-            for agent_config in self.channel(channel_id).config.agents
-            if agent_config.agent in self.agents
-        ]
-
     @cached_property
     def gateway_agents(self) -> frozenset[str]:
         """The agents whose driven turns offer the gateway spells: each agent's own
@@ -228,7 +221,7 @@ class ReflexDeps:
             session.conversation_id = conversation.id
         return session
 
-    @cached_property
+    @property
     def available_routes(self) -> dict[str, list[AgentRoute]]:
         return self.gateway.available_routes(self.channels, self.agents)
 
@@ -238,23 +231,32 @@ class ReflexDeps:
         agent_id: str | None,
         model: AgentRouteModelName | None,
     ) -> AgentModelConfig:
-        configs = self.agent_configs(channel_id)
-        matched: AgentModelConfig | None = None
-        for agent_config in configs:
-            if agent_config.agent == agent_id and agent_config.model == model:
-                return agent_config
-            if agent_id is not None and agent_config.agent == agent_id:
-                matched = agent_config
-        if (
-            matched is not None
-            and model is not None
-            and model in self.agent(matched.agent).models
-        ):
-            # Summonable models are claims-driven, not bounded by the channel's
-            # entry list — honor any model the agent actually serves rather
-            # than snapping back to the entry default.
-            return AgentModelConfig(agent=matched.agent, model=model)
-        return matched or configs[0]
+        """Select an exposed agent and resolve a model from its catalog."""
+        agent_ids = self.channel(channel_id).agent_ids
+        if agent_id is None:
+            agent_id = agent_ids[0]
+        if agent_id not in agent_ids:
+            raise ValueError(
+                f"agent {agent_id!r} is not bound to channel {channel_id!r}"
+            )
+
+        agent = self.agent(agent_id)
+        if not agent.models:
+            raise ValueError(f"agent {agent_id!r} has no available model catalog")
+        if model is None:
+            return AgentModelConfig(agent=agent_id, model=agent.default_model)
+        if model in agent.models:
+            return AgentModelConfig(agent=agent_id, model=model)
+
+        # Saved handoffs may omit the provider; only an unambiguous match is valid.
+        if model and ":" not in model:
+            matches = [name for name in agent.models if name.partition(":")[2] == model]
+            if len(matches) == 1:
+                return AgentModelConfig(agent=agent_id, model=matches[0])
+
+        raise ValueError(
+            f"agent {agent_id!r} does not serve model {model!r} with an unambiguous provider"
+        )
 
     async def render_chat(
         self, messages: list[ThreadMessage], *, ceiling: int = 0

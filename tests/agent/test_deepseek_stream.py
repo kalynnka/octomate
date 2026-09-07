@@ -39,7 +39,6 @@ from tests.agent.test_deepseek_native_ingest import (
     SESSION_ID,
     turn_events,
 )
-from tests.support.agents import DEEPSEEK_MODELS
 from tests.support.config import registered
 
 SECRET = SecretStr("the-hook-secret")
@@ -57,7 +56,7 @@ def stream_client() -> tuple[TestClient, DeepseekTentacle]:
     tentacle = DeepseekTentacle(
         "deepseek",
         octomate,
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+        config=DeepseekConfig(),
     )
 
     # Entering the client runs the lifespan: the registered user gets their
