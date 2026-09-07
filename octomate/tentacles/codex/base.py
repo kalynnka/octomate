@@ -82,7 +82,7 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import codex_logfire
+from octomate.telemetry import agent_input_message_attributes, codex_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.codex.adapter import (
     CODEX_PROVIDER_NAME,
@@ -166,8 +166,8 @@ NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
 # so the identity the header asserts is the launch config's and never the model's.
 # The token is the kicking user's own secret — the turn speaks as the human it
 # represents, and a kicker carrying none gets no wiring at all.
-GATEWAY_TOKEN_ENV = "OCTOMATE_GATEWAY_TOKEN"
-GATEWAY_CONVERSATION_ENV = "OCTOMATE_GATEWAY_CONVERSATION"
+MCP_TOKEN_ENV = "OCTOMATE_MCP_TOKEN"
+MCP_CONVERSATION_ENV = "OCTOMATE_MCP_CONVERSATION"
 
 
 @dataclass
@@ -179,10 +179,10 @@ class PooledCodexClient:
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
-    # The kicker's bearer this client's gateway wiring was launched with — None for
+    # The kicker's bearer this client's MCP wiring was launched with — None for
     # no wiring. A turn wanting otherwise evicts and rebuilds, since launch config
     # is fixed at process start.
-    gateway_bearer: SecretStr | None = None
+    mcp_bearer: SecretStr | None = None
 
 
 class CodexClientPool:
@@ -210,27 +210,27 @@ class CodexClientPool:
         self.lock = asyncio.Lock()
 
     async def acquire(
-        self, conversation_id: uuid.UUID, *, gateway_bearer: SecretStr | None = None
+        self, conversation_id: uuid.UUID, *, mcp_bearer: SecretStr | None = None
     ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
             pooled = self.clients.get(conversation_id)
-            if pooled is not None and pooled.gateway_bearer != gateway_bearer:
-                # Launch config is fixed at process start, so a turn whose gateway
+            if pooled is not None and pooled.mcp_bearer != mcp_bearer:
+                # Launch config is fixed at process start, so a turn whose MCP
                 # wiring disagrees gets a fresh process; the Codex thread itself
                 # survives, resumed from the conversation's external id.
                 if pooled.in_use:
                     raise RuntimeError(
                         f"conversation {conversation_id} has a live turn on a Codex "
-                        "client whose gateway wiring disagrees with this turn's"
+                        "client whose MCP wiring disagrees with this turn's"
                     )
                 del self.clients[conversation_id]
                 await self.close(pooled)
                 pooled = None
             if pooled is None:
-                client = self.build(conversation_id, gateway_bearer)
+                client = self.build(conversation_id, mcp_bearer)
                 await client.__aenter__()
-                pooled = PooledCodexClient(client=client, gateway_bearer=gateway_bearer)
+                pooled = PooledCodexClient(client=client, mcp_bearer=mcp_bearer)
                 self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
@@ -302,7 +302,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     app-server process), created on first use and reused across the thread's turns;
     the tentacle itself only owns the pool. The notification stream is translated
     into the same pydantic-ai event and message projections that channel feelers
-    already render for other agents. A `teleport` cast over the served gateway
+    already render for other agents. A `teleport` cast through the Octomate MCP server
     interrupts the turn, which ends as the deferral the graph performs and resumes
     the agent from, and a resumed run opens from what the graph resolved it with.
     """
@@ -546,61 +546,15 @@ class CodexTentacle(AgentTentacle[str, None]):
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
         def new_client(
-            conversation_id: uuid.UUID, gateway_bearer: SecretStr | None
+            conversation_id: uuid.UUID, mcp_bearer: SecretStr | None
         ) -> AsyncCodex:
             env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
-            # Either way the launch config says what `mcp_servers.octomate` is for
-            # this process, because `~/.codex/config.toml` may already hold one:
-            # the operator's own native entry, carrying the credential of whoever
-            # ran `octomate codex mcp install` there. An app-server is a child of
-            # this host and reads that file, so a turn that named nothing would
-            # inherit a stranger's identity — every spell it cast would land on
-            # their linked accounts. A turn speaks as its kicker or it does not
-            # speak at all.
-            if gateway_bearer is None:
-                overrides = (
-                    *overrides,
-                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=false",
-                )
-            else:
-                # The turn's session is at the gateway, so the launch config wires
-                # the process to the served MCP endpoint and asserts the turn's own
-                # conversation id — the model never chooses the header. The url is
-                # the deployment's bind address and port. An unspecified bind is
-                # reached over loopback by the app-server running on this host.
-                deployment = self.octomate.config
-                if deployment is None:
-                    raise RuntimeError(
-                        "this turn's Octomate session is registered, but the host "
-                        "cannot name the served MCP endpoint to wire it to: "
-                        "Octomate.config must be set"
-                    )
-                env[GATEWAY_TOKEN_ENV] = gateway_bearer.get_secret_value()
-                env[GATEWAY_CONVERSATION_ENV] = str(conversation_id)
-                url = URL(
-                    scheme="http",
-                    host="127.0.0.1"
-                    if deployment.host.is_unspecified
-                    else str(deployment.host),
-                    port=deployment.port,
-                    path=OCTOMATE_MCP_PATH,
-                )
-                overrides = (
-                    *overrides,
-                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=true",
-                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.url={url}",
-                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.bearer_token_env_var="
-                    f"{GATEWAY_TOKEN_ENV}",
-                    # Emptied rather than left alone: the native entry's own
-                    # `Authorization` lives here, and it would outrank the bearer
-                    # this turn just named.
-                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.http_headers={{}}",
-                    f"mcp_servers.{OCTOMATE_SERVER_NAME}.env_http_headers="
-                    f'{{"{CONVERSATION_HEADER}" = "{GATEWAY_CONVERSATION_ENV}"}}',
-                )
+            if mcp_bearer is not None:
+                env[MCP_TOKEN_ENV] = mcp_bearer.get_secret_value()
+                env[MCP_CONVERSATION_ENV] = str(conversation_id)
             runtime = replace(self.config.runtime, env=env, config_overrides=overrides)
             client = AsyncCodex(config=runtime)
 
@@ -627,6 +581,46 @@ class CodexTentacle(AgentTentacle[str, None]):
             idle_ttl=self.config.client_idle_ttl,
         )
         return self
+
+    def thread_config(self, mcp_bearer: SecretStr | None) -> JsonObject:
+        # Thread config is the app-server's in-place overlay for a driven run. It
+        # supplies the complete transport instead of relying on a process-level
+        # dotted override to merge with the operator's native MCP entry.
+        if mcp_bearer is None:
+            return {
+                "mcp_servers": {
+                    OCTOMATE_SERVER_NAME: {
+                        "enabled": False,
+                        "url": f"http://127.0.0.1{OCTOMATE_MCP_PATH}",
+                    }
+                }
+            }
+        deployment = self.octomate.config
+        if deployment is None:
+            raise RuntimeError(
+                "this turn's Octomate session is registered, but the host cannot "
+                "name the served MCP endpoint to wire it to: Octomate.config must "
+                "be set"
+            )
+        url = URL(
+            scheme="http",
+            host="127.0.0.1"
+            if deployment.host.is_unspecified
+            else str(deployment.host),
+            port=deployment.port,
+            path=OCTOMATE_MCP_PATH,
+        )
+        return {
+            "mcp_servers": {
+                OCTOMATE_SERVER_NAME: {
+                    "enabled": True,
+                    "url": str(url),
+                    "bearer_token_env_var": MCP_TOKEN_ENV,
+                    "http_headers": {},
+                    "env_http_headers": {CONVERSATION_HEADER: MCP_CONVERSATION_ENV},
+                }
+            }
+        }
 
     async def __aexit__(self, *exc: object) -> None:
         await self.session_tailer.shutdown()
@@ -868,6 +862,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         *,
         plan: CodexPermissionPlan,
         base_instructions: str | None,
+        config: JsonObject,
         cwd: str | None,
         developer_instructions: str | None,
         ephemeral: bool | None,
@@ -880,6 +875,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             return await client.thread_start(
                 approval_mode=plan.sdk_mode,
                 base_instructions=base_instructions,
+                config=config,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
                 ephemeral=ephemeral,
@@ -895,6 +891,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 approval_policy=plan.policy,
                 approvals_reviewer=plan.reviewer,
                 base_instructions=base_instructions,
+                config=config,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
                 ephemeral=ephemeral,
@@ -913,6 +910,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         thread_id: str,
         plan: CodexPermissionPlan,
         base_instructions: str | None,
+        config: JsonObject,
         cwd: str | None,
         developer_instructions: str | None,
         model: str | None,
@@ -925,6 +923,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 thread_id,
                 approval_mode=plan.sdk_mode,
                 base_instructions=base_instructions,
+                config=config,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
                 model=model,
@@ -940,6 +939,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 approval_policy=plan.policy,
                 approvals_reviewer=plan.reviewer,
                 base_instructions=base_instructions,
+                config=config,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
                 model=model,
@@ -1097,6 +1097,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             agent_id=self.id,
             run_name=run_name or "codex",
             conversation_address=str(conversation_address),
+            **agent_input_message_attributes(user_prompt),
         ):
             # Entered here so the tree exists before a turn is dispatched into it,
             # and a chat thread's is thrown away when the run leaves — after the
@@ -1108,14 +1109,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 # whose kicker is unregistered or carries no secret launches clean,
                 # with the spells withheld.
                 session = self.octomate.gateway.get(conversation.id)
-                gateway_bearer = (
+                mcp_bearer = (
                     await self.octomate.users.secret_of(session.user_profile)
                     if session is not None
                     else None
                 )
-                pooled = await self.pool.acquire(
-                    conversation.id, gateway_bearer=gateway_bearer
-                )
+                thread_config = self.thread_config(mcp_bearer)
+                pooled = await self.pool.acquire(conversation.id, mcp_bearer=mcp_bearer)
                 try:
                     codex_thread = pooled.thread
                     if codex_thread is None:
@@ -1125,6 +1125,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 thread_id=conversation.external_id,
                                 plan=plan,
                                 base_instructions=self.config.base_instructions,
+                                config=thread_config,
                                 cwd=run_cwd,
                                 developer_instructions=developer_instructions,
                                 model=sdk_model,
@@ -1137,6 +1138,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 pooled.client,
                                 plan=plan,
                                 base_instructions=self.config.base_instructions,
+                                config=thread_config,
                                 cwd=run_cwd,
                                 developer_instructions=developer_instructions,
                                 ephemeral=self.config.ephemeral,

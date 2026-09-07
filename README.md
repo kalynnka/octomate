@@ -92,7 +92,7 @@ drives them, it does not reimplement them.
 |---|---|---|---|
 | **claude** | Claude Agent SDK | ✅ hooks + transcript tailer | runs locally; 🚧 an SSH transport for running on another host is WIP |
 | **codex** | openai-codex SDK | ✅ hooks + rollout tailer | |
-| **deepseek** | DeepSeek Harness (`dsh`), over its `/api` gateway | ✅ hooks + event tailer | attaches to a `dsh web` you already run, and starts one only if nothing answers |
+| **deepseek** | DeepSeek Harness (`dsh`), over its `/api` gateway | 🚧 WIP | hooks and event tailing work; driven MCP identity is not yet conversation-scoped |
 | **inkling** | in-process pydantic-ai agent | — | any pydantic-ai supported providers or models; every MCP tentacle's tools, as the person who asked |
 
 The first three feed the native-session ingest above, so a session started in your

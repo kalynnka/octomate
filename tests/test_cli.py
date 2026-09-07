@@ -1006,7 +1006,7 @@ def test_codex_mcp_uninstall_drops_an_emptied_section(
     assert tomllib.loads(path.read_text()) == {}
 
 
-def test_deepseek_mcp_install_writes_the_gateway_row_beside_the_hooks_row(
+def test_deepseek_mcp_install_writes_the_octomate_row_beside_the_hooks_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gateway_ready(monkeypatch)
@@ -1021,11 +1021,11 @@ def test_deepseek_mcp_install_writes_the_gateway_row_beside_the_hooks_row(
     assert "octomate-hooks" in text  # the hooks row survives beside the new one
     assert text.count("serverName: octomate") == 1
     rows = yaml.safe_load(text)
-    [gateway_row] = [
-        row["insert"][0] for row in rows if row["insert"][0]["id"] == "octomate-gateway"
+    [mcp_row] = [
+        row["insert"][0] for row in rows if row["insert"][0]["id"] == "octomate-mcp"
     ]
-    assert gateway_row["name"] == "@deepseek-ai/dsh-mcp-client"
-    assert gateway_row["config"] == {
+    assert mcp_row["name"] == "@deepseek-ai/dsh-mcp-client"
+    assert mcp_row["config"] == {
         "serverName": "octomate",
         "transport": "streamable-http",
         "url": "http://127.0.0.1:9999/octomate/mcp",
@@ -1045,13 +1045,33 @@ def test_deepseek_mcp_and_hooks_blocks_come_and_go_independently(
     runner.invoke(deepseek_typer, ["hooks", "uninstall", "--home", str(tmp_path)])
 
     text = (tmp_path / "cordis.patch.yml").read_text()
-    assert "octomate-gateway" in text  # the gateway row outlives the hooks row
+    assert "octomate-mcp" in text  # the MCP row outlives the hooks row
     assert "octomate-hooks" not in text
 
     runner.invoke(deepseek_typer, ["mcp", "uninstall", "--home", str(tmp_path)])
     text = (tmp_path / "cordis.patch.yml").read_text()
-    assert "octomate-gateway" not in text
+    assert "octomate-mcp" not in text
     assert text.strip().splitlines()[-1] == "[]"  # the empty document restored
+
+
+def test_deepseek_mcp_install_replaces_the_legacy_gateway_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    patch = tmp_path / "cordis.patch.yml"
+    patch.write_text(
+        "# >>> octomate deepseek gateway >>>\n"
+        "- insert:\n"
+        "    - id: octomate-gateway\n"
+        "# <<< octomate deepseek gateway <<<\n"
+    )
+
+    result = runner.invoke(deepseek_typer, ["mcp", "install", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    text = patch.read_text()
+    assert "octomate-gateway" not in text
+    assert text.count("octomate-mcp") == 1
 
 
 def test_deepseek_mcp_show_masks_the_credential(

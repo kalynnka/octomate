@@ -33,7 +33,7 @@ def patch_file(home: Path) -> Path:
 
 def without_block(text: str, begin: str = MARK_BEGIN, end: str = MARK_END) -> str:
     """The patch file's text with one marker block removed, everything else
-    kept byte-for-byte. Defaults to the hooks block's markers; the gateway
+    kept byte-for-byte. Defaults to the hooks block's markers; the MCP
     block passes its own."""
     lines = text.splitlines(keepends=True)
     kept: list[str] = []
