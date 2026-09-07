@@ -452,7 +452,7 @@ class CodexConfig(AgentConfig):
 
 
 class DeepseekConfig(AgentConfig):
-    """DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
+    """WIP DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
 
     Opt-in: `agents.deepseek` is null by default, so the agent is absent unless a
     block is supplied. The tentacle attaches to a dsh already serving
