@@ -66,7 +66,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import deepseek_logfire
+from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deepseek.adapter import (
     DEEPSEEK_PROVIDER_NAME,
@@ -786,6 +786,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             agent_id=self.id,
             run_name=run_name or "deepseek",
             conversation_address=str(conversation_address),
+            **agent_input_message_attributes(user_prompt),
         ):
             # Entered first so it leaves last: the tree exists before dsh is given
             # it as a cwd, and a chat thread's is only thrown away once the turn

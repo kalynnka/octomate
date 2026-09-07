@@ -80,6 +80,7 @@ class ThreadCall:
     thread_id: str | None
     approval_mode: ApprovalMode | None
     base_instructions: str | None
+    config: JsonObject | None
     cwd: str | None
     developer_instructions: str | None
     ephemeral: bool | None
@@ -248,6 +249,7 @@ class FakeCodex:
         *,
         approval_mode: ApprovalMode = ApprovalMode.auto_review,
         base_instructions: str | None = None,
+        config: JsonObject | None = None,
         cwd: str | None = None,
         developer_instructions: str | None = None,
         ephemeral: bool | None = None,
@@ -262,6 +264,7 @@ class FakeCodex:
                 thread_id=None,
                 approval_mode=approval_mode,
                 base_instructions=base_instructions,
+                config=config,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
                 ephemeral=ephemeral,
@@ -279,6 +282,7 @@ class FakeCodex:
         *,
         approval_mode: ApprovalMode | None = None,
         base_instructions: str | None = None,
+        config: JsonObject | None = None,
         cwd: str | None = None,
         developer_instructions: str | None = None,
         model: str | None = None,
@@ -292,6 +296,7 @@ class FakeCodex:
                 thread_id=thread_id,
                 approval_mode=approval_mode,
                 base_instructions=base_instructions,
+                config=config,
                 cwd=cwd,
                 developer_instructions=developer_instructions,
                 ephemeral=None,
@@ -623,6 +628,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         *,
         plan: codex_base.CodexPermissionPlan,
         base_instructions: str | None,
+        config: JsonObject,
         cwd: str | None,
         developer_instructions: str | None,
         ephemeral: bool | None,
@@ -635,6 +641,14 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         # reviewer path the bridge exists for.
         assert plan.sdk_mode is None
         assert plan.reviewer is codex_base.ApprovalsReviewer.user
+        assert config == {
+            "mcp_servers": {
+                "octomate": {
+                    "enabled": False,
+                    "url": "http://127.0.0.1/octomate/mcp",
+                }
+            }
+        }
         assert isinstance(client, FakeCodex)
         return ApprovalFakeThread("thread-new")
 
@@ -985,10 +999,7 @@ async def test_a_driven_run_opens_the_network(
         await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
 
     assert FakeCodex.last_config is not None
-    assert FakeCodex.last_config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        "mcp_servers.octomate.enabled=false",
-    )
+    assert FakeCodex.last_config.config_overrides == (codex_base.NETWORK_ACCESS,)
     [turn_call] = FakeCodex.turn_calls
     assert turn_call.sandbox is None
     # And the write scope is untouched: the thread still carries the preset.
@@ -1020,7 +1031,6 @@ async def test_an_operators_own_network_answer_wins(
     assert FakeCodex.last_config.config_overrides == (
         codex_base.NETWORK_ACCESS,
         operator,
-        "mcp_servers.octomate.enabled=false",
     )
 
 
@@ -1119,7 +1129,7 @@ def a_kicker(octomate: Octomate, secret: str = "lu-token") -> UserProfile:
         ("::1", "[::1]"),
     ],
 )
-async def test_a_registered_octomate_session_wires_the_launch_config(
+async def test_a_registered_octomate_session_wires_the_thread_config(
     monkeypatch: pytest.MonkeyPatch,
     host: str,
     url_host: str,
@@ -1153,27 +1163,32 @@ async def test_a_registered_octomate_session_wires_the_launch_config(
     assert config is not None
     assert config.env is not None
     # The kicker's own credential: the turn speaks as the human it represents.
-    assert config.env[codex_base.GATEWAY_TOKEN_ENV] == "lu-token"
+    assert config.env[codex_base.MCP_TOKEN_ENV] == "lu-token"
 
-    assert config.env[codex_base.GATEWAY_CONVERSATION_ENV] == str(conversation.id)
+    assert config.env[codex_base.MCP_CONVERSATION_ENV] == str(conversation.id)
     assert config.env[codex_base.DRIVEN_ENV] == "1"
-    assert config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        "mcp_servers.octomate.enabled=true",
-        f"mcp_servers.octomate.url=http://{url_host}:8123/octomate/mcp",
-        "mcp_servers.octomate.bearer_token_env_var=OCTOMATE_GATEWAY_TOKEN",
-        # The native entry's own Authorization would outrank the bearer above.
-        "mcp_servers.octomate.http_headers={}",
-        "mcp_servers.octomate.env_http_headers="
-        '{"X-Octomate-Conversation" = "OCTOMATE_GATEWAY_CONVERSATION"}',
-    )
+    assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.config == {
+        "mcp_servers": {
+            "octomate": {
+                "enabled": True,
+                "url": f"http://{url_host}:8123/octomate/mcp",
+                "bearer_token_env_var": "OCTOMATE_MCP_TOKEN",
+                "http_headers": {},
+                "env_http_headers": {
+                    "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
+                },
+            }
+        }
+    }
 
 
 async def test_a_turn_without_a_octomate_session_launches_clean(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Clean means the server is turned off, not merely left unmentioned: the
-    # operator's `~/.codex/config.toml` may hold a native gateway entry with
+    # operator's `~/.codex/config.toml` may hold a native Octomate entry with
     # their own credential in it, and an app-server is a child of this host.
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
@@ -1184,11 +1199,17 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        "mcp_servers.octomate.enabled=false",
-    )
-    assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
+    assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.config == {
+        "mcp_servers": {
+            "octomate": {
+                "enabled": False,
+                "url": "http://127.0.0.1/octomate/mcp",
+            }
+        }
+    }
+    assert codex_base.MCP_TOKEN_ENV not in (config.env or {})
 
 
 async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
@@ -1225,14 +1246,20 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        "mcp_servers.octomate.enabled=false",
-    )
-    assert codex_base.GATEWAY_TOKEN_ENV not in (config.env or {})
+    assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
+    [thread_call] = FakeCodex.thread_calls
+    assert thread_call.config == {
+        "mcp_servers": {
+            "octomate": {
+                "enabled": False,
+                "url": "http://127.0.0.1/octomate/mcp",
+            }
+        }
+    }
+    assert codex_base.MCP_TOKEN_ENV not in (config.env or {})
 
 
-async def test_a_gateway_wiring_flip_evicts_the_pooled_client(
+async def test_an_mcp_wiring_flip_evicts_the_pooled_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
@@ -1359,6 +1386,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         *,
         plan: codex_base.CodexPermissionPlan,
         base_instructions: str | None,
+        config: JsonObject,
         cwd: str | None,
         developer_instructions: str | None,
         ephemeral: bool | None,
@@ -1367,6 +1395,17 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> BindingFakeThread:
+        assert config["mcp_servers"] == {
+            "octomate": {
+                "enabled": True,
+                "url": "http://127.0.0.1:8123/octomate/mcp",
+                "bearer_token_env_var": "OCTOMATE_MCP_TOKEN",
+                "http_headers": {},
+                "env_http_headers": {
+                    "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
+                },
+            }
+        }
         return BindingFakeThread("thread-new")
 
     monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_binding_thread)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias, TypeVar
+from typing import Literal, TypeVar
 
 from openai_codex.generated.v2_all import (
     AbsolutePathBuf,
@@ -20,6 +20,7 @@ from openai_codex.generated.v2_all import (
     FileChangeThreadItem,
     ItemCompletedNotification,
     ItemStartedNotification,
+    LegacyAppPathString,
     McpToolCallProgressNotification,
     McpToolCallStatus,
     McpToolCallThreadItem,
@@ -72,7 +73,7 @@ from pydantic_ai.usage import RequestUsage, RunUsage
 from octomate.capabilities.harness.events import StreamEvents
 from octomate.types.json import JsonObject, JsonValue
 
-ToolOutcome: TypeAlias = Literal["success", "failed", "denied"]
+type ToolOutcome = Literal["success", "failed", "denied"]
 StructuredOutputT = TypeVar("StructuredOutputT")
 
 CODEX_PROVIDER_NAME = "openai_codex"
@@ -154,7 +155,11 @@ def codex_metadata(events: list[JsonValue] | None = None) -> JsonObject:
 
 
 def command_args(item: CommandExecutionThreadItem) -> JsonObject:
-    cwd = item.cwd.root if isinstance(item.cwd, AbsolutePathBuf) else str(item.cwd)
+    cwd = (
+        item.cwd.root
+        if isinstance(item.cwd, AbsolutePathBuf | LegacyAppPathString)
+        else str(item.cwd)
+    )
     return {
         "command": item.command,
         "cwd": cwd,

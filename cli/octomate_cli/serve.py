@@ -411,7 +411,7 @@ def serve(
 
     if port is not None:
         # The factory reads OctomateConfig() itself; export the override so the
-        # config the app is built from — the gateway MCP URL driven runtimes are
+        # config the app is built from — the Octomate MCP URL driven runtimes are
         # wired with included — agrees with the bind.
         os.environ["OCTOMATE__PORT"] = str(port)
     config = OctomateConfig()

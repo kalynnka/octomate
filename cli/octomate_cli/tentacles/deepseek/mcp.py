@@ -33,26 +33,32 @@ mcp_typer = typer.Typer(
 MCP_CLIENT_PACKAGE = "@deepseek-ai/dsh-mcp-client"
 
 
-# The Octomate row's id and markers: what a re-install overwrites and an
+# The Octomate MCP row's id and markers: what a re-install overwrites and an
 # uninstall removes, without ever touching the hooks block.
-GATEWAY_ROW_ID = "octomate-gateway"
+MCP_ROW_ID = "octomate-mcp"
 
 
-GATEWAY_MARK_BEGIN = "# >>> octomate deepseek gateway >>>"
+MCP_MARK_BEGIN = "# >>> octomate deepseek mcp >>>"
 
 
-GATEWAY_MARK_END = "# <<< octomate deepseek gateway <<<"
+MCP_MARK_END = "# <<< octomate deepseek mcp <<<"
 
 
-def gateway_patch_block(url: str, secret: str) -> str:
+LEGACY_MCP_MARK_BEGIN = "# >>> octomate deepseek gateway >>>"
+
+
+LEGACY_MCP_MARK_END = "# <<< octomate deepseek gateway <<<"
+
+
+def mcp_patch_block(url: str, secret: str) -> str:
     """The marker-delimited row mounting dsh's MCP client on the served server —
     `serverName: octomate`, so the model sees `mcp__octomate__<tool>`, the same
     names Claude and Codex read. Header values are JSON-quoted, which YAML reads
     as flow scalars: the credential is hand-written and need not be YAML-safe."""
     return (
-        f"{GATEWAY_MARK_BEGIN}\n"
+        f"{MCP_MARK_BEGIN}\n"
         f"- insert:\n"
-        f"    - id: {GATEWAY_ROW_ID}\n"
+        f"    - id: {MCP_ROW_ID}\n"
         f"      name: '{MCP_CLIENT_PACKAGE}'\n"
         f"      config:\n"
         f"        serverName: {OCTOMATE_SERVER_KEY}\n"
@@ -61,7 +67,7 @@ def gateway_patch_block(url: str, secret: str) -> str:
         f"        headers:\n"
         f"          Authorization: {json.dumps(f'Bearer {secret}')}\n"
         f"          {CLIENT_HEADER}: {DEEPSEEK_NATIVE_CLIENT}\n"
-        f"{GATEWAY_MARK_END}\n"
+        f"{MCP_MARK_END}\n"
     )
 
 
@@ -88,17 +94,18 @@ def mcp_install(
     secret = octomate_secret()
     patch = patch_file(dsh_home(home))
     text = patch.read_text() if patch.exists() else "[]\n"
+    text = patch_text_without_block(text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END)
     patch.parent.mkdir(parents=True, exist_ok=True)
     patch.write_text(
         patch_text_with_block(
             text,
-            gateway_patch_block(target, secret),
-            GATEWAY_MARK_BEGIN,
-            GATEWAY_MARK_END,
+            mcp_patch_block(target, secret),
+            MCP_MARK_BEGIN,
+            MCP_MARK_END,
         )
     )
     typer.echo(f"Installed the Octomate MCP row → {target}")
-    typer.echo(f"  patch:  {patch} (row id {GATEWAY_ROW_ID!r})")
+    typer.echo(f"  patch:  {patch} (row id {MCP_ROW_ID!r})")
     typer.echo(f"  client: {DEEPSEEK_NATIVE_CLIENT}")
     typer.echo(
         "  auth:   embedded — the file holds the literal credential; rotation "
@@ -115,10 +122,9 @@ def mcp_uninstall(home: DshHomeOption = None) -> None:
     if not patch.exists():
         typer.echo(f"No Octomate MCP row in {patch}")
         raise typer.Exit()
+    text = patch_text_without_block(patch.read_text(), MCP_MARK_BEGIN, MCP_MARK_END)
     patch.write_text(
-        patch_text_without_block(
-            patch.read_text(), GATEWAY_MARK_BEGIN, GATEWAY_MARK_END
-        )
+        patch_text_without_block(text, LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END)
     )
     typer.echo(f"Removed the Octomate MCP row from {patch}")
 
@@ -129,17 +135,22 @@ def mcp_show(home: DshHomeOption = None) -> None:
     patch = patch_file(dsh_home(home))
     text = patch.read_text() if patch.exists() else ""
     lines = text.splitlines()
-    if GATEWAY_MARK_BEGIN not in (line.strip() for line in lines):
+    markers = (
+        (MCP_MARK_BEGIN, MCP_MARK_END)
+        if MCP_MARK_BEGIN in (line.strip() for line in lines)
+        else (LEGACY_MCP_MARK_BEGIN, LEGACY_MCP_MARK_END)
+    )
+    if markers[0] not in (line.strip() for line in lines):
         typer.echo(f"No Octomate MCP row in {patch}")
         raise typer.Exit()
-    typer.echo(f"Gateway MCP row in {patch}:")
+    typer.echo(f"Octomate MCP row in {patch}:")
     inside = False
     for line in lines:
         stripped = line.strip()
-        if stripped == GATEWAY_MARK_BEGIN:
+        if stripped == markers[0]:
             inside = True
             continue
-        if stripped == GATEWAY_MARK_END:
+        if stripped == markers[1]:
             break
         if inside:
             if stripped.startswith("Authorization:"):

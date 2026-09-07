@@ -88,7 +88,7 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import claude_logfire
+from octomate.telemetry import agent_input_message_attributes, claude_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.hooks import ClaudeHookInput
@@ -119,7 +119,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     context across turns. Output is the run's final text (`str`); pydantic-ai
     run options that don't map onto Claude (custom output_type, toolsets,
     capabilities, ...) are ignored — except a `GatewayCapability`, which mounts
-    the gateway as the turn's in-process MCP server. A `teleport` cast through
+    the unified Octomate server as the turn's in-process MCP server. A `teleport` cast through
     it interrupts the turn, which ends as the deferral the graph performs and
     resumes the agent from — in a sub-thread, a crossing, or a project's
     workspace — and a resumed run opens from what the graph resolved it with.
@@ -759,6 +759,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 agent_id=self.id,
                 run_name=run_name or "claude",
                 conversation_address=str(conversation_address),
+                **agent_input_message_attributes(user_prompt),
                 # transport=(
                 #     f"ssh:{self.config.ssh.host}"
                 #     if self.config.ssh is not None

@@ -578,8 +578,8 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     options = FakeClaudeClient.last_options
     assert isinstance(options, ClaudeAgentOptions)
     assert isinstance(options.mcp_servers, dict)
-    gateway = options.mcp_servers["octomate"]
-    assert gateway.get("type") == "sdk"
+    server = options.mcp_servers["octomate"]
+    assert server.get("type") == "sdk"
     # Ordinary MCP tools on the normal approval route: nothing is pre-allowed.
     assert options.allowed_tools == []
     # The routing contract rides the same preset append as the run instructions.
