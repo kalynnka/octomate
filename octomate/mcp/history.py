@@ -77,9 +77,12 @@ def mount_history(
         limit: int = 10,
         session: OctomateSession = octomate_session,
     ) -> str:
-        rows = await thread_manager.search_chat_messages(
-            reader(session), query, actor_kind=actor_kind, limit=page(limit)
-        )
+        try:
+            rows = await thread_manager.search_chat_messages(
+                reader(session), query, actor_kind=actor_kind, limit=page(limit)
+            )
+        except ValueError as refusal:
+            raise ToolError(str(refusal), log_level=logging.INFO) from refusal
         return (
             "\n".join(
                 line

@@ -370,11 +370,20 @@ async def test_a_receiver_reads_every_thread_its_user_spoke_in() -> None:
             ctx,
             tools["read_thread_history_after"],
         )
-    assert await search(await _bound(threads, "bob")) == [
+    assert set(await search(await _bound(threads, "bob"))) == {
         "find the auth bug",
         "the bug is in login",
         "a bug of my own",
-    ]
+    }
+
+
+async def test_history_capability_retries_a_blank_search() -> None:
+    threads = ThreadManager(users=UserManager())
+    await threads.record_inbound(_event("m1", "alice", "something searchable"))
+    capability = await _bound(threads, "alice")
+
+    with pytest.raises(ModelRetry, match="at least one word"):
+        await capability.search_thread_history("  \n  ")
 
 
 async def test_the_template_serves_no_run_itself() -> None:

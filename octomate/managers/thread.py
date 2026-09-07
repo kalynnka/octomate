@@ -5,7 +5,18 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus.materia.sqlalchemy import noload, selectinload
-from sqlalchemy import and_, or_, select
+from sqlalchemy import (
+    String,
+    Uuid,
+    and_,
+    column,
+    func,
+    insert,
+    literal_column,
+    or_,
+    select,
+    table,
+)
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
@@ -27,6 +38,25 @@ from octomate.schemas.thread import (
     ThreadMessageDirection,
 )
 from octomate.schemas.user import UserProfile
+
+THREAD_MESSAGES_FTS = table(
+    "thread_messages_fts",
+    column("message_id", Uuid),
+    column("message_text", String),
+)
+
+
+def history_match_query(query: str) -> str:
+    """An English plain-text query expressed safely in FTS5's query language.
+
+    Each whitespace-delimited term is its own quoted phrase, so every term must
+    match while operators and punctuation supplied by a caller stay literal.
+    """
+    terms = query.split()
+    if not terms:
+        raise ValueError("history search query must contain at least one word")
+    escaped = [term.replace('"', '""') for term in terms]
+    return " AND ".join(f'"{term}"' for term in escaped)
 
 
 def message_text_from_segments(segments: list[MessageSegment]) -> str | None:
@@ -356,6 +386,14 @@ class ThreadManager:
         """
         async with async_session() as session:
             session.add(message)
+            await session.flush()
+            if message.message_text:
+                await session.execute(
+                    insert(THREAD_MESSAGES_FTS).values(
+                        message_id=message.id,
+                        message_text=message.message_text,
+                    )
+                )
             row = await session.get(Thread, thread.id)
             if row is not None:
                 row.updated_at = datetime.now(UTC)
@@ -737,30 +775,42 @@ class ThreadManager:
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
     ) -> list[ThreadMessage]:
-        """The messages containing `query` across this person's history — the
-        threads they have spoken in, on this account or any the registry links to
-        it — oldest first. A visitor's history is one account's."""
+        """The messages matching every English term in `query` across this person's
+        history — the threads they have spoken in, on this account or any the registry
+        links to it. Best lexical match first, newest first when scores tie. A
+        visitor's history is one account's."""
+        match_query = history_match_query(query)
         senders = [
             profile.id,
             *(linked.id for linked in await self.users.linked_profiles(profile)),
         ]
         expressions = [
+            literal_column(THREAD_MESSAGES_FTS.name).op("MATCH")(match_query),
             ThreadMessage["thread_id"].in_(
                 select(ThreadMessage["thread_id"]).where(
                     ThreadMessage["sender_id"].in_(senders)
                 )
             ),
-            ThreadMessage["message_text"].ilike(f"%{query}%"),
         ]
         if actor_kind is not None:
             expressions.append(ThreadMessage["actor_kind"] == actor_kind)
         async with async_session() as session:
-            rows = await session.list(
-                ThreadMessage,
-                limit=limit,
-                order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
-                expressions=expressions,
+            statement = (
+                select(ThreadMessage)
+                .join(
+                    THREAD_MESSAGES_FTS,
+                    ThreadMessage["id"] == THREAD_MESSAGES_FTS.c.message_id,
+                )
+                .where(*expressions)
+                .options(noload(ThreadMessage["model_messages"]))
+                .order_by(
+                    func.bm25(literal_column(THREAD_MESSAGES_FTS.name)),
+                    ThreadMessage["happened_at"].desc(),
+                    ThreadMessage["id"].desc(),
+                )
+                .limit(limit)
             )
+            rows = (await session.execute(statement)).scalars().all()
         return list(rows)
 
     async def chat_messages_before(

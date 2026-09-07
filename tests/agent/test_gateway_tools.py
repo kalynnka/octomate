@@ -523,6 +523,8 @@ async def test_a_driven_turn_reads_every_thread_its_user_spoke_in(
             await client.call_tool("history_read_after", {"message_id": "#msg:b1"})
         with pytest.raises(ToolError, match="over the page"):
             await client.call_tool("history_search", {"query": "bug", "limit": 500})
+        with pytest.raises(ToolError, match="at least one word"):
+            await client.call_tool("history_search", {"query": "  "})
 
     lines = hits.data.splitlines()
     # Bob's own direct messages are not alice's history: two hits, not three.
