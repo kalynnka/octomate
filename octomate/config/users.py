@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, TypeAlias
+from typing import Annotated
 
 from pydantic import BaseModel, Field, SecretStr, ValidateAs
 
@@ -36,7 +36,7 @@ class UserConfig(BaseModel):
         default_factory=dict,
         description=(
             "Channel tentacle id → a profile mapping with an explicit "
-            "channel_user_id. Unknown fields are forbidden. Reconciliation "
+            "channel_user_id. Unknown fields are ignored. Reconciliation "
             "makes this the profile's sole ownership authority; fields seed an "
             "unseen account and never overwrite channel observations."
         ),
@@ -60,4 +60,4 @@ class UserConfig(BaseModel):
 # The `users:` block: registered profiles keyed by stable username. A bare mapping
 # for the same reason the projects block is one — `UserConfig` is the shape, and
 # naming the block keeps the registry and the config agreeing on its empty default.
-UsersConfig: TypeAlias = dict[str, UserConfig]
+type UsersConfig = dict[str, UserConfig]

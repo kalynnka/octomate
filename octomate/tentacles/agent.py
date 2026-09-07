@@ -6,8 +6,8 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping, Sequence
 from functools import cached_property
 from pathlib import Path
-from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
+from types import MappingProxyType, TracebackType
+from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 from pydantic_ai import (
     AgentCapability,
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 # generic over RunOutputDataT, mirroring pydantic-ai's own run signatures.
 AgentOutputT = TypeVar("AgentOutputT")
 AgentDepsT = TypeVar("AgentDepsT")
-AgentSpecInput: TypeAlias = JsonObject | AgentSpec
+type AgentSpecInput = JsonObject | AgentSpec
 
 
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
@@ -60,12 +60,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # Subclasses refine this default; overridable at init.
     description: str = "General-purpose agent for handling user requests."
 
-    # Per-model claims this agent advertises, keyed by route model name. Claims
-    # are the agent's to make — its config block owns them; a channel only
-    # chooses which agents to expose (and their entry models). A model with no
-    # claim advertises nothing: it is not offered as a route, so it cannot be
-    # summoned (or commissioned). Subclasses assign it in `__init__`; the default
-    # is read-only, so the empty one cannot be shared into.
+    # Routing metadata supplied by the harness, or config when it is unavailable.
     claims: Mapping[AgentRouteModelName, Claim] = MappingProxyType({})
 
     # Whether this agent's driven turns offer the gateway spells — the agent's side
@@ -75,16 +70,36 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
     @cached_property
     def routes(self) -> list[AgentRoute]:
-        """The routes this agent offers — one per claim it can actually honor.
-        A claim naming a model that is not in `models` is evicted rather than
-        advertised, so a route can never point at a model the agent cannot run.
-        Cached — `claims` and `models` are settled in `__init__` and never
-        change after."""
+        """Every served model, using discovered or configured routing metadata."""
+        return self.build_routes()
+
+    def build_routes(self) -> list[AgentRoute]:
         return [
-            AgentRoute(agent_id=self.id, model=model, claim=claim)
-            for model, claim in self.claims.items()
-            if model in self.models
+            AgentRoute(
+                agent_id=self.id,
+                model=model,
+                claim=self.claims.get(model) or Claim(self.description, efforts=()),
+            )
+            for model in self.models
         ]
+
+    async def __aenter__(self) -> Self:
+        """Enter after the subclass has prepared its models and claims."""
+        self.routes = self.build_routes()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        self.routes = []
+
+    @property
+    def default_model(self) -> str | None:
+        """Inkling's configured first model; harnesses override with native defaults."""
+        return next(iter(self.models), None)
 
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
@@ -109,6 +124,20 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return None
 
     models: dict[AgentRouteModelName, Model | str]
+
+    async def discover_models(self) -> None:
+        """Refresh models and claims once the harness connection is ready.
+
+        Harnesses call this during entry and install results with set_model_catalog.
+        Agents with config-supplied catalogs keep their existing models and claims.
+        """
+
+    def set_model_catalog(
+        self, models: dict[str, Model | str], claims: dict[str, Claim]
+    ) -> None:
+        self.models = models
+        self.claims = claims
+        self.routes = self.build_routes()
 
     async def user_capabilities(
         self,

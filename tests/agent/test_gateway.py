@@ -10,7 +10,7 @@ from pydantic_ai.settings import ThinkingEffort
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config import ChannelConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.users import UserConfig
 from octomate.managers.gateway import GatewayManager, OctomateSession, PrivateBlocker
@@ -142,14 +142,12 @@ def test_summon_decision_requires_model_field() -> None:
         )
 
 
-@pytest.mark.parametrize("model", [None, ""])
-def test_summon_decision_requires_concrete_model(model: str | None) -> None:
+def test_summon_decision_rejects_empty_model() -> None:
     with pytest.raises(ValidationError, match="model"):
         SummonDecision(
             action="summon",
             agent_id="claude",
-            # Same: `None` and `""` are the rejected values this parametrises over.
-            model=model,  # pyright: ignore[reportArgumentType]
+            model="",
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -538,10 +536,7 @@ async def _crossable(
             id="far",
             config=ChannelConfig(
                 type="fake",
-                agents=[
-                    AgentModelConfig(agent=route.agent_id, model=route.model)
-                    for route in far_routes
-                ],
+                agents=[route.agent_id for route in far_routes],
             ),
         ),
     }
@@ -589,9 +584,7 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
     capability = await _crossable(
         far_channel=_NoSubThreadChannel(
             id="far",
-            config=ChannelConfig(
-                type="fake", agents=[AgentModelConfig(agent="claude", model="opus")]
-            ),
+            config=ChannelConfig(type="fake", agents=["claude"]),
         )
     )
     assert capability.toolset is not None
@@ -748,6 +741,8 @@ def _destination_kinds(capability: GatewayCapability, tool_name: str) -> list[st
     kinds: list[str] = []
     for name, definition in defs.items():
         if not name.endswith("Target") or not isinstance(definition, dict):
+            continue
+        if definition.get("type") != "object":
             continue
         properties = definition["properties"]
         assert isinstance(properties, dict)

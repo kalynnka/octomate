@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import secrets
 import tomllib
-from enum import Enum
+from enum import StrEnum
 from functools import cache
 from pathlib import Path
 from typing import Annotated
@@ -41,7 +41,7 @@ from rich.panel import Panel
 console = Console(stderr=True)
 
 
-class Scope(str, Enum):
+class Scope(StrEnum):
     user = "user"
     project = "project"
 
@@ -75,6 +75,7 @@ class CLISettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
+        extra="ignore",
         # The reason there is a prefix: the server's settings read `OCTOMATE__` with
         # `__` between the levels, so a client variable under that prefix would read
         # as a deployment key — and one of them, the retired deployment secret,

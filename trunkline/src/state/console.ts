@@ -16,7 +16,6 @@ import type {
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
 import type { BatchResponseBody, WireEvent } from '@/lib/api/events'
-import { shortModel } from '@/lib/api/live'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 
@@ -398,7 +397,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (!s.ntOn || s.ntRouteId !== null) return
         set({
           ntAgent: first.agent,
-          ntModel: shortModel(first.model),
+          ntModel: first.model ?? 'Harness default',
           ntRouteId: first.id,
         })
       })

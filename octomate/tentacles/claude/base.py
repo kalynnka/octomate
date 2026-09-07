@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -71,7 +72,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import ClaudeCodeConfig
+from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
@@ -91,6 +92,7 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, claude_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.catalog import ClaudeServerInfo
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.mcp import octomate_mcp_server
@@ -158,12 +160,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.description = description or self.description
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
         # One live Claude client per conversation, keyed by conversation id: a new
         # turn interrupts the prior run for the same conversation (Phase 6). Not
@@ -173,7 +170,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
             weakref.WeakValueDictionary()
         )
-        self.models = {model: model for model in config.models}
+        self.models = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
@@ -433,10 +430,55 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
-    async def __aexit__(self, *exc: object) -> None:
+    @property
+    def default_model(self) -> None:
+        # Omitting --model preserves Claude's own settings and resume selection.
+        return None
+
+    async def discover_models(self) -> None:
+        async with ClaudeSDKClient() as client:
+            info = ClaudeServerInfo.model_validate(await client.get_server_info())
+        provider = info.account.api_provider
+        if provider is None or provider == "firstParty":
+            provider = "anthropic"
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        for model in info.models:
+            key = f"{provider}:{model.value}"
+            configured = self.config.claims.get(key)
+            if model.supported_effort_levels is not None:
+                efforts: tuple[ThinkingEffort, ...] = tuple(
+                    effort
+                    for effort in ThinkingEfforts
+                    if ("low" if effort == "minimal" else effort)
+                    in model.supported_effort_levels
+                )
+            elif model.supports_effort is False:
+                efforts = ()
+            else:
+                efforts = configured.efforts if configured else ()
+            models[key] = model.value
+            claims[key] = Claim(
+                model.description
+                or (configured.ability if configured else model.display_name),
+                efforts,
+            )
+        self.set_model_catalog(models, claims)
+
+    async def __aenter__(self) -> ClaudeCodeTentacle:
+        await self.discover_models()
+        return await super().__aenter__()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
+        await super().__aexit__(exc_type, exc_value, traceback)
         for future in list(self.pending.values()):
             if not future.done():
                 future.cancel()
@@ -469,6 +511,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        cli_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if conversation_id is not None:
@@ -518,14 +561,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             if output_schema is not None
             else None
         )
-        # Per-run model override (e.g. Sonnet for triage, Opus for reception);
-        # the SDK takes a CLI model string, so a pydantic-ai Model yields its name.
-        if isinstance(model, Model):
-            cli_model = model.model_name
-        elif isinstance(model, str):
-            cli_model = model
-        else:
-            cli_model = None
 
         async def can_use_tool(
             tool_name: str,

@@ -25,7 +25,7 @@ class UserManager:
     """
 
     def __init__(self, config: UsersConfig | None = None) -> None:
-        self.config = config if config is not None else UsersConfig()
+        self.config: UsersConfig = config if config is not None else {}
         self.users: dict[uuid.UUID, User] = {}
         self.ensure_lock = asyncio.Lock()
 

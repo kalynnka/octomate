@@ -9,7 +9,9 @@ from octomate.config.agents import AgentRouteModelName, ConfigPath
 
 class AgentModelConfig(BaseModel):
     agent: str
-    model: AgentRouteModelName
+    model: AgentRouteModelName | None = Field(
+        description="Selected model, or null to use the harness's native default."
+    )
 
 
 class ChannelStreamConfig(BaseModel):
@@ -78,13 +80,12 @@ class ChannelConfig(BaseModel):
     enabled: bool = True
     stream: ChannelStreamConfig = Field(default_factory=ChannelStreamConfig)
     recap: ChatRecapConfig = Field(default_factory=ChatRecapConfig)
-    agents: list[AgentModelConfig] = Field(
+    agents: list[str] = Field(
         min_length=1,
         description=(
-            "The agents this channel can dispatch to: agents[0] is the default "
-            "entry agent; all of them are summon candidates. Required — nothing "
-            "picks a model on an operator's behalf, so a channel with no route "
-            "would have nothing to answer with."
+            "Bound agent ids, in entry order. The first agent handles new "
+            "conversations using its native default; every bound agent exposes "
+            "its full model catalog."
         ),
     )
     mcp: bool = Field(
@@ -251,7 +252,8 @@ class TrunklineStreamConfig(ChannelStreamConfig):
 
 class TrunklineChannelConfig(ChannelConfig):
     """The console has no group surface, so the base `mention_only` never
-    applies to it (there is nothing to be mentioned in)."""
+    applies to it (there is nothing to be mentioned in). Configured agents set
+    entry order; every registered agent's models are available in the console."""
 
     type: Literal["trunkline"] = "trunkline"
     static_dir: ConfigPath | None = Field(

@@ -65,7 +65,7 @@ if TYPE_CHECKING:
 class RouteInfo(BaseModel):
     id: str = Field(description="The route id a directive's `model` field names.")
     agent: str
-    model: AgentRouteModelName
+    model: AgentRouteModelName | None
 
 
 class ChannelInfo(BaseModel):
@@ -150,7 +150,7 @@ def build_trunkline_router(
     async def routes() -> list[RouteInfo]:
         return [
             RouteInfo(
-                id=f"{agent_config.agent}{ROUTE_SEP}{agent_config.model}",
+                id=f"{agent_config.agent}{ROUTE_SEP}{agent_config.model or ''}",
                 agent=agent_config.agent,
                 model=agent_config.model,
             )

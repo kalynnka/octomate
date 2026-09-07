@@ -11,7 +11,7 @@ import pytest
 from pydantic import SecretStr
 
 from octomate import Octomate
-from octomate.config import AgentModelConfig, DiscordChannelConfig
+from octomate.config import DiscordChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.channel import ChannelSurfaces, build_channel
 from octomate.tentacles.discord import (
@@ -94,7 +94,7 @@ class FakeDiscordClient:
 def config() -> DiscordChannelConfig:
     return DiscordChannelConfig(
         bot_token=SecretStr("discord-test"),
-        agents=[AgentModelConfig(agent="inkling", model="test")],
+        agents=["inkling"],
     )
 
 
