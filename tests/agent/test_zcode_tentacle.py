@@ -88,6 +88,10 @@ def test_config_routes_and_permission_registration() -> None:
     assert config.agents.configured_models()["zcode"] == {"GLM-5.3"}
     assert config.agents.zcode is not None
     assert config.agents.zcode.permission_mode == "build"
+    assert config.agents.zcode.approval_timeout == 3600
+    assert (
+        ZcodeConfig(models={"GLM-5.3"}, approval_timeout=None).approval_timeout is None
+    )
     assert config.agents.zcode.gateway is False
     check_mode("zcode", "build")
     with pytest.raises(ValueError, match="not one"):

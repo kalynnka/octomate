@@ -4,6 +4,9 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator, Sequence
+from dataclasses import dataclass
+from functools import partial
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 
 import anyio
@@ -24,11 +27,11 @@ from pydantic_ai.agent.abstract import (
     RunOutputDataT,
 )
 from pydantic_ai.exceptions import AgentRunError
-from pydantic_ai.messages import TextContent, UserContent
+from pydantic_ai.messages import TextContent, ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ThinkingEffort
-from pydantic_ai.tools import DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
@@ -37,7 +40,15 @@ from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ZcodeConfig
 from octomate.prompts import tagged
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import (
+    MAX_QUESTION_CHOICES,
+    DeferredActionBatch,
+)
+from octomate.schemas.deferred import (
+    QuestionRequest as CardQuestion,
+)
 from octomate.schemas.messages import ModelRequest
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.locks import SessionLocks
@@ -45,6 +56,9 @@ from octomate.tentacles.zcode.adapter import ZcodeRunAccumulator
 from octomate.tentacles.zcode.client import ZcodeClient
 from octomate.tentacles.zcode.wire import (
     DesktopConfig,
+    InteractionRequest,
+    PermissionRequest,
+    PlanInput,
     SessionMessages,
     SessionSnapshot,
 )
@@ -57,11 +71,23 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class ZcodeBridgeContext:
+    conversation: Conversation
+    address: ChannelAddress
+    run_name: str | None
+    interactive: bool
+    session_allowed: set[str]
+    session_id: str | None = None
+
+
 class ZcodeTentacle(AgentTentacle[str, None]):
     """Core driven sessions using ZCode's bundled desktop runtime."""
 
     config: ZcodeConfig
     conversation_locks: SessionLocks
+    live_clients: dict[ZcodeClient, ZcodeBridgeContext]
+    in_process: ClassVar[bool] = True
     permission_modes: ClassVar[tuple[str, ...]] = get_args(ZcodePermissionMode)
     brand_color: ClassVar[Style | None] = Style(color="#3B6FF5", bold=True)
     description: str = (
@@ -73,6 +99,7 @@ class ZcodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.gateway = False
         self.pending = {}
+        self.live_clients = {}
         # Widen the literal keys to the shared route vocabulary; dict(...) cannot do that.
         self.claims = {model: claim for model, claim in config.claims.items()}  # noqa: C416
         self.models = {model: model for model in config.models}
@@ -81,6 +108,207 @@ class ZcodeTentacle(AgentTentacle[str, None]):
     @property
     def default_permission_mode(self) -> str:
         return self.config.permission_mode
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        with anyio.CancelScope(shield=True):
+            for client, context in list(self.live_clients.items()):
+                if context.session_id is not None and client.failure is None:
+                    try:
+                        await client.call(
+                            "session/stop", {"sessionId": context.session_id}
+                        )
+                    except AgentRunError as error:
+                        logger.warning("Could not stop ZCode session: %s", error)
+                client.fail(AgentRunError("ZCode tentacle is shutting down"))
+                await client.__aexit__(exc_type, exc, traceback)
+            self.live_clients.clear()
+
+    async def await_human(
+        self, context: ZcodeBridgeContext, requests: DeferredToolRequests
+    ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+        channel = self.octomate.channels[context.address.channel_tentacle_id]
+        presentation = asyncio.create_task(
+            channel.feelers.present_actions(
+                action_manager=self.octomate.deferred_actions,
+                conversation=context.conversation,
+                agent_tentacle_id=self.id,
+                run_name=context.run_name,
+                source_address=context.address,
+                target_address=context.address,
+                target_mode="sub" if context.address.channel_thread_id else "main",
+                decision=None,
+                requests=requests,
+            )
+        )
+        try:
+            batch = await asyncio.shield(presentation)
+        except asyncio.CancelledError:
+            # Presentation may already have persisted the batch. Finish it to obtain
+            # its identity, then expire it rather than leave an orphaned card.
+            with anyio.CancelScope(shield=True):
+                batch = await presentation
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+            raise
+        future: asyncio.Future[DeferredActionBatchResponse] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self.pending[batch.id] = future
+        try:
+            response = await asyncio.wait_for(
+                asyncio.shield(future), self.config.approval_timeout
+            )
+            await self.octomate.deferred_actions.resolve_batch(response)
+            return batch, response
+        except TimeoutError:
+            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+            return batch, None
+        except BaseException:
+            with anyio.CancelScope(shield=True):
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+            raise
+        finally:
+            self.pending.pop(batch.id, None)
+            if not future.done():
+                future.cancel()
+
+    async def answer_interaction(
+        self, context: ZcodeBridgeContext, request: InteractionRequest
+    ) -> JsonObject:
+        params = request.params
+        denial: JsonObject = (
+            {"decision": "deny"}
+            if isinstance(request, PermissionRequest)
+            else {"action": "decline"}
+        )
+        if context.session_id is None or (
+            params.session_id != context.session_id
+            and (
+                params.origin is None
+                or params.origin.parent_session_id != context.session_id
+            )
+        ):
+            return {
+                **denial,
+                "reason": "This interaction does not belong to the live ZCode session.",
+            }
+        if (
+            not context.interactive
+            or context.address.channel_tentacle_id not in self.octomate.channels
+        ):
+            return {
+                **denial,
+                "reason": "This run has no human channel available to answer.",
+            }
+        if isinstance(request, PermissionRequest):
+            permission = request.params
+            if permission.tool_name in context.session_allowed:
+                return {"decision": "allow"}
+            requests = DeferredToolRequests(
+                approvals=[
+                    ToolCallPart(
+                        tool_name=permission.tool_name,
+                        args={
+                            "input": permission.input,
+                            "reason": permission.reason,
+                            "riskLevel": permission.risk_level,
+                        },
+                        tool_call_id=permission.tool_call_id,
+                        provider_name="zcode",
+                    )
+                ]
+            )
+            batch, response = await self.await_human(context, requests)
+            action = next(iter(batch.approvals))
+            approved = response is not None and bool(
+                response.approvals.get(action.id, False)
+            )
+            if approved and response is not None and response.allow_session:
+                await self.octomate.conversations.grant_session_tool(
+                    context.conversation, permission.tool_name
+                )
+                context.session_allowed.add(permission.tool_name)
+            if approved:
+                return {"decision": "allow"}
+            reason = (
+                "The approval expired without a response."
+                if response is None
+                else "The user declined permission to run this tool."
+            )
+            return {**denial, "reason": reason}
+        question = request.params
+        questions: list[CardQuestion] = []
+        for item in question.questions:
+            hints = [item.header]
+            hints.extend(
+                f"{option.label}: {option.description}"
+                if option.description
+                else option.label
+                for option in item.options
+            )
+            hints.extend(option.preview for option in item.options if option.preview)
+            if item.multi_select:
+                hints.append(
+                    "You can enter multiple answers as text, separated by commas."
+                )
+            questions.append(
+                CardQuestion(
+                    question=item.question,
+                    choices=[option.label for option in item.options][
+                        :MAX_QUESTION_CHOICES
+                    ],
+                    hint="\n\n".join(hints),
+                )
+            )
+        if not questions:
+            if not question.prompt:
+                raise AgentRunError(
+                    "ZCode requested user input without a question or prompt"
+                )
+            questions.append(CardQuestion(question=question.prompt))
+        if question.tool_name == "ExitPlanMode" or (
+            question.request_schema is not None
+            and question.request_schema.interaction == "plan_approval"
+        ):
+            plan = PlanInput.model_validate(question.input).plan
+            questions[0]["hint"] = f"{plan}\n\n{questions[0].get('hint', '')}".rstrip()
+        requests = DeferredToolRequests(
+            calls=[
+                ToolCallPart(
+                    tool_name=question.tool_name or "zcode_user_input",
+                    args={"questions": questions},
+                    tool_call_id=question.tool_call_id or question.request_id,
+                    provider_name="zcode",
+                )
+            ]
+        )
+        batch, response = await self.await_human(context, requests)
+        if response is None:
+            return {**denial, "reason": "The question expired without a response."}
+        content: JsonObject = {}
+        for index, action in enumerate(sorted(batch.questions)):
+            answer = response.answers.get(action.id)
+            if not answer or not answer.strip():
+                continue
+            if index < len(question.questions):
+                option = next(
+                    (
+                        option
+                        for option in question.questions[index].options
+                        if option.label == answer
+                    ),
+                    None,
+                )
+                if option is not None:
+                    answer = option.value
+            content[f"answer_{index}"] = answer
+        if not content:
+            return {**denial, "reason": "The user did not answer."}
+        return {"action": "accept", "content": content}
 
     async def iter_events(
         self,
@@ -177,6 +405,13 @@ class ZcodeTentacle(AgentTentacle[str, None]):
             )
             run_id = str(uuid7())
             session_id: str | None = None
+            context = ZcodeBridgeContext(
+                conversation=conversation,
+                address=conversation_address,
+                run_name=run_name,
+                interactive=interactive,
+                session_allowed=set(conversation.allowed_tools),
+            )
             async with (
                 workspace,
                 ZcodeClient(
@@ -185,8 +420,10 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                     state_dir=self.config.state_dir.resolve(),
                     request_timeout=self.config.request_timeout,
                     secrets=secrets,
+                    interaction_handler=partial(self.answer_interaction, context),
                 ) as client,
             ):
+                self.live_clients[client] = context
                 workspace_ref: JsonObject = {
                     "workspacePath": str(workspace.path),
                     "workspaceKey": str(workspace.path),
@@ -207,6 +444,7 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                             await client.call("session/create", params)
                         )
                     session_id = snapshot.session.session_id
+                    context.session_id = session_id
                     await client.call(
                         "session/setMode", {"sessionId": session_id, "mode": mode}
                     )
@@ -246,6 +484,7 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                         f"ZCode returned an invalid session or event payload: {client.redact(details)}"
                     ) from None
                 finally:
+                    self.live_clients.pop(client, None)
                     with anyio.CancelScope(shield=True):
                         if session_id is not None:
                             if not accumulator.ended and client.failure is None:

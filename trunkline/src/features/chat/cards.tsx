@@ -813,7 +813,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
             ref={bodyRef}
             style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP, marginTop: 6 }}
           >
-            <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)' }}>{item.body}</p>
+            <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)', whiteSpace: 'pre-wrap' }}>{item.body}</p>
             {bodyLong && !bodyMore && (
               <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
             )}

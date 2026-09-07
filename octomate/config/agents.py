@@ -626,7 +626,12 @@ class ZcodeConfig(AgentConfig):
     )
     permission_mode: ZcodePermissionMode = Field(
         default="build",
-        description="Default ZCode posture; requests needing a human are declined immediately.",
+        description="Default ZCode permission posture.",
+    )
+    approval_timeout: float | None = Field(
+        default=3600.0,
+        gt=0,
+        description="Seconds to wait for a human approval or answer before the card expires. None waits indefinitely.",
     )
     request_timeout: float = Field(
         default=60.0,

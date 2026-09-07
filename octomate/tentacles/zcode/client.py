@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 import signal
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from types import TracebackType
 
@@ -13,10 +14,13 @@ from pydantic import SecretStr, ValidationError
 from pydantic_ai.exceptions import AgentRunError
 
 from octomate.tentacles.zcode.wire import (
+    InteractionRequest,
+    PermissionRequest,
     RpcNotification,
     RpcRequest,
     RpcResponse,
     SessionEvent,
+    interaction_request_adapter,
     json_object_adapter,
 )
 from octomate.types.json import JsonObject, JsonValue
@@ -33,12 +37,22 @@ class ZcodeClient:
         state_dir: Path,
         request_timeout: float,
         secrets: list[SecretStr],
+        interaction_handler: Callable[[InteractionRequest], Awaitable[JsonObject]]
+        | None = None,
     ) -> None:
         self.command: list[str] = command
         self.cwd: Path = cwd
         self.state_dir: Path = state_dir
         self.request_timeout: float = request_timeout
         self.secrets: list[SecretStr] = secrets
+        self.interaction_handler: (
+            Callable[[InteractionRequest], Awaitable[JsonObject]] | None
+        ) = interaction_handler
+        self.interactions: dict[
+            tuple[str, str, str], tuple[InteractionRequest, asyncio.Task[JsonObject]]
+        ] = {}
+        self.callback_tasks: set[asyncio.Task[None]] = set()
+        self.close_lock: asyncio.Lock = asyncio.Lock()
         self.process: asyncio.subprocess.Process | None = None
         self.reader: asyncio.Task[None] | None = None
         self.stderr_reader: asyncio.Task[None] | None = None
@@ -83,9 +97,24 @@ class ZcodeClient:
         traceback: TracebackType | None,
     ) -> None:
         with anyio.CancelScope(shield=True):
+            async with self.close_lock:
+                await self.close()
+
+    async def close(self) -> None:
+        if not self.closing:
             self.closing = True
+            if self.reader is not None:
+                self.reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.reader
+            tasks = [task for _, task in self.interactions.values()]
+            for task in [*self.callback_tasks, *tasks]:
+                task.cancel()
+            await asyncio.gather(*self.callback_tasks, *tasks, return_exceptions=True)
+            self.callback_tasks.clear()
+            self.interactions.clear()
             process = self.process
-            if process is not None:
+            if process is not None and process.returncode is None:
                 # The runtime may own tool subprocesses. Its process group belongs to this run.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGTERM)
@@ -95,11 +124,10 @@ class ZcodeClient:
                     with contextlib.suppress(ProcessLookupError):
                         os.killpg(process.pid, signal.SIGKILL)
                     await process.wait()
-            for task in (self.reader, self.stderr_reader):
-                if task is not None:
-                    task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+            if self.stderr_reader is not None:
+                self.stderr_reader.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.stderr_reader
             for future in self.pending.values():
                 if not future.done():
                     future.cancel()
@@ -157,18 +185,52 @@ class ZcodeClient:
                 raw = json_object_adapter.validate_json(line)
                 if "method" in raw and "id" in raw:
                     request = RpcRequest.model_validate(raw)
-                    if request.method == "interaction/requestPermission":
+                    if request.method in {
+                        "interaction/requestPermission",
+                        "interaction/requestUserInput",
+                    }:
+                        try:
+                            interaction = interaction_request_adapter.validate_json(
+                                self.redact(json.dumps(raw))
+                            )
+                        except ValidationError:
+                            await self.send(
+                                {
+                                    "id": request.id,
+                                    "error": {
+                                        "code": -32602,
+                                        "message": "Invalid ZCode interaction payload",
+                                    },
+                                }
+                            )
+                            raise AgentRunError(
+                                "Invalid ZCode interaction payload"
+                            ) from None
+                        key = (
+                            interaction.method,
+                            interaction.params.session_id,
+                            interaction.params.request_id,
+                        )
+                        existing = self.interactions.get(key)
+                        if existing is None:
+                            task = asyncio.create_task(
+                                self.answer_interaction(interaction)
+                            )
+                            self.interactions[key] = (interaction, task)
+                        else:
+                            previous, task = existing
+                            if previous != interaction:
+                                raise AgentRunError(
+                                    "ZCode changed an outstanding interaction"
+                                )
+                        reply = asyncio.create_task(
+                            self.reply_interaction(request.id, task)
+                        )
+                        self.callback_tasks.add(reply)
+                        reply.add_done_callback(self.callback_tasks.discard)
+                        continue
+                    if request.method == "session/requestRuntimePreferences":
                         result: JsonObject = {
-                            "decision": "deny",
-                            "reason": "Octomate's ZCode runner does not support approval cards yet.",
-                        }
-                    elif request.method == "interaction/requestUserInput":
-                        result = {
-                            "action": "decline",
-                            "reason": "Octomate's ZCode runner does not support question cards yet.",
-                        }
-                    elif request.method == "session/requestRuntimePreferences":
-                        result = {
                             "nativeSearchEnhancementsEnabled": False,
                             "memoryEnabled": False,
                             "askUserQuestionAutoResolutionEnabled": False,
@@ -230,8 +292,36 @@ class ZcodeClient:
             self.fail(AgentRunError(self.redact(str(error))))
 
     def fail(self, error: AgentRunError) -> None:
+        if self.failure is not None:
+            return
         self.failure = error
         for future in self.pending.values():
             if not future.done():
                 future.set_exception(error)
         self.events.put_nowait(error)
+
+    async def answer_interaction(self, request: InteractionRequest) -> JsonObject:
+        if self.interaction_handler is not None:
+            return await self.interaction_handler(request)
+        reason = "This ZCode client has no human interaction handler."
+        if isinstance(request, PermissionRequest):
+            return {"decision": "deny", "reason": reason}
+        return {"action": "decline", "reason": reason}
+
+    async def reply_interaction(
+        self, rpc_id: int | str, task: asyncio.Task[JsonObject]
+    ) -> None:
+        try:
+            result = await asyncio.shield(task)
+            await self.send({"id": rpc_id, "result": result})
+        except Exception as error:
+            message = (
+                "Invalid ZCode interaction payload"
+                if isinstance(error, ValidationError)
+                else self.redact(str(error))
+            )
+            self.fail(AgentRunError(f"ZCode interaction failed: {message}"))
+            with contextlib.suppress(AgentRunError, OSError):
+                await self.send(
+                    {"id": rpc_id, "error": {"code": -32603, "message": message}}
+                )

@@ -31,8 +31,8 @@
   #     GLM-5.3:
   #       ability: Repository-aware coding and software engineering with ZCode.
   #   permission_mode: build
-  #   # Approvals/questions are declined immediately. Gateway tools and hooks
-  #   # are not supported yet; gateway is fixed to false.
+  #   approval_timeout: 3600  # Seconds to wait for approval/question cards; null waits indefinitely.
+  #   # Gateway tools and hooks are not supported yet; gateway is fixed to false.
 
   # The in-process pydantic-ai agent. Takes any pydantic-ai model id and reaches each
   # provider through `providers.yaml`, or that provider's own environment variable.

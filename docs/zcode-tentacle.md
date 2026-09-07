@@ -19,6 +19,7 @@ agents:
       GLM-5.3:
         ability: Repository-aware coding and software engineering with ZCode.
     permission_mode: build
+    approval_timeout: 3600
 ```
 
 Add `agent: zcode` and `model: GLM-5.3` to the desired channel's `agents` list in
@@ -53,8 +54,21 @@ configuration, plugins and tool behavior.
   serialize; different conversations can run independently.
 - `build` is the default posture. Conversations and projects can select ZCode's
   `plan`, `build`, `edit`, `yolo` or `auto` modes through existing permission APIs.
-  Permission requests are denied and questions declined immediately. There are
-  no approval/question cards. `yolo` retains ZCode's unrestricted tool behavior.
+  Requests needing human review use the channel's existing approval and question
+  cards. `yolo` retains ZCode's unrestricted tool behavior.
+- Approve or deny a tool request, or allow that tool for the Octomate conversation.
+  Conversation grants survive app-server restarts; they do not write ZCode's
+  project-wide permission rules. Questions always require their own answer.
+- Questions offer up to three suggested choices and accept free text. Additional
+  choices and descriptions appear in the hint. For multiple selections, enter
+  the answers as text. Plan-review cards include the full plan; approving starts
+  implementation, while written feedback returns to ZCode for revision.
+- `approval_timeout` defaults to 3600 seconds for both approvals and questions;
+  `null` waits indefinitely. Timed-out cards expire and their requests are
+  declined. Non-interactive runs and runs without a channel decline immediately.
+  Waiters live in the current backend process, as with Claude and Codex; an
+  interrupted waiter is not resumed across a backend restart. Cancellation,
+  shutdown and transport failure expire outstanding batches.
 - Runtime preferences disable native-search enhancements, memory and automatic
   question answering. Other unsupported callbacks receive an explicit RPC error.
 - Effort maps minimal/low to `low`, medium/high to `high`, and xhigh to `max`.
@@ -71,9 +85,12 @@ configuration, plugins and tool behavior.
 
 ## Verification
 
-Focused tests cover protocol interleaving, callbacks, history reconciliation,
-provider configuration, streaming, cancellation and fresh-process resume.
+Focused tests cover protocol interleaving, repeated callbacks, card decisions,
+question answers, history reconciliation, provider configuration, streaming,
+cancellation and fresh-process resume with conversation grants.
 Live checks require the desktop installation and its configured provider: send
 an initial prompt, follow up after the app-server exits, ask for read-only tool
 activity and cancel an active turn. Confirm the same session identifier is used
-and each Octomate run contains only that turn's messages.
+and each Octomate run contains only that turn's messages. In a temporary workspace,
+approve and deny harmless gated tool requests, answer a question, and cancel a
+run waiting on a card. Confirm repeated native announcements present one batch.

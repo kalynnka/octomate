@@ -180,6 +180,75 @@ class RpcRequest(WireModel):
     params: JsonObject = Field(default_factory=dict)
 
 
+class InteractionOrigin(WireModel):
+    kind: Literal["subagent"]
+    parent_session_id: str
+
+
+class PermissionParams(WireModel):
+    request_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    turn_id: str | None = None
+    tool_call_id: str = Field(min_length=1)
+    tool_name: str = Field(min_length=1)
+    reason: str
+    risk_level: Literal["low", "medium", "high", "critical"]
+    input: JsonValue
+    origin: InteractionOrigin | None = None
+
+
+class QuestionOption(WireModel):
+    value: str
+    label: str
+    description: str | None = None
+    preview: str | None = None
+
+
+class QuestionItem(WireModel):
+    question: str = Field(min_length=1)
+    header: str
+    options: list[QuestionOption] = Field(min_length=1)
+    multi_select: bool = False
+
+
+class QuestionSchema(WireModel):
+    tool_name: str | None = None
+    interaction: Literal["plan_approval"] | None = None
+
+
+class PlanInput(WireModel):
+    plan: str = Field(min_length=1)
+
+
+class QuestionParams(WireModel):
+    request_id: str = Field(min_length=1)
+    session_id: str = Field(min_length=1)
+    turn_id: str | None = None
+    tool_call_id: str | None = None
+    tool_name: str | None = None
+    prompt: str | None = None
+    questions: list[QuestionItem] = Field(default_factory=list)
+    input: JsonValue = None
+    origin: InteractionOrigin | None = None
+    request_schema: QuestionSchema | None = Field(default=None, alias="schema")
+
+
+class PermissionRequest(WireModel):
+    method: Literal["interaction/requestPermission"]
+    params: PermissionParams
+
+
+class QuestionRequest(WireModel):
+    method: Literal["interaction/requestUserInput"]
+    params: QuestionParams
+
+
+InteractionRequest = Annotated[
+    PermissionRequest | QuestionRequest, Field(discriminator="method")
+]
+interaction_request_adapter = TypeAdapter(InteractionRequest)
+
+
 class RpcNotification(WireModel):
     method: str
     params: JsonObject = Field(default_factory=dict)
