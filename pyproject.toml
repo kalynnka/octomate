@@ -39,7 +39,7 @@ dependencies = [
     "uvicorn>=0.34",
     "logfire[httpx,sqlalchemy]>=4.29.0",
     "rich>=13",
-    "openai-codex>=0.1.0b3",
+    "openai-codex>=0.147.0",
     "typer>=0.25.1",
     "email-validator",
     # The gateway's own MCP server (`octomate.mcp.gateway`) and, in time, the
