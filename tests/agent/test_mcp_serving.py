@@ -124,7 +124,7 @@ async def a_driven_turn(octomate: Octomate) -> OctomateSession:
     session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="codex",
-        channels={"im": FakeChannelTentacle()},
+        channels={"im": FakeChannelTentacle(octomate=octomate)},
         conversation_id=uuid.uuid4(),
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
@@ -155,8 +155,8 @@ def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once
     None
 ):
     octomate = Octomate()
-    octomate.connect(ToolsTentacle(id="a"))
-    octomate.connect(ToolsTentacle(id="b"))
+    octomate.connect(ToolsTentacle(id="a", octomate=octomate))
+    octomate.connect(ToolsTentacle(id="b", octomate=octomate))
 
     tentacles = list(octomate.mcps.values())
     instructions = octomate_instructions(tentacles)
@@ -182,7 +182,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
     # sees is the linking pair, after Octomate's own families — and the pair
     # knows only the tentacles served here.
     octomate = a_driven_deployment()
-    octomate.connect(ToolsTentacle(id="a"))
+    octomate.connect(ToolsTentacle(id="a", octomate=octomate))
     async with served(octomate) as (octomate, app):
         session = await a_driven_turn(octomate)
         async with over(
@@ -343,10 +343,11 @@ def a_native_deployment() -> FakeOctomate:
     octomate.connect(FakeAgent(id="other"))
     octomate.connect(
         FakeChannelTentacle(
+            octomate=octomate,
             config=ChannelConfig(
                 type="fake",
                 agents=[AgentModelConfig(agent="other", model="test")],
-            )
+            ),
         )
     )
     return octomate

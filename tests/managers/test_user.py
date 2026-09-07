@@ -90,6 +90,25 @@ async def test_ensure_profile_serializes_concurrent_first_sightings() -> None:
     assert {profile.user_id for profile in profiles} == {None}
 
 
+@pytest.mark.parametrize(("channel_id", "user_id"), [("slack", "U2"), ("lark", "U1")])
+async def test_ensure_locks_only_the_matching_profile(
+    channel_id: str, user_id: str
+) -> None:
+    manager = UserManager()
+
+    async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
+        async with manager.lock(("slack", "U1")):
+            duplicate = tasks.create_task(
+                manager.ensure_profile("slack", UserProfile(channel_user_id="U1"))
+            )
+            await asyncio.sleep(0)
+            other = await manager.ensure_profile(
+                channel_id, UserProfile(channel_user_id=user_id)
+            )
+            assert not duplicate.done()
+        assert (await duplicate).id != other.id
+
+
 async def test_profile_tracks_the_latest_channel_snapshot() -> None:
     manager = UserManager()
     first = await manager.ensure_profile(

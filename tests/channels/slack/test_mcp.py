@@ -145,7 +145,7 @@ async def a_slack_turn(
     session = OctomateSession(
         channel_routes={channel.id: []},
         current_agent_id="codex",
-        channels={channel.id: channel, "im": FakeChannelTentacle()},
+        channels={channel.id: channel, "im": FakeChannelTentacle(octomate=octomate)},
         conversation_id=uuid.uuid4(),
         conversation_address=address,
         users=octomate.users,

@@ -455,7 +455,7 @@ async def test_a_declared_name_a_registered_project_already_holds_is_refused(
 ) -> None:
     # Ahead of the unique constraint, which would not say which two directories
     # wanted the name.
-    await a_registry(a_project(directory(tmp_path / "vita" / "api")))
+    await a_registry(a_project(directory(tmp_path / "example" / "api")))
 
     api = directory(tmp_path / "api")
     with pytest.raises(ValueError, match="both named 'api'"):

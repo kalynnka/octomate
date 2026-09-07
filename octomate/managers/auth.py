@@ -14,6 +14,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.auth import AuthConfig
 from octomate.database import async_session
+from octomate.managers.base import Manager
 from octomate.schemas.auth import IssuedApiKey, SessionTokens, UserApiKey, UserSession
 from octomate.schemas.user import User
 from octomate.types.auth import ApiKeyScope
@@ -24,7 +25,7 @@ class InvalidCredentials(ValueError):
         super().__init__("Invalid or expired credentials")
 
 
-class AuthManager:
+class AuthManager(Manager):
     """Local passwords and credentials; callers own admission and resource access."""
 
     def __init__(self, config: AuthConfig) -> None:

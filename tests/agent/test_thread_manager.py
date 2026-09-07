@@ -95,6 +95,25 @@ async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
         assert await session.count(Thread) == 1
 
 
+async def test_ensure_locks_only_the_matching_thread() -> None:
+    manager = ThreadManager(users=UserManager())
+    key = ThreadKey.from_address(address())
+    other_key = ThreadKey(
+        channel_tentacle_id="slack",
+        chat_type="thread",
+        chat_id="C123",
+        channel_thread_id="other",
+    )
+
+    async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
+        async with manager.lock(key):
+            duplicate = tasks.create_task(manager.ensure(address("bob")))
+            await asyncio.sleep(0)
+            other = await manager.ensure(other_key)
+            assert not duplicate.done()
+        assert (await duplicate).id != other.id
+
+
 async def test_a_re_delivered_message_is_recorded_once() -> None:
     """A platform re-sends when it misses an ack, and the second send is the same
     message. Recording is idempotent: asking again is answered with the row that

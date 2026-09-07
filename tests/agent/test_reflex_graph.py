@@ -1000,6 +1000,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     )
     second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    deps = _summon_deps(im, entry, second)
     threads = FakeThreadManager()
     # alice's DM already belongs to `second`; the group cannot change that.
     dm_thread = await threads.ensure(
@@ -1011,7 +1012,6 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
         )
     )
     await threads.record_handoff(dm_thread, to_agent_tentacle_id="second")
-    deps = _summon_deps(im, entry, second)
     deps.thread_manager = threads
     target = _source_target(address)
 
@@ -1277,18 +1277,17 @@ async def _crossing_state(
     `second` and nothing else, which is what makes the handoff land on the agent the
     summon named rather than on whatever `im` happens to list first.
     """
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
+    users = im.octomate.users
+    users.config = {
+        "luhui": UserConfig.model_validate(
+            {
+                "profiles": {
+                    "im": {"channel_user_id": "alice"},
+                    "far": {"channel_user_id": "ou_alice"},
                 }
-            )
-        }
-    )
+            }
+        )
+    }
     await users.reconcile()
     address = _group_key()
     far_landing = CrossingLanding(
@@ -2244,6 +2243,7 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
 ) -> None:
     # Cast mid-run and performed after it: the turn's work reaches the mirror,
     # then the tree goes, and the thread is left where a later turn resumes it.
+    im = _channel(stream=False)
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
@@ -2271,7 +2271,6 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
         reception_output="all done",
         allow_reception_run=True,
     )
-    im = _channel(stream=False)
     deps = _deps(
         conversations=FakeConversationManager(),
         channels={"im": im},
@@ -2302,6 +2301,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
 ) -> None:
     # `here` with a project: the move is only into the workspace. The thread is
     # bound and its tree forked before the agent resumes, with the call answered.
+    im = _channel(stream=False)
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
@@ -2327,7 +2327,6 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         reception_output="carried on",
         allow_reception_run=True,
     )
-    im = _channel(stream=False)
     deps = _deps(
         conversations=FakeConversationManager(),
         channels={"im": im},

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from collections.abc import Sequence
 from dataclasses import replace
@@ -14,6 +13,7 @@ from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
+from octomate.managers.base import Locks, Manager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -23,24 +23,16 @@ from octomate.types.permissions import AgentPermissionMode, check_mode
 RunT = TypeVar("RunT", bound=AgentRun)
 
 
-class ConversationManager:
+class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
     A `Conversation` is one agent's model context within a `Thread` — not a human
     chat log; the user-facing chat ledger is `ThreadManager`'s `ThreadMessage`
     rows. A thread owns one conversation per agent, so the identity is
-    `(thread_id, agent_tentacle_id)`: every sender in a group thread keys to the
-    same owning agent's conversation, regardless of who woke it.
+    `(thread_id, agent_tentacle_id, subagent_id)`: every sender in a group thread
+    keys to the same owning agent's conversation, regardless of who woke it.
     """
-
-    def __init__(self) -> None:
-        # Serializes first sightings: two concurrent ensures of one identity — a
-        # session's follow task preparing while a hook pokes it, a commission fan-out
-        # landing twice in one thread — must not both insert. Under the lock the
-        # loser re-reads the row the winner committed instead of raising a UNIQUE
-        # violation.
-        self.ensure_lock = asyncio.Lock()
 
     async def ensure(
         self,
@@ -62,7 +54,8 @@ class ConversationManager:
                 "a subagent conversation requires both subagent_id and "
                 "parent_conversation_id; a bare conversation takes neither"
             )
-        async with self.ensure_lock:
+        # Serialize first sightings so the loser reads the committed row.
+        async with self.lock((thread_id, agent_tentacle_id, subagent_id)):
             async with async_session() as session:
                 conversation = await session.one_or_none(
                     Conversation,

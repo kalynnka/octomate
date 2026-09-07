@@ -92,8 +92,6 @@ async def a_native_call(
     thread, no address, the session speaking for the registered user the
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
-    channel = FakeChannelTentacle()
-    threads = FakeThreadManager()
     kicks: list[GatewayHandoffSignal] = []
     users = UserManager(
         {
@@ -108,6 +106,8 @@ async def a_native_call(
         }
     )
     await users.reconcile()
+    channel = FakeChannelTentacle()
+    threads = FakeThreadManager()
     session = OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id=CLAUDE_NATIVE_ID,

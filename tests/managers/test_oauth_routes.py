@@ -31,8 +31,6 @@ async def database(in_memory_engine: AsyncEngine) -> None:
 def browser(manager: OAuthManager) -> httpx.AsyncClient:
     app = FastAPI()
     app.include_router(oauth_router)
-    # The routes resolve their manager off the serving Octomate instance; a test
-    # substitutes one rather than standing a whole application up around it.
     app.dependency_overrides[oauth_manager] = lambda: manager
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),

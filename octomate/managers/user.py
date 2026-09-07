@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 
 from pydantic import SecretStr
 
 from octomate.config.users import UsersConfig
 from octomate.database import async_session
+from octomate.managers.base import Locks, Manager
 from octomate.schemas.user import User, UserProfile
 from octomate.types.threads import NATIVE_TENTACLE_IDS
 
 PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
 
-class UserManager:
+class UserManager(Manager, Locks[tuple[str, str]]):
     """The cross-channel user registry, currently configured through YAML.
 
     A persisted profile is an observed channel identity. It belongs to a
@@ -27,7 +27,6 @@ class UserManager:
     def __init__(self, config: UsersConfig | None = None) -> None:
         self.config = config if config is not None else UsersConfig()
         self.users: dict[uuid.UUID, User] = {}
-        self.ensure_lock = asyncio.Lock()
 
     def cache_user(self, user: User) -> None:
         self.users[user.id] = user
@@ -159,7 +158,8 @@ class UserManager:
         only a verified bearer's transient anchor (`native_profile`) carries
         one — so an identity that arrives owned stays owned.
         """
-        async with self.ensure_lock, async_session() as session:
+        key = (channel_tentacle_id, observed.channel_user_id)
+        async with self.lock(key), async_session() as session:
             profile = await session.one_or_none(
                 UserProfile,
                 expressions=[
