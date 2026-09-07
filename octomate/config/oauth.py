@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 
 class OAuthConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     encryption_key: SecretStr | None = Field(
         default=None,

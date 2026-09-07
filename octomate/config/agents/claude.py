@@ -37,7 +37,7 @@ class ClaudeCodeConfig(AgentConfig):
     refused while remote runs are disabled.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: ClassVar[str] = "claude"
 

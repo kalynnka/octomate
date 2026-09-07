@@ -43,7 +43,7 @@ class CodexConfig(AgentConfig):
     per-run overrides before calling the SDK.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: ClassVar[str] = "codex"
 

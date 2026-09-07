@@ -1155,12 +1155,13 @@ def test_harness_configs_discover_models(
 
 @pytest.mark.parametrize("config_type", [ClaudeCodeConfig, CodexConfig, DeepseekConfig])
 @pytest.mark.parametrize("models", [None, ["provider:future-model"]])
-def test_harness_configs_reject_obsolete_model_lists(
+def test_harness_configs_ignore_obsolete_model_lists(
     config_type: type[ClaudeCodeConfig | CodexConfig | DeepseekConfig],
     models: list[str] | None,
 ) -> None:
-    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
-        config_type.model_validate({"models": models})
+    config = config_type.model_validate({"models": models})
+    assert "models" not in config.model_dump()
+    assert not hasattr(config, "models")
 
 
 def test_channel_rejects_obsolete_model_bindings() -> None:

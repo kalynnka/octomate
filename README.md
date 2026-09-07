@@ -107,8 +107,8 @@ session's selection. Channels bind agent IDs and expose all of those agents' mod
 with optional configured claims for missing metadata. Inkling still uses its
 configured model list, with the first model as its default.
 
-When updating an existing deployment, remove the three harnesses' `models` keys;
-their full catalogs come from the harnesses.
+Unknown config keys are ignored, including the three harnesses' obsolete `models`
+keys; their full catalogs come from the harnesses.
 Replace channel `{agent, model}` entries with agent IDs. Set provider overrides
 in the harness itself; Octomate reads them there. Explicit routes and optional claim
 keys use `provider:model` names from the catalog.

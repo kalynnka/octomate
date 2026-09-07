@@ -31,7 +31,7 @@ class DeepseekConfig(AgentConfig):
     `external_id` and prompted again for later turns.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     id: ClassVar[str] = "deepseek"
 

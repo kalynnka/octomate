@@ -36,7 +36,7 @@ class UserConfig(BaseModel):
         default_factory=dict,
         description=(
             "Channel tentacle id → a profile mapping with an explicit "
-            "channel_user_id. Unknown fields are forbidden. Reconciliation "
+            "channel_user_id. Unknown fields are ignored. Reconciliation "
             "makes this the profile's sole ownership authority; fields seed an "
             "unseen account and never overwrite channel observations."
         ),
