@@ -20,6 +20,20 @@
 
 # agents:
 
+  # ZCode desktop's bundled app-server, using an existing desktop API-key provider.
+  # zcode:
+  #   command: [node, /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs, app-server, --stdio]
+  #   desktop_config: ~/.zcode/v2/config.json
+  #   state_dir: ~/.octomate/zcode
+  #   provider: builtin:bigmodel
+  #   models: [GLM-5.3]
+  #   claims:
+  #     GLM-5.3:
+  #       ability: Repository-aware coding and software engineering with ZCode.
+  #   permission_mode: build
+  #   # Approvals/questions are declined immediately. Gateway tools and hooks
+  #   # are not supported yet; gateway is fixed to false.
+
   # The in-process pydantic-ai agent. Takes any pydantic-ai model id and reaches each
   # provider through `providers.yaml`, or that provider's own environment variable.
   #

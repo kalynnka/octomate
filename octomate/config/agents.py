@@ -18,6 +18,7 @@ from octomate.types.permissions import (
     CodexPermissionMode,
     DeepseekPermissionMode,
     InklingPermissionMode,
+    ZcodePermissionMode,
 )
 
 # A filesystem path from config, with `~` meaning what the person writing it meant:
@@ -69,8 +70,13 @@ type CodexReasoningSummary = Literal[
 # dsh identifies a model by (provider, model id); these are the model-id labels the
 # routes select from, all under `DeepseekConfig.provider`.
 type DeepseekModelName = Literal["deepseek-v4-flash", "deepseek-v4-pro"]
+type ZcodeModelName = Literal["GLM-5.3", "GLM-5.3-Flash", "GLM-5.2", "GLM-5-Turbo"]
 type AgentRouteModelName = (
-    KnownModelName | ClaudeCodeModelName | CodexModelName | DeepseekModelName
+    KnownModelName
+    | ClaudeCodeModelName
+    | CodexModelName
+    | DeepseekModelName
+    | ZcodeModelName
 )
 
 
@@ -579,6 +585,56 @@ class DeepseekConfig(AgentConfig):
     )
 
 
+class ZcodeConfig(AgentConfig):
+    """Driven ZCode sessions using the runtime bundled with the desktop app."""
+
+    gateway: Literal[False] = Field(
+        default=False,
+        description="Gateway tools are not supported by the ZCode runner yet.",
+    )
+    command: list[str] = Field(
+        default_factory=lambda: [
+            "node",
+            "/Applications/ZCode.app/Contents/Resources/glm/zcode.cjs",
+            "app-server",
+            "--stdio",
+        ],
+        min_length=1,
+        description="Complete argument vector used to launch the stdio app-server.",
+    )
+    desktop_config: ConfigPath = Field(
+        default=Path("~/.zcode/v2/config.json"),
+        validate_default=True,
+        description="Read-only source of desktop provider and model configuration.",
+    )
+    state_dir: ConfigPath = Field(
+        default=Path("~/.octomate/zcode"),
+        validate_default=True,
+        description="Octomate-owned directory for ZCode runtime state and its session database.",
+    )
+    provider: str = Field(
+        default="builtin:bigmodel",
+        min_length=1,
+        description="Provider identifier in the ZCode desktop configuration.",
+    )
+    models: set[ZcodeModelName] = Field(
+        min_length=1, description="ZCode models exposed as channel routes."
+    )
+    claims: dict[ZcodeModelName, Claim] = Field(
+        default_factory=dict,
+        description="Per-model routing abilities and effort levels.",
+    )
+    permission_mode: ZcodePermissionMode = Field(
+        default="build",
+        description="Default ZCode posture; requests needing a human are declined immediately.",
+    )
+    request_timeout: float = Field(
+        default=60.0,
+        gt=0,
+        description="Timeout for app-server RPC responses, not for model turns.",
+    )
+
+
 class AgentsConfig(BaseModel):
     """Every agent is opt-in and omitting one means it is absent, inkling included.
 
@@ -592,11 +648,12 @@ class AgentsConfig(BaseModel):
     claude: ClaudeCodeConfig | None = None
     codex: CodexConfig | None = None
     deepseek: DeepseekConfig | None = None
+    zcode: ZcodeConfig | None = None
 
     def configured_models(self) -> dict[str, set[str]]:
         """Each connectable agent id and the model names it routes.
 
-        The one place that knows the four slots and their differing `models`
+        The one place that knows the agent slots and their differing `models`
         shapes, so a channel route can be checked — and a tentacle built — without
         anything downstream naming an agent.
         """
@@ -607,6 +664,7 @@ class AgentsConfig(BaseModel):
             ("claude", self.claude),
             ("codex", self.codex),
             ("deepseek", self.deepseek),
+            ("zcode", self.zcode),
         ):
             if agent is not None and agent.enabled:
                 configured[agent_id] = set(agent.models)

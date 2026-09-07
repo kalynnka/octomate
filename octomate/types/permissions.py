@@ -52,11 +52,15 @@ CodexPermissionMode = Literal["user_review", "auto_review", "deny_all"]
 # permission RPC — the tentacle switches a session's preset with the `/permission
 # <preset>` command on the remotes plane.
 DeepseekPermissionMode = Literal["workspace-write", "danger-full-access"]
+ZcodePermissionMode = Literal["plan", "build", "edit", "yolo", "auto"]
 
 # One status, whichever provider it came from. Which arm applies is decided by the
 # row's `agent_tentacle_id`, not by a discriminator inside the value.
 AgentPermissionMode = (
-    ClaudePermissionMode | CodexPermissionMode | DeepseekPermissionMode
+    ClaudePermissionMode
+    | CodexPermissionMode
+    | DeepseekPermissionMode
+    | ZcodePermissionMode
 )
 
 # Which statuses each agent answers to, so a Codex posture on a Claude conversation is
@@ -68,6 +72,7 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     "claude": get_args(ClaudePermissionMode),
     "codex": get_args(CodexPermissionMode),
     "deepseek": get_args(DeepseekPermissionMode),
+    "zcode": get_args(ZcodePermissionMode),
     # The runtimes Octomate tails rather than drives. They keep their provider's
     # vocabulary because a native session really is in one of these postures and its
     # transcript says which — the column records what was observed, which is the same
@@ -124,3 +129,7 @@ def is_codex_mode(mode: str | None) -> TypeIs[CodexPermissionMode]:
 
 def is_deepseek_mode(mode: str | None) -> TypeIs[DeepseekPermissionMode]:
     return mode in PERMISSION_MODES["deepseek"]
+
+
+def is_zcode_mode(mode: str | None) -> TypeIs[ZcodePermissionMode]:
+    return mode in PERMISSION_MODES["zcode"]

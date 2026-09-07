@@ -24,6 +24,7 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
+from octomate.tentacles.zcode import ZcodeTentacle
 from octomate.types.permissions import PERMISSION_MODES, check_mode
 from octomate.types.threads import (
     CLAUDE_NATIVE_ID,
@@ -38,6 +39,7 @@ REGISTERED: dict[str, type[AgentTentacle]] = {
     "claude": ClaudeCodeTentacle,
     "codex": CodexTentacle,
     "deepseek": DeepseekTentacle,
+    "zcode": ZcodeTentacle,
 }
 
 
