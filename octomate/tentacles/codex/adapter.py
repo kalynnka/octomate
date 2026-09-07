@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal, TypeVar
 
 from openai_codex.generated.v2_all import (
@@ -350,7 +350,9 @@ class CodexRunAccumulator:
             )
             state = StreamingPartState(index=self.take_part_index(), part=part)
             self.streaming_parts[payload.item_id] = state
-            yield PartStartEvent(index=state.index, part=part)
+            # Buffered consumers must see the part as it was when it started,
+            # before later deltas mutate the accumulator's copy.
+            yield PartStartEvent(index=state.index, part=replace(part))
         state.events.append(event)
         if isinstance(state.part, TextPart):
             state.part.content += payload.delta
@@ -379,7 +381,7 @@ class CodexRunAccumulator:
             )
             state = StreamingPartState(index=self.take_part_index(), part=part)
             self.streaming_parts[payload.item_id] = state
-            yield PartStartEvent(index=state.index, part=part)
+            yield PartStartEvent(index=state.index, part=replace(part))
         state.events.append(event)
         if isinstance(state.part, ThinkingPart):
             state.part.content += payload.delta
@@ -405,7 +407,7 @@ class CodexRunAccumulator:
             )
             state = StreamingPartState(index=self.take_part_index(), part=part)
             self.streaming_parts[payload.item_id] = state
-            yield PartStartEvent(index=state.index, part=part)
+            yield PartStartEvent(index=state.index, part=replace(part))
         state.events.append(event)
         if isinstance(state.part, ThinkingPart):
             state.part.content += payload.delta
