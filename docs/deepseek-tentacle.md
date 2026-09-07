@@ -1,4 +1,4 @@
-# DeepseekTentacle — v1 limitations
+# DeepseekTentacle — WIP
 
 The `deepseek` agent tentacle drives DeepSeek Harness the way dsh's own web client
 does: it speaks the `/api` gateway — HTTP for unary calls, the mux WebSocket

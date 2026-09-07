@@ -15,7 +15,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from octomate_cli.stream import (
+from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
@@ -67,7 +67,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import deepseek_logfire
+from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.deepseek.adapter import (
     DEEPSEEK_PROVIDER_NAME,
@@ -115,7 +115,7 @@ class DeepseekBridgeContext:
 
 @dataclass
 class DeepseekTentacle(AgentTentacle[str, None]):
-    """DeepSeek Harness (dsh) exposed as an Octomate agent tentacle.
+    """WIP DeepSeek Harness (dsh) exposed as an Octomate agent tentacle.
 
     Attach first, start second: a dsh already serving the configured
     `host:port` is used as it stands — the one the operator runs — and a
@@ -170,9 +170,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     # DeepSeek's own blue, so dsh's lines read as dsh's in a shared console.
     brand_color: ClassVar[Style | None] = Style(color="#4D6BFE", bold=True)
 
-    description: str = (
-        "DeepSeek Harness coding agent for repository-aware software engineering tasks."
-    )
+    description: str = "WIP DeepSeek Harness coding agent for repository-aware software engineering tasks."
 
     def __init__(
         self,
@@ -843,6 +841,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             agent_id=self.id,
             run_name=run_name or "deepseek",
             conversation_address=str(conversation_address),
+            **agent_input_message_attributes(user_prompt),
         ):
             # Entered first so it leaves last: the tree exists before dsh is given
             # it as a cwd, and a chat thread's is only thrown away once the turn

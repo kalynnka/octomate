@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from typing import Literal, TypeIs, get_args
+from typing import Literal, get_args
 
 from claude_agent_sdk import PermissionMode as ClaudePermissionMode
+from typing_extensions import TypeIs
 
 from octomate.types.threads import (
     CLAUDE_NATIVE_ID,

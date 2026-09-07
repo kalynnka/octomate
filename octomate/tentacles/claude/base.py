@@ -34,7 +34,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import SystemPromptPreset
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
-from octomate_cli.stream import (
+from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
@@ -89,7 +89,7 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import claude_logfire
+from octomate.telemetry import agent_input_message_attributes, claude_logfire
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.catalog import ClaudeServerInfo
@@ -121,7 +121,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     context across turns. Output is the run's final text (`str`); pydantic-ai
     run options that don't map onto Claude (custom output_type, toolsets,
     capabilities, ...) are ignored — except a `GatewayCapability`, which mounts
-    the gateway as the turn's in-process MCP server. A `teleport` cast through
+    the unified Octomate server as the turn's in-process MCP server. A `teleport` cast through
     it interrupts the turn, which ends as the deferral the graph performs and
     resumes the agent from — in a sub-thread, a crossing, or a project's
     workspace — and a resumed run opens from what the graph resolved it with.
@@ -794,6 +794,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 agent_id=self.id,
                 run_name=run_name or "claude",
                 conversation_address=str(conversation_address),
+                **agent_input_message_attributes(user_prompt),
                 # transport=(
                 #     f"ssh:{self.config.ssh.host}"
                 #     if self.config.ssh is not None

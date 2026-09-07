@@ -110,6 +110,8 @@ def _destination_kinds(schema: dict[str, object]) -> list[str]:
     for name, definition in defs.items():
         if not name.endswith("Target") or not isinstance(definition, dict):
             continue
+        if definition.get("type") != "object":
+            continue
         properties = definition["properties"]
         assert isinstance(properties, dict)
         kinds.append(str(properties["kind"]["const"]))

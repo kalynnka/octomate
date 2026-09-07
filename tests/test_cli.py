@@ -11,13 +11,13 @@ from typing import Any
 
 import pytest
 import yaml
-from octomate_cli import mcp as cli_mcp
-from octomate_cli.claude import claude_typer
-from octomate_cli.codex import codex_typer
 from octomate_cli.config import CLISettings, user_config_path
-from octomate_cli.deepseek import deepseek_typer
-from octomate_cli.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
 from octomate_cli.main import app
+from octomate_cli.tentacles import mcp as cli_mcp
+from octomate_cli.tentacles.claude import claude_typer
+from octomate_cli.tentacles.codex import codex_typer
+from octomate_cli.tentacles.deepseek import deepseek_typer
+from octomate_cli.tentacles.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT
 from typer.testing import CliRunner
 
 from octomate.mcp import gateway as served_gateway
@@ -668,25 +668,23 @@ def test_deepseek_install_without_a_bridge_link_warns(tmp_path: Path) -> None:
     assert "--bridge" in result.output
 
 
-def test_reaching_the_deepseek_commands_costs_no_websocket_stack() -> None:
-    """Why `deepseek` is a package: the tail speaks websockets and the installers
-    never do, so `base` defers that import into the one command that tails and the
-    package re-exports `base` alone. A convenience re-export of `tail` in
-    `__init__` would undo it silently — nothing about an install would look
-    slower, and every `octomate deepseek hooks install` would pay for it.
+@pytest.mark.parametrize("tentacle", ["claude", "codex", "deepseek"])
+def test_tentacle_commands_defer_streaming_imports(tentacle: str) -> None:
+    """Loading command groups must not import transcript clients or the server.
 
     A subprocess because `sys.modules` is process-global: this suite has imported
     websockets long before this runs.
     """
     probe = (
-        "import sys; import octomate_cli.deepseek as ds;"
-        "print(ds.DEEPSEEK_HOOK_PATH, 'websockets' in sys.modules)"
+        f"import sys; import octomate_cli.tentacles.{tentacle};"
+        "print([name for name in ('websockets', 'watchfiles', 'octomate') "
+        "if name in sys.modules])"
     )
     result = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
 
-    assert result.stdout.strip() == "/hooks/deepseek False"
+    assert result.stdout.strip() == "[]"
 
 
 def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1008,7 +1006,7 @@ def test_codex_mcp_uninstall_drops_an_emptied_section(
     assert tomllib.loads(path.read_text()) == {}
 
 
-def test_deepseek_mcp_install_writes_the_gateway_row_beside_the_hooks_row(
+def test_deepseek_mcp_install_writes_the_octomate_row_beside_the_hooks_row(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gateway_ready(monkeypatch)
@@ -1023,11 +1021,11 @@ def test_deepseek_mcp_install_writes_the_gateway_row_beside_the_hooks_row(
     assert "octomate-hooks" in text  # the hooks row survives beside the new one
     assert text.count("serverName: octomate") == 1
     rows = yaml.safe_load(text)
-    [gateway_row] = [
-        row["insert"][0] for row in rows if row["insert"][0]["id"] == "octomate-gateway"
+    [mcp_row] = [
+        row["insert"][0] for row in rows if row["insert"][0]["id"] == "octomate-mcp"
     ]
-    assert gateway_row["name"] == "@deepseek-ai/dsh-mcp-client"
-    assert gateway_row["config"] == {
+    assert mcp_row["name"] == "@deepseek-ai/dsh-mcp-client"
+    assert mcp_row["config"] == {
         "serverName": "octomate",
         "transport": "streamable-http",
         "url": "http://127.0.0.1:9999/octomate/mcp",
@@ -1047,13 +1045,33 @@ def test_deepseek_mcp_and_hooks_blocks_come_and_go_independently(
     runner.invoke(deepseek_typer, ["hooks", "uninstall", "--home", str(tmp_path)])
 
     text = (tmp_path / "cordis.patch.yml").read_text()
-    assert "octomate-gateway" in text  # the gateway row outlives the hooks row
+    assert "octomate-mcp" in text  # the MCP row outlives the hooks row
     assert "octomate-hooks" not in text
 
     runner.invoke(deepseek_typer, ["mcp", "uninstall", "--home", str(tmp_path)])
     text = (tmp_path / "cordis.patch.yml").read_text()
-    assert "octomate-gateway" not in text
+    assert "octomate-mcp" not in text
     assert text.strip().splitlines()[-1] == "[]"  # the empty document restored
+
+
+def test_deepseek_mcp_install_replaces_the_legacy_gateway_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    gateway_ready(monkeypatch)
+    patch = tmp_path / "cordis.patch.yml"
+    patch.write_text(
+        "# >>> octomate deepseek gateway >>>\n"
+        "- insert:\n"
+        "    - id: octomate-gateway\n"
+        "# <<< octomate deepseek gateway <<<\n"
+    )
+
+    result = runner.invoke(deepseek_typer, ["mcp", "install", "--home", str(tmp_path)])
+
+    assert result.exit_code == 0, result.output
+    text = patch.read_text()
+    assert "octomate-gateway" not in text
+    assert text.count("octomate-mcp") == 1
 
 
 def test_deepseek_mcp_show_masks_the_credential(

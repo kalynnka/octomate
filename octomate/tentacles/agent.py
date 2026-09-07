@@ -7,7 +7,7 @@ from collections.abc import Mapping, Sequence
 from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType, TracebackType
-from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, TypeVar, overload
+from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 from pydantic_ai import (
     AgentCapability,
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 # generic over RunOutputDataT, mirroring pydantic-ai's own run signatures.
 AgentOutputT = TypeVar("AgentOutputT")
 AgentDepsT = TypeVar("AgentDepsT")
-AgentSpecInput: TypeAlias = JsonObject | AgentSpec
+type AgentSpecInput = JsonObject | AgentSpec
 
 
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):

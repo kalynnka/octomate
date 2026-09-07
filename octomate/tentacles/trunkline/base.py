@@ -22,7 +22,7 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, ClassVar, TypeAlias
+from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 from anyio import BrokenResourceError, ClosedResourceError
@@ -78,12 +78,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RunStreamItem: TypeAlias = (
-    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-)
-TrunklineStreamItem: TypeAlias = (
-    RunStreamItem | SubagentStartedEvent | SubagentSettledEvent
-)
+type RunStreamItem = StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+type TrunklineStreamItem = RunStreamItem | SubagentStartedEvent | SubagentSettledEvent
 
 # The console is single-user until it grows authentication; the sender is fixed
 # and every thread lives in the one private chat with them.

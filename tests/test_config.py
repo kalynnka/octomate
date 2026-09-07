@@ -138,30 +138,30 @@ def test_configured_agents_returns_enabled_config_objects() -> None:
     codex = CodexConfig()
     agents = AgentsConfig(claude=claude, codex=codex)
 
-    [enabled] = agents.configured_agents
+    configured_agents = agents.configured_agents
+    [enabled] = configured_agents
     assert enabled is codex
     assert enabled.id == "codex"
 
     claude.enabled = True
     codex.enabled = False
-    [enabled] = agents.configured_agents
-    assert enabled is claude
-    assert enabled.id == "claude"
+    assert agents.configured_agents is configured_agents
+    assert agents.configured_agents == [codex]
 
 
 def test_configured_agents_preserves_model_iteration_and_serialization() -> None:
-    config = OctomateConfig(
-        agents=AgentsConfig(
-            inkling=InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
-            claude=ClaudeCodeConfig(enabled=False),
-            codex=CodexConfig(),
-            deepseek=DeepseekConfig(),
-        )
+    agents = AgentsConfig(
+        inkling=InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
+        claude=ClaudeCodeConfig(enabled=False),
+        codex=CodexConfig(),
+        deepseek=DeepseekConfig(),
     )
-    fields = dict(config.agents)
+    fields = dict(agents)
     assert set(fields) == {"inkling", "claude", "codex", "deepseek"}
-    assert fields["claude"] is config.agents.claude
+    assert fields["claude"] is agents.claude
+    config = OctomateConfig(agents=agents)
     serialized = config.model_dump(mode="json")
+    assert set(serialized["agents"]) == set(fields)
     assert serialized["agents"]["claude"]["enabled"] is False
     assert all("id" not in agent for agent in serialized["agents"].values())
 

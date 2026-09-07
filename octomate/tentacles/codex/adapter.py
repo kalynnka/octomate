@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass, field
-from typing import Literal, TypeAlias, TypeVar
+from typing import Literal, TypeVar
 
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
@@ -71,7 +71,7 @@ from pydantic_ai.usage import RequestUsage, RunUsage
 from octomate.capabilities.harness.events import StreamEvents
 from octomate.types.json import JsonObject, JsonValue
 
-ToolOutcome: TypeAlias = Literal["success", "failed", "denied"]
+type ToolOutcome = Literal["success", "failed", "denied"]
 StructuredOutputT = TypeVar("StructuredOutputT")
 
 CODEX_PROVIDER_NAME = "openai_codex"

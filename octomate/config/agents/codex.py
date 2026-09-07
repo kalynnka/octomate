@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal, TypeAlias
+from typing import ClassVar, Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import ConfigDict, Field
@@ -10,13 +10,13 @@ from pydantic import ConfigDict, Field
 from octomate.config.agents.common import AgentConfig, Claim
 from octomate.types.permissions import CodexPermissionMode
 
-CodexPersonality: TypeAlias = Literal["none", "friendly", "pragmatic"]
+type CodexPersonality = Literal["none", "friendly", "pragmatic"]
 
 
-CodexSandbox: TypeAlias = Literal["read_only", "workspace_write", "full_access"]
+type CodexSandbox = Literal["read_only", "workspace_write", "full_access"]
 
 
-CodexReasoningEffort: TypeAlias = Literal[
+type CodexReasoningEffort = Literal[
     "none",
     "minimal",
     "low",
@@ -26,7 +26,7 @@ CodexReasoningEffort: TypeAlias = Literal[
 ]
 
 
-CodexReasoningSummary: TypeAlias = Literal[
+type CodexReasoningSummary = Literal[
     "auto",
     "concise",
     "detailed",

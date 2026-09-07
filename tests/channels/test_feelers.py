@@ -54,7 +54,6 @@ from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.napcat import NapcatTentacle
 from octomate.tentacles.slack import SlackTentacle
 from octomate.tentacles.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
-from octomate.tentacles.vercel import VercelTentacle
 from tests.support.channels import (
     FakeChannelTentacle,
     FakeOAuthInk,
@@ -117,8 +116,7 @@ def _approval(*, batch_id: uuid.UUID | None = None) -> DeferredApproval:
 def test_channel_surfaces_and_routing_are_declared_apart() -> None:
     # `thread_strategy` is routing: does an inbound threaded message continue its
     # thread without triage. `surfaces` is capability: what this platform can be asked
-    # to open. Vercel is why they are two questions — it wants the routing and can
-    # open nothing.
+    # to open.
     assert SlackTentacle.thread_strategy == "flat_thread"
     assert SlackTentacle.surfaces == ChannelSurfaces(
         sub_thread=True, direct_message=True
@@ -134,9 +132,6 @@ def test_channel_surfaces_and_routing_are_declared_apart() -> None:
     assert NapcatTentacle.surfaces == ChannelSurfaces(
         sub_thread=False, direct_message=True
     )
-
-    assert VercelTentacle.thread_strategy == "flat_thread"
-    assert VercelTentacle.surfaces == ChannelSurfaces()
 
 
 def test_parent_timeline_hides_subagent_tool_rows() -> None:

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, Self
 
 from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, model_validator
 
-from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents import AgentRouteModelName, ConfigPath
 
 
 class AgentModelConfig(BaseModel):
@@ -101,7 +101,7 @@ class ChannelConfig(BaseModel):
 # Every user-token scope Slack's MCP server advertises in its authorization-server
 # metadata. A literal for the same reason `GitHubScope` is one: a misspelled scope
 # is otherwise only discovered at the consent screen.
-SlackUserScope: TypeAlias = Literal[
+type SlackUserScope = Literal[
     "canvases:read",
     "canvases:write",
     "channels:history",
@@ -256,6 +256,14 @@ class TrunklineChannelConfig(ChannelConfig):
     entry order; every registered agent's models are available in the console."""
 
     type: Literal["trunkline"] = "trunkline"
+    static_dir: ConfigPath | None = Field(
+        default=None,
+        description=(
+            "Directory containing the compiled UI, served at /. Unset disables "
+            "static serving without disabling the console API. Expands ~; relative "
+            "paths use the server's working directory. The directory must exist."
+        ),
+    )
     # Annotated as the subclass so a YAML `stream:` override keeps the
     # console defaults (the base class would flip `enabled` back to False).
     stream: TrunklineStreamConfig = Field(default_factory=TrunklineStreamConfig)
@@ -276,7 +284,7 @@ class NapcatChannelConfig(ChannelConfig):
 # platform, so a deployment can run two Lark apps — or two consoles — by naming them
 # apart; the key is the channel tentacle id everywhere downstream, which is what
 # `users[].profiles` and `Thread.channel_tentacle_id` already mean by it.
-ChannelConfigVariant: TypeAlias = Annotated[
+type ChannelConfigVariant = Annotated[
     SlackChannelConfig
     | LarkChannelConfig
     | DiscordChannelConfig

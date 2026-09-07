@@ -15,6 +15,7 @@
 # channels:
 #   trunkline:                    # the web console
 #     type: trunkline
+#     static_dir: /absolute/path/to/trunkline/dist  # omit for console API only
 #     agents:
 #       - inkling
 #   slack:

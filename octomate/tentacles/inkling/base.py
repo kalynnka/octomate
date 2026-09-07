@@ -8,7 +8,7 @@ from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, Self, TypeAlias, get_args, overload
+from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
 from pydantic_ai import (
     AgentCapability,
@@ -81,7 +81,7 @@ logger = logging.getLogger(__name__)
 # demand instead of hanging the host's startup.
 MCP_WARM_TIMEOUT = 20.0
 
-InklingOutput: TypeAlias = str | list[MessageSegment] | DeferredToolRequests
+type InklingOutput = str | list[MessageSegment] | DeferredToolRequests
 
 
 @dataclass(frozen=True)

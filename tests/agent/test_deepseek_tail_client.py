@@ -6,8 +6,13 @@ process is still writing."""
 from __future__ import annotations
 
 import pytest
-from octomate_cli.deepseek import tail as deepseek_tail
-from octomate_cli.deepseek.tail import new_entries, seq_of, session_origin, shippable
+from octomate_cli.streaming import deepseek as deepseek_tail
+from octomate_cli.streaming.deepseek import (
+    new_entries,
+    seq_of,
+    session_origin,
+    shippable,
+)
 
 DSH_URL = "http://127.0.0.1:3080"
 SESSION_ID = "session-native-0001"

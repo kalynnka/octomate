@@ -25,7 +25,7 @@ def hook_guard(
     Takes the bearer registry rather than reading an environment variable: the running
     app builds it as `Octomate.bearers()`, and where its credentials came from — the
     users' YAML entries — is the config's business and not this module's. How a *client*
-    is told to carry one is the installer's business (`octomate_cli.hooks`). Any known
+    is told to carry one is the installer's business (`octomate_cli.tentacles.hooks`). Any known
     bearer passes, and the dependency yields its owner's username — the principal
     the ledger attributes everything this request writes to.
 

@@ -144,7 +144,7 @@ class OctomateConfig(BaseSettings):
     )
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     users: UsersConfig = Field(
-        default_factory=UsersConfig,
+        default_factory=dict,
         description=(
             "Registered cross-channel users keyed by stable username; profiles are "
             "reconciled into the registry at startup."

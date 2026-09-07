@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import secrets
 import tomllib
-from enum import Enum
+from enum import StrEnum
 from functools import cache
 from pathlib import Path
 from typing import Annotated
@@ -41,7 +41,7 @@ from rich.panel import Panel
 console = Console(stderr=True)
 
 
-class Scope(str, Enum):
+class Scope(StrEnum):
     user = "user"
     project = "project"
 

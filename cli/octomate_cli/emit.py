@@ -15,7 +15,7 @@ imports the package.
 
 Anything added here must keep that property: stdlib imports only. The environment
 variable names, the hook path, and the client-config resolution below are duplicated
-from `octomate_cli/config.py` and `octomate_cli/codex.py` (and octomate's
+from `octomate_cli/config.py` and `octomate_cli/tentacles/codex/hooks.py` (and octomate's
 `tentacles/codex/hooks.py` holds `DRIVEN_ENV`) for the same reason — this
 module cannot import them without paying for a package. Change them together; the
 tests hold the copies to the canonical ones.

@@ -89,7 +89,7 @@
   #   max_clients: 8             # warm app-server processes pooled; ~ = unbounded
   #   client_idle_ttl: 600       # seconds an idle pooled client lives; ~ = forever
 
-  # DeepSeek Harness agent. Attaches to a dsh already serving host:port and starts a
+  # WIP DeepSeek Harness agent. Attaches to a dsh already serving host:port and starts a
   # `dsh web` child there only when nothing answers — two harnesses over one DSH_HOME
   # corrupt session logs. Drives it over its /api gateway.
   #

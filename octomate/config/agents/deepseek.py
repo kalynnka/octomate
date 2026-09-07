@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, TypeAlias
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import AfterValidator, ConfigDict, Field
 from pydantic_ai.settings import ThinkingEffort
@@ -15,11 +15,11 @@ from octomate.types.permissions import DeepseekPermissionMode
 # pydantic keeps `~/...` literal, and `Path("~/x").resolve()` yields `<cwd>/~/x` rather
 # than a home directory — a root like that matches nothing and quietly stops a session
 # being ingested.
-ConfigPath: TypeAlias = Annotated[Path, AfterValidator(Path.expanduser)]
+type ConfigPath = Annotated[Path, AfterValidator(Path.expanduser)]
 
 
 class DeepseekConfig(AgentConfig):
-    """DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
+    """WIP DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
 
     Opt-in: `agents.deepseek` is null by default, so the agent is absent unless a
     block is supplied. The tentacle attaches to a dsh already serving

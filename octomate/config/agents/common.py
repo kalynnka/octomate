@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, ClassVar, TypeAlias
+from typing import Annotated, ClassVar
 
 from pydantic import BaseModel, Field
 from pydantic_ai.settings import ThinkingEffort
 
-AgentRouteModelName: TypeAlias = Annotated[str, Field(min_length=1)]
+type AgentRouteModelName = Annotated[str, Field(min_length=1)]
 
 
 ThinkingEfforts: tuple[ThinkingEffort, ...] = (

@@ -11,7 +11,7 @@ import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, TypeAlias, TypeVar, overload
+from typing import Any, TypeVar, overload
 
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import UserContent
@@ -107,7 +107,7 @@ class DeferredResult:
     batch_id: uuid.UUID | None = None
 
 
-ReflexGraphResult: TypeAlias = ReflexResult | DeferredResult
+type ReflexGraphResult = ReflexResult | DeferredResult
 # The node a reflex graph is entered at — see `build_reflex_graph`.
 ReflexEntryT = TypeVar(
     "ReflexEntryT", bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]"

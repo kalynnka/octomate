@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
-from octomate_cli.stream import SESSION_FILE
+from octomate_protocol.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import (
     ModelMessage,

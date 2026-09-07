@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Annotated, TypeAlias
+from typing import Annotated
 
 from pydantic import BaseModel, Field, SecretStr, ValidateAs
 
@@ -60,4 +60,4 @@ class UserConfig(BaseModel):
 # The `users:` block: registered profiles keyed by stable username. A bare mapping
 # for the same reason the projects block is one — `UserConfig` is the shape, and
 # naming the block keeps the registry and the config agreeing on its empty default.
-UsersConfig: TypeAlias = dict[str, UserConfig]
+type UsersConfig = dict[str, UserConfig]

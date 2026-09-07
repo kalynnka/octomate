@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal, NamedTuple, TypeAlias
+from typing import Annotated, Literal, NamedTuple
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ToolCallPart
@@ -118,16 +118,14 @@ class ChannelTarget(SpellTarget):
 # stays put only to bind this thread to a project — otherwise it would just be the
 # agent carrying on; `dm` is where a scheme lands, and a summon into someone's
 # direct messages is a scheme by another name.
-SummonTarget: TypeAlias = Annotated[
+type SummonTarget = Annotated[
     HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
-TeleportTarget: TypeAlias = Annotated[
+type TeleportTarget = Annotated[
     HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
 ]
-SchemeTarget: TypeAlias = Annotated[
-    DirectTarget | ChannelTarget, Field(discriminator="kind")
-]
-SendTarget: TypeAlias = Annotated[
+type SchemeTarget = Annotated[DirectTarget | ChannelTarget, Field(discriminator="kind")]
+type SendTarget = Annotated[
     HereTarget | DirectTarget | ChannelTarget, Field(discriminator="kind")
 ]
 
@@ -200,7 +198,7 @@ class CrossingLanding(BaseModel):
     )
 
 
-SummonLanding: TypeAlias = Annotated[
+type SummonLanding = Annotated[
     HereLanding | ThreadLanding | CrossingLanding, Field(discriminator="kind")
 ]
 
@@ -317,7 +315,7 @@ class TeleportDecision(BaseModel):
 
 
 # Every decision a gateway can record for the graph to act on after the turn.
-GatewayDecision: TypeAlias = Annotated[
+type GatewayDecision = Annotated[
     SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
 ]
 

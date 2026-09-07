@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated, ClassVar, Literal, TypeAlias
+from typing import Annotated, ClassVar, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai.models import KnownModelName
@@ -56,7 +56,7 @@ class SummarizeAction(BaseModel):
     kind: Literal["summarize"] = "summarize"
 
 
-ToolOutputAction: TypeAlias = Annotated[
+type ToolOutputAction = Annotated[
     TruncateAction | SpillAction | SummarizeAction,
     Field(discriminator="kind"),
 ]
