@@ -104,7 +104,7 @@ class RawMessage(TypedDict, total=False):
     segments: NotRequired[list[MessageSegment]]
 
 
-@dataclass
+@dataclass(eq=False)
 class FakeOctomate(Octomate):
     kicks: list[AwakeSignal] = field(default_factory=list)
 

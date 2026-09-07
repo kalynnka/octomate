@@ -12,8 +12,9 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate.dependencies import oauth_manager
 from octomate.managers.oauth import OAuthManager
-from octomate.oauth.routes import oauth_manager, oauth_router
+from octomate.oauth.routes import oauth_router
 from octomate.schemas.user import UserProfile
 from tests.managers.test_oauth import (
     LINEAR_CONNECTOR_ID,

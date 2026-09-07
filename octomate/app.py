@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 
 import logfire
-from fastapi import FastAPI
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
@@ -35,7 +34,7 @@ def health_probes_are_noise(record: logging.LogRecord) -> bool:
     )
 
 
-def create_app() -> FastAPI:
+def create_app() -> Octomate:
     """Build the Octomate FastAPI app.
 
     All setup lives here, not at import time, so that uvicorn's reload supervisor
@@ -169,4 +168,4 @@ def create_app() -> FastAPI:
         if mcp_config.enabled:
             octomate.connect(build_mcp(mcp_id, mcp_config, octomate))
 
-    return octomate.app(title="Octomate")
+    return octomate

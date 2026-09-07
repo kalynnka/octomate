@@ -256,7 +256,7 @@ def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
     )
     assert sorted(host.oauth.connectors) == ["gh", "linear_home"]
     # Only the authorization-code half carries a transport, and it is what makes
-    # `Octomate.app` serve the routes its URIs point at.
+    # Octomate serve the routes its URIs point at.
     assert host.oauth.connector("gh").callback_transport is None
     assert isinstance(
         host.oauth.connector("linear_home").callback_transport,

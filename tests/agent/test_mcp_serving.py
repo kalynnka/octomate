@@ -65,7 +65,7 @@ async def served(
     rather than a fixture because the transport's task group must be left from
     the task that entered it, and a fixture's teardown runs in another."""
     octomate = octomate or Octomate()
-    app = octomate.app()
+    app = octomate
     async with app.router.lifespan_context(app):
         yield octomate, app
 

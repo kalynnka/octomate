@@ -152,7 +152,7 @@ def test_trunkline_router_requires_registered_channel() -> None:
     # manual include.
     octomate.connect(channel)
 
-    app = octomate.app()
+    app = octomate
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/api/trunkline/routes" in paths
     assert "/api/trunkline/permission-modes" in paths
@@ -397,7 +397,7 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -429,7 +429,7 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -452,7 +452,7 @@ async def test_the_configured_default_is_what_the_endpoint_reports(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent, permission_mode="dontAsk")
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -472,7 +472,7 @@ async def test_a_posture_rides_the_first_directive_then_switches_on_the_row(
     await _register(octomate, agent)
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -513,7 +513,7 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
     await _register(octomate, agent)
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -573,7 +573,7 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -601,7 +601,7 @@ async def test_threads_and_detail_endpoints(
         )
     )
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -718,7 +718,7 @@ async def test_console_reads_never_load_the_model_ledger(
         if statement.lstrip().upper().startswith("SELECT"):
             selects.append(statement)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -797,7 +797,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         external_session_id="session-1",
     )
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -827,7 +827,7 @@ async def test_a_thread_no_project_claims_reads_back_without_one(
     channel = await _register(octomate, agent)
     await _post(channel, "what changed?", thread_id="thread-8")
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:
@@ -874,7 +874,7 @@ async def test_batch_resolve_resolves_and_streams(
     )
     approval_id = next(iter(batch.approvals)).id
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
         transport=transport, base_url="http://testserver"
     ) as client:

@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 import octomate.database as database
 from octomate.config.base import OCTOMATE_HOME_ENV
 from octomate.models import Base
-from octomate.oauth.routes import oauth_manager
 from octomate.schemas.base import sqlalchemy_materia
 from tests.support.config import ISOLATED_HOME, without_dotenv
 
@@ -62,13 +61,6 @@ def isolated_cwd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     machine's own config home means probing the checkout.
     """
     monkeypatch.chdir(tmp_path)
-
-
-@pytest.fixture(autouse=True)
-def fresh_manager_dependencies() -> Iterator[None]:
-    oauth_manager.cache_clear()
-    yield
-    oauth_manager.cache_clear()
 
 
 @pytest.fixture(autouse=True)

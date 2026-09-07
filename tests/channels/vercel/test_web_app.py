@@ -117,7 +117,7 @@ def test_vercel_router_requires_registered_channel() -> None:
     # connect mounts the channel's router (VercelTentacle.routers) — no manual include.
     octomate.connect(channel)
 
-    app = octomate.app()
+    app = octomate
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/api/chat" in paths
     assert "/api/configure" in paths

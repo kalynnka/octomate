@@ -276,7 +276,7 @@ async def reconciled(**declared: Project.Create) -> ProjectManager:
 
 
 async def test_a_declaration_built_before_the_materia_still_persists() -> None:
-    # Production validates its config in `main.py`, before `Octomate.app()` enters
+    # Production validates its config before Octomate's lifespan enters
     # `sqlalchemy_materia`, so a declared `Project` has no row behind it to add to a
     # session. UNBOUND is built the same way — at import, before the engine fixture —
     # which the in-test declarations above cannot reproduce.
