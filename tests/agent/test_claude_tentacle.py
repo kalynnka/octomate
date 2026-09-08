@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace
 from typing import ClassVar, Literal, cast
+from unittest.mock import Mock
 
 import pytest
 from claude_agent_sdk import (
@@ -22,7 +23,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message
-from pydantic import TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent, ToolDenied
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -38,6 +39,7 @@ from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
+from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
@@ -135,12 +137,19 @@ def _tentacle(
     )
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    trace_environment = TraceEnvironment(
+        "https://logfire.example/v1/traces", SecretStr("test-token")
+    )
+    trace_config = Mock(return_value=trace_environment)
+    monkeypatch.setattr(claude_base, "octomate_trace_environment", trace_config)
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(conversations, config=ClaudeCodeConfig(instrument=instrument))
 
     events = []
     async with tentacle.run_stream_events(
@@ -155,6 +164,14 @@ async def test_run_stream_events_proxies_events_and_persists(
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
     assert FakeClaudeClient.last_prompt == "fix it"
+    assert trace_config.call_count == int(instrument)
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    if instrument:
+        assert trace_environment.as_env().items() <= options.env.items()
+        assert options.env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+    else:
+        assert "OTEL_TRACES_EXPORTER" not in options.env
 
     # One run persisted; the session id captured from ResultMessage is stored on
     # the conversation for resume.

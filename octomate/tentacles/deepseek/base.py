@@ -136,9 +136,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     events dsh's `dsh-hooks-claude-code` bridge POSTs in, and the stream
     endpoint takes each session's history entries from the client-side tail
     (`octomate deepseek tail`, reading *its* machine's dsh gateway) for the
-    tailer to assemble into turns. Sessions this tentacle drives itself are
-    claimed (`DeepseekHookIngest.driving`) so their hooks are dropped and
-    their tails refused rather than recorded twice.
+    tailer to assemble into turns. All incoming ingest is recorded as external
+    sessions, including sessions started through this tentacle.
     """
 
     config: DeepseekConfig = field(init=False)
@@ -255,12 +254,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and
-        refuse what cannot stream — a stale protocol loudly, and a session this
-        tentacle is driving itself, whose events ingested here would write the
-        conversation a second time (`DeepseekHookIngest.driving`). `sender` is
-        the verified bearer's own profile, resolved at the handshake — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -278,9 +276,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if hello.session_id in self.session_ingest.driven:
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request.
         with sqlalchemy_materia():
@@ -792,7 +787,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -805,6 +802,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         accumulator = DeepseekRunAccumulator()
         accumulator.begin(user_prompt)
@@ -925,60 +923,70 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     interactive=interactive,
                 )
                 prompted = False
-                # Claimed before the prompt goes out: the turn's hooks —
-                # `UserPromptSubmit` at pre-step, `Stop` inside turn-stopping,
-                # both ahead of the `turn/end` that ends this scope — must
-                # arrive claimed, or the native ingest would write this driven
-                # conversation a second time.
-                with self.session_ingest.driving(session_id):
-                    try:
-                        prompt_value = SessionPromptValue.model_validate(
-                            self.unwrap(
-                                await client.call(
-                                    "session.prompt",
-                                    {
-                                        "sessionId": session_id,
-                                        "mode": "queue",
-                                        "content": [
-                                            {"type": "text", "text": prompt_text}
-                                        ],
-                                    },
-                                ),
+                try:
+                    prompt_value = SessionPromptValue.model_validate(
+                        self.unwrap(
+                            await client.call(
                                 "session.prompt",
-                            )
+                                {
+                                    "sessionId": session_id,
+                                    "mode": "queue",
+                                    "content": [{"type": "text", "text": prompt_text}],
+                                },
+                            ),
+                            "session.prompt",
                         )
-                        if prompt_value.command is not None:
-                            # dsh intercepted the line as a slash command: no
-                            # turn opened, the command's answer is the whole
-                            # result.
-                            command_text = (
-                                prompt_value.command.text
-                                or f"{prompt_value.command.kind} command executed"
-                            )
-                            for event in accumulator.complete_command(command_text):
-                                yield event
-                        else:
-                            prompted = True
-                            while not accumulator.turn_ended:
-                                frame = await queue.get()
-                                if isinstance(frame, StreamErrorFrame):
-                                    accumulator.turn_error = (
-                                        "dsh event stream failed mid-turn: "
-                                        f"{frame.error.message}"
-                                    )
-                                    break
-                                for event in accumulator.consume(frame):
-                                    yield event
-                    finally:
-                        self.subscribers.pop(session_id, None)
-                        self.bridge_contexts.pop(session_id, None)
-                        if prompted and not accumulator.turn_ended:
-                            # The run is leaving mid-turn (cancelled, or its
-                            # stream died); don't leave dsh's turn burning.
-                            with contextlib.suppress(Exception):
-                                await client.call(
-                                    "session.cancel", {"sessionId": session_id}
+                    )
+                    if prompt_value.command is not None:
+                        # dsh intercepted the line as a slash command: no
+                        # turn opened, the command's answer is the whole
+                        # result.
+                        command_text = (
+                            prompt_value.command.text
+                            or f"{prompt_value.command.kind} command executed"
+                        )
+                        for event in accumulator.complete_command(command_text):
+                            yield event
+                    else:
+                        prompted = True
+                        while not accumulator.turn_ended:
+                            frame = await queue.get()
+                            if isinstance(frame, StreamErrorFrame):
+                                accumulator.turn_error = (
+                                    "dsh event stream failed mid-turn: "
+                                    f"{frame.error.message}"
                                 )
+                                break
+                            if (
+                                self.config.instrument
+                                and frame.event.type != "assistant/chunk"
+                                and (
+                                    accumulator.turn_started
+                                    or frame.event.type == "turn/start"
+                                )
+                            ):
+                                # dsh's native OTel backend exports logs, with no
+                                # span exporter or inbound parent context. Keep
+                                # events under this kick, not the shared mux task;
+                                # see docs/agent-telemetry.md for checked releases.
+                                deepseek_logfire.info(
+                                    "deepseek.event {event_type}",
+                                    event_type=frame.event.type,
+                                    session_id=session_id,
+                                    event=frame.event.model_dump(mode="json"),
+                                )
+                            for event in accumulator.consume(frame):
+                                yield event
+                finally:
+                    self.subscribers.pop(session_id, None)
+                    self.bridge_contexts.pop(session_id, None)
+                    if prompted and not accumulator.turn_ended:
+                        # The run is leaving mid-turn (cancelled, or its
+                        # stream died); don't leave dsh's turn burning.
+                        with contextlib.suppress(Exception):
+                            await client.call(
+                                "session.cancel", {"sessionId": session_id}
+                            )
 
                 run_id = str(uuid7())
                 recorded_run = await self.octomate.conversations.record_agent_run(

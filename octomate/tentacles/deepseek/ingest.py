@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections import Counter
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -44,34 +41,10 @@ class DeepseekHookIngest:
         self.octomate = octomate
         self.tailer = tailer
         self.locks = locks if locks is not None else SessionLocks()
-        # Sessions the tentacle is driving right now, counted by how many runs
-        # hold each — their hooks fire like any native session's (the bridge's
-        # config is process-wide in a dsh octomate may only have attached to),
-        # but the tentacle records those runs itself, and the stream route
-        # refuses their tails.
-        self.driven: Counter[str] = Counter()
         self.tasks: set[asyncio.Task[None]] = set()
-
-    @contextmanager
-    def driving(self, session_id: str) -> Generator[None]:
-        """Claim a session as one Octomate drives itself, for the length of the
-        turn. Taken before `session.prompt` goes out, so the prompt's own hooks
-        arrive claimed; dsh's `Stop` fires inside turn-stopping, before the
-        `turn/end` frame that ends the claim's scope, so it arrives claimed too.
-        """
-        self.driven[session_id] += 1
-        try:
-            yield
-        finally:
-            self.driven[session_id] -= 1
-            if self.driven[session_id] <= 0:
-                del self.driven[session_id]
 
     async def handle(self, event: DeepseekHookInput) -> None:
         if not event.session_id:
-            return
-        if event.session_id in self.driven:
-            logger.debug("session %s: ignored driven dsh hook", event.session_id)
             return
         match event.hook_event_name:
             case "UserPromptSubmit":

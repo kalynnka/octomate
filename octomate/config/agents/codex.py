@@ -51,6 +51,11 @@ class CodexConfig(AgentConfig):
         default=True,
         description="Whether to register the Codex tentacle when the config block exists.",
     )
+    instrument: bool = Field(
+        default=False,
+        description="Export native Codex OTLP spans to Octomate's Logfire project "
+        "under the driving trace.",
+    )
     runtime: CodexSdkConfig = Field(
         default_factory=CodexSdkConfig,
         description=(

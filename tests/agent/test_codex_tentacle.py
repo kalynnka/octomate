@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from ipaddress import ip_address
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
+from unittest.mock import Mock
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
@@ -51,6 +52,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
+from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.feelers.base import Feelers
@@ -427,13 +429,23 @@ async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uui
     return next(iter(tentacle.pending))
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    trace_environment = TraceEnvironment(
+        "https://logfire.example/v1/traces", SecretStr("test-token")
+    )
+    trace_config = Mock(return_value=trace_environment)
+    monkeypatch.setattr(codex_base, "octomate_trace_environment", trace_config)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(
+        conversations,
+        config=CodexConfig(instrument=instrument, permission_mode="deny_all"),
+    )
 
     events = []
     async with tentacle:
@@ -450,6 +462,18 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    assert trace_config.call_count == int(instrument)
+    runtime = FakeCodex.last_config
+    assert runtime is not None
+    assert runtime.env is not None
+    if instrument:
+        assert trace_environment.as_env().items() <= runtime.env.items()
+        assert (
+            'otel.trace_exporter.otlp-http.endpoint="https://logfire.example/v1/traces"'
+            in runtime.config_overrides
+        )
+    else:
+        assert "OTEL_TRACES_EXPORTER" not in runtime.env
 
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "start"
@@ -535,7 +559,6 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert FakeCodex.last_config.client_name == runtime.client_name
     assert FakeCodex.last_config.env == {
         "EXISTING_RUNTIME_VALUE": "kept",
-        "OCTOMATE_CODEX_DRIVEN": "1",
     }
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
@@ -909,6 +932,70 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     assert tentacle.pool is None
 
 
+async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starting = asyncio.Event()
+    finish_starting = asyncio.Event()
+
+    class SlowStartingCodex(FakeCodex):
+        async def __aenter__(self) -> FakeCodex:
+            if FakeCodex.builds > 1:
+                starting.set()
+                await finish_starting.wait()
+            return self
+
+    monkeypatch.setattr(codex_base, "AsyncCodex", SlowStartingCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        await tentacle.run("warm up", conversation_address=KEY, thread_id=_THREAD)
+        cold = asyncio.create_task(
+            tentacle.run("cold", conversation_address=KEY, thread_id=uuid7())
+        )
+        try:
+            async with asyncio.timeout(1):
+                await starting.wait()
+            first_token = False
+            async with asyncio.timeout(1):
+                async with tentacle.run_stream_events(
+                    "warm", conversation_address=KEY, thread_id=_THREAD
+                ) as stream:
+                    async for event in stream:
+                        if isinstance(event, PartStartEvent):
+                            first_token = True
+                            assert not finish_starting.is_set()
+            assert first_token
+        finally:
+            finish_starting.set()
+            await cold
+
+    assert FakeCodex.builds == 2
+    assert FakeCodex.closed == 2
+
+
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+async def test_failed_client_startup_releases_its_pool_lease(
+    monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
+) -> None:
+    class FailedStartingCodex(FakeCodex):
+        async def __aenter__(self) -> FakeCodex:
+            raise error("startup stopped")
+
+    monkeypatch.setattr(codex_base, "AsyncCodex", FailedStartingCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        with pytest.raises(error, match="startup stopped"):
+            await tentacle.run("cold", conversation_address=KEY, thread_id=_THREAD)
+        assert tentacle.pool is not None
+        assert all(client.in_use == 0 for client in tentacle.pool.clients.values())
+
+    assert FakeCodex.closed == 1
+
+
 @pytest.mark.parametrize(
     ("permission_mode", "sdk_mode", "reviewer"),
     [
@@ -1153,7 +1240,6 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     assert config.env[codex_base.MCP_TOKEN_ENV] == "lu-token"
 
     assert config.env[codex_base.MCP_CONVERSATION_ENV] == str(conversation.id)
-    assert config.env[codex_base.DRIVEN_ENV] == "1"
     assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {

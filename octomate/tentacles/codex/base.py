@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 import uuid
@@ -86,19 +87,21 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import agent_input_message_attributes, codex_logfire
+from octomate.telemetry import (
+    agent_input_message_attributes,
+    codex_logfire,
+    octomate_trace_environment,
+)
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.codex.adapter import (
     CODEX_PROVIDER_NAME,
     CodexRunAccumulator,
     json_object_adapter,
 )
-from octomate.tentacles.codex.hooks import (
-    DRIVEN_ENV,
-    CodexHookInput,
-)
+from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -233,7 +236,6 @@ class CodexClientPool:
                 pooled = None
             if pooled is None:
                 client = self.build(conversation_id, mcp_bearer)
-                await client.__aenter__()
                 pooled = PooledCodexClient(client=client, mcp_bearer=mcp_bearer)
                 self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
@@ -281,7 +283,7 @@ class CodexClientPool:
 
     @staticmethod
     async def close(pooled: PooledCodexClient) -> None:
-        # Pair the `__aenter__` done in `acquire` with the SDK's own `__aexit__`
+        # Pair the run's `__aenter__` with the SDK's own `__aexit__`
         # teardown, so client init and shutdown stay explicit and matched.
         with contextlib.suppress(Exception):
             await pooled.client.__aexit__(None, None, None)
@@ -408,13 +410,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and refuse
-        what cannot stream — a stale protocol loudly (the session still degrades to
-        hooks-only ingest), and a session this tentacle is driving itself, whose
-        rollout ingested here would write the conversation a second time
-        (`CodexHookIngest.driving`). Authentication already happened at the
-        handshake, and `sender` is the verified bearer's own profile — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -432,9 +432,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if hello.session_id in self.session_ingest.driven:
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
         with sqlalchemy_materia():
@@ -606,10 +603,19 @@ class CodexTentacle(AgentTentacle[str, None]):
         def new_client(
             conversation_id: uuid.UUID, mcp_bearer: SecretStr | None
         ) -> AsyncCodex:
-            env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
+            env = dict(self.config.runtime.env or {})
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
+            if self.config.instrument:
+                trace_environment = octomate_trace_environment()
+                if trace_environment is not None:
+                    env.update(trace_environment.as_env())
+                    overrides += (
+                        "otel.trace_exporter.otlp-http.endpoint="
+                        + json.dumps(trace_environment.endpoint),
+                        'otel.trace_exporter.otlp-http.protocol="binary"',
+                    )
             if mcp_bearer is not None:
                 env[MCP_TOKEN_ENV] = mcp_bearer.get_secret_value()
                 env[MCP_CONVERSATION_ENV] = str(conversation_id)
@@ -627,7 +633,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             def handler(method: str, params: JsonObject | None) -> JsonObject:
                 return self.handle_sdk_request(conversation_id, method, params)
 
-            client._client._sync = CodexClient(
+            client_type = TracedCodexClient if self.config.instrument else CodexClient
+            client._client._sync = client_type(
                 config=runtime,
                 approval_handler=handler,
             )
@@ -1047,7 +1054,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -1060,6 +1069,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         if deferred_tool_results is not None:
             # A resumed run. The app-server takes no tool result back, so the graph's
@@ -1177,6 +1187,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 try:
                     codex_thread = pooled.thread
                     if codex_thread is None:
+                        # SDK startup can wait on network I/O. Enter after acquiring
+                        # the lease so it cannot hold up other conversations' clients.
+                        await pooled.client.__aenter__()
                         if conversation.external_id:
                             codex_thread = await self.resume_codex_thread(
                                 pooled.client,
@@ -1219,48 +1232,45 @@ class CodexTentacle(AgentTentacle[str, None]):
                         session_allowed=set(conversation.allowed_tools),
                     )
                     try:
-                        with self.session_ingest.driving(codex_thread.id):
-                            # No `sandbox=` here. The thread already carries the
-                            # mode, and a turn's is sent as a whole policy built
-                            # from the SDK's defaults — which would stamp
-                            # `networkAccess: false` back over what the config
-                            # resolved, and narrow the writable roots with it.
-                            turn = await codex_thread.turn(
-                                prompt_text,
-                                approval_mode=plan.sdk_mode,
-                                cwd=run_cwd,
-                                effort=turn_effort,
-                                model=sdk_model,
-                                output_schema=output_schema,
-                                personality=personality,
-                                summary=summary,
-                            )
-                            previous = self.live_turns.get(conversation.id)
-                            self.live_turns[conversation.id] = turn
-                            if previous is not None and previous is not turn:
-                                with contextlib.suppress(Exception):
-                                    await previous.interrupt()
-                            interrupted = False
-                            try:
-                                async for notification in turn.stream():
-                                    for event in accumulator.consume(notification):
-                                        yield event
-                                    if (
-                                        not interrupted
-                                        and session is not None
-                                        and isinstance(
-                                            session.decision, TeleportDecision
-                                        )
-                                    ):
-                                        # Moving mid-run: the move is the graph's to
-                                        # perform, and this process is still where
-                                        # it was, so the turn ends now — as the
-                                        # deferral the graph performs and resumes from.
-                                        interrupted = True
-                                        await turn.interrupt()
-                            finally:
-                                if self.live_turns.get(conversation.id) is turn:
-                                    self.live_turns.pop(conversation.id, None)
+                        # No `sandbox=` here. The thread already carries the
+                        # mode, and a turn's is sent as a whole policy built
+                        # from the SDK's defaults — which would stamp
+                        # `networkAccess: false` back over what the config
+                        # resolved, and narrow the writable roots with it.
+                        turn = await codex_thread.turn(
+                            prompt_text,
+                            approval_mode=plan.sdk_mode,
+                            cwd=run_cwd,
+                            effort=turn_effort,
+                            model=sdk_model,
+                            output_schema=output_schema,
+                            personality=personality,
+                            summary=summary,
+                        )
+                        previous = self.live_turns.get(conversation.id)
+                        self.live_turns[conversation.id] = turn
+                        if previous is not None and previous is not turn:
+                            with contextlib.suppress(Exception):
+                                await previous.interrupt()
+                        interrupted = False
+                        try:
+                            async for notification in turn.stream():
+                                for event in accumulator.consume(notification):
+                                    yield event
+                                if (
+                                    not interrupted
+                                    and session is not None
+                                    and isinstance(session.decision, TeleportDecision)
+                                ):
+                                    # Moving mid-run: the move is the graph's to
+                                    # perform, and this process is still where
+                                    # it was, so the turn ends now — as the
+                                    # deferral the graph performs and resumes from.
+                                    interrupted = True
+                                    await turn.interrupt()
+                        finally:
+                            if self.live_turns.get(conversation.id) is turn:
+                                self.live_turns.pop(conversation.id, None)
                     finally:
                         self.bridge_contexts.pop(conversation.id, None)
                 finally:

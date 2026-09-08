@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Literal
+from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
@@ -15,6 +17,7 @@ from pydantic_ai.messages import (
     ModelResponse as RawModelResponse,
 )
 from pydantic_ai.messages import TextPart, ToolCallPart, UserPromptPart
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -148,6 +151,70 @@ async def test_record_run_creates_run_and_persists_messages() -> None:
     kinds = {type(m).__name__ for m in listed}
     assert kinds == {"ModelRequest", "ModelResponse"}
     assert len(list(reloaded.messages)) == 2
+
+
+@pytest.mark.parametrize("lookup", ["ensure", "get"])
+async def test_native_resume_reads_no_history_and_can_append_a_run(
+    in_memory_engine: AsyncEngine, lookup: Literal["ensure", "get"]
+) -> None:
+    service = ConversationManager()
+    thread_id = await _thread()
+    conversation = await service.ensure(thread_id, agent_tentacle_id="claude")
+    messages = [RawModelResponse(parts=[TextPart(content="previous answer")])]
+    await service.record_agent_run(
+        conversation, run_id="previous", messages=messages, external_id="native-session"
+    )
+    queries = Mock()
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    try:
+        if lookup == "ensure":
+            resumed = await service.ensure(
+                thread_id, agent_tentacle_id="claude", with_history=False
+            )
+        else:
+            resumed = await service.get(conversation.id, with_history=False)
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+
+    assert resumed.external_id == "native-session"
+    assert queries.call_count == 1
+    statement = queries.call_args_list[0].args[2]
+    assert isinstance(statement, str)
+    assert "FROM conversations" in statement
+    assert "agent_runs" not in statement
+    assert "model_messages" not in statement
+
+    await service.record_agent_run(resumed, run_id="next", messages=messages)
+    reloaded = await service.get(resumed.id)
+    assert {run.id for run in reloaded.runs} == {"previous", "next"}
+    assert len(reloaded.messages) == 2
+
+
+async def test_history_loading_leaves_the_conversation_creation_lock(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    service = ConversationManager()
+    thread_id = await _thread()
+    conversation = await service.ensure(thread_id, agent_tentacle_id="inkling")
+    await service.record_agent_run(
+        conversation,
+        run_id="previous",
+        messages=[RawModelResponse(parts=[TextPart(content="previous answer")])],
+    )
+    locked: list[bool] = []
+    queries = Mock(
+        side_effect=lambda *_args: locked.append(service.ensure_lock.locked())
+    )
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    try:
+        reloaded = await service.ensure(thread_id, agent_tentacle_id="inkling")
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+
+    assert len(reloaded.messages) == 1
+    assert locked[0] is True
+    assert len(locked) > 1
+    assert not any(locked[1:])
 
 
 async def test_external_run_reads_back_as_its_variant() -> None:

@@ -102,6 +102,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             target_conversation = await ctx.deps.conversation_manager.ensure(
                 state.thread.id,
                 agent_tentacle_id=agent.id,
+                with_history=False,
             )
             # A handoff pins who owns the chat, so it is read and written there: a
             # chat room's sub-thread is new every kick and would forget the owner.

@@ -24,7 +24,7 @@ def test_build_command_wraps_the_sdk_command_in_ssh() -> None:
     # The remote binary is argv[0] and the SDK's full option mapping is preserved.
     assert "claude --output-format stream-json" in remote
     assert "--model opus" in remote
-    assert "--resume sess-9" in remote
+    assert "--resume=sess-9" in remote
     assert "--max-turns 7" in remote
     assert "--input-format stream-json" in remote
     assert "cd /srv/proj && export " in remote

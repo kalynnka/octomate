@@ -35,6 +35,10 @@ class DeepseekConfig(AgentConfig):
 
     id: ClassVar[str] = "deepseek"
 
+    instrument: bool = Field(
+        default=False,
+        description="Record DeepSeek session events under the driving Logfire trace.",
+    )
     host: Literal["127.0.0.1", "localhost"] = Field(
         default="127.0.0.1",
         description=(
