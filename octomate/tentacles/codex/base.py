@@ -239,7 +239,6 @@ class CodexClientPool:
                 pooled = None
             if pooled is None:
                 client = self.build(conversation_id, mcp_bearer)
-                await client.__aenter__()
                 pooled = PooledCodexClient(client=client, mcp_bearer=mcp_bearer)
                 self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
@@ -287,7 +286,7 @@ class CodexClientPool:
 
     @staticmethod
     async def close(pooled: PooledCodexClient) -> None:
-        # Pair the `__aenter__` done in `acquire` with the SDK's own `__aexit__`
+        # Pair the run's `__aenter__` with the SDK's own `__aexit__`
         # teardown, so client init and shutdown stay explicit and matched.
         with contextlib.suppress(Exception):
             await pooled.client.__aexit__(None, None, None)
@@ -1193,6 +1192,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 try:
                     codex_thread = pooled.thread
                     if codex_thread is None:
+                        # SDK startup can wait on network I/O. Enter after acquiring
+                        # the lease so it cannot hold up other conversations' clients.
+                        await pooled.client.__aenter__()
                         if conversation.external_id:
                             codex_thread = await self.resume_codex_thread(
                                 pooled.client,

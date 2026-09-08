@@ -933,6 +933,70 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     assert tentacle.pool is None
 
 
+async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starting = asyncio.Event()
+    finish_starting = asyncio.Event()
+
+    class SlowStartingCodex(FakeCodex):
+        async def __aenter__(self) -> FakeCodex:
+            if FakeCodex.builds > 1:
+                starting.set()
+                await finish_starting.wait()
+            return self
+
+    monkeypatch.setattr(codex_base, "AsyncCodex", SlowStartingCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        await tentacle.run("warm up", conversation_address=KEY, thread_id=_THREAD)
+        cold = asyncio.create_task(
+            tentacle.run("cold", conversation_address=KEY, thread_id=uuid7())
+        )
+        try:
+            async with asyncio.timeout(1):
+                await starting.wait()
+            first_token = False
+            async with asyncio.timeout(1):
+                async with tentacle.run_stream_events(
+                    "warm", conversation_address=KEY, thread_id=_THREAD
+                ) as stream:
+                    async for event in stream:
+                        if isinstance(event, PartStartEvent):
+                            first_token = True
+                            assert not finish_starting.is_set()
+            assert first_token
+        finally:
+            finish_starting.set()
+            await cold
+
+    assert FakeCodex.builds == 2
+    assert FakeCodex.closed == 2
+
+
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+async def test_failed_client_startup_releases_its_pool_lease(
+    monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
+) -> None:
+    class FailedStartingCodex(FakeCodex):
+        async def __aenter__(self) -> FakeCodex:
+            raise error("startup stopped")
+
+    monkeypatch.setattr(codex_base, "AsyncCodex", FailedStartingCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        with pytest.raises(error, match="startup stopped"):
+            await tentacle.run("cold", conversation_address=KEY, thread_id=_THREAD)
+        assert tentacle.pool is not None
+        assert all(client.in_use == 0 for client in tentacle.pool.clients.values())
+
+    assert FakeCodex.closed == 1
+
+
 @pytest.mark.parametrize(
     ("permission_mode", "sdk_mode", "reviewer"),
     [
