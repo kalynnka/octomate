@@ -50,7 +50,6 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.feelers.base import Feelers
 from tests.support.channels import FakeChannelTentacle
-from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -204,7 +203,6 @@ def _build(
     if conversation is not None:
         conversations.store[(_THREAD, "claude", "")] = conversation
     octomate = Octomate(
-        config=registered(HOOK_SECRET.get_secret_value()),
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, dam),
         tentacles={"im": a_channel(feelers)},

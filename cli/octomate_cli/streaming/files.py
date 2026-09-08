@@ -201,13 +201,13 @@ async def stream_session(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    secret: str,
+    token: str,
     spool: Path | None = None,
 ) -> bool:
     """One connection's life. True when the session is done (the server said finalize,
     or it went idle and drained out); False to reconnect and resume."""
     async with connect(
-        url, additional_headers={"Authorization": f"Bearer {secret}"}
+        url, additional_headers={"Authorization": f"Bearer {token}"}
     ) as websocket:
         await websocket.send(
             StreamHello(
@@ -282,7 +282,7 @@ async def run_tail(
     session_id: str,
     transcript_path: Path,
     cwd: str,
-    secret: str,
+    token: str,
     spool: Path | None = None,
 ) -> None:
     """The reconnect loop around `stream_session`: resume after drops, back off while
@@ -292,7 +292,7 @@ async def run_tail(
     while True:
         try:
             if await stream_session(
-                url, session_id, transcript_path, cwd, secret, spool
+                url, session_id, transcript_path, cwd, token, spool
             ):
                 return
             attempt = 0  # the connection worked; the drop was the network's
@@ -308,8 +308,8 @@ async def run_tail(
             # close code — `hook_guard`'s 401 — and does not heal by retrying.
             if denied.response.status_code in {401, 403}:
                 print(
-                    "octomate: stream denied — the credential does not match "
-                    "Octomate's secret.",
+                    "octomate: stream denied — a valid API token with hooks scope "
+                    "is required. Run `octomate configure --token <api-token>`.",
                     file=sys.stderr,
                 )
                 return
@@ -341,12 +341,12 @@ def main(
     if spool is not None and agent_path is not None:
         with spool.open("a") as handle:
             handle.write(f"{agent_path}\n")
-    secret = cli_settings().secret
-    if not secret:
+    token = cli_settings().token
+    if not token:
         print(
-            f"octomate: no credential — {CLISettings.env('secret')} is unset and the "
+            f"octomate: no credential — {CLISettings.env('token')} is unset and the "
             "client config holds none, so this session is not being streamed. "
-            "Run `octomate configure`.",
+            "Run `octomate configure --token <api-token>`.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -364,4 +364,4 @@ def main(
                 if monotonic() >= deadline:
                     return
                 time.sleep(LOCK_POLL)
-        asyncio.run(run_tail(url, session_id, transcript_path, cwd, secret, spool))
+        asyncio.run(run_tail(url, session_id, transcript_path, cwd, token, spool))

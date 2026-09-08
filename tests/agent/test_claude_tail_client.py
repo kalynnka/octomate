@@ -15,6 +15,11 @@ from octomate_cli.config import CLISettings
 from octomate_cli.streaming.files import FileCursor, SessionTail, main
 
 
+@pytest.fixture(autouse=True)
+def isolated_client_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+
+
 def test_read_lines_frames_complete_lines_and_holds_the_fragment(
     tmp_path: Path,
 ) -> None:
@@ -93,7 +98,7 @@ async def test_main_refuses_to_run_without_the_hook_credential(
     capfd: pytest.CaptureFixture[str],
     tmp_path: Path,
 ) -> None:
-    monkeypatch.delenv(CLISettings.env("secret"), raising=False)
+    monkeypatch.delenv(CLISettings.env("token"), raising=False)
     # And no config file in either scope: the developer's real cli.toml must not
     # fill it in.
     monkeypatch.setenv("HOME", str(tmp_path))
@@ -105,7 +110,7 @@ async def test_main_refuses_to_run_without_the_hook_credential(
             url="ws://127.0.0.1:1/hooks/claude/stream",
             cwd="",
         )
-    assert CLISettings.env("secret") in capfd.readouterr().err
+    assert CLISettings.env("token") in capfd.readouterr().err
 
 
 def test_a_second_tail_for_the_same_session_is_a_no_op(
@@ -113,7 +118,7 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
 ) -> None:
     """The launcher fires on every prompt; the flock is what makes each spawn after
     the first exit quietly, with no stale-pidfile state to manage."""
-    monkeypatch.setenv(CLISettings.env("secret"), "s")
+    monkeypatch.setenv(CLISettings.env("token"), "s")
     monkeypatch.setattr(tail_mod, "LOCK_GRACE", 0.0)  # a held lock cedes instantly
     streamed: list[str] = []
 
@@ -156,7 +161,7 @@ def test_a_spawn_during_the_drain_waits_out_the_lock(
     """The server relays `finalize` at `Stop`, so a queued prompt's launcher can fire
     while the previous turn's tail is still draining out. The grace window bridges
     that overlap: the spawn waits for the lock instead of ceding the round."""
-    monkeypatch.setenv(CLISettings.env("secret"), "s")
+    monkeypatch.setenv(CLISettings.env("token"), "s")
     monkeypatch.setattr(tail_mod, "LOCK_GRACE", 5.0)
     monkeypatch.setattr(tail_mod, "LOCK_POLL", 0.05)
     streamed: list[str] = []
@@ -199,7 +204,7 @@ def test_a_spool_handoff_reaches_a_running_tail_and_defers(
     """A Codex SubagentStop fires while a tail already holds the session: that
     invocation's whole job is appending the child's path — the holder re-reads the
     spool on every pump — and then getting out of the way at the lock."""
-    monkeypatch.setenv(CLISettings.env("secret"), "s")
+    monkeypatch.setenv(CLISettings.env("token"), "s")
     monkeypatch.setattr(tail_mod, "LOCK_GRACE", 0.0)
     monkeypatch.setattr(
         tail_mod, "run_tail", None

@@ -331,6 +331,36 @@ html[data-theme='dark'] {
   margin: 12px 0;
 }
 
+/* Form fields — sunken wells in the data voice; the accent marks the caret's
+   field, red the one the relay refused. */
+.trk-input {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px 10px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fg-1);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line-divider);
+  border-radius: 0;
+  outline: none;
+  transition: border-color var(--motion-fast) linear;
+}
+.trk-input::placeholder {
+  color: var(--fg-3);
+}
+.trk-input:focus {
+  border-color: var(--color-accent);
+}
+.trk-input[aria-invalid='true'] {
+  border-color: var(--color-red);
+}
+.trk-input:disabled {
+  opacity: 0.55;
+}
+
 /* Channel letter-rail expands on hover */
 .trk-chrail {
   transition: width 0.18s ease;

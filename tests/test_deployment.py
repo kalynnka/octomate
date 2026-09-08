@@ -16,16 +16,17 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
 from octomate_protocol.deployment import DatabaseBackup
+from pydantic import SecretStr
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
 from octomate import deployment
+from octomate.config import AuthConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
-from tests.support.config import registered
 
 
 @pytest.fixture
@@ -65,7 +66,7 @@ def test_backup_waits_for_server_shutdown(
     database: Path, monkeypatch: pytest.MonkeyPatch, stops: bool
 ) -> None:
     monkeypatch.setattr(sys, "argv", ["maintenance", "backup"])
-    monkeypatch.setattr(deployment, "OctomateConfig", lambda: registered("test-bearer"))
+    monkeypatch.setattr(deployment, "OctomateConfig", OctomateConfig)
     monkeypatch.setattr(deployment.time, "sleep", lambda duration: None)
     busy = OSError(errno.EADDRINUSE, "Server is still listening")
     with (
@@ -166,24 +167,32 @@ def test_actual_upgrade_rehearses_on_a_copy(database: Path) -> None:
     assert deployment.revisions(snapshot.backup) == (previous,)
 
 
+@pytest.mark.parametrize("auth_configured", [False, True])
 @pytest.mark.parametrize("console_enabled", [False, True])
 @pytest.mark.parametrize("console_registered", [False, True])
 @pytest.mark.parametrize("host", ["127.0.0.1", "192.0.2.1"])
-async def test_verification_checks_authenticated_mcp_and_console_routes(
+async def test_verification_checks_protected_mcp_and_console_routes(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
+    auth_configured: bool,
     console_enabled: bool,
     console_registered: bool,
     host: str,
 ) -> None:
-    config = registered("test-bearer")
+    config = OctomateConfig()
     config.host = IPv4Address(host)
     config.agents.codex = CodexConfig()
     config.channels["trunkline"] = TrunklineChannelConfig(
         enabled=console_enabled,
         agents=["codex"],
     )
-    server = FastMCP("octomate", auth=KnownBearers(config.users))
+    if auth_configured:
+        config.auth = AuthConfig(
+            access_token_salt=SecretStr("access-test-salt-123"),
+            refresh_token_salt=SecretStr("refresh-test-salt-123"),
+            api_key_salt=SecretStr("api-key-test-salt-123"),
+        )
+    server = FastMCP("octomate", auth=KnownBearers())
 
     @server.tool
     def hello() -> str:
@@ -193,7 +202,7 @@ async def test_verification_checks_authenticated_mcp_and_console_routes(
 
     async def console(request: Request) -> Response:
         assert request.url.hostname == host
-        return Response("console")
+        return Response("console", status_code=401 if auth_configured else 503)
 
     if console_registered:
         api.routes.append(Route("/api/trunkline/health", console))
@@ -210,15 +219,14 @@ async def test_verification_checks_authenticated_mcp_and_console_routes(
         else:
             await deployment.verify(config)
             output = capsys.readouterr().out
-            assert "1 tools" in output
-            assert "test-bearer" not in output
+            assert "protected local Octomate MCP" in output
 
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "0.0.0.0", "192.0.2.1"])
 def test_maintenance_requires_an_explicit_bind_address(
     database: Path, monkeypatch: pytest.MonkeyPatch, host: str
 ) -> None:
-    config = registered("test-bearer")
+    config = OctomateConfig()
     config.host = IPv4Address(host)
     config.agents.codex = CodexConfig()
     config.channels["trunkline"] = TrunklineChannelConfig(agents=["codex"])

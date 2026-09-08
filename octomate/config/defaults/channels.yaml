@@ -1,6 +1,6 @@
 # Channel tentacles, keyed by instance id with `type` selecting the platform — so a
 # deployment can run two Lark apps, or two consoles, by naming them apart. The key is
-# the channel tentacle id everywhere downstream: what a `users[]` profile names, and
+# the channel tentacle id everywhere downstream: what a stored profile names, and
 # what a thread records as its origin. Renaming a key therefore re-homes its threads,
 # so pick one and keep it.
 #

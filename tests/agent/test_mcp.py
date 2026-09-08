@@ -35,7 +35,6 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
 from octomate.config import BareMcpConfig, GitHubMcpConfig, LinearMcpConfig
-from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
@@ -61,6 +60,7 @@ from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle, build_mcp
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import FakeConversationManager, fixed_session
 from tests.support.mcp import discover
+from tests.support.users import a_user
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 LINEAR_URL = "https://mcp.linear.app/mcp"
@@ -105,17 +105,11 @@ class Provider(OAuthMcpTentacle):
 
 async def a_linked_host() -> tuple[Octomate, Provider, UserProfile]:
     """A host whose registered `alice` may link `gh`, with her Slack profile."""
-    users = UserManager(
-        {
-            "alice": UserConfig.model_validate(
-                {"profiles": {"slack": {"channel_user_id": "U1"}}}
-            )
-        }
-    )
+    await a_user("alice", profiles={"slack": "U1"})
+    users = UserManager()
     host = Octomate(users=users, oauth_encryption_key=ENCRYPTION_KEY)
     tentacle = host.connect(Provider("gh", host))
     host.oauth.register(OAuthConnector(id="gh", flow=StaticGitHubFlow()))
-    await users.reconcile()
     async with async_session() as session:
         profile = await session.one_or_none(
             UserProfile,
@@ -262,7 +256,7 @@ def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
     )
     assert sorted(host.oauth.connectors) == ["gh", "linear_home"]
     # Only the authorization-code half carries a transport, and it is what makes
-    # `Octomate.app` serve the routes its URIs point at.
+    # Octomate serve the routes its URIs point at.
     assert host.oauth.connector("gh").callback_transport is None
     assert isinstance(
         host.oauth.connector("linear_home").callback_transport,

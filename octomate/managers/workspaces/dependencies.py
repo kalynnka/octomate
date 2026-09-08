@@ -27,6 +27,8 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import ClassVar
 
+from octomate.managers.base import Manager
+
 logger = logging.getLogger(__name__)
 
 # Where a tree records the lockfile it was last installed from. Under `.git`,
@@ -36,7 +38,7 @@ logger = logging.getLogger(__name__)
 STAMP = "octomate-installed"
 
 
-class PackageManager(ABC):
+class PackageManager(Manager, ABC):
     """One ecosystem's answer to "put this tree's dependencies in place".
 
     A manager is stateless and claims a tree by its lockfile, which is also what

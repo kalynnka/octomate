@@ -8,7 +8,6 @@ from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
 from sqlalchemy import (
     JSON,
-    DateTime,
     ForeignKey,
     Integer,
     String,
@@ -18,7 +17,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, UTCDateTime
 from octomate.types.todos import TodoStatus
 
 if TYPE_CHECKING:
@@ -54,13 +53,13 @@ class Todo(Base, TransmuterProxiedMixin):
     parent_ref: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     depends_on: Mapped[JsonValue] = mapped_column(JSON, nullable=False, default=list)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),

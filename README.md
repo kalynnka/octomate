@@ -222,8 +222,7 @@ SQLite file under `.octomate/`, so there is nothing to stand up first.
 
 ### 1. Collect your own sessions
 
-The smallest useful Octomate. No API key, no chat platform, no tokens — it records the
-Claude Code sessions you already run.
+The smallest useful Octomate records the Claude Code sessions you already run.
 
 ```bash
 uv sync
@@ -231,7 +230,7 @@ uv run alembic upgrade head
 mkdir -p .octomate/config
 ```
 
-Declare one agent — that is the whole config:
+Declare one agent:
 
 ```bash
 cat > .octomate/config/agents.yaml <<'YAML'
@@ -240,31 +239,24 @@ agents:
 YAML
 ```
 
-A configured `claude` serves a hook router, and that router authenticates — so someone
-must be registered before it will boot: every configured credential names a person.
-Register yourself with a secret of your own. `configure` generates one, writes it
-where every client on this machine resolves it, and prints it once — that printed
-value is what goes in the `users:` entry telling the server whose credential it is.
-Here you are both people, so both halves are yours to do.
-
-```bash
-octomate configure --url http://127.0.0.1:8000   # ~/.config/octomate/cli.toml
-cat > .octomate/config/users.yaml <<'YAML'
-users:
-  you:
-    secret: "<the credential configure printed>"
-YAML
-```
-
-Your clients read that credential from their config file; the server reads your
-`users:` entry and knows every session bearing it is yours.
-
-Then serve it and point Claude Code at it:
+A configured `claude` serves an authenticated hook router. Accounts live in the
+database; see [local accounts](docs/users.md) for invitation and registration setup.
+After configuring local accounts, start the server:
 
 ```bash
 uv run octomate serve --tmux
+```
+
+Register through an invitation and sign in through Trunkline. Issue an API token
+through the [account API](docs/users.md#cli-and-api-tokens), then configure the client:
+
+```bash
+octomate configure --url http://127.0.0.1:8000 --token '<api-token>'
 octomate claude hooks install
 ```
+
+Use an API token with `hooks` and `mcp` scopes. For local HTTP development,
+set `auth.cookie_secure: false`; deployed instances use HTTPS.
 
 Start a Claude Code session anywhere — a terminal, the VSCode extension, the desktop
 app. Every turn is now recorded: prompt, tool calls, answer, subagents. Nothing about
@@ -302,6 +294,9 @@ bot token; its [private-app setup and live verification](docs/discord.md) cover 
 required intent and least-privilege invite.
 
 ### 3. Add the web console
+
+Trunkline requires an invited local account. Follow [Local accounts](docs/users.md)
+to configure authentication and issue your first invitation.
 
 Optional, and no platform account needed — `type: trunkline` alongside the Slack block:
 
@@ -370,7 +365,7 @@ server's files from the rest of `.octomate/` — the database and the client's
     octomate.yaml        host, port, db_url
     agents.yaml          claude, codex, deepseek, inkling
     channels.yaml        slack, lark, discord, napcat, trunkline
-    users.yaml           registered humans and their per-channel ids
+    auth.yaml            local account credentials and session settings
     projects.yaml        code locations an agent may run in
     providers.yaml       LLM credentials
     mcp.yaml             MCP tentacles: vendor servers, linked GitHub and Linear accounts
@@ -397,7 +392,7 @@ model picked on your behalf would be a route that boots fine and 401s on first u
 
 Channels are keyed by instance id with `type` selecting the platform, so one platform
 can be mounted more than once — two Lark apps are two keys. That key is the channel
-tentacle id everywhere else: what a `users[]` profile names, and what a thread
+tentacle id everywhere else: what a stored profile names, and what a thread
 records as its origin.
 
 Secrets stay out of the home. `.env` in the working directory and the process
@@ -406,25 +401,14 @@ environment both override it, using `OCTOMATE__` with `__` as the nested delimit
 
 ### Native session hooks
 
-Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes write straight into thread history, which agents read back, so they authenticate — and every configured credential names a person: each registered user carries their own secret in their `users:` entry, and Octomate refuses to boot a hook router while nobody is registered to reach it.
+Configuring `agents.claude`, `agents.codex` or `agents.deepseek` serves that agent's hook router (`/hooks/claude`, `/hooks/codex`, `/hooks/deepseek`) for native sessions to POST their prompts and answers into. Those routes authenticate API tokens with the `hooks` scope. They can start before any accounts exist; requests without a recognized bearer receive 401.
 
-```yaml
-users:
-  lu:
-    secret: "..."                            # their own bearer — one secret, one user
-    profiles:
-      slack: {channel_user_id: U0123ABCD}    # where their gateway spells can reach
-```
-
-Setting a person up is three steps on their own machine, in this order — mint, register, install:
+After signing in through Trunkline, issue an API token through the account API
+and configure the client before installing its runtime integrations:
 
 ```bash
-# 1. mint it, and read what it prints
-octomate configure --url http://<host>:<port>    # ~/.config/octomate/cli.toml, mode 600
+octomate configure --url https://<host> --token '<api-token>'
 
-# 2. hand that value to the deployment's admin, who adds it as your users: entry
-
-# 3. point your runtimes at it, once there is something to resolve
 octomate claude hooks install                    # merges handlers into ~/.claude/settings.json
 octomate claude mcp install                      # this project's mcpServers.octomate
 octomate codex hooks install                     # merges handlers into ~/.codex/hooks.json
@@ -432,11 +416,11 @@ octomate codex mcp install                       # [mcp_servers.octomate] in ~/.
 octomate deepseek hooks install --bridge <path>  # writes $DSH_HOME/octomate-hooks.json + a patch row
 ```
 
-`octomate configure` writes the address and the credential to a file every client on the machine resolves — a hook, a `tail`, an `mcp install` — and prints a generated one once, in a panel saying what to do with it. The order matters: the installs write down whatever resolves *at install time*, so a credential that does not exist yet gets you entries that only 401, and moving one means re-running them.
+`octomate configure --token` saves an already issued API token. It does not generate credentials locally. The installs use the token that resolves at install time, so re-run MCP installation after changing it.
 
-A file, not an exported variable, and that is a security property rather than a convenience. An environment is inherited: everything a shell starts carries what it holds, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `$OCTOMATE_CLI_SECRET` and `$OCTOMATE_CLI_URL` still resolve ahead of the files, for a container or a CI step with no home to write into. `OCTOMATE_CLI_` rather than the server's `OCTOMATE__` prefix, so nothing about a client credential reads as deployment config.
+A file, not an exported variable, and that is a security property rather than a convenience. An environment is inherited: everything a shell starts carries what it holds, this deployment's own Codex app-servers included, and a driven turn must speak as the human who kicked it and nobody else. `$OCTOMATE_CLI_TOKEN` and `$OCTOMATE_CLI_URL` still resolve ahead of the files, for a container or a CI step with no home to write into. `OCTOMATE_CLI_` rather than the server's `OCTOMATE__` prefix, so nothing about a client credential reads as deployment config.
 
-Native sessions can also *route*: a session in your terminal reaches the same gateway spells the driven agents get — over `/octomate/mcp`, carrying its bearer plus a static `X-Octomate-Client` header written at install time. The client header is attribution (which runtime); the bearer is identity (which human): a native session bearing a user's secret speaks for that person, and its spells light up on *their* linked accounts. Driven turns answer to the same rule — every run represents the human who kicked it, so a driven Codex turn's loopback call carries the kicker's own secret and nobody else's credential can drive it, while a turn kicked by an unregistered user simply runs without the spells. Rotation or revocation is only ever the admin editing the YAML. The trust statement, plainly: a user's secret holds the hook pipe's ledger writes plus the gateway's outbound sends, handoffs and project bindings, under that user's name. Same trust domain (the operator's machines), same mitigations (per-user secrets, HTTPS off-box), plus the per-connection `gateway` flag.
+Native sessions can also *route* through `/octomate/mcp`, using an API token with `mcp` scope and the static `X-Octomate-Client` header written at install time. The token identifies the user; the header identifies the runtime. Gateway spells use that user's linked accounts. Driven Codex clients receive a temporary MCP-only token for the kicking user, revoked when the client closes. Expired, revoked, and incorrectly scoped tokens are refused. Channel account linking remains separate follow-up work.
 
 Point the runtimes' native sessions at it with the `mcp` commands — static MCP client config, written once:
 

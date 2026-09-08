@@ -6,12 +6,12 @@ from typing import Annotated, Literal
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field
+from pydantic import AwareDatetime, ConfigDict, Field
 
 from octomate.models.runs import AgentRun as AgentRunModel
 from octomate.models.runs import ExternalAgentRun as ExternalAgentRunModel
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.messages import ModelRequest, ModelResponse, UtcDateTime
+from octomate.schemas.messages import ModelRequest, ModelResponse
 
 
 @sqlalchemy_materia.bless(AgentRunModel)
@@ -44,7 +44,7 @@ class AgentRun(BaseTransmuter):
     # the run whose tool call spawned this one, and which ToolCallPart it answers.
     parent_run_id: str | None = None
     parent_tool_call_id: str | None = None
-    started_at: UtcDateTime | None = None
+    started_at: AwareDatetime | None = None
 
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 

@@ -18,7 +18,6 @@ a renamed field fails a test rather than a session going unauthenticated.
 from __future__ import annotations
 
 import json
-import secrets
 import tomllib
 from enum import StrEnum
 from functools import cache
@@ -98,18 +97,17 @@ class CLISettings(BaseSettings):
             "switch, not a re-install. An explicit `--url` beats it."
         ),
     )
-    secret: str | None = Field(
+    token: str | None = Field(
         default=None,
         description=(
-            "This person's own bearer, which the hook routers and the served MCP "
-            "endpoints authenticate. Minted by `octomate configure` and registered "
-            "by an admin under `users.<name>.secret`."
+            "A server-issued API token with hooks and/or mcp scope, obtained through "
+            "the authenticated account API."
         ),
     )
 
     @classmethod
     def env(cls, field: str) -> str:
-        """`CLISettings.env("secret")` — the variable that field reads.
+        """`CLISettings.env("token")` — the variable that field reads.
 
         The class is asked every time rather than a constant standing beside it, so
         no variable name is ever spelled by hand: this composes from the prefix
@@ -117,7 +115,7 @@ class CLISettings(BaseSettings):
 
         A method and not `__class_getitem__`, which would read better at the ~20 call
         sites: a subscript on a class is a *type* to a type checker, so pyright reads
-        `CLISettings["secret"]` as specialising the model and calls the result
+        `CLISettings["token"]` as specialising the model and calls the result
         `type[CLISettings]` whatever the override returns. Every site would be
         mistyped, and silently so wherever the value is only interpolated.
 
@@ -189,11 +187,10 @@ def configure(
         str | None,
         typer.Option(help="Octomate's base URL (http://host:port)."),
     ] = None,
-    secret: Annotated[
+    token: Annotated[
         str | None,
         typer.Option(
-            help="Your own credential. Omitted, the one already resolving is kept, "
-            "and one is generated when nothing resolves anywhere."
+            help="A server-issued API token. Omitted, the token already resolving is kept."
         ),
     ] = None,
     scope: Annotated[
@@ -206,10 +203,7 @@ def configure(
 ) -> None:
     """Write the client config every hook, tail and MCP entry on this machine reads.
 
-    The first of the three steps that set a person up: this mints the credential and
-    puts it somewhere durable, the panel it prints says how to get it registered, and
-    the runtimes' own `hooks install` / `mcp install` come last, once there is
-    something for them to resolve.
+    Sign in through Trunkline and issue a token through the account API first.
 
     The environment still overrides both scopes, and a `--url` pinned at install time
     beats everything — the files are the durable floor, so ingest works from any
@@ -219,13 +213,11 @@ def configure(
     current = load_config(path)
     if url is not None:
         current["url"] = url
-    generated = False
-    if secret is None:
-        secret = cli_settings().secret
-        if secret is None:
-            secret = secrets.token_urlsafe(32)
-            generated = True
-    current["secret"] = secret
+    if token is None:
+        token = cli_settings().token
+    if token is not None:
+        current["token"] = token
+    current.pop("secret", None)
 
     # json.dumps output is a valid TOML basic string: the escapes JSON emits are the
     # subset TOML shares, so no hand-rolled quoting and no extra dependency.
@@ -245,7 +237,9 @@ def configure(
     address = current.get("url") or f"(unset — hooks need ${CLISettings.env('url')})"
     typer.echo(f"Wrote {path}")
     typer.echo(f"  url:    {address}")
-    typer.echo(f"  secret: {'generated' if generated else 'kept'}")
+    typer.echo(
+        f"  token: {'saved' if token is not None else 'unset — provide --token'}"
+    )
     # Prose is left for rich to wrap; lines meant to be copied are kept short enough
     # to survive intact, since a token split across two lines is worse than no help.
     steps = [
@@ -255,28 +249,4 @@ def configure(
         "  [cyan]octomate claude hooks install[/]   [cyan]octomate claude mcp install[/]",
         "  [cyan]octomate codex hooks install[/]    [cyan]octomate codex mcp install[/]",
     ]
-    if not generated:
-        console.print(Panel("\n".join(steps), title="[bold]next[/]", padding=(1, 2)))
-        return
-    # A generated token is url-safe and a supplied one never reaches here, so no
-    # value below can carry markup.
-    console.print(
-        Panel(
-            "\n".join(
-                [
-                    "[yellow]Octomate cannot see this credential yet[/], and its "
-                    "routers refuse a bearer they do not know. Give it to the "
-                    "server's admin to add as yours:",
-                    "",
-                    "  [dim]users:[/]",
-                    "    [dim]<your username>:[/]",
-                    f"      [dim]secret:[/] [green]{secret}[/]",
-                    "",
-                    *steps,
-                ]
-            ),
-            title="[bold yellow]register this credential[/]",
-            border_style="yellow",
-            padding=(1, 2),
-        )
-    )
+    console.print(Panel("\n".join(steps), title="[bold]next[/]", padding=(1, 2)))

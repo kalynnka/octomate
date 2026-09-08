@@ -4,6 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from octomate.database import async_session
+from octomate.managers.base import Manager
 from octomate.schemas.todos import Todo, TodoWrite
 from octomate.types.todos import TodoStatus
 
@@ -16,7 +17,7 @@ def fresh_ref(taken: set[str]) -> str:
     return ref
 
 
-class TodoManager:
+class TodoManager(Manager):
     """Conversation-scoped todo persistence, keyed on the short hex `ref`.
 
     Persistence only — event derivation and cycle/blocking validation live in the

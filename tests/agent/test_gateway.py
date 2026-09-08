@@ -12,7 +12,6 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config import ChannelConfig
 from octomate.config.agents import AgentRouteModelName
-from octomate.config.users import UserConfig
 from octomate.managers.gateway import GatewayManager, OctomateSession, PrivateBlocker
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
@@ -39,6 +38,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
+from tests.support.users import a_user
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
@@ -506,19 +506,8 @@ async def _crossable(
     is its own config, so the routes drive both what it advertises and who the gate
     will let a spell name there.
     """
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
+    users = UserManager()
     capability = _capability(shape)
     session = capability.session
     session.users = users
@@ -648,18 +637,21 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
         )
 
 
+@pytest.mark.parametrize(
+    ("shape", "destinations"),
+    [("shared_main", ["thread"]), ("private_main", ["thread", "far"])],
+)
 async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
     in_memory_engine: None,
+    shape: Shape,
+    destinations: list[str],
 ) -> None:
     """Everything said here travels with a teleport. Out of a group that would
     republish what other people said into somewhere private on another platform,
     under this person's name alone — so the crossing is not offered at all, while
     the group's own sub-thread still is."""
-    shared = await _crossable("shared_main", far_routes=(INKLING_ROUTE,))
-    assert await shared.session.teleport_handles() == ["thread"]
-
-    private = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
-    assert await private.session.teleport_handles() == ["thread", "far"]
+    capability = await _crossable(shape, far_routes=(INKLING_ROUTE,))
+    assert await capability.session.teleport_handles() == destinations
 
 
 async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(

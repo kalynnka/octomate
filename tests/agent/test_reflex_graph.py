@@ -24,7 +24,6 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
-from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
@@ -91,6 +90,7 @@ from tests.support.managers import (
     a_project,
     a_registry,
 )
+from tests.support.users import a_user
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
@@ -1077,6 +1077,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     )
     second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    deps = _summon_deps(im, entry, second)
     threads = FakeThreadManager()
     # alice's DM already belongs to `second`; the group cannot change that.
     dm_thread = await threads.ensure(
@@ -1088,7 +1089,6 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
         )
     )
     await threads.record_handoff(dm_thread, to_agent_tentacle_id="second")
-    deps = _summon_deps(im, entry, second)
     deps.thread_manager = threads
     target = _source_target(address)
 
@@ -1164,19 +1164,8 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
     channel that DM is on. `im` does not run `second` at all, so a handoff resolved
     against the origin instead would land back on `im`'s own first agent — with the
     brief delivered somewhere nobody chose."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
+    users = UserManager()
     address = _group_key()
     entry = FakeAgent(
         id="other",
@@ -1352,19 +1341,8 @@ async def _crossing_state(
     `second` and nothing else, which is what makes the handoff land on the agent the
     summon named rather than on whatever `im` happens to list first.
     """
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    users = im.octomate.users
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
     address = _group_key()
     far_landing = CrossingLanding(
         address=ChannelAddress(
@@ -1512,19 +1490,8 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
     crossing opens on the far channel, the handoff row says from=claude-native,
     and the brief is the far agent's prompt. The source is the native
     pseudo-channel nobody serves, which the crossing never needs to look up."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        CLAUDE_NATIVE_ID: {"channel_user_id": "native"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={CLAUDE_NATIVE_ID: "native", "far": "ou_alice"})
+    users = UserManager()
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
     far = FakeChannelTentacle(
         id="far",
@@ -2313,6 +2280,7 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
 ) -> None:
     # Cast mid-run and performed after it: the turn's work reaches the mirror,
     # then the tree goes, and the thread is left where a later turn resumes it.
+    im = _channel(stream=False)
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
@@ -2340,7 +2308,6 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
         reception_output="all done",
         allow_reception_run=True,
     )
-    im = _channel(stream=False)
     deps = _deps(
         conversations=FakeConversationManager(),
         channels={"im": im},
@@ -2371,6 +2338,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
 ) -> None:
     # `here` with a project: the move is only into the workspace. The thread is
     # bound and its tree forked before the agent resumes, with the call answered.
+    im = _channel(stream=False)
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
@@ -2396,7 +2364,6 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         reception_output="carried on",
         allow_reception_run=True,
     )
-    im = _channel(stream=False)
     deps = _deps(
         conversations=FakeConversationManager(),
         channels={"im": im},

@@ -230,7 +230,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         The guard covers the websocket too: FastAPI runs router dependencies
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
-        verifier = hook_guard(self.octomate.bearers, self.id)
+        verifier = hook_guard(self.octomate.bearers)
         resolve_sender = hook_sender(self.octomate.users, DEEPSEEK_NATIVE_ID, verifier)
         router = APIRouter(tags=["deepseek"], dependencies=[Depends(verifier)])
 

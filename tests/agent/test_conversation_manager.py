@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime
 from typing import Literal
@@ -42,6 +43,47 @@ async def test_ensure_is_idempotent() -> None:
     a = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     b = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     assert a.id == b.id
+
+
+async def test_concurrent_ensures_of_one_identity_insert_once() -> None:
+    manager = ConversationManager()
+    thread_id = await _thread()
+
+    conversations = await asyncio.gather(
+        *(manager.ensure(thread_id, agent_tentacle_id="inkling") for _ in range(4))
+    )
+
+    assert len({conversation.id for conversation in conversations}) == 1
+    async with async_session() as session:
+        assert await session.count(Conversation) == 1
+
+
+@pytest.mark.parametrize(
+    ("chat_id", "agent_tentacle_id", "subagent_id"),
+    [("other", "inkling", ""), ("chat", "other", ""), ("chat", "inkling", "child")],
+)
+async def test_ensure_locks_only_the_matching_conversation(
+    chat_id: str, agent_tentacle_id: str, subagent_id: str
+) -> None:
+    manager = ConversationManager()
+    thread_id = await _thread()
+    other_thread_id = await a_thread(chat_id)
+    parent = await manager.ensure(thread_id, agent_tentacle_id="parent")
+
+    async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
+        async with manager.lock((thread_id, "inkling", "")):
+            duplicate = tasks.create_task(
+                manager.ensure(thread_id, agent_tentacle_id="inkling")
+            )
+            await asyncio.sleep(0)
+            other = await manager.ensure(
+                other_thread_id,
+                agent_tentacle_id=agent_tentacle_id,
+                subagent_id=subagent_id,
+                parent_conversation_id=parent.id if subagent_id else None,
+            )
+            assert not duplicate.done()
+        assert (await duplicate).id != other.id
 
 
 async def test_subagents_lists_only_the_parents_own_hands() -> None:
@@ -203,7 +245,9 @@ async def test_history_loading_leaves_the_conversation_creation_lock(
     )
     locked: list[bool] = []
     queries = Mock(
-        side_effect=lambda *_args: locked.append(service.ensure_lock.locked())
+        side_effect=lambda *_args: locked.append(
+            service.lock((thread_id, "inkling", "")).locked()
+        )
     )
     event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
     try:

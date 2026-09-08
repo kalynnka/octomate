@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import uuid
 from datetime import UTC, datetime
 
@@ -9,6 +8,7 @@ from sqlalchemy import and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
+from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -63,21 +63,13 @@ def thread_title(text: str | None) -> str | None:
     return line if len(line) <= TITLE_MAX else f"{line[:TITLE_MAX].rstrip()}…"
 
 
-class ThreadManager:
+class ThreadManager(Manager, Locks[ThreadKey]):
     """Owns durable thread chat ledger persistence."""
 
     def __init__(self, *, users: UserManager) -> None:
         # Every ledger row references its sender's registry profile — the host
         # constructs this manager around its one identity registry.
         self.users = users
-        # Serializes first sightings, as `ConversationManager` does for its own
-        # rows: two concurrent ensures of one key — a session's follow task
-        # preparing while a hook pokes it, two people replying at once in a chat
-        # with no thread row yet — must not both insert. Under the lock the loser
-        # re-reads the row the winner committed instead of raising a UNIQUE
-        # violation, which here escapes into `follow`'s handler and strands every
-        # later turn of the session.
-        self.ensure_lock = asyncio.Lock()
 
     async def ensure(
         self,
@@ -110,7 +102,7 @@ class ThreadManager:
             )
         # The lock spans the read, the insert and the commit: a loser that woke
         # after the winner's read but before its commit would still find nothing.
-        async with self.ensure_lock, async_session() as session:
+        async with self.lock(key), async_session() as session:
             thread = await session.one_or_none(
                 Thread,
                 expressions=[
@@ -288,7 +280,11 @@ class ThreadManager:
         return bound
 
     async def get(
-        self, thread_id: uuid.UUID, *, with_messages: bool = True
+        self,
+        thread_id: uuid.UUID,
+        *,
+        with_messages: bool = True,
+        user_id: uuid.UUID | None = None,
     ) -> Thread | None:
         """The thread by primary key, or None — its handoffs with the row, its
         ledger only when asked for.
@@ -308,7 +304,16 @@ class ThreadManager:
             else []
         )
         async with async_session() as session:
-            thread = await session.get(Thread, thread_id, options=options)
+            expressions = [Thread["id"] == thread_id]
+            if user_id is not None:
+                expressions.append(
+                    Thread["messages"].any(
+                        ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                    )
+                )
+            thread = await session.one_or_none(
+                Thread, expressions=expressions, options=options
+            )
             if thread is None:
                 return None
         return thread
@@ -318,6 +323,7 @@ class ThreadManager:
         channel_tentacle_id: str | None = None,
         *,
         limit: int = 100,
+        user_id: uuid.UUID | None = None,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
         channel's when `channel_tentacle_id` is None. Sub-threads are not listed;
@@ -331,6 +337,12 @@ class ThreadManager:
         # Sub-threads are left out: a listing names the surfaces a person can open,
         # and the threads a chat room's kicks work in are reached through it.
         expressions = [Thread["parent_thread_id"].is_(None)]
+        if user_id is not None:
+            expressions.append(
+                Thread["messages"].any(
+                    ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                )
+            )
         if channel_tentacle_id is not None:
             expressions.append(Thread["channel_tentacle_id"] == channel_tentacle_id)
         async with async_session() as session:

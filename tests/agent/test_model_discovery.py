@@ -28,7 +28,6 @@ from tests.agent.test_deepseek_tentacle import (
     patch_gateway,
     turn_events,
 )
-from tests.support.config import registered
 from tests.support.managers import FakeConversationManager
 
 
@@ -257,10 +256,7 @@ def harness(
     monkeypatch: pytest.MonkeyPatch,
     codex_catalog: AsyncMock,
 ) -> AgentTentacle[str, None]:
-    octomate = Octomate(
-        config=registered("model-discovery-test-secret"),
-        conversations=FakeConversationManager(),
-    )
+    octomate = Octomate(conversations=FakeConversationManager())
     if request.param == "claude":
         client = AsyncMock()
         client.get_server_info.return_value = {

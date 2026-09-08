@@ -22,13 +22,13 @@ from octomate_cli.emit import (
     CODEX_HOOK_PATH,
     HOOK_TIMEOUT,
     OCTOMATE_URL_ENV,
-    SECRET_ENV,
+    TOKEN_ENV,
 )
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.tentacles.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
 from octomate_cli.tentacles.hooks import EMIT_SCRIPT
 
-SECRET = "the-hook-secret"
+SECRET = "the-hook-token"
 PAYLOAD = {"hook_event_name": "Stop", "session_id": "s1", "turn_id": "t1"}
 
 
@@ -87,7 +87,7 @@ def test_the_payload_is_delivered_bearing_the_hook_credential(
     router: tuple[str, Received],
 ) -> None:
     url, received = router
-    result = emit(["--path", CODEX_HOOK_PATH, "--url", url], {SECRET_ENV: SECRET})
+    result = emit(["--path", CODEX_HOOK_PATH, "--url", url], {TOKEN_ENV: SECRET})
 
     assert result.returncode == 0
     assert received.body == PAYLOAD
@@ -98,7 +98,7 @@ def test_the_payload_is_delivered_bearing_the_hook_credential(
 
 def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None:
     url, received = router
-    emit(["--path", CODEX_HOOK_PATH, "--url", url], {SECRET_ENV: SECRET})
+    emit(["--path", CODEX_HOOK_PATH, "--url", url], {TOKEN_ENV: SECRET})
 
     assert received.body is not None
     assert "octomate_driven" not in received.body
@@ -112,14 +112,14 @@ def test_without_a_secret_nothing_is_posted(router: tuple[str, Received]) -> Non
 
     assert result.returncode == 1
     assert received.body is None
-    assert SECRET_ENV in result.stderr
+    assert TOKEN_ENV in result.stderr
 
 
 def test_an_unreachable_octomate_does_not_take_the_turn_down() -> None:
     """A session is the person's own work; ingest only observes it."""
     result = emit(
         ["--path", CODEX_HOOK_PATH, "--url", "http://127.0.0.1:1/hooks/codex"],
-        {SECRET_ENV: SECRET},
+        {TOKEN_ENV: SECRET},
     )
 
     assert result.returncode == 1
@@ -135,7 +135,7 @@ def test_the_target_resolves_from_the_environment_at_fire_time(
     url, received = router
     result = emit(
         ["--path", CODEX_HOOK_PATH],
-        {SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
+        {TOKEN_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
     )
 
     assert result.returncode == 0
@@ -148,7 +148,7 @@ def test_a_pinned_url_wins_over_the_environment(router: tuple[str, Received]) ->
     url, received = router
     result = emit(
         ["--path", CODEX_HOOK_PATH, "--url", url],
-        {SECRET_ENV: SECRET, OCTOMATE_URL_ENV: "http://127.0.0.1:1"},
+        {TOKEN_ENV: SECRET, OCTOMATE_URL_ENV: "http://127.0.0.1:1"},
     )
 
     assert result.returncode == 0
@@ -158,7 +158,7 @@ def test_a_pinned_url_wins_over_the_environment(router: tuple[str, Received]) ->
 def test_without_a_target_nothing_is_posted_and_the_turn_survives() -> None:
     """No pin and no OCTOMATE_CLI_URL: say so on stderr and stay out of the way — a fresh
     machine without the environment set must not lose its session to ingest."""
-    result = emit(["--path", CODEX_HOOK_PATH], {SECRET_ENV: SECRET})
+    result = emit(["--path", CODEX_HOOK_PATH], {TOKEN_ENV: SECRET})
 
     assert result.returncode == 1
     assert OCTOMATE_URL_ENV in result.stderr
@@ -172,7 +172,7 @@ def test_the_claude_path_stays_silent_on_stdout(router: tuple[str, Received]) ->
     url, received = router
     result = emit(
         ["--path", "/hooks/claude"],
-        {SECRET_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
+        {TOKEN_ENV: SECRET, OCTOMATE_URL_ENV: base_of(url)},
     )
 
     assert result.returncode == 0
@@ -188,7 +188,7 @@ def test_the_config_file_backstops_a_bare_environment(
     url, received = router
     (tmp_path / ".config" / "octomate").mkdir(parents=True)
     (tmp_path / ".config" / "octomate" / "cli.toml").write_text(
-        f'url = "{base_of(url)}"\nsecret = "{SECRET}"\n'
+        f'url = "{base_of(url)}"\ntoken = "{SECRET}"\n'
     )
     result = emit(["--path", CODEX_HOOK_PATH], {"HOME": str(tmp_path)})
 
@@ -209,7 +209,7 @@ def test_the_project_config_backstops_too_and_wins_over_the_user_scope(
     )
     project = tmp_path / "project" / ".octomate"
     project.mkdir(parents=True)
-    (project / "cli.toml").write_text(f'url = "{base_of(url)}"\nsecret = "{SECRET}"\n')
+    (project / "cli.toml").write_text(f'url = "{base_of(url)}"\ntoken = "{SECRET}"\n')
     result = subprocess.run(
         [sys.executable, str(EMIT_SCRIPT), "--path", CODEX_HOOK_PATH],
         input=json.dumps(PAYLOAD),
@@ -239,7 +239,7 @@ def test_the_previous_generations_url_only_form_still_delivers(
     """Hooks written before `--path` existed invoke `emit.py --url <url>`; they keep
     delivering until their next re-install, rather than breaking on upgrade."""
     url, received = router
-    result = emit(["--url", url], {SECRET_ENV: SECRET})
+    result = emit(["--url", url], {TOKEN_ENV: SECRET})
 
     assert result.returncode == 0
     assert received.body == PAYLOAD
@@ -255,7 +255,7 @@ def test_its_duplicated_names_still_match_the_canonical_ones() -> None:
     Held against `CLISettings` itself rather than a constant beside it, so renaming a
     *field* — which is what decides the variable — is caught here too.
     """
-    assert SECRET_ENV == CLISettings.env("secret")
+    assert TOKEN_ENV == CLISettings.env("token")
     assert OCTOMATE_URL_ENV == CLISettings.env("url")
     assert HOOK_TIMEOUT == CANONICAL_HOOK_TIMEOUT
     assert CODEX_HOOK_PATH == CANONICAL_CODEX_HOOK_PATH
@@ -270,7 +270,7 @@ def test_the_script_and_the_settings_class_agree_on_which_file_wins(
     *later* file wins, so it lists them the other way round. Two opposite spellings of
     one answer, and a reversal would quietly point a session at the wrong server.
     """
-    monkeypatch.delenv(SECRET_ENV, raising=False)
+    monkeypatch.delenv(TOKEN_ENV, raising=False)
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     project = tmp_path / "project"
     project.mkdir()
@@ -280,16 +280,16 @@ def test_the_script_and_the_settings_class_agree_on_which_file_wins(
         (project_config_path(), "from-the-project-file"),
     ):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f'secret = "{value}"\n')
+        path.write_text(f'token = "{value}"\n')
 
     from_the_script = emit_module.resolved(
-        "secret",
-        SECRET_ENV,
+        "token",
+        TOKEN_ENV,
         [emit_module.file_config(path) for path in emit_module.config_files()],
     )
 
     assert from_the_script == "from-the-project-file"
-    assert CLISettings().secret == from_the_script
+    assert CLISettings().token == from_the_script
 
 
 def test_the_script_never_imports_the_octomate_package() -> None:

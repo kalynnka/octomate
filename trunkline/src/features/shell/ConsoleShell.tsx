@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { fetchThreads } from '@/lib/api/client'
 import { useConsole } from '@/state/console'
 import { ThreadsSidebar } from '@/features/threads/ThreadsSidebar'
 import { ControlRail } from '@/features/control/ControlRail'
@@ -8,7 +9,24 @@ import { TimelinePanel } from '@/features/timeline/TimelinePanel'
 import { StatusBar } from './StatusBar'
 
 export function ConsoleShell() {
-  const { applyViewport, cyclePermissionMode } = useConsole((s) => s.actions)
+  const { applyViewport, cyclePermissionMode, selectThread, startNewThread } = useConsole(
+    (s) => s.actions,
+  )
+  // Boot into the newest live thread; an empty or unreachable relay opens the
+  // new-thread flow (the status bar carries the offline state). The shell
+  // mounts once per sign-in, so each operator boots into their own threads.
+  useEffect(() => {
+    void (async () => {
+      let first: { channel_tentacle_id: string; id: string } | undefined
+      try {
+        first = (await fetchThreads())[0]
+      } catch {
+        first = undefined
+      }
+      if (first) void selectThread(first.channel_tentacle_id, first.id)
+      else startNewThread()
+    })()
+  }, [selectThread, startNewThread])
   useEffect(() => {
     const measure = () => applyViewport(window.innerWidth)
     measure()

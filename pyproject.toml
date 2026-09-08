@@ -22,7 +22,7 @@ dependencies = [
     "pydantic-graph>=2.20.0",
     "pydantic-ai-harness[code-mode]>=0.14",
     "watchfiles>=1.1.1",
-    "arcanus>=0.0.25",
+    "arcanus>=0.0.27",
     "sqlalchemy[aiosqlite]>=2.0",
     "uuid-utils>=0.9",
     "alembic>=1.15",
@@ -47,6 +47,7 @@ dependencies = [
     # pydantic-ai; the slim distribution is the same package without the CLI's
     # dependencies.
     "fastmcp-slim[server]>=3.4",
+    "argon2-cffi>=25.1.0",
 ]
 
 [project.urls]

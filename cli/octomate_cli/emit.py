@@ -30,7 +30,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-SECRET_ENV = "OCTOMATE_CLI_SECRET"
+TOKEN_ENV = "OCTOMATE_CLI_TOKEN"
 OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
 CODEX_HOOK_PATH = "/hooks/codex"
 HOOK_TIMEOUT = 10
@@ -75,13 +75,13 @@ def resolved(key: str, env: str, tables: list[dict[str, object]]) -> str | None:
     return None
 
 
-def main(url: str, secret: str | None) -> int:
+def main(url: str, token: str | None) -> int:
     payload = json.load(sys.stdin)
-    if not secret:
+    if not token:
         print(
-            f"octomate: no credential — {SECRET_ENV} is unset and the "
+            f"octomate: no credential — {TOKEN_ENV} is unset and the "
             "client config holds none, so this session is not being ingested. "
-            "Run `octomate configure`.",
+            "Run `octomate configure --token <api-token>`.",
             file=sys.stderr,
         )
         return 1
@@ -91,7 +91,7 @@ def main(url: str, secret: str | None) -> int:
         data=json.dumps(payload).encode(),
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {secret}",
+            "Authorization": f"Bearer {token}",
         },
     )
     try:
@@ -136,7 +136,7 @@ if __name__ == "__main__":
         )
         status = 1
     else:
-        status = main(url, resolved("secret", SECRET_ENV, tables))
+        status = main(url, resolved("token", TOKEN_ENV, tables))
     if path is None or path == CODEX_HOOK_PATH:
         # Codex reads stdout as the hook's decision; an empty object decides nothing,
         # which is what an observer should do. A Claude hook's stdout is injected into

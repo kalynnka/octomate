@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
+from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
@@ -750,7 +751,7 @@ class OctomateSession:
         )
 
 
-class GatewayManager:
+class GatewayManager(Manager):
     """The live Octomate sessions, one per driven turn, keyed by conversation id.
 
     In-process on purpose: a session is only meaningful while its turn is in

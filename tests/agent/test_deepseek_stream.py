@@ -7,7 +7,7 @@ seqs, not bytes, because the client reads its dsh gateway rather than a file."""
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import pytest
@@ -31,8 +31,8 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
+from octomate.config import OctomateConfig
 from octomate.config.agents import DeepseekConfig
-from octomate.managers.user import UserManager
 from octomate.schemas.conversation import Conversation
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
@@ -41,8 +41,8 @@ from tests.agent.test_deepseek_native_ingest import (
     SESSION_ID,
     turn_events,
 )
-from tests.support.config import registered
 from tests.support.managers import a_thread
+from tests.support.users import a_api_key, a_user, auth_config
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -54,19 +54,17 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
-    config = registered(SECRET.get_secret_value())
-    octomate = Octomate(config=config, users=UserManager(config.users))
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = DeepseekTentacle(
         "deepseek",
         octomate,
         config=DeepseekConfig(),
     )
 
-    # Entering the client runs the lifespan: the registered user gets their
-    # registry row, the way the real app reconciles before serving.
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await octomate.users.reconcile()
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        user = await a_user()
+        await a_api_key(user, SECRET.get_secret_value())
         yield
 
     app = FastAPI(lifespan=lifespan)

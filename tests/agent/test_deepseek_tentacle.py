@@ -50,7 +50,6 @@ from octomate.tentacles.deepseek.wire import (
 from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.channels import FakeChannelTentacle
-from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -349,7 +348,6 @@ def interaction_octomate(
     conversations: FakeConversationManager | None = None,
 ) -> Octomate:
     return Octomate(
-        config=registered("the-hook-secret"),
         conversations=conversations or FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         tentacles={"im": a_channel(feelers)},

@@ -9,6 +9,7 @@ import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Sequence
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
 from types import TracebackType
@@ -74,8 +75,10 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
+from octomate.managers.auth import AuthManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
+from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
@@ -171,8 +174,7 @@ NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
 # How a driven turn's Codex process is told to reach Octomate's MCP server: the
 # launch config names these variables, and `new_client` fills them per conversation,
 # so the identity the header asserts is the launch config's and never the model's.
-# The token is the kicking user's own secret — the turn speaks as the human it
-# represents, and a kicker carrying none gets no wiring at all.
+# A temporary MCP API token represents the kicking user for this client.
 MCP_TOKEN_ENV = "OCTOMATE_MCP_TOKEN"
 MCP_CONVERSATION_ENV = "OCTOMATE_MCP_CONVERSATION"
 
@@ -180,16 +182,14 @@ MCP_CONVERSATION_ENV = "OCTOMATE_MCP_CONVERSATION"
 @dataclass
 class PooledCodexClient:
     client: AsyncCodex
+    resources: contextlib.AsyncExitStack
     # The live SDK thread handle for this Octomate thread; created on first turn and
     # reused so later turns continue the same Codex thread on the warm process.
     thread: AsyncThread | None = None
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
-    # The kicker's bearer this client's MCP wiring was launched with — None for
-    # no wiring. A turn wanting otherwise evicts and rebuilds, since launch config
-    # is fixed at process start.
-    mcp_bearer: SecretStr | None = None
+    api_key: IssuedApiKey | None = field(default=None, repr=False)
 
 
 class CodexClientPool:
@@ -207,22 +207,32 @@ class CodexClientPool:
         self,
         *,
         build: Callable[[uuid.UUID, SecretStr | None], AsyncCodex],
+        auth: AuthManager | None,
         max_clients: int | None,
         idle_ttl: float | None,
     ) -> None:
         self.build = build
+        self.auth: AuthManager | None = auth
         self.max_clients = max_clients
         self.idle_ttl = idle_ttl
         self.clients: OrderedDict[uuid.UUID, PooledCodexClient] = OrderedDict()
         self.lock = asyncio.Lock()
 
     async def acquire(
-        self, conversation_id: uuid.UUID, *, mcp_bearer: SecretStr | None = None
+        self, conversation_id: uuid.UUID, *, user_id: uuid.UUID | None = None
     ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
             pooled = self.clients.get(conversation_id)
-            if pooled is not None and pooled.mcp_bearer != mcp_bearer:
+            if pooled is not None and (
+                (pooled.api_key.key.user_id if pooled.api_key is not None else None)
+                != user_id
+                or (
+                    pooled.api_key is not None
+                    and pooled.api_key.key.expires_at is not None
+                    and pooled.api_key.key.expires_at <= datetime.now(UTC)
+                )
+            ):
                 # Launch config is fixed at process start, so a turn whose MCP
                 # wiring disagrees gets a fresh process; the Codex thread itself
                 # survives, resumed from the conversation's external id.
@@ -232,12 +242,32 @@ class CodexClientPool:
                         "client whose MCP wiring disagrees with this turn's"
                     )
                 del self.clients[conversation_id]
-                await self.close(pooled)
+                await pooled.resources.aclose()
                 pooled = None
             if pooled is None:
-                client = self.build(conversation_id, mcp_bearer)
-                pooled = PooledCodexClient(client=client, mcp_bearer=mcp_bearer)
-                self.clients[conversation_id] = pooled
+                async with contextlib.AsyncExitStack() as resources:
+                    api_key = None
+                    if user_id is not None and self.auth is not None:
+                        api_key = await self.auth.create_api_key(
+                            user_id,
+                            name=f"Codex {conversation_id}",
+                            scopes=["mcp"],
+                            expires_at=datetime.now(UTC)
+                            + self.auth.config.runtime_api_key_lifetime,
+                        )
+                        resources.push_async_callback(
+                            self.auth.revoke_api_key, user_id, api_key.key.id
+                        )
+                    client = self.build(
+                        conversation_id, api_key.token if api_key is not None else None
+                    )
+                    resources.push_async_exit(client)
+                    pooled = PooledCodexClient(
+                        client=client,
+                        resources=resources.pop_all(),
+                        api_key=api_key,
+                    )
+                    self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
             pooled.last_used = time.monotonic()
@@ -259,7 +289,7 @@ class CodexClientPool:
             pooled = self.clients[conversation_id]
             if pooled.in_use == 0 and pooled.last_used < cutoff:
                 del self.clients[conversation_id]
-                await self.close(pooled)
+                await pooled.resources.aclose()
 
     async def evict_over_cap(self) -> None:
         if self.max_clients is None:
@@ -272,21 +302,14 @@ class CodexClientPool:
             pooled = self.clients[conversation_id]
             if pooled.in_use == 0:
                 del self.clients[conversation_id]
-                await self.close(pooled)
+                await pooled.resources.aclose()
 
     async def aclose(self) -> None:
         async with self.lock:
             pooled_clients = list(self.clients.values())
             self.clients.clear()
         for pooled in pooled_clients:
-            await self.close(pooled)
-
-    @staticmethod
-    async def close(pooled: PooledCodexClient) -> None:
-        # Pair the run's `__aenter__` with the SDK's own `__aexit__`
-        # teardown, so client init and shutdown stay explicit and matched.
-        with contextlib.suppress(Exception):
-            await pooled.client.__aexit__(None, None, None)
+            await pooled.resources.aclose()
 
 
 @dataclass
@@ -385,7 +408,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         the same 401 before any socket opens. Each route takes `hook_sender` — the
         verified bearer resolved to their own profile, on the guard's single
         per-request check — as the ledger's principal."""
-        verifier = hook_guard(self.octomate.bearers, self.id)
+        verifier = hook_guard(self.octomate.bearers)
         resolve_sender = hook_sender(self.octomate.users, CODEX_NATIVE_ID, verifier)
         router = APIRouter(tags=["codex"], dependencies=[Depends(verifier)])
 
@@ -642,6 +665,7 @@ class CodexTentacle(AgentTentacle[str, None]):
 
         self.pool = CodexClientPool(
             build=new_client,
+            auth=self.octomate.auth,
             max_clients=self.config.max_clients,
             idle_ttl=self.config.client_idle_ttl,
         )
@@ -661,12 +685,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 }
             }
         deployment = self.octomate.config
-        if deployment is None:
-            raise RuntimeError(
-                "this turn's Octomate session is registered, but the host cannot "
-                "name the served MCP endpoint to wire it to: Octomate.config must "
-                "be set"
-            )
         url = URL(
             scheme="http",
             host="127.0.0.1"
@@ -1171,19 +1189,18 @@ class CodexTentacle(AgentTentacle[str, None]):
             # and a chat thread's is thrown away when the run leaves — after the
             # client is back in the pool, which is why the pool sits inside it.
             async with workspace:
-                # Registered by the react node for exactly the turns whose connection
-                # has the gateway; an accomplice's or a stray conversation is not
-                # there. The wiring carries the kicker's own credential, so a turn
-                # whose kicker is unregistered or carries no secret launches clean,
-                # with the spells withheld.
                 session = self.octomate.gateway.get(conversation.id)
-                mcp_bearer = (
-                    await self.octomate.users.secret_of(session.user_profile)
+                user_id = (
+                    session.user_profile.user_id
                     if session is not None
+                    and session.user_profile is not None
+                    and self.octomate.auth is not None
                     else None
                 )
-                thread_config = self.thread_config(mcp_bearer)
-                pooled = await self.pool.acquire(conversation.id, mcp_bearer=mcp_bearer)
+                pooled = await self.pool.acquire(conversation.id, user_id=user_id)
+                thread_config = self.thread_config(
+                    pooled.api_key.token if pooled.api_key is not None else None
+                )
                 try:
                     codex_thread = pooled.thread
                     if codex_thread is None:

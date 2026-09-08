@@ -6,7 +6,7 @@ Codex, and DeepSeek Harness.
 
 ```bash
 pip install octomate-cli
-octomate configure --url https://your-server.example
+octomate configure --url https://your-server.example --token '<api-token>'
 octomate claude hooks install
 octomate --version
 ```
@@ -24,3 +24,22 @@ same installer used to install it, such as `pip install --upgrade octomate-cli`.
 
 See the [project documentation](https://github.com/kalynnka/octomate) and
 [server deployment guide](https://github.com/kalynnka/octomate/blob/main/docs/server-deployment.md).
+
+## Client authentication
+
+Create an invitation on the server, then register using that code:
+
+```sh
+octomate invite
+octomate user create --username alice --password 'YourPassword1!' --invitationcode '<code>'
+```
+
+These commands require the server package and use its configured database.
+`octomate invite --url <server>` prints a registration link instead of the code.
+Sign-in happens in the Trunkline UI.
+
+Issue an API token through the authenticated account API, then run
+`octomate configure --token <api-token>`. The config key is `token` and the
+environment override is `OCTOMATE_CLI_TOKEN`. Old `secret` values and
+`OCTOMATE_CLI_SECRET` are no longer used. Install hooks and MCP after configuring
+the token, and reinstall MCP entries when it changes.

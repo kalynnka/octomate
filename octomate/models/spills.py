@@ -4,11 +4,11 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import DateTime, LargeBinary, String, Uuid
+from sqlalchemy import LargeBinary, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, UTCDateTime
 
 
 class ToolOutputSpill(Base, TransmuterProxiedMixin):
@@ -26,7 +26,7 @@ class ToolOutputSpill(Base, TransmuterProxiedMixin):
     handle: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
