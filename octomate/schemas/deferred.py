@@ -6,7 +6,6 @@ from typing import (
     Annotated,
     Literal,
     NotRequired,
-    TypeAlias,
     TypedDict,
     cast,
 )
@@ -95,12 +94,12 @@ class DeferredApprovalPayload(TypedDict):
     metadata: JsonObject
 
 
-DeferredActionPayload: TypeAlias = DeferredQuestionPayload | DeferredApprovalPayload
-DeferredActionCollectionInput: TypeAlias = (
+type DeferredActionPayload = DeferredQuestionPayload | DeferredApprovalPayload
+type DeferredActionCollectionInput = (
     DeferredToolRequests | list[DeferredActionPayload | JsonObject]
 )
-DeferredQuestionResult: TypeAlias = str | None
-DeferredApprovalResult: TypeAlias = bool | None
+type DeferredQuestionResult = str | None
+type DeferredApprovalResult = bool | None
 
 
 @sqlalchemy_materia.bless(deferred_models.DeferredAction)
@@ -156,7 +155,7 @@ class DeferredApproval(DeferredAction):
     args: ApprovalRequest
 
 
-DeferredActionVariant: TypeAlias = Annotated[
+type DeferredActionVariant = Annotated[
     DeferredQuestion | DeferredApproval,
     Field(discriminator="kind"),
 ]

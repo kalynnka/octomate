@@ -18,7 +18,7 @@ import logging
 import uuid
 from collections.abc import Awaitable, Callable
 from functools import wraps
-from typing import TYPE_CHECKING, Annotated, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Annotated
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -82,11 +82,8 @@ CONVERSATION_HEADER = "X-Octomate-Conversation"
 # trust domain, not authentication: the bearer is what authenticates.
 CLIENT_HEADER = "X-Octomate-Client"
 
-SpellP = ParamSpec("SpellP")
-SpellT = TypeVar("SpellT")
 
-
-def spoken(
+def spoken[**SpellP, SpellT](
     spell: Callable[SpellP, Awaitable[SpellT]],
 ) -> Callable[SpellP, Awaitable[SpellT]]:
     """A spell with its refusal spoken as the model reads it: a `ToolError` carrying

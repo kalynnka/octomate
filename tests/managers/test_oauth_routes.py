@@ -61,7 +61,7 @@ async def test_the_start_link_redirects_to_the_staged_provider_request() -> None
 
 
 async def test_an_unknown_start_link_says_only_that_it_is_finished() -> None:
-    manager, _profile, _flow, client = await linear_browser()
+    _manager, _profile, _flow, client = await linear_browser()
 
     async with client:
         response = await client.get(
@@ -129,7 +129,7 @@ async def test_a_declined_authorization_closes_its_operation() -> None:
 
 
 async def test_a_callback_without_an_authorization_is_refused() -> None:
-    manager, _profile, _flow, client = await linear_browser()
+    _manager, _profile, _flow, client = await linear_browser()
 
     async with client:
         response = await client.get(f"/oauth/{LINEAR_CONNECTOR_ID}/callback")
