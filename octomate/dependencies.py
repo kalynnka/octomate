@@ -1,9 +1,10 @@
 from typing import Annotated
 
-from fastapi import Depends
+from fastapi import Depends, HTTPException
 from starlette.requests import HTTPConnection
 
 from octomate.base import Octomate
+from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
@@ -20,6 +21,14 @@ def application(connection: HTTPConnection) -> Octomate:
 
 def user_manager(app: Annotated[Octomate, Depends(application)]) -> UserManager:
     return app.users
+
+
+def auth_manager(app: Annotated[Octomate, Depends(application)]) -> AuthManager:
+    if app.auth is None:
+        raise HTTPException(
+            status_code=503, detail="Local account authentication is not configured"
+        )
+    return app.auth
 
 
 def thread_manager(app: Annotated[Octomate, Depends(application)]) -> ThreadManager:

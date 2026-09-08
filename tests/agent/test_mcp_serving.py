@@ -1,5 +1,5 @@
 """Octomate serving its MCP server: one endpoint, `/octomate/mcp`, behind the
-registered users' own secrets — the only bearers there are, so a deployment with
+registered users' scoped API tokens, so a deployment with
 no registered user serves it locked outright.
 
 Spoken to over the wire — through the mounted app, bearer and all — which is how a
@@ -26,9 +26,7 @@ from octomate.base import Octomate
 from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import AgentModelConfig, ChannelConfig
-from octomate.config.users import UserConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.user import UserManager
 from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
@@ -44,6 +42,7 @@ from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle, FakeOctomate
+from tests.support.users import a_api_key, a_user, auth_config
 
 LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 
@@ -64,7 +63,7 @@ async def served(
     lifespan, which Starlette never runs for a mounted app on its own. A context
     rather than a fixture because the transport's task group must be left from
     the task that entered it, and a fixture's teardown runs in another."""
-    octomate = octomate or Octomate()
+    octomate = octomate or Octomate(config=OctomateConfig(auth=auth_config()))
     app = octomate
     async with app.router.lifespan_context(app):
         yield octomate, app
@@ -100,27 +99,16 @@ def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
 DRIVEN_BEARER = {"Authorization": "Bearer lu-token"}
 
 
-def a_driven_deployment() -> Octomate:
-    """A deployment whose driven turns are kicked by the registered `lu` — the
-    secret in the config is the bearer the turn's launch config would carry."""
-    return Octomate(
-        config=OctomateConfig.model_validate({"users": {"lu": {"secret": "lu-token"}}}),
-        users=UserManager(
-            {
-                "lu": UserConfig.model_validate(
-                    {
-                        "secret": "lu-token",
-                        "profiles": {"im": {"channel_user_id": "alice"}},
-                    }
-                )
-            }
-        ),
-    )
+async def a_driven_deployment() -> Octomate:
+    """A deployment whose driven turns carry the persisted bearer for `lu`."""
+    user = await a_user("lu", profiles={"im": "alice"})
+    await a_api_key(user, "lu-token")
+    return Octomate(config=OctomateConfig(auth=auth_config()))
 
 
 async def a_driven_turn(octomate: Octomate) -> OctomateSession:
     """A turn at the gateway, as React registers one: the session a served call
-    naming its conversation runs against, kicked by `lu`'s reconciled account."""
+    naming its conversation runs against, kicked by `lu`'s linked account."""
     session = OctomateSession(
         channel_routes={"im": []},
         current_agent_id="codex",
@@ -154,7 +142,7 @@ class ToolsTentacle(FakeChannelTentacle, OAuthMcpTentacle):
 def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once() -> (
     None
 ):
-    octomate = Octomate()
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     octomate.connect(ToolsTentacle(id="a", octomate=octomate))
     octomate.connect(ToolsTentacle(id="b", octomate=octomate))
 
@@ -181,7 +169,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
     # Nobody has linked the fake, so its proxy lists nothing; what a caller
     # sees is the linking pair, after Octomate's own families — and the pair
     # knows only the tentacles served here.
-    octomate = a_driven_deployment()
+    octomate = await a_driven_deployment()
     octomate.connect(ToolsTentacle(id="a", octomate=octomate))
     async with served(octomate) as (octomate, app):
         session = await a_driven_turn(octomate)
@@ -243,8 +231,8 @@ async def test_the_server_refuses_an_unauthenticated_call(
     assert response.headers["www-authenticate"].startswith("Bearer")
 
 
-async def test_a_user_secret_opens_the_six_spells_and_the_history_tools() -> None:
-    async with served(a_driven_deployment()) as (octomate, app):
+async def test_an_api_token_opens_the_six_spells_and_the_history_tools() -> None:
+    async with served(await a_driven_deployment()) as (octomate, app):
         async with over(octomate, app, DRIVEN_BEARER) as client:
             tools = await client.list_tools()
 
@@ -252,7 +240,7 @@ async def test_a_user_secret_opens_the_six_spells_and_the_history_tools() -> Non
 
 
 async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:
-    async with served(a_driven_deployment()) as (octomate, app):
+    async with served(await a_driven_deployment()) as (octomate, app):
         session = await a_driven_turn(octomate)
         async with over(
             octomate,
@@ -267,25 +255,14 @@ async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:
 
 
 async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
-    # `hui` is registered too, but the turn was kicked by `lu`: a valid user
-    # secret opens the endpoint, and the gateway still refuses to let it drive
+    # `hui` is registered too, but the turn was kicked by `lu`: a valid API
+    # token opens the endpoint, and the gateway still refuses to let it drive
     # someone else's session.
-    octomate = Octomate(
-        config=OctomateConfig.model_validate(
-            {"users": {"lu": {"secret": "lu-token"}, "hui": {"secret": "hui-token"}}}
-        ),
-        users=UserManager(
-            {
-                "lu": UserConfig.model_validate(
-                    {
-                        "secret": "lu-token",
-                        "profiles": {"im": {"channel_user_id": "alice"}},
-                    }
-                ),
-                "hui": UserConfig.model_validate({"secret": "hui-token"}),
-            }
-        ),
-    )
+    user = await a_user("lu", profiles={"im": "alice"})
+    await a_api_key(user, "lu-token")
+    user = await a_user("hui")
+    await a_api_key(user, "hui-token")
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     async with served(octomate) as (octomate, app):
         session = await a_driven_turn(octomate)
         header = {CONVERSATION_HEADER: str(session.conversation_id)}
@@ -297,7 +274,7 @@ async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
 
 
 async def test_a_call_naming_no_turn_is_refused() -> None:
-    async with served(a_driven_deployment()) as (octomate, app):
+    async with served(await a_driven_deployment()) as (octomate, app):
         await a_driven_turn(octomate)
 
         async with over(octomate, app, DRIVEN_BEARER) as client:
@@ -315,29 +292,13 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
                 await client.call_tool("gateway_scry", {"reveal": "routes"})
 
 
-def a_native_deployment() -> FakeOctomate:
-    """A deployment a registered native claude session can route through: the
-    flag on, the user's own secret in the deployment config, their real `im`
-    account reconciled, and `im` serving an agent whose routes a crossing can
-    name. The config carries only the credential half — its user links may name
-    only configured channels, and `im` is a runtime fake — while the manager
-    reconciles the profiles, as `main.py` builds both from one config."""
+async def a_native_deployment() -> FakeOctomate:
+    """A registered native Claude session with a linked account on `im`."""
+    user = await a_user("luhui", profiles={"im": "alice"})
+    await a_api_key(user, "luhui-token")
     octomate = FakeOctomate(
         config=OctomateConfig.model_validate(
-            {
-                "agents": {"claude": {"models": ["opus"]}},
-                "users": {"luhui": {"secret": "luhui-token"}},
-            }
-        ),
-        users=UserManager(
-            {
-                "luhui": UserConfig.model_validate(
-                    {
-                        "secret": "luhui-token",
-                        "profiles": {"im": {"channel_user_id": "alice"}},
-                    }
-                )
-            }
+            {"agents": {"claude": {"models": ["opus"]}}, "auth": auth_config()}
         ),
     )
     octomate.connect(FakeAgent(id="other"))
@@ -358,7 +319,7 @@ USER_BEARER = {"Authorization": "Bearer luhui-token"}
 
 
 async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
-    async with served(a_native_deployment()) as (octomate, app):
+    async with served(await a_native_deployment()) as (octomate, app):
         async with over(
             octomate, app, {**USER_BEARER, CLIENT_HEADER: "emacs-native"}
         ) as client:
@@ -367,7 +328,7 @@ async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
 
 
 async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
-    async with served(a_native_deployment()) as (octomate, app):
+    async with served(await a_native_deployment()) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
             result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
 
@@ -378,7 +339,7 @@ async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
 
 
 async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
-    octomate = a_native_deployment()
+    octomate = await a_native_deployment()
     async with served(octomate) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
             result = await client.call_tool(

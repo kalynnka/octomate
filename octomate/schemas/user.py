@@ -22,7 +22,7 @@ ANONYMOUS_CHANNEL_USER_ID = "0"
 class UserProfile(BaseTransmuter):
     """An observed channel identity and the boundary channel-profile shape.
 
-    Persisted profiles belong to a YAML-declared ``User`` or remain ownerless
+    Persisted profiles belong to a registered ``User`` or remain ownerless
     visitors. Ephemeral channel snapshots also have no owner; ``UserManager``
     stamps their channel id and resolves ownership from the registry row.
     """
@@ -53,7 +53,7 @@ class UserProfile(BaseTransmuter):
     user_id: uuid.UUID | None = Field(
         default=None,
         description=(
-            "The YAML-declared owning User; None for ephemeral snapshots and "
+            "The registered owning User; None for ephemeral snapshots and "
             "persisted visitor profiles."
         ),
     )
@@ -61,20 +61,22 @@ class UserProfile(BaseTransmuter):
         default_factory=Relation,
         frozen=True,
         exclude=True,
-        description="The optional YAML-declared owner, eagerly loaded.",
+        description="The optional registered owner, eagerly loaded.",
     )
 
 
 @sqlalchemy_materia.bless(UserModel)
 class User(BaseTransmuter):
-    """A YAML-declared human across channels."""
+    """A registered human across channels."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(
+        from_attributes=True, json_schema_serialization_defaults_required=True
+    )
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     username: str = Field(
         frozen=True,
-        description="Stable username naming this human — the `users:` YAML key.",
+        description="Stable username naming this human across sign-in and channels.",
     )
     name: str = Field(
         default="",
@@ -90,16 +92,7 @@ class User(BaseTransmuter):
         repr=False,
         description="Argon2id password hash; None until local sign-in is enrolled.",
     )
-    secret: SecretStr | None = Field(
-        default=None,
-        exclude=True,
-        description="This human's own bearer credential; the column is unique, "
-        "so a bearer names exactly one user, and None registers identity only. "
-        "Masked as `SecretStr` and excluded from dumps besides — it leaves the "
-        "row only through `UserManager.secret_of`.",
-    )
-
-    profiles: RelationCollection[UserProfile] = Relationships()
+    profiles: RelationCollection[UserProfile] = Relationships(exclude=True)
 
 
 # `UserProfile.user` names `User`, which is declared below it, so the profile is

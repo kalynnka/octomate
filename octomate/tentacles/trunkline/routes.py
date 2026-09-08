@@ -34,32 +34,31 @@ thread: it is the console's to change, mid-thread, and the conversation is what
 remembers it. It is switched through PATCH, or — while the thread is still being
 composed and has no row to switch — carried on the directive that creates it."""
 
-from __future__ import annotations
-
 import uuid
-from typing import TYPE_CHECKING
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from octomate.auth import browser_request, current_user
+from octomate.base import Octomate
 from octomate.config.agents import AgentRouteModelName
+from octomate.dependencies import thread_manager
+from octomate.managers.thread import ThreadManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.user import User
 from octomate.tentacles.trunkline.base import (
-    CONSOLE_USER_ID,
     ROUTE_SEP,
     RouteLockedError,
     TrunklineDirective,
     TrunklineTentacle,
 )
 from octomate.types.permissions import PERMISSION_MODES, AgentPermissionMode
-
-if TYPE_CHECKING:
-    from octomate import Octomate
 
 
 class RouteInfo(BaseModel):
@@ -140,7 +139,11 @@ def build_trunkline_router(
         )
     channel: TrunklineTentacle = registered
 
-    router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
+    router = APIRouter(
+        prefix="/api/trunkline",
+        tags=["trunkline"],
+        dependencies=[Depends(browser_request), Depends(current_user)],
+    )
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:
@@ -199,17 +202,24 @@ def build_trunkline_router(
 
     @router.get(
         "/threads",
-        summary="Every channel's threads, most recently touched first",
-        response_model_exclude={"__all__": {"messages"}},
+        summary="This user's threads, most recently touched first",
+        response_model_exclude={"__all__": {"messages", "parent"}},
     )
-    async def list_threads() -> list[Thread]:
-        return await octomate.thread_manager.list_threads()
+    async def list_threads(
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+        user: Annotated[User, Depends(current_user)],
+    ) -> list[Thread]:
+        return await threads.list_threads(user_id=user.id)
 
-    @router.get("/threads/{thread_id}", response_model_exclude={"messages"})
-    async def read_thread(thread_id: uuid.UUID) -> Thread:
+    @router.get("/threads/{thread_id}", response_model_exclude={"messages", "parent"})
+    async def read_thread(
+        thread_id: uuid.UUID,
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+        user: Annotated[User, Depends(current_user)],
+    ) -> Thread:
         """One thread and its handoffs, by row id — any channel's, not only the
         console's own."""
-        thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+        thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
         if thread is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         return thread
@@ -219,8 +229,12 @@ def build_trunkline_router(
         summary="The thread's chat ledger, oldest first",
         response_model_exclude={"__all__": {"model_messages"}},
     )
-    async def thread_messages(thread_id: uuid.UUID) -> list[ThreadMessage]:
-        thread = await octomate.thread_manager.get(thread_id)
+    async def thread_messages(
+        thread_id: uuid.UUID,
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+        user: Annotated[User, Depends(current_user)],
+    ) -> list[ThreadMessage]:
+        thread = await threads.get(thread_id, user_id=user.id)
         if thread is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         return list(thread.messages)
@@ -230,7 +244,9 @@ def build_trunkline_router(
         summary="The thread's agent conversations, each with its runs",
         response_model_exclude={"__all__": {"messages"}},
     )
-    async def thread_conversations(thread_id: uuid.UUID) -> list[Conversation]:
+    async def thread_conversations(
+        thread: Annotated[Thread, Depends(read_thread)],
+    ) -> list[Conversation]:
         """Subagent conversations included — they name their parent, so a reader
         can fold them under the run whose tool call spawned them.
 
@@ -239,20 +255,17 @@ def build_trunkline_router(
         a thread would otherwise watch a run's whole middle disappear. The
         conversation's own `messages` stay excluded — that relation is the same rows
         under a different parent, and one copy is enough."""
-        if await octomate.thread_manager.get(thread_id, with_messages=False) is None:
-            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         return await octomate.conversations.for_thread(
-            thread_id, with_run_messages=True
+            thread.id, with_run_messages=True
         )
 
     @router.get("/threads/{thread_id}/project")
-    async def thread_project(thread_id: uuid.UUID) -> Project | None:
+    async def thread_project(
+        thread: Annotated[Thread, Depends(read_thread)],
+    ) -> Project | None:
         """The project this thread's work is in; null for a thread no project
         claims. Frozen: it is set when the thread is created, from the directory
         the session ran in, and no endpoint changes it."""
-        thread = await octomate.thread_manager.get(thread_id, with_messages=False)
-        if thread is None:
-            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         return await thread.project
 
     @router.get(
@@ -260,13 +273,13 @@ def build_trunkline_router(
         summary="Unanswered action batches, oldest first",
         response_model_exclude={"__all__": {"requests"}},
     )
-    async def thread_batches(thread_id: uuid.UUID) -> list[DeferredActionBatch]:
+    async def thread_batches(
+        thread: Annotated[Thread, Depends(read_thread)],
+    ) -> list[DeferredActionBatch]:
         """The waiting questions and approvals, so a reload re-renders the
         feelers a run is blocked on. `requests` stays behind: it is the agent's
         own tool-call payload, and the actions carry what a reader asks."""
-        if await octomate.thread_manager.get(thread_id, with_messages=False) is None:
-            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
-        return await octomate.deferred_actions.pending_for_thread(thread_id)
+        return await octomate.deferred_actions.pending_for_thread(thread.id)
 
     @router.post(
         "/threads/{thread_key}/messages",
@@ -275,9 +288,14 @@ def build_trunkline_router(
         description="`thread_key` is the trunkline platform thread id (not the "
         "row id): a fresh key creates the thread, an existing one continues it.",
     )
-    async def send_directive(thread_key: str, body: DirectiveBody) -> StreamingResponse:
+    async def send_directive(
+        thread_key: str,
+        body: DirectiveBody,
+        user: Annotated[User, Depends(current_user)],
+    ) -> StreamingResponse:
         directive = TrunklineDirective(
             thread_id=thread_key,
+            user=user,
             text=body.text,
             message_id=body.message_id,
             model=body.model,
@@ -297,7 +315,10 @@ def build_trunkline_router(
         response_model_exclude={"messages", "runs"},
     )
     async def set_permission_mode(
-        conversation_id: uuid.UUID, body: PermissionModeBody
+        conversation_id: uuid.UUID,
+        body: PermissionModeBody,
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+        user: Annotated[User, Depends(current_user)],
     ) -> Conversation:
         """The one place a live thread's posture changes. A run reads it as it
         starts, so the switch lands on the next turn and leaves anything in flight
@@ -306,6 +327,7 @@ def build_trunkline_router(
             conversation = await octomate.conversations.get(conversation_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        await read_thread(conversation.thread_id, threads, user)
         try:
             return await octomate.conversations.set_permission_mode(
                 conversation, body.permission_mode
@@ -319,19 +341,24 @@ def build_trunkline_router(
         summary="Answer a deferred-action batch and stream the resumed run",
     )
     async def resolve_batch(
-        batch_id: uuid.UUID, body: BatchResponseBody
+        batch_id: uuid.UUID,
+        body: BatchResponseBody,
+        user: Annotated[User, Depends(current_user)],
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
     ) -> StreamingResponse:
         try:
             batch = await octomate.deferred_actions.get_batch(batch_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
+        conversation = await octomate.conversations.get(batch.conversation_id)
+        await read_thread(conversation.thread_id, threads, user)
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
         return channel.stream_kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id,
-                responder_id=CONSOLE_USER_ID,
+                responder_id=str(user.id),
                 answers=body.answers,
                 approvals=body.approvals,
                 allow_session=body.allow_session,

@@ -8,7 +8,6 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
 from octomate.managers.project import ProjectManager
-from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.base import TentacleLogFormatter
@@ -72,7 +71,6 @@ def create_app() -> Octomate:
 
     octomate = Octomate(
         config=config,
-        users=UserManager(config.users),
         workspaces=WorkspaceManager(
             projects=ProjectManager(config.projects),
             mirrors=MirrorManager(config=config.mirrors),

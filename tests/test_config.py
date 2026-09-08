@@ -27,7 +27,6 @@ from octomate.config import (
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
-    UserConfig,
 )
 from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
 from octomate.config.channels import SLACK_MCP_SCOPES
@@ -42,8 +41,8 @@ IN_MEMORY_DB_URL = "sqlite+aiosqlite:///:memory:"
 
 
 def test_the_suite_never_reads_the_developers_config() -> None:
-    """`./.octomate/` and `~/.octomate/` are gitignored, so anything they carry — a
-    user, half a channel's secrets — would make a result depend on the machine. The
+    """`./.octomate/` and `~/.octomate/` are gitignored, so anything they carry — half
+    a channel's secrets — would make a result depend on the machine. The
     session fixture points `OCTOMATE_HOME` at `tests/config/` and clears the
     environment; this is what notices if either half stops."""
 
@@ -55,7 +54,7 @@ def test_the_suite_never_reads_the_developers_config() -> None:
     ]
 
     live = OctomateConfig()
-    assert live.users == {}
+    assert live.channels == {}
 
 
 def test_an_explicit_home_wins_over_discovery(
@@ -130,6 +129,7 @@ def test_the_packaged_defaults_are_a_valid_deployment() -> None:
     assert config.agents.configured_models() == {}
     assert config.channels == {}
     assert config.providers.deepseek is None
+    assert config.auth is None
 
 
 def test_channel_config_parses_supported_channels() -> None:
@@ -979,104 +979,6 @@ def test_agent_claims_override_parses_from_config() -> None:
     }
 
 
-def test_user_links_must_reference_configured_channel() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        OctomateConfig.model_validate(
-            {
-                "users": {
-                    "luhui": {
-                        "name": "Lu",
-                        "profiles": {"matrix": {"channel_user_id": "@lu:x"}},
-                    }
-                }
-            }
-        )
-
-    error = exc_info.value.errors()[0]
-    assert error["loc"] == ("users", "luhui", "profiles", "matrix")
-    assert error["msg"] == "'matrix' does not match a configured channel"
-
-
-def test_user_links_refuse_a_native_pseudo_channel() -> None:
-    # The runtime claim retired: a native session is registered by the user's
-    # own `secret`, so a pseudo-channel link has no claimed row left to seed and
-    # is as unresolvable as any typo — declared runtime or not.
-    with pytest.raises(
-        ValidationError, match="'claude-native' does not match a configured channel"
-    ):
-        OctomateConfig.model_validate(
-            {
-                "agents": {"claude": {"models": ["opus"]}},
-                "users": {
-                    "luhui": {
-                        "profiles": {"claude-native": {"channel_user_id": "native"}}
-                    }
-                },
-            }
-        )
-
-
-def test_distinct_user_secrets_validate() -> None:
-    config = OctomateConfig.model_validate(
-        {"users": {"lu": {"secret": "lu-token"}, "hui": {"secret": "hui-token"}}}
-    )
-
-    lu_secret = config.users["lu"].secret
-    assert lu_secret is not None
-    assert lu_secret.get_secret_value() == "lu-token"
-    # A user with no secret stays valid: registration is opt-in per user.
-    assert OctomateConfig.model_validate({"users": {"lu": {}}}).users["lu"].secret is (
-        None
-    )
-
-
-def test_user_profile_config_rejects_the_old_user_id_field() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        UserConfig.model_validate(
-            {
-                "profiles": {
-                    "slack": {
-                        "channel_user_id": "U1",
-                        "user_id": "U1",
-                        "name": "Lu",
-                    }
-                }
-            }
-        )
-
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("profiles", "slack", "user_id")
-    assert error["type"] == "uuid_parsing"
-
-
-def test_user_profile_config_ignores_server_generated_id() -> None:
-    supplied_id = "00000000-0000-0000-0000-000000000001"
-
-    config = UserConfig.model_validate(
-        {"profiles": {"slack": {"channel_user_id": "U1", "id": supplied_id}}}
-    )
-
-    assert str(config.profiles["slack"].id) != supplied_id
-
-
-def test_user_profile_config_requires_channel_user_id_in_a_mapping() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        UserConfig.model_validate({"profiles": {"slack": {"name": "Lu"}}})
-
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("profiles", "slack")
-    assert "channel_user_id is required in a YAML profile" in error["msg"]
-
-
-def test_user_profile_config_rejects_scalar_id_shorthand() -> None:
-    with pytest.raises(ValidationError) as exc_info:
-        UserConfig.model_validate({"profiles": {"slack": "U1"}})
-
-    [error] = exc_info.value.errors()
-    assert error["loc"] == ("profiles", "slack")
-    assert error["type"] == "model_attributes_type"
-
-
 def test_projects_validate_as_projects(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1163,43 +1065,6 @@ def test_a_projects_block_error_says_what_the_block_held() -> None:
     assert "[{'root': '~/Projects/inky'}]" in error["msg"]
 
 
-def test_user_links_accept_configured_channels() -> None:
-    config = OctomateConfig.model_validate(
-        {
-            "agents": {
-                "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-            },
-            "channels": {
-                "napcat": {
-                    "type": "napcat",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
-                    "ws_url": "ws://x",
-                    "http_url": "http://x",
-                },
-                "trunkline": {
-                    "type": "trunkline",
-                    "agents": [{"agent": "inkling", "model": "openai:gpt-4o"}],
-                },
-            },
-            "users": {
-                "luhui": {
-                    "name": "Lu",
-                    "profiles": {
-                        "napcat": {"channel_user_id": "9"},
-                        "trunkline": {"channel_user_id": "dev"},
-                    },
-                },
-            },
-        }
-    )
-
-    profiles = config.users["luhui"].profiles
-    assert {key: profile.channel_user_id for key, profile in profiles.items()} == {
-        "napcat": "9",
-        "trunkline": "dev",
-    }
-
-
 def test_one_vendor_can_be_mounted_once_per_account() -> None:
     # The key is the connector id, so two Linears differ by name rather than by
     # anything the config has to invent.
@@ -1281,3 +1146,16 @@ def test_a_slack_oauth_client_stores_tokens_and_so_needs_the_key() -> None:
     assert slack.oauth.scopes == SLACK_MCP_SCOPES
     assert "chat:write" not in slack.oauth.scopes
     assert str(slack.oauth.callback_base_uri) == "http://localhost:8000/"
+
+
+def test_users_are_not_loaded_from_yaml(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
+    (tmp_path / "users.yaml").write_text("users: [invalid old configuration]\n")
+
+    config = OctomateConfig()
+
+    assert "users.yaml" not in CONFIG_FILES
+    assert "users" not in OctomateConfig.model_fields
+    assert "users" not in config.model_dump()

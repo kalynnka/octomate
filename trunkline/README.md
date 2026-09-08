@@ -164,8 +164,9 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
     artifacts + a `plan.apply_edits`-style tool contract.
 13. **Relay verbs** — `POST /api/threads/{id}/teleport` and relay/send to
     another channel (reflex verbs exist in-process; not exposed over HTTP).
-14. **Auth + CORS** — everything above needs a session story; today the web
-    surface is a fixed `dev` user bound to 127.0.0.1 with no CORS headers.
+14. **Auth + CORS** — [invited local accounts](../docs/users.md) now use HttpOnly
+    sessions and private thread access. The console and API share an origin;
+    cross-origin access is not enabled.
 15. **A title on the thread row** — the sidebar names each thread by its
     surface (the platform thread key), because a listing carries no messages
     and reading one line per thread would be a request per row. The fix is a

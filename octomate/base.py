@@ -12,6 +12,8 @@ from itertools import count
 from typing import TypeVar
 
 from fastapi import FastAPI, Request, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
@@ -20,6 +22,7 @@ from rich.style import Style
 from starlette.types import ASGIApp
 
 from octomate.config.base import OctomateConfig
+from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
@@ -50,7 +53,6 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.mcp import McpTentacle
-from octomate.tentacles.trunkline.base import TrunklineTentacle
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)
@@ -117,15 +119,14 @@ class Octomate(FastAPI):
     # The deployment config the host was built from. What a tentacle reads for
     # serving facts the app object itself does not model — above all the uvicorn
     # bind port, which only the config knows.
-    config: OctomateConfig | None = None
+    config: OctomateConfig = field(default_factory=OctomateConfig)
     oauth_encryption_key: SecretStr | None = field(default=None, repr=False)
 
-    users: UserManager = field(default_factory=UserManager)
+    auth: AuthManager | None = field(init=False)
     oauth: OAuthManager = field(init=False)
-    # Every credential this deployment accepts — the registered users' own secrets,
-    # nothing else. One registry shared by the MCP verifier and the hook guards;
-    # with no user registered it rejects every bearer, and whether that should
-    # refuse a boot is the hook routers' own mounting question.
+    users: UserManager = field(default_factory=UserManager)
+
+    # Scoped API tokens, shared by MCP verification and hook guards.
     bearers: KnownBearers = field(init=False)
 
     thread_manager: ThreadManager = field(init=False)
@@ -156,12 +157,13 @@ class Octomate(FastAPI):
             lifespan=self.lifespan,
         )
         self.thread_manager = ThreadManager(users=self.users)
+        self.auth = (
+            AuthManager(self.config.auth) if self.config.auth is not None else None
+        )
+        self.bearers = KnownBearers(self.auth)
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=self.oauth_encryption_key,
-        )
-        self.bearers = KnownBearers(
-            self.config.users if self.config is not None else {}
         )
 
         @self.middleware("http")
@@ -171,6 +173,21 @@ class Octomate(FastAPI):
         ) -> Response:
             with sqlalchemy_materia():
                 return await call_next(request)
+
+        @self.exception_handler(RequestValidationError)
+        async def validation_error(
+            request: Request, error: RequestValidationError
+        ) -> JSONResponse:
+            # FastAPI's default includes raw rejected inputs, including passwords.
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": [
+                        {"loc": item["loc"], "msg": item["msg"], "type": item["type"]}
+                        for item in error.errors()
+                    ]
+                },
+            )
 
     @property
     def projects(self) -> ProjectManager:
@@ -294,11 +311,7 @@ class Octomate(FastAPI):
     @asynccontextmanager
     async def lifespan(self, app: FastAPI) -> AsyncGenerator[None]:
         with sqlalchemy_materia():
-            # The identity registry reconciles before any tentacle starts, so
-            # YAML users and their declared profiles exist from the first
-            # ingested message; every other sender remains a visitor.
-            await self.users.reconcile()
-            # Likewise the project registry: reconciling here is what builds
+            # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before
             # anything is running that could ask.
             await self.projects.reconcile()
@@ -317,7 +330,7 @@ class Octomate(FastAPI):
                 # transport's task group lives in that lifespan; the endpoint
                 # answers only inside it. Outermost, so the server is up
                 # before any tentacle starts and down after the last stops.
-                self.mcp_app.lifespan(self.mcp_app),
+                self.mcp.lifespan(self.mcp),
                 AsyncExitStack() as outer_stack,
                 AsyncExitStack() as channel_stack,
             ):
@@ -388,13 +401,13 @@ class Octomate(FastAPI):
                         await sweeping
 
     @cached_property
-    def mcp_app(self) -> StarletteWithLifespan:
+    def mcp(self) -> StarletteWithLifespan:
         # A mounted app rather than a router: the MCP transport speaks all three
         # methods on one path, reads and writes the stream itself, and carries
         # its own bearer check — the deployment's known bearers, the same
         # credentials and principals as the hook routers, which locks the
         # endpoint outright until a user is registered.
-        mcp = octomate_mcp(
+        octoate_mcp = octomate_mcp(
             served_session(self),
             self.thread_manager,
             kick=self.kick_soon,
@@ -404,12 +417,15 @@ class Octomate(FastAPI):
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name
         # below, this path is the tail of `OCTOMATE_MCP_PATH`.
-        return mcp.http_app(path="/mcp", stateless_http=True)
+        return octoate_mcp.http_app(path="/mcp", stateless_http=True)
 
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
+        from octomate.auth import auth_router
         from octomate.oauth.routes import oauth_router
+        from octomate.tentacles.trunkline.base import TrunklineTentacle
 
+        self.include_router(auth_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted
         # only when a registered connector actually points a browser at it — the two
@@ -421,7 +437,7 @@ class Octomate(FastAPI):
         ):
             self.include_router(oauth_router)
 
-        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.mcp_app, name=OCTOMATE_SERVER_NAME)
+        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.mcp, name=OCTOMATE_SERVER_NAME)
 
         for channel in self.channels.values():
             if (

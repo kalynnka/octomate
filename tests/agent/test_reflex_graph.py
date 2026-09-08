@@ -24,7 +24,6 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
-from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
@@ -91,6 +90,7 @@ from tests.support.managers import (
     a_project,
     a_registry,
 )
+from tests.support.users import a_user
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
@@ -1087,19 +1087,8 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
     channel that DM is on. `im` does not run `second` at all, so a handoff resolved
     against the origin instead would land back on `im`'s own first agent — with the
     brief delivered somewhere nobody chose."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
+    users = UserManager()
     address = _group_key()
     entry = FakeAgent(
         id="other",
@@ -1278,17 +1267,7 @@ async def _crossing_state(
     summon named rather than on whatever `im` happens to list first.
     """
     users = im.octomate.users
-    users.config = {
-        "luhui": UserConfig.model_validate(
-            {
-                "profiles": {
-                    "im": {"channel_user_id": "alice"},
-                    "far": {"channel_user_id": "ou_alice"},
-                }
-            }
-        )
-    }
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
     address = _group_key()
     far_landing = CrossingLanding(
         address=ChannelAddress(
@@ -1442,19 +1421,8 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
     crossing opens on the far channel, the handoff row says from=claude-native,
     and the brief is the far agent's prompt. The source is the native
     pseudo-channel nobody serves, which the crossing never needs to look up."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        CLAUDE_NATIVE_ID: {"channel_user_id": "native"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={CLAUDE_NATIVE_ID: "native", "far": "ou_alice"})
+    users = UserManager()
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
     far = FakeChannelTentacle(
         id="far",

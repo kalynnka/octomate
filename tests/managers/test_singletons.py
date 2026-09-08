@@ -6,7 +6,6 @@ from fastapi import Depends, FastAPI
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config.users import UsersConfig
 from octomate.dependencies import (
     application,
     conversation_manager,
@@ -30,18 +29,15 @@ from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 
 
 def test_manager_construction_is_independent() -> None:
-    config = UsersConfig()
-    users = UserManager(config)
+    users = UserManager()
     other = UserManager()
 
     assert other is not users
-    assert users.config is config
     assert other.lock(("slack", "U1")) is not users.lock(("slack", "U1"))
 
 
 async def test_dependency_reuses_the_configured_manager_across_requests() -> None:
-    config = UsersConfig()
-    octomate = Octomate(users=UserManager(config))
+    octomate = Octomate(users=UserManager())
     key = (uuid7(), "linear")
     lock = octomate.oauth.lock(key)
     assert isinstance(octomate, FastAPI)
@@ -53,7 +49,6 @@ async def test_dependency_reuses_the_configured_manager_across_requests() -> Non
     ) -> int:
         assert app is octomate
         assert manager.users is octomate.users
-        assert manager.users.config is config
         assert manager.lock(key) is lock
         return id(manager)
 

@@ -210,7 +210,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         route takes `hook_sender` — the verified bearer resolved to their own
         profile, on the guard's single per-request check — as the ledger's
         principal."""
-        verifier = hook_guard(self.octomate.bearers, self.id)
+        verifier = hook_guard(self.octomate.bearers)
         resolve_sender = hook_sender(self.octomate.users, CLAUDE_NATIVE_ID, verifier)
         router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
 

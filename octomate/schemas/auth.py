@@ -14,6 +14,17 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.auth import ApiKeyScope
 
 
+@sqlalchemy_materia.bless(auth_models.UserInvitation)
+class UserInvitation(BaseTransmuter):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    token_hash: SecretStr = Field(exclude=True, repr=False)
+    expires_at: AwareDatetime
+    consumed_at: AwareDatetime | None = None
+    version: int = Field(default=1, exclude=True, repr=False)
+
+
 @sqlalchemy_materia.bless(auth_models.UserSession)
 class UserSession(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)

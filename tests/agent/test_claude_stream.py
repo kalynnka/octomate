@@ -6,7 +6,7 @@ without `eof` leaves its open turns for the next connect to re-stream."""
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -30,8 +30,7 @@ from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
-from octomate.config import ClaudeCodeConfig
-from octomate.managers.user import UserManager
+from octomate.config import ClaudeCodeConfig, OctomateConfig
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
@@ -48,7 +47,7 @@ from tests.agent.test_claude_tailer import (
     subagent_runs_of,
 )
 from tests.support.agents import CLAUDE_MODELS
-from tests.support.config import registered
+from tests.support.users import a_api_key, a_user, auth_config
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -87,7 +86,7 @@ async def feed(
 
 
 def remote_tailer() -> tuple[Octomate, ClaudeTranscriptTailer]:
-    octomate = Octomate()
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     return octomate, ClaudeTranscriptTailer(
         octomate.conversations, octomate.thread_manager
     )
@@ -243,19 +242,17 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
 
 
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
-    config = registered(SECRET.get_secret_value())
-    octomate = Octomate(config=config, users=UserManager(config.users))
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
     )
 
-    # Entering the client runs the lifespan: the registered user gets their
-    # registry row, the way the real app reconciles before serving.
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await octomate.users.reconcile()
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        user = await a_user()
+        await a_api_key(user, SECRET.get_secret_value())
         yield
 
     app = FastAPI(lifespan=lifespan)

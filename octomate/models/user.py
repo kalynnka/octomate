@@ -13,16 +13,12 @@ from octomate.models.base import Base, SecretString
 
 class User(Base, TransmuterProxiedMixin):
     __tablename__ = "users"
-    # Named, not `unique=True`: the metadata has no naming convention, and an
-    # unnamed constraint cannot be dropped by a downgrade.
-    __table_args__ = (UniqueConstraint("secret", name="uq_users_secret"),)
-
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
     username: Mapped[str] = mapped_column(
         String,
         nullable=False,
         unique=True,
-        comment="Stable username naming this human — the `users:` YAML key.",
+        comment="Stable username naming this human.",
     )
     name: Mapped[str] = mapped_column(
         String,
@@ -40,19 +36,6 @@ class User(Base, TransmuterProxiedMixin):
         nullable=True,
         comment="Argon2id password hash; NULL until local sign-in is enrolled.",
     )
-    secret: Mapped[SecretStr | None] = mapped_column(
-        SecretString,
-        nullable=True,
-        comment=(
-            "This human's own bearer credential, reconciled from `users.<name>."
-            "secret` — what the served MCP endpoints and hook routers "
-            "authenticate. Unique, so a bearer names exactly one user; NULL for "
-            "a user registered only to link accounts. Stored plaintext by the "
-            "same posture as the YAML that seeds it, `SecretStr` above the "
-            "column."
-        ),
-    )
-
     profiles: Mapped[list[UserProfile]] = relationship(
         "UserProfile",
         back_populates="user",
@@ -85,7 +68,7 @@ class UserProfile(Base, TransmuterProxiedMixin):
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
-        comment="The YAML-declared owning User; NULL for a visitor profile.",
+        comment="The owning User; NULL for a visitor profile.",
     )
     channel_user_id: Mapped[str] = mapped_column(
         String,

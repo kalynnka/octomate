@@ -25,7 +25,6 @@ from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.todos import TodoCapability
 from octomate.config import AgentModelConfig, ChannelConfig
-from octomate.config.users import UserConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
@@ -42,6 +41,7 @@ from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from tests.support.agents import ScriptedStream, ScriptedTurn
 from tests.support.channels import FakeChannelTentacle
+from tests.support.users import a_user
 
 
 class _NoDmChannel(FakeChannelTentacle):
@@ -338,20 +338,10 @@ async def test_the_gate_works_out_where_else_the_asker_is(
     Only channels that are connected, have direct messages, and serve an agent —
     somewhere nobody could answer from is not somewhere this can go.
     """
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "lark": {"channel_user_id": "ou_alice"},
-                        "mute": {"channel_user_id": "m_alice"},
-                    }
-                }
-            )
-        }
+    await a_user(
+        "luhui", profiles={"im": "alice", "lark": "ou_alice", "mute": "m_alice"}
     )
-    await users.reconcile()
+    users = UserManager()
     here = await users.ensure_profile("im", UserProfile(channel_user_id="alice"))
 
     lark = FakeChannelTentacle(

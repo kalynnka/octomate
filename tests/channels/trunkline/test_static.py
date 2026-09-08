@@ -54,7 +54,7 @@ async def test_frontend_uses_the_enabled_channels_static_directory(
         assert app.url_path_for("console", path="app.js") == "/app.js"
         assert index.text == "<html>Trunkline</html>"
         assert asset.text == "window.trunkline = true;"
-    assert health.status_code == (200 if enabled else 404)
+    assert health.status_code == (503 if enabled else 404)
     assert mcp.status_code == 401
 
 

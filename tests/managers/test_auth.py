@@ -141,13 +141,13 @@ async def test_simultaneous_refreshes_only_issue_one_pair(
     first = await auth.login(user.username, PASSWORD)
     other = AuthManager(auth.config)
     barrier = asyncio.Barrier(2)
-    commit = AsyncSession.commit
+    flush = AsyncSession.flush
 
-    async def simultaneous_commit(session: AsyncSession) -> None:
+    async def simultaneous_flush(session: AsyncSession) -> None:
         await barrier.wait()
-        await commit(session)
+        await flush(session)
 
-    monkeypatch.setattr(AsyncSession, "commit", simultaneous_commit)
+    monkeypatch.setattr(AsyncSession, "flush", simultaneous_flush)
     results = await asyncio.wait_for(
         asyncio.gather(
             auth.refresh_session(first.refresh_token),

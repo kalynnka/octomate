@@ -20,8 +20,6 @@ from pathlib import Path
 import httpx
 from alembic.config import Config
 from alembic.script import ScriptDirectory
-from fastmcp import Client
-from fastmcp.client.transports import StreamableHttpTransport
 from octomate_protocol.deployment import DatabaseBackup
 from sqlalchemy.engine import make_url
 
@@ -144,50 +142,35 @@ def migrate(backup: DatabaseBackup) -> None:
     print(f"Database upgraded to {head}.")
 
 
-def local_http_client(
-    headers: dict[str, str] | None = None,
-    timeout: httpx.Timeout | None = None,
-    auth: httpx.Auth | None = None,
-    *,
-    follow_redirects: bool = True,
-) -> httpx.AsyncClient:
-    """Keep MCP readiness requests out of the operator's HTTP proxies."""
-    return httpx.AsyncClient(
-        headers=headers,
-        timeout=timeout,
-        auth=auth,
-        follow_redirects=follow_redirects,
-        trust_env=False,
-    )
-
-
 async def verify(config: OctomateConfig) -> None:
-    secret = next(
-        user.secret for user in config.users.values() if user.secret is not None
-    )
     url = f"http://{config.host}:{config.port}"
-    transport = StreamableHttpTransport(
-        f"{url}{OCTOMATE_MCP_PATH}",
-        auth=secret.get_secret_value(),
-        httpx_client_factory=local_http_client,
-    )
-    async with Client(transport, timeout=10, init_timeout=10) as client:
-        tools = await client.list_tools()
     console_enabled = any(
         channel.enabled and channel.type == "trunkline"
         for channel in config.channels.values()
     )
-    expected_status = 200 if console_enabled else 404
+    console_status = (
+        (401 if config.auth is not None else 503) if console_enabled else 404
+    )
     async with httpx.AsyncClient(base_url=url, trust_env=False) as client:
+        status = (
+            await client.post(
+                OCTOMATE_MCP_PATH,
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
+            )
+        ).status_code
+        if status != 401:
+            raise ValueError(
+                f"The MCP endpoint returned {status}; expected 401 without credentials."
+            )
         for path in ("/api/trunkline/health", "/api/trunkline/threads"):
             status = (await client.get(path)).status_code
-            if status != expected_status:
+            if status != console_status:
                 raise ValueError(
                     f"The console route {path} returned {status}; "
-                    f"expected {expected_status}."
+                    f"expected {console_status}."
                 )
     print(
-        f"Verified local Octomate MCP ({len(tools)} tools) and "
+        "Verified protected local Octomate MCP and "
         f"{'enabled' if console_enabled else 'disabled'} console routes."
     )
 
@@ -200,10 +183,6 @@ def main() -> None:
     database = database_path()
     if not isinstance(config.host, IPv4Address) or config.host.is_unspecified:
         raise ValueError("The managed server requires an explicit IPv4 bind address.")
-    if not any(user.secret is not None for user in config.users.values()):
-        raise ValueError(
-            "Register a user's bearer in users.yaml before starting the server."
-        )
     if action == "backup":
         deadline = time.monotonic() + 30
         while True:

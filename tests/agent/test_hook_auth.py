@@ -5,7 +5,7 @@ read back."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 import pytest
@@ -18,13 +18,17 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config import ClaudeCodeConfig, CodexConfig, DeepseekConfig
-from octomate.managers.user import UserManager
+from octomate.config import (
+    ClaudeCodeConfig,
+    CodexConfig,
+    DeepseekConfig,
+    OctomateConfig,
+)
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
-from tests.support.config import registered
+from tests.support.users import a_api_key, a_user, auth_config
 
 SECRET = SecretStr("the-hook-secret")
 EVENT = {"hook_event_name": "SessionEnd", "session_id": "s1"}
@@ -36,8 +40,7 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def client_for(path: str) -> TestClient:
-    config = registered(SECRET.get_secret_value())
-    octomate = Octomate(config=config, users=UserManager(config.users))
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     if path == CLAUDE_HOOK_PATH:
         tentacle = ClaudeCodeTentacle(
             "claude",
@@ -57,12 +60,10 @@ def client_for(path: str) -> TestClient:
             config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
         )
 
-    # Entering the client runs the lifespan: the registered user gets their
-    # registry row, the way the real app reconciles before serving — the hook
-    # handlers resolve the verified bearer's own profile against it.
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await octomate.users.reconcile()
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        user = await a_user()
+        await a_api_key(user, SECRET.get_secret_value())
         yield
 
     app = FastAPI(lifespan=lifespan)
@@ -90,7 +91,7 @@ def test_an_unauthenticated_hook_is_refused(path: str, headers: dict[str, str]) 
 @pytest.mark.parametrize(
     "path", [CLAUDE_HOOK_PATH, CODEX_HOOK_PATH, DEEPSEEK_HOOK_PATH]
 )
-def test_the_configured_secret_is_accepted(path: str) -> None:
+def test_the_api_token_is_accepted(path: str) -> None:
     with client_for(path) as client:
         response = client.post(
             path,
@@ -100,13 +101,10 @@ def test_the_configured_secret_is_accepted(path: str) -> None:
     assert response.status_code == 200
 
 
-def test_a_hook_router_refuses_to_mount_for_nobody() -> None:
-    # A deployment where no user carries a secret would serve a router no
-    # human's machine could reach — the boot says so instead.
+def test_a_hook_router_mounts_before_any_user_registers() -> None:
     tentacle = ClaudeCodeTentacle(
         "claude",
-        Octomate(),
+        Octomate(config=OctomateConfig(auth=auth_config())),
         config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
     )
-    with pytest.raises(RuntimeError, match="no registered user carries a secret"):
-        tentacle.routers()
+    assert len(tentacle.routers()) == 1

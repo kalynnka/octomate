@@ -19,7 +19,6 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
-from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
@@ -53,6 +52,7 @@ from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.support.channels import FakeChannelTentacle, RecordingOAuthFeeler
 from tests.support.managers import fixed_session
+from tests.support.users import a_user
 
 GITHUB_CONNECTOR_ID = "github"
 LINEAR_CONNECTOR_ID = "linear"
@@ -214,14 +214,8 @@ async def linear_manager(
 
 
 async def linked_user_manager() -> tuple[UserManager, UserProfile]:
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {"profiles": {"slack": {"channel_user_id": "U1"}}}
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"slack": "U1"})
+    users = UserManager()
     async with async_session() as session:
         profile = await session.one_or_none(
             UserProfile,
@@ -537,9 +531,12 @@ async def test_a_declined_authorization_is_closed() -> None:
 async def test_unlinking_the_profile_stops_its_callback() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
-    # The YAML declaration goes away while the user is at the provider's page.
-    manager.users.config = {}
-    await manager.users.reconcile()
+    # Ownership is revoked while the user is at the provider's page.
+    async with async_session() as session:
+        stored = await session.get(UserProfile, profile.id)
+        assert stored is not None
+        stored.user_id = None
+        await session.commit()
 
     with pytest.raises(UnusableOAuthOperation, match="no longer linked"):
         await manager.complete_callback(
@@ -704,19 +701,8 @@ async def test_start_replaces_a_device_authorization_that_has_expired() -> None:
 
 
 async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() -> None:
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "slack": {"channel_user_id": "U1"},
-                        "lark": {"channel_user_id": "OU1"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"slack": "U1", "lark": "OU1"})
+    users = UserManager()
     async with async_session() as session:
         slack = await session.one_or_none(
             UserProfile,

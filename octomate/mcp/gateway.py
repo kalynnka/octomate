@@ -165,9 +165,9 @@ def served_session(octomate: Octomate) -> Callable[[], Awaitable[OctomateSession
             agent = client.removesuffix("-native")
             raise ToolError(
                 "A native session speaks for a registered user, and this call's "
-                "bearer names none. Give this human their own under "
-                "`users.<name>.secret`, run `octomate configure --secret` with "
-                f"it on their machine, and re-run `octomate {agent} mcp "
+                "bearer names none. Run `octomate configure --token` with "
+                "their API token on their machine, then re-run "
+                f"`octomate {agent} mcp "
                 "install`."
             )
         return await native_session(octomate, client, principal)
@@ -190,8 +190,7 @@ async def native_session(
     profile = await octomate.users.native_profile(client, username)
     if profile is None:
         raise RuntimeError(
-            f"the bearer verified as {username!r} but the registry holds no such "
-            "user — reconciliation runs before serving, so this is a wiring bug"
+            f"the bearer verified as {username!r} but the registry holds no such user"
         )
     return OctomateSession(
         channel_routes=octomate.gateway.available_routes(

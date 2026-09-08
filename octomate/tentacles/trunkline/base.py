@@ -22,7 +22,7 @@ import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import TYPE_CHECKING, ClassVar, TypeAlias
+from typing import TYPE_CHECKING, ClassVar
 
 import anyio
 from anyio import BrokenResourceError, ClosedResourceError
@@ -56,7 +56,7 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
 from octomate.schemas.segments import ImageSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import Thread
-from octomate.schemas.user import UserProfile
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
     ChannelOutput,
     ChannelTentacle,
@@ -78,16 +78,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-RunStreamItem: TypeAlias = (
-    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-)
-TrunklineStreamItem: TypeAlias = (
-    RunStreamItem | SubagentStartedEvent | SubagentSettledEvent
-)
-
-# The console is single-user until it grows authentication; the sender is fixed
-# and every thread lives in the one private chat with them.
-CONSOLE_USER_ID = "dev"
+type RunStreamItem = StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+type TrunklineStreamItem = RunStreamItem | SubagentStartedEvent | SubagentSettledEvent
 
 # Separator joining agent and model into the route id the console picker offers.
 ROUTE_SEP = ":"
@@ -115,6 +107,7 @@ class TrunklineDirective(BaseModel):
     """One console turn: the directive text bound for a thread."""
 
     thread_id: str
+    user: User
     text: str
     message_id: str | None = None
     model: str | None = None
@@ -140,10 +133,10 @@ class TrunklineInk(Ink[WireEvent]):
     """Transport stub: only identity probing is used (output streams inline)."""
 
     async def inspect(self) -> UserProfile:
-        return UserProfile(channel_user_id="trunkline", name="Octomate")
+        return UserProfile(channel_user_id="trunkline", name="Trunkline")
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
-        return UserProfile(channel_user_id=user_id or CONSOLE_USER_ID, name="Console")
+        return UserProfile(channel_user_id=user_id, name="Console")
 
     async def upload_media(self, data: bytes) -> str | None:
         raise TrunklineSeamNotWired
@@ -175,8 +168,8 @@ class TrunklineChromo(Chromo[TrunklineDirective, WireEvent]):
         return MessageEvent(
             message_id=raw.message_id or uuid7().hex,
             channel_thread_id=raw.thread_id,
-            user_id=CONSOLE_USER_ID,
-            chat_id=CONSOLE_USER_ID,
+            user_id=str(raw.user.id),
+            chat_id=str(raw.user.id),
             chat_type="thread" if raw.thread_id else "dm",
             segments=[TextSegment(data={"text": raw.text})],
             raw=raw.text,
@@ -570,7 +563,13 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             raise ValueError("directive carried no text")
         event.tentacle_id = self.id
         event.self_id = self.self_profile.channel_user_id
-        event.sender = await self.get_user_profile(event.user_id)
+        event.sender = UserProfile(
+            channel_tentacle_id=self.id,
+            channel_user_id=event.user_id,
+            user_id=directive.user.id,
+            name=directive.user.name,
+            nickname=directive.user.nickname,
+        )
         thread = await self.octomate.thread_manager.ensure(
             ChannelAddress(
                 channel_tentacle_id=self.id,

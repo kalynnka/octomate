@@ -11,7 +11,6 @@ from pydantic_ai.messages import TextPart, UserPromptPart
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress
@@ -26,6 +25,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.user import UserProfile
 from tests.support.managers import a_loaded_thread
+from tests.support.users import a_user
 
 
 @pytest.fixture(autouse=True)
@@ -229,20 +229,8 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
 
 
 async def test_record_inbound_stamps_linked_identity_on_the_event() -> None:
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "name": "Lu Hui",
-                    "profiles": {
-                        "slack": {"channel_user_id": "U1"},
-                        "lark": {"channel_user_id": "ou_1"},
-                    },
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", name="Lu Hui", profiles={"slack": "U1", "lark": "ou_1"})
+    users = UserManager()
     manager = ThreadManager(users=users)
 
     slack = event("m1", "U1", "hello from slack")
@@ -572,20 +560,8 @@ async def test_a_persons_history_is_every_thread_their_accounts_spoke_in() -> No
     """Registered, alice is one person on slack and on lark: read as either
     account, her history holds both threads. Bob's own direct messages, where she
     never spoke, are his and not hers."""
-    users = UserManager(
-        {
-            "alice": UserConfig.model_validate(
-                {
-                    "secret": "alice-token",
-                    "profiles": {
-                        "slack": {"channel_user_id": "alice"},
-                        "lark": {"channel_user_id": "ou_alice"},
-                    },
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("alice", profiles={"slack": "alice", "lark": "ou_alice"})
+    users = UserManager()
     manager = ThreadManager(users=users)
     await manager.record_inbound(event("m1", "alice", "alpha on slack"))
     await manager.record_inbound(

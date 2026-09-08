@@ -18,7 +18,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
 from octomate.capabilities.history import HISTORY_TOOLS, HistoryCapability
-from octomate.config.users import UserConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
@@ -41,6 +40,7 @@ from octomate.schemas.user import UserProfile
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
+from tests.support.users import a_user
 
 CLAUDE_ROUTE = AgentRoute(
     agent_id="claude",
@@ -93,19 +93,8 @@ async def a_native_call(
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
     kicks: list[GatewayHandoffSignal] = []
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "secret": "luhui-token",
-                    "profiles": {"im": {"channel_user_id": "alice"}},
-                }
-                if linked
-                else {"secret": "luhui-token"}
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice"} if linked else {})
+    users = UserManager()
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
     session = OctomateSession(
@@ -541,17 +530,8 @@ async def test_a_native_session_reads_its_users_history(
     """A terminal session speaks for the registered person its bearer named, whose
     history is what their linked accounts said — read from the terminal as from
     any turn."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "secret": "luhui-token",
-                    "profiles": {"im": {"channel_user_id": "alice"}},
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice"})
+    users = UserManager()
     threads = ThreadManager(users=users)
     await threads.record_inbound(
         MessageEvent(

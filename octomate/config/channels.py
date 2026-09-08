@@ -281,7 +281,7 @@ class NapcatChannelConfig(ChannelConfig):
 # One variant per platform, selected by `type`. Keyed by instance id rather than by
 # platform, so a deployment can run two Lark apps — or two consoles — by naming them
 # apart; the key is the channel tentacle id everywhere downstream, which is what
-# `users[].profiles` and `Thread.channel_tentacle_id` already mean by it.
+# `UserProfile.channel_tentacle_id` and `Thread.channel_tentacle_id` already mean by it.
 type ChannelConfigVariant = Annotated[
     SlackChannelConfig
     | LarkChannelConfig

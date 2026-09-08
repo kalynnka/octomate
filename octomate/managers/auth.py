@@ -14,10 +14,16 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.auth import AuthConfig
 from octomate.database import async_session
-from octomate.managers.base import Manager
-from octomate.schemas.auth import IssuedApiKey, SessionTokens, UserApiKey, UserSession
+from octomate.managers.base import Locks, Manager
+from octomate.schemas.auth import (
+    IssuedApiKey,
+    SessionTokens,
+    UserApiKey,
+    UserInvitation,
+    UserSession,
+)
 from octomate.schemas.user import User
-from octomate.types.auth import ApiKeyScope
+from octomate.types.auth import ApiKeyScope, NewPasswordAdapter
 
 
 class InvalidCredentials(ValueError):
@@ -25,8 +31,13 @@ class InvalidCredentials(ValueError):
         super().__init__("Invalid or expired credentials")
 
 
-class AuthManager(Manager):
-    """Local passwords and credentials; callers own admission and resource access."""
+class UsernameUnavailable(ValueError):
+    def __init__(self) -> None:
+        super().__init__("This username is already taken")
+
+
+class AuthManager(Manager, Locks[str]):
+    """Invite-only registration, local passwords, and user credentials."""
 
     def __init__(self, config: AuthConfig) -> None:
         self.config: AuthConfig = config
@@ -53,6 +64,69 @@ class AuthManager(Manager):
                 (token.get_secret_value() + salt.get_secret_value()).encode()
             ).hexdigest()
         )
+
+    async def invite(self) -> SecretStr:
+        """Issue an anonymous code that admits one new account."""
+        token = SecretStr(secrets.token_urlsafe(32))
+        async with async_session() as session:
+            session.add(
+                UserInvitation(
+                    token_hash=SecretStr(
+                        hashlib.sha256(token.get_secret_value().encode()).hexdigest()
+                    ),
+                    expires_at=datetime.now(UTC) + self.config.invitation_lifetime,
+                )
+            )
+            await session.commit()
+            return token
+
+    async def register(
+        self, username: str, password: SecretStr, invitation: SecretStr, *, name: str
+    ) -> User:
+        if not username or username != username.strip() or len(username) > 100:
+            raise ValueError(
+                "Username must contain 1-100 characters without surrounding spaces"
+            )
+        password = NewPasswordAdapter.validate_python(password)
+        if not 1 <= len(name) <= 100:
+            raise ValueError("Display name must contain 1-100 characters")
+        async with self.lock(username), async_session() as session:
+            token_hash = SecretStr(
+                hashlib.sha256(invitation.get_secret_value().encode()).hexdigest()
+            )
+            current = await session.one_or_none(
+                UserInvitation,
+                expressions=[
+                    UserInvitation["token_hash"] == token_hash,
+                    UserInvitation["consumed_at"].is_(None),
+                    UserInvitation["expires_at"] > datetime.now(UTC),
+                ],
+            )
+            if current is None:
+                raise InvalidCredentials
+            if (
+                await session.one_or_none(
+                    User, expressions=[User["username"] == username]
+                )
+                is not None
+            ):
+                raise UsernameUnavailable
+            user = User(
+                username=username,
+                name=name,
+                password_hash=await self.hash_password(password),
+            )
+            session.add(user)
+            now = datetime.now(UTC)
+            if current.expires_at <= now:
+                raise InvalidCredentials
+            current.consumed_at = now
+            try:
+                await session.flush()
+            except StaleDataError as error:
+                raise InvalidCredentials from error
+            await session.commit()
+            return user
 
     async def login(self, username: str, password: SecretStr) -> SessionTokens:
         async with async_session() as session:
@@ -151,9 +225,10 @@ class AuthManager(Manager):
             )
             current.access_expires_at = tokens.access_expires_at
             try:
-                await session.commit()
+                await session.flush()
             except StaleDataError as error:
                 raise InvalidCredentials from error
+            await session.commit()
             return tokens
 
     async def revoke_session(self, user_id: uuid.UUID, session_id: uuid.UUID) -> None:
@@ -164,9 +239,10 @@ class AuthManager(Manager):
             if current.revoked_at is None:
                 current.revoked_at = datetime.now(UTC)
                 try:
-                    await session.commit()
+                    await session.flush()
                 except StaleDataError as error:
                     raise InvalidCredentials from error
+                await session.commit()
 
     async def create_api_key(
         self,
@@ -210,6 +286,16 @@ class AuthManager(Manager):
                 ],
             )
         return key if key is not None and scope in key.scopes else None
+
+    async def list_api_keys(self, user_id: uuid.UUID) -> list[UserApiKey]:
+        async with async_session() as session:
+            return list(
+                await session.list(
+                    UserApiKey,
+                    expressions=[UserApiKey["user_id"] == user_id],
+                    limit=None,
+                )
+            )
 
     async def revoke_api_key(self, user_id: uuid.UUID, key_id: uuid.UUID) -> None:
         async with async_session() as session:

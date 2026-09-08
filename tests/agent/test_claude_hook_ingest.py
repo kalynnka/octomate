@@ -9,9 +9,7 @@ from pydantic import JsonValue
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config.users import UserConfig
 from octomate.database import async_session
-from octomate.managers.user import UserManager
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
@@ -19,6 +17,7 @@ from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from tests.support.managers import a_loaded_thread
+from tests.support.users import a_user
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -351,10 +350,8 @@ async def test_the_ledger_row_belongs_to_the_bearers_user() -> None:
     """The principal is the point: an ingested prompt's sender profile is owned
     by the user whose token authenticated the hook, so two humans' terminals
     write distinguishable history."""
-    octomate = Octomate(
-        users=UserManager({"lu": UserConfig.model_validate({"secret": "lu-token"})})
-    )
-    await octomate.users.reconcile()
+    await a_user("lu")
+    octomate = Octomate()
     ingest = ClaudeHookIngest(
         octomate,
         ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),

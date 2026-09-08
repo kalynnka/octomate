@@ -280,7 +280,11 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         return bound
 
     async def get(
-        self, thread_id: uuid.UUID, *, with_messages: bool = True
+        self,
+        thread_id: uuid.UUID,
+        *,
+        with_messages: bool = True,
+        user_id: uuid.UUID | None = None,
     ) -> Thread | None:
         """The thread by primary key, or None — its handoffs with the row, its
         ledger only when asked for.
@@ -300,7 +304,16 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             else []
         )
         async with async_session() as session:
-            thread = await session.get(Thread, thread_id, options=options)
+            expressions = [Thread["id"] == thread_id]
+            if user_id is not None:
+                expressions.append(
+                    Thread["messages"].any(
+                        ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                    )
+                )
+            thread = await session.one_or_none(
+                Thread, expressions=expressions, options=options
+            )
             if thread is None:
                 return None
         return thread
@@ -310,6 +323,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         channel_tentacle_id: str | None = None,
         *,
         limit: int = 100,
+        user_id: uuid.UUID | None = None,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
         channel's when `channel_tentacle_id` is None. Sub-threads are not listed;
@@ -323,6 +337,12 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         # Sub-threads are left out: a listing names the surfaces a person can open,
         # and the threads a chat room's kicks work in are reached through it.
         expressions = [Thread["parent_thread_id"].is_(None)]
+        if user_id is not None:
+            expressions.append(
+                Thread["messages"].any(
+                    ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                )
+            )
         if channel_tentacle_id is not None:
             expressions.append(Thread["channel_tentacle_id"] == channel_tentacle_id)
         async with async_session() as session:

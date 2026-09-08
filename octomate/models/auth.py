@@ -14,6 +14,28 @@ from octomate.models.base import Base, MapperArgs, SecretString, UTCDateTime
 from octomate.types.auth import ApiKeyScope
 
 
+class UserInvitation(Base, TransmuterProxiedMixin):
+    __tablename__ = "user_invitations"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    token_hash: Mapped[SecretStr] = mapped_column(
+        SecretString,
+        nullable=False,
+        unique=True,
+        comment="SHA-256 digest of an anonymous registration token; never stores the token.",
+    )
+    expires_at: Mapped[datetime] = mapped_column(UTCDateTime, nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(UTCDateTime, nullable=True)
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        comment="Optimistic lock preventing an invitation from being consumed twice.",
+    )
+
+    __mapper_args__: ClassVar[MapperArgs] = {"version_id_col": version}
+
+
 class UserSession(Base, TransmuterProxiedMixin):
     __tablename__ = "user_sessions"
 

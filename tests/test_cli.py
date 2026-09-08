@@ -106,7 +106,7 @@ def test_the_installed_handler_carries_neither_credential_nor_host(
     assert handler["type"] == "command"
     assert "--path /hooks/claude" in handler["command"]
     assert "--url" not in handler["command"]
-    assert "OCTOMATE_CLI_SECRET" not in json.dumps(read(path))
+    assert "OCTOMATE_CLI_TOKEN" not in json.dumps(read(path))
 
 
 def test_install_retires_an_event_octomate_no_longer_registers(tmp_path: Path) -> None:
@@ -313,30 +313,30 @@ def test_configure_writes_the_client_file_with_tight_permissions(
     configured(monkeypatch, None)
     result = runner.invoke(
         app,
-        ["configure", "--url", "http://minidock.local:8000", "--secret", "s3cr3t"],
+        ["configure", "--url", "http://minidock.local:8000", "--token", "s3cr3t"],
     )
 
     assert result.exit_code == 0
     path = user_config_path()
     assert tomllib.loads(path.read_text()) == {
         "url": "http://minidock.local:8000",
-        "secret": "s3cr3t",
+        "token": "s3cr3t",
     }
     assert path.stat().st_mode & 0o777 == 0o600
 
 
-def test_configure_generates_a_secret_when_nothing_resolves(
+def test_configure_does_not_generate_an_api_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     configured(monkeypatch, None)
     result = runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
 
     assert result.exit_code == 0
-    assert tomllib.loads(user_config_path().read_text())["secret"]
-    assert "generated" in result.output
+    assert "token" not in tomllib.loads(user_config_path().read_text())
+    assert "provide --token" in result.output
 
 
-def test_configure_carries_an_env_secret_into_the_file(
+def test_configure_carries_an_env_token_into_the_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """An environment dies with its shell, and hooks fire from launch paths that never
@@ -345,20 +345,18 @@ def test_configure_carries_an_env_secret_into_the_file(
     configured(monkeypatch, "from-the-shell")
     runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
 
-    assert tomllib.loads(user_config_path().read_text())["secret"] == "from-the-shell"
+    assert tomllib.loads(user_config_path().read_text())["token"] == "from-the-shell"
 
 
 def test_the_environment_beats_the_file(monkeypatch: pytest.MonkeyPatch) -> None:
     """The file is the floor: an env switch (the debug-server case) must win, and the
     file must still fill whatever the environment leaves unset."""
     configured(monkeypatch, None)
-    runner.invoke(
-        app, ["configure", "--url", "http://file:1", "--secret", "file-secret"]
-    )
+    runner.invoke(app, ["configure", "--url", "http://file:1", "--token", "file-token"])
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://env:2")
 
     assert CLISettings().url == "http://env:2"
-    assert CLISettings().secret == "file-secret"
+    assert CLISettings().token == "file-token"
 
 
 def test_configure_project_scope_writes_beside_the_session(
@@ -369,7 +367,7 @@ def test_configure_project_scope_writes_beside_the_session(
     configured(monkeypatch, None)
     result = runner.invoke(
         app,
-        ["configure", "--scope", "project", "--url", "http://debug:1", "--secret", "s"],
+        ["configure", "--scope", "project", "--url", "http://debug:1", "--token", "s"],
     )
 
     assert result.exit_code == 0
@@ -377,20 +375,16 @@ def test_configure_project_scope_writes_beside_the_session(
     assert table["url"] == "http://debug:1"
 
 
-def test_a_generated_credential_comes_with_what_to_do_about_it(
+def test_configure_never_prints_the_supplied_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Minting is the first of three steps and the only one this command does, so it
-    has to hand over the other two: the value an admin needs, and the installs that
-    come after it exists — they write down whatever resolves at install time."""
     configured(monkeypatch, None)
-
-    result = runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
-
+    result = runner.invoke(
+        app,
+        ["configure", "--url", "http://server:8000", "--token", "omk_private-token"],
+    )
     assert result.exit_code == 0
-    secret = tomllib.loads(user_config_path().read_text())["secret"]
-    assert secret in result.output
-    assert "users:" in result.output  # where it goes, on the server
+    assert "omk_private-token" not in result.output
     assert "hooks install" in result.output
     assert "mcp install" in result.output
 
@@ -399,16 +393,19 @@ def test_a_credential_already_written_is_never_rotated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Re-running is what someone does to repoint the url, or after an install moved.
-    Minting a second credential there would strand the `users:` entry registered
-    against the first, and every entry still carrying it."""
+    Minting a second credential there would strand the account registered
+    against the first, and every client still carrying it."""
     configured(monkeypatch, None)
-    runner.invoke(app, ["configure", "--url", "http://minidock.local:8000"])
-    minted = tomllib.loads(user_config_path().read_text())["secret"]
+    runner.invoke(
+        app,
+        ["configure", "--url", "http://minidock.local:8000", "--token", "omk_existing"],
+    )
+    minted = tomllib.loads(user_config_path().read_text())["token"]
 
     result = runner.invoke(app, ["configure", "--url", "http://elsewhere:8000"])
 
     table = tomllib.loads(user_config_path().read_text())
-    assert table["secret"] == minted
+    assert table["token"] == minted
     assert table["url"] == "http://elsewhere:8000"
     # And the registration panel is not shown again: it is already registered, and
     # reprinting a live credential every run is not a thing to do.
@@ -431,16 +428,14 @@ def test_the_project_file_beats_the_user_file_per_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Scopes merge per key, like Claude's settings: the project pins its url while
-    the secret still comes from the user file."""
+    the token still comes from the user file."""
     configured(monkeypatch, None)
-    runner.invoke(
-        app, ["configure", "--url", "http://user:1", "--secret", "user-secret"]
-    )
+    runner.invoke(app, ["configure", "--url", "http://user:1", "--token", "user-token"])
     (Path.cwd() / ".octomate").mkdir()
     (Path.cwd() / ".octomate" / "cli.toml").write_text('url = "http://project:2"\n')
 
     assert CLISettings().url == "http://project:2"
-    assert CLISettings().secret == "user-secret"
+    assert CLISettings().token == "user-token"
 
 
 def test_codex_install_without_url_leaves_the_target_to_the_environment(
@@ -465,13 +460,13 @@ def test_codex_install_without_url_leaves_the_target_to_the_environment(
         assert "--url" not in handler["command"]
 
 
-def configured(monkeypatch: pytest.MonkeyPatch, secret: str | None) -> None:
+def configured(monkeypatch: pytest.MonkeyPatch, token: str | None) -> None:
     """Pin what the client resolves, rather than reading the ambient environment:
-    whoever runs the suite has a secret of their own by now, and it must not
+    whoever runs the suite has a token of their own by now, and it must not
     decide these. (The config-file source is already isolated per test.)"""
-    monkeypatch.delenv("OCTOMATE_CLI_SECRET", raising=False)
-    if secret is not None:
-        monkeypatch.setenv("OCTOMATE_CLI_SECRET", secret)
+    monkeypatch.delenv("OCTOMATE_CLI_TOKEN", raising=False)
+    if token is not None:
+        monkeypatch.setenv("OCTOMATE_CLI_TOKEN", token)
 
 
 def test_installing_without_a_resolving_secret_says_so(
@@ -487,7 +482,7 @@ def test_installing_without_a_resolving_secret_says_so(
     )
 
     assert result.exit_code == 0  # it still installs
-    assert "octomate configure" in result.output
+    assert "octomate configure --token" in result.output
 
 
 def test_uninstall_removes_only_octomate_hooks(tmp_path: Path) -> None:
@@ -691,7 +686,7 @@ def gateway_ready(monkeypatch: pytest.MonkeyPatch) -> None:
     """An address and a credential resolving from the environment — the way a
     machine that ran `octomate configure` looks to an installer."""
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
-    monkeypatch.setenv("OCTOMATE_CLI_SECRET", "the-secret")
+    monkeypatch.setenv("OCTOMATE_CLI_TOKEN", "the-token")
 
 
 def test_claude_mcp_install_writes_the_entry_beside_everything_else(
@@ -715,7 +710,7 @@ def test_claude_mcp_install_writes_the_entry_beside_everything_else(
         "type": "http",
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
-            "Authorization": "Bearer the-secret",
+            "Authorization": "Bearer the-token",
             "X-Octomate-Client": "claude-native",
         },
     }
@@ -797,7 +792,7 @@ def test_claude_mcp_show_masks_the_credential(
     assert result.exit_code == 0
     assert "http://127.0.0.1:9999/octomate/mcp" in result.output
     assert "Bearer ***" in result.output
-    assert "the-secret" not in result.output
+    assert "the-token" not in result.output
 
 
 def test_claude_mcp_local_install_nests_under_the_project(
@@ -830,7 +825,7 @@ def test_claude_mcp_local_install_nests_under_the_project(
         "type": "http",
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
-            "Authorization": "Bearer the-secret",
+            "Authorization": "Bearer the-token",
             "X-Octomate-Client": "claude-native",
         },
     }
@@ -877,7 +872,7 @@ def test_claude_mcp_show_reads_the_local_entry(
 
     assert result.exit_code == 0
     assert "http://127.0.0.1:9999/octomate/mcp" in result.output
-    assert "the-secret" not in result.output
+    assert "the-token" not in result.output
 
 
 def test_mcp_install_refuses_without_an_address(
@@ -886,7 +881,7 @@ def test_mcp_install_refuses_without_an_address(
     """A static entry pointing nowhere would fail every session's tool listing,
     so — unlike the hooks, which resolve at fire time — the install refuses."""
     monkeypatch.delenv("OCTOMATE_CLI_URL", raising=False)
-    monkeypatch.setenv("OCTOMATE_CLI_SECRET", "the-secret")
+    monkeypatch.setenv("OCTOMATE_CLI_TOKEN", "the-token")
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
         (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),
@@ -905,7 +900,7 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
     """Every entry holds the literal credential; without one the written entry
     would only 401, so the install refuses instead."""
     monkeypatch.setenv("OCTOMATE_CLI_URL", "http://127.0.0.1:9999")
-    monkeypatch.delenv("OCTOMATE_CLI_SECRET", raising=False)
+    monkeypatch.delenv("OCTOMATE_CLI_TOKEN", raising=False)
     invocations = [
         (claude_typer, ["mcp", "install", "--file", str(tmp_path / "c.json")]),
         (codex_typer, ["mcp", "install", "--config-file", str(tmp_path / "c.toml")]),
@@ -939,7 +934,7 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
     assert table["mcp_servers"]["octomate"] == {
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "http_headers": {
-            "Authorization": "Bearer the-secret",
+            "Authorization": "Bearer the-token",
             "X-Octomate-Client": "codex-native",
         },
     }
@@ -992,7 +987,7 @@ def test_codex_mcp_show_masks_the_embedded_credential(
 
     assert result.exit_code == 0
     assert "http://127.0.0.1:9999/octomate/mcp" in result.output
-    assert "the-secret" not in result.output
+    assert "the-token" not in result.output
 
 
 def test_codex_mcp_uninstall_drops_an_emptied_section(
@@ -1030,7 +1025,7 @@ def test_deepseek_mcp_install_writes_the_octomate_row_beside_the_hooks_row(
         "transport": "streamable-http",
         "url": "http://127.0.0.1:9999/octomate/mcp",
         "headers": {
-            "Authorization": "Bearer the-secret",
+            "Authorization": "Bearer the-token",
             "X-Octomate-Client": "deepseek-native",
         },
     }
@@ -1085,7 +1080,7 @@ def test_deepseek_mcp_show_masks_the_credential(
     assert result.exit_code == 0
     assert "serverName: octomate" in result.output
     assert "Bearer ***" in result.output
-    assert "the-secret" not in result.output
+    assert "the-token" not in result.output
 
 
 def test_the_cli_literals_match_the_server() -> None:
