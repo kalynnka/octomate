@@ -24,8 +24,8 @@ Spawned per session by the launcher hook (`launch.py`), detached; one
 instance per session via the same flock the file tails use. The server owns
 the cursor: each connect re-asks where to resume (the committed floor), so
 this process holds no durable state. It ends on the server's `finalize` (a
-`Stop` settled), on the idle window, or on a policy refusal (close 1008 — a
-driven session, or a stale protocol).
+`Stop` settled), on the idle window, or on a policy refusal (close 1008, such
+as a stale protocol).
 """
 
 from __future__ import annotations

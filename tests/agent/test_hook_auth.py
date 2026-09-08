@@ -27,7 +27,6 @@ from octomate.config import (
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
-from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
 from tests.support.users import a_api_key, a_user, auth_config
 
 SECRET = SecretStr("the-hook-secret")
@@ -45,19 +44,19 @@ def client_for(path: str) -> TestClient:
         tentacle = ClaudeCodeTentacle(
             "claude",
             octomate,
-            config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+            config=ClaudeCodeConfig(),
         )
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
             "codex",
             octomate,
-            config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+            config=CodexConfig(permission_mode="deny_all"),
         )
     else:
         tentacle = DeepseekTentacle(
             "deepseek",
             octomate,
-            config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+            config=DeepseekConfig(),
         )
 
     @asynccontextmanager
@@ -105,6 +104,6 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
     tentacle = ClaudeCodeTentacle(
         "claude",
         Octomate(config=OctomateConfig(auth=auth_config())),
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=ClaudeCodeConfig(),
     )
     assert len(tentacle.routers()) == 1

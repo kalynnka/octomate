@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from ipaddress import ip_address
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
+from unittest.mock import Mock
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
@@ -39,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config import AgentModelConfig, ChannelConfig, OctomateConfig
+from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
@@ -52,12 +53,12 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
-from tests.support.agents import CODEX_MODELS
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversation,
@@ -365,11 +366,7 @@ class FakeFeelers:
 def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
     """The `im` channel the tentacle presents approvals and questions through,
     its feelers recording what was asked."""
-    channel = FakeChannelTentacle(
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
-        )
-    )
+    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
     channel.feelers = cast(Feelers, feelers)
     return channel
 
@@ -412,8 +409,7 @@ def _tentacle(
     return CodexTentacle(
         "codex",
         Octomate(conversations=conversations),
-        config=config
-        or CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=config or CodexConfig(permission_mode="deny_all"),
     )
 
 
@@ -434,13 +430,23 @@ async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uui
     return next(iter(tentacle.pending))
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    trace_environment = TraceEnvironment(
+        "https://logfire.example/v1/traces", SecretStr("test-token")
+    )
+    trace_config = Mock(return_value=trace_environment)
+    monkeypatch.setattr(codex_base, "octomate_trace_environment", trace_config)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(
+        conversations,
+        config=CodexConfig(instrument=instrument, permission_mode="deny_all"),
+    )
 
     events = []
     async with tentacle:
@@ -457,6 +463,18 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    assert trace_config.call_count == int(instrument)
+    runtime = FakeCodex.last_config
+    assert runtime is not None
+    assert runtime.env is not None
+    if instrument:
+        assert trace_environment.as_env().items() <= runtime.env.items()
+        assert (
+            'otel.trace_exporter.otlp-http.endpoint="https://logfire.example/v1/traces"'
+            in runtime.config_overrides
+        )
+    else:
+        assert "OTEL_TRACES_EXPORTER" not in runtime.env
 
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "start"
@@ -483,7 +501,6 @@ async def test_instructions_join_the_developer_instructions(
     tentacle = _tentacle(
         conversations,
         config=CodexConfig(
-            models=set(CODEX_MODELS),
             permission_mode="deny_all",
             developer_instructions="House style.",
         ),
@@ -519,13 +536,11 @@ async def test_run_resumes_prior_thread_and_applies_config(
     tentacle = _tentacle(
         conversations,
         config=CodexConfig(
-            models=set(CODEX_MODELS),
             runtime=runtime,
             permission_mode="auto_review",
             base_instructions="base",
             developer_instructions="dev",
             ephemeral=True,
-            model_provider="openai",
             personality="pragmatic",
             effort="xhigh",
             summary="detailed",
@@ -545,7 +560,6 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert FakeCodex.last_config.client_name == runtime.client_name
     assert FakeCodex.last_config.env == {
         "EXISTING_RUNTIME_VALUE": "kept",
-        "OCTOMATE_CODEX_DRIVEN": "1",
     }
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
@@ -671,7 +685,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
+        config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
 
@@ -715,7 +729,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
+        config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -768,7 +782,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
+        config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -797,7 +811,6 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         "codex-timeout",
         octomate,
         config=CodexConfig(
-            models=set(CODEX_MODELS),
             permission_mode="user_review",
             approval_timeout=0.01,
         ),
@@ -837,7 +850,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="user_review"),
+        config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
@@ -916,6 +929,70 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     assert tentacle.pool is None
 
 
+async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    starting = asyncio.Event()
+    finish_starting = asyncio.Event()
+
+    class SlowStartingCodex(FakeCodex):
+        async def __aenter__(self) -> FakeCodex:
+            if FakeCodex.builds > 1:
+                starting.set()
+                await finish_starting.wait()
+            return self
+
+    monkeypatch.setattr(codex_base, "AsyncCodex", SlowStartingCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        await tentacle.run("warm up", conversation_address=KEY, thread_id=_THREAD)
+        cold = asyncio.create_task(
+            tentacle.run("cold", conversation_address=KEY, thread_id=uuid7())
+        )
+        try:
+            async with asyncio.timeout(1):
+                await starting.wait()
+            first_token = False
+            async with asyncio.timeout(1):
+                async with tentacle.run_stream_events(
+                    "warm", conversation_address=KEY, thread_id=_THREAD
+                ) as stream:
+                    async for event in stream:
+                        if isinstance(event, PartStartEvent):
+                            first_token = True
+                            assert not finish_starting.is_set()
+            assert first_token
+        finally:
+            finish_starting.set()
+            await cold
+
+    assert FakeCodex.builds == 2
+    assert FakeCodex.closed == 2
+
+
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+async def test_failed_client_startup_releases_its_pool_lease(
+    monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
+) -> None:
+    class FailedStartingCodex(FakeCodex):
+        async def __aenter__(self) -> FakeCodex:
+            raise error("startup stopped")
+
+    monkeypatch.setattr(codex_base, "AsyncCodex", FailedStartingCodex)
+    reset_fake_codex(text_script("done"))
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        with pytest.raises(error, match="startup stopped"):
+            await tentacle.run("cold", conversation_address=KEY, thread_id=_THREAD)
+        assert tentacle.pool is not None
+        assert all(client.in_use == 0 for client in tentacle.pool.clients.values())
+
+    assert FakeCodex.closed == 1
+
+
 @pytest.mark.parametrize(
     ("permission_mode", "sdk_mode", "reviewer"),
     [
@@ -944,7 +1021,7 @@ async def test_the_conversations_posture_overrides_the_configured_one(
     )
     tentacle = _tentacle(
         conversations,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -967,9 +1044,7 @@ async def test_the_sandbox_is_the_operators_and_no_posture_moves_it(
     )
     tentacle = _tentacle(
         conversations,
-        config=CodexConfig(
-            models=set(CODEX_MODELS), permission_mode="auto_review", sandbox="read_only"
-        ),
+        config=CodexConfig(permission_mode="auto_review", sandbox="read_only"),
     )
 
     async with tentacle:
@@ -1015,7 +1090,6 @@ async def test_an_operators_own_network_answer_wins(
     tentacle = _tentacle(
         FakeConversationManager(),
         config=CodexConfig(
-            models=set(CODEX_MODELS),
             permission_mode="deny_all",
             runtime=CodexSdkConfig(config_overrides=(operator,)),
         ),
@@ -1061,7 +1135,7 @@ async def test_a_claude_posture_on_a_codex_conversation_falls_back_to_config(
     )
     tentacle = _tentacle(
         conversations,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -1149,7 +1223,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -1172,7 +1246,6 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     )
 
     assert config.env[codex_base.MCP_CONVERSATION_ENV] == str(conversation.id)
-    assert config.env[codex_base.DRIVEN_ENV] == "1"
     assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {
@@ -1244,7 +1317,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -1279,7 +1352,7 @@ async def test_an_mcp_wiring_flip_evicts_the_pooled_client(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -1325,7 +1398,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:
@@ -1437,7 +1510,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
     suspender = RecordingSuspender()
 

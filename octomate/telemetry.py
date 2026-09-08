@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import TypedDict
+from urllib.parse import quote
 
 import logfire
+from pydantic import SecretStr
 from pydantic_ai import InstrumentationSettings
 from pydantic_ai.messages import ModelMessage, ModelRequest, UserContent, UserPromptPart
 from pydantic_core import to_json
@@ -36,6 +39,39 @@ claude_logfire = logfire.with_settings(custom_scope_suffix="claude")
 codex_logfire = logfire.with_settings(custom_scope_suffix="codex")
 deepseek_logfire = logfire.with_settings(custom_scope_suffix="deepseek")
 inkling_logfire = logfire.with_settings(custom_scope_suffix="inkling")
+
+
+@dataclass(frozen=True)
+class TraceEnvironment:
+    endpoint: str  # Full OTLP/HTTP trace endpoint.
+    token: SecretStr  # Logfire write token for native exporters.
+
+    def as_env(self) -> dict[str, str]:
+        return {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": self.endpoint,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "Authorization="
+            + quote(self.token.get_secret_value(), safe=""),
+            "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+            "OTEL_TRACES_EXPORTER": "otlp",
+        }
+
+
+def octomate_trace_environment() -> TraceEnvironment | None:
+    """Give native exporters the same destination as the configured Logfire SDK."""
+    config = octomate_logfire.config
+    if not config.send_to_logfire or not config.token:
+        return None
+    if not isinstance(config.token, str):
+        raise ValueError(
+            "Native harness tracing requires a single Logfire project token"
+        )
+    return TraceEnvironment(
+        endpoint=(
+            config.advanced.generate_base_url(config.token).rstrip("/") + "/v1/traces"
+        ),
+        token=SecretStr(config.token),
+    )
+
 
 AgentInputMessageAttributes = TypedDict(
     "AgentInputMessageAttributes",

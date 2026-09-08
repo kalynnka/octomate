@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal, TypeVar
 
 from arcanus import RelationCollection
-from arcanus.materia.sqlalchemy import noload, selectinload
+from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
@@ -41,6 +41,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         agent_tentacle_id: str,
         subagent_id: str = "",
         parent_conversation_id: uuid.UUID | None = None,
+        with_history: bool = True,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
         creating it if it does not yet exist. Its `conversation.messages` is the
@@ -48,17 +49,23 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         in the same thread keep separate conversations — so callers must always
         supply it. `subagent_id` narrows to one subagent's own context; empty is
         the agent's long-lived conversation in the thread. A subagent context
-        names the conversation that spawned it, and only a subagent context may."""
+        names the conversation that spawned it, and only a subagent context may.
+        `with_history=False` leaves runs and messages unloaded for callers that
+        only need identity, permissions, or the native session's resume id."""
         if bool(subagent_id) != (parent_conversation_id is not None):
             raise ValueError(
                 "a subagent conversation requires both subagent_id and "
                 "parent_conversation_id; a bare conversation takes neither"
             )
         # Serialize first sightings so the loser reads the committed row.
-        async with self.lock((thread_id, agent_tentacle_id, subagent_id)):
-            async with async_session() as session:
+        async with async_session() as session:
+            async with self.lock((thread_id, agent_tentacle_id, subagent_id)):
                 conversation = await session.one_or_none(
                     Conversation,
+                    options=[
+                        lazyload(Conversation["runs"]),
+                        lazyload(Conversation["messages"]),
+                    ],
                     expressions=[
                         Conversation["thread_id"] == thread_id,
                         Conversation["agent_tentacle_id"] == agent_tentacle_id,
@@ -74,22 +81,38 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                     )
                     session.add(conversation)
                 await session.flush()
+                await session.commit()
+            if with_history:
                 await conversation.runs
                 await conversation.messages
-                await session.commit()
             return conversation
 
-    async def get(self, conversation_id: uuid.UUID) -> Conversation:
+    async def get(
+        self, conversation_id: uuid.UUID, *, with_history: bool = True
+    ) -> Conversation:
         """Resolve a conversation by id — one fresh read; raises on an unknown
         id. This is the by-id path for a run addressed at a pre-ensured
         conversation (a commissioned accomplice's child context): the caller
-        ensured it and owns any thread/agent validation."""
+        ensured it and owns any thread/agent validation. `with_history=False`
+        leaves runs and messages unloaded, as on `ensure`."""
+        if not with_history:
+            options = [
+                lazyload(Conversation["runs"]),
+                lazyload(Conversation["messages"]),
+            ]
+        else:
+            options = []
         async with async_session() as session:
-            conversation = await session.get(Conversation, conversation_id)
+            conversation = await session.get(
+                Conversation,
+                conversation_id,
+                options=options,
+            )
             if conversation is None:
                 raise ValueError(f"unknown conversation {conversation_id}")
-            await conversation.runs
-            await conversation.messages
+            if with_history:
+                await conversation.runs
+                await conversation.messages
         return conversation
 
     async def link_parent_run(
@@ -287,7 +310,12 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         async with async_session() as session:
             session.add(run)
             reloaded = await session.one_or_none(
-                Conversation, expressions=[Conversation["id"] == conversation_id]
+                Conversation,
+                expressions=[Conversation["id"] == conversation_id],
+                options=[
+                    noload(Conversation["runs"]),
+                    noload(Conversation["messages"]),
+                ],
             )
             if reloaded is not None:
                 reloaded.external_id = external_id

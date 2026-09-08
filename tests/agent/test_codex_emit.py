@@ -20,7 +20,6 @@ from octomate_cli import emit as emit_module
 from octomate_cli.config import CLISettings, project_config_path, user_config_path
 from octomate_cli.emit import (
     CODEX_HOOK_PATH,
-    DRIVEN_ENV,
     HOOK_TIMEOUT,
     OCTOMATE_URL_ENV,
     TOKEN_ENV,
@@ -28,8 +27,6 @@ from octomate_cli.emit import (
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.tentacles.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
 from octomate_cli.tentacles.hooks import EMIT_SCRIPT
-
-from octomate.tentacles.codex.hooks import DRIVEN_ENV as CANONICAL_DRIVEN_ENV
 
 SECRET = "the-hook-token"
 PAYLOAD = {"hook_event_name": "Stop", "session_id": "s1", "turn_id": "t1"}
@@ -97,19 +94,6 @@ def test_the_payload_is_delivered_bearing_the_hook_credential(
     assert received.authorization == f"Bearer {SECRET}"
     # Codex reads stdout as the hook's decision; an observer decides nothing.
     assert result.stdout.strip() == "{}"
-
-
-def test_a_driven_session_is_marked_so_the_router_can_drop_it(
-    router: tuple[str, Received],
-) -> None:
-    url, received = router
-    emit(
-        ["--path", CODEX_HOOK_PATH, "--url", url],
-        {TOKEN_ENV: SECRET, DRIVEN_ENV: "1"},
-    )
-
-    assert received.body is not None
-    assert received.body["octomate_driven"] is True
 
 
 def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None:
@@ -273,7 +257,6 @@ def test_its_duplicated_names_still_match_the_canonical_ones() -> None:
     """
     assert TOKEN_ENV == CLISettings.env("token")
     assert OCTOMATE_URL_ENV == CLISettings.env("url")
-    assert DRIVEN_ENV == CANONICAL_DRIVEN_ENV
     assert HOOK_TIMEOUT == CANONICAL_HOOK_TIMEOUT
     assert CODEX_HOOK_PATH == CANONICAL_CODEX_HOOK_PATH
 

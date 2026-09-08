@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from octomate import Octomate
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.trunkline import TrunklineTentacle
 
 
@@ -35,7 +35,7 @@ async def test_frontend_uses_the_enabled_channels_static_directory(
                         "static_dir": static_dir.format(root=tmp_path)
                         if static_dir is not None
                         else None,
-                        "agents": [{"agent": "codex", "model": "gpt-5.6-sol"}],
+                        "agents": ["codex"],
                     }
                 ),
             )
@@ -66,7 +66,7 @@ def test_frontend_rejects_a_missing_static_directory(tmp_path: Path) -> None:
             octomate,
             config=TrunklineChannelConfig(
                 static_dir=tmp_path / "missing",
-                agents=[AgentModelConfig(agent="codex", model="gpt-5.6-sol")],
+                agents=["codex"],
             ),
         )
     )

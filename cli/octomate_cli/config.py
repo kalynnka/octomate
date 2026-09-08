@@ -74,6 +74,7 @@ class CLISettings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
+        extra="ignore",
         # The reason there is a prefix: the server's settings read `OCTOMATE__` with
         # `__` between the levels, so a client variable under that prefix would read
         # as a deployment key — and one of them, the retired deployment secret,
@@ -82,7 +83,6 @@ class CLISettings(BaseSettings):
         # An exported-but-empty variable means unset, and the files under it still
         # answer — what a shell that cleared one intends.
         env_ignore_empty=True,
-        extra="ignore",
         # Weakest first: within one TOML source the later file wins, so the project's
         # own beats the machine's. That is how one directory aims at a different
         # server (a debug instance) without touching the default.

@@ -40,7 +40,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
-from octomate.mcp.server import tentacles_mcp
+from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCP_TOOLS, tentacles_mcp
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
@@ -59,6 +59,7 @@ from octomate.tentacles.linear import LinearTentacle
 from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle, build_mcp
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import FakeConversationManager, fixed_session
+from tests.support.mcp import discover
 from tests.support.users import a_user
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
@@ -197,9 +198,14 @@ async def test_a_bare_server_speaks_the_operator_credential_for_everyone() -> No
     # deployment's, and the key is the prefix its tools carry.
     async with proxied(tentacle, a_turn(), upstream) as client:
         tools = await client.list_tools()
-        result = await client.call_tool("linear_list_issues", {})
+        catalog = await discover(client, "linear")
+        result = await client.call_tool(
+            CALL_MCP_TOOL,
+            {"namespace": "linear", "name": "linear_list_issues", "arguments": {}},
+        )
 
-    assert [tool.name for tool in tools] == ["linear_list_issues"]
+    assert [tool.name for tool in tools] == [LIST_MCP_TOOLS, CALL_MCP_TOOL]
+    assert [tool.name for tool in catalog.tools] == ["linear_list_issues"]
     assert result.data == "answered"
     assert seen == ["Bearer lin_x"]
 
@@ -213,9 +219,9 @@ async def test_an_explicit_prefix_overrides_the_key() -> None:
     upstream, _seen = an_upstream("list_issues")
 
     async with proxied(tentacle, a_turn(), upstream) as client:
-        tools = await client.list_tools()
+        catalog = await discover(client, "linear")
 
-    assert [tool.name for tool in tools] == ["lin_list_issues"]
+    assert [tool.name for tool in catalog.tools] == ["lin_list_issues"]
 
 
 def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
@@ -294,20 +300,26 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
     async with proxied(tentacle, a_turn(profile), upstream) as client:
         unlinked = await client.list_tools()
         with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `gh`"):
-            await client.call_tool("gh_list_repos", {})
+            await discover(client, "gh")
         await host.oauth.start(profile, "gh")
         await host.oauth.complete_latest(profile, "gh")
         linked = await client.list_tools()
-        result = await client.call_tool("gh_list_repos", {})
+        catalog = await discover(client, "gh")
+        result = await client.call_tool(
+            CALL_MCP_TOOL,
+            {"namespace": "gh", "name": "gh_list_repos", "arguments": {}},
+        )
 
-    # Before the link: the linking pair and nothing of the provider's. After:
-    # the provider's tools under the prefix, called as the person.
-    assert [tool.name for tool in unlinked] == [CONNECT_TOOL, CONFIRM_TOOL]
+    # Linking enables discovery without changing the initial tool list.
+    assert [tool.name for tool in unlinked] == [tool.name for tool in linked]
     assert [tool.name for tool in linked] == [
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
-        "gh_list_repos",
     ]
+    assert [tool.name for tool in catalog.tools] == ["gh_list_repos"]
+    assert catalog.instructions == tentacle.instructions
     assert result.data == "answered"
     assert seen == ["Bearer github-user-token"]
 
@@ -319,9 +331,17 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
     async with proxied(tentacle, a_turn(), upstream) as client:
         tools = await client.list_tools()
         with pytest.raises(ToolError, match="nobody registered did"):
-            await client.call_tool("gh_list_repos", {})
+            await client.call_tool(
+                CALL_MCP_TOOL,
+                {"namespace": "gh", "name": "gh_list_repos", "arguments": {}},
+            )
 
-    assert [tool.name for tool in tools] == [CONNECT_TOOL, CONFIRM_TOOL]
+    assert [tool.name for tool in tools] == [
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+    ]
     assert seen == []
 
 
@@ -345,8 +365,9 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     assert "Provider" in str(capability.description)
     assert isinstance(instructions, str)
     assert "## Linking accounts" in instructions
-    assert "The provider's own contract." in instructions
-    assert set(tools) == {CONNECT_TOOL, CONFIRM_TOOL}
+    assert "The provider's own contract." not in instructions
+    assert "`gh` (Provider)" in instructions
+    assert set(tools) == {CONNECT_TOOL, CONFIRM_TOOL, LIST_MCP_TOOLS, CALL_MCP_TOOL}
 
 
 async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retry() -> (
@@ -366,22 +387,24 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
         )
         before = await toolset.get_tools(ctx)
         with pytest.raises(ModelRetry, match=f"`{CONNECT_TOOL}` with `gh`"):
-            await toolset.call_tool("gh_list_repos", {}, ctx, before[CONNECT_TOOL])
+            await toolset.call_tool(
+                LIST_MCP_TOOLS, {"namespace": "gh"}, ctx, before[LIST_MCP_TOOLS]
+            )
         await host.oauth.start(profile, "gh")
         await host.oauth.complete_latest(profile, "gh")
         after = await toolset.get_tools(ctx)
         answer = await toolset.call_tool(
-            "gh_list_repos", {}, ctx, after["gh_list_repos"]
+            CALL_MCP_TOOL,
+            {"namespace": "gh", "name": "gh_list_repos", "arguments": {}},
+            ctx,
+            after[CALL_MCP_TOOL],
         )
 
     # No client between the run and the server: a refusal is the retry Inkling
     # corrects from, worded as every other runtime reads it; once linked, the
     # call goes as the person and what comes back is what the provider said.
     assert "gh_list_repos" not in before
-    assert (
-        after["gh_list_repos"].tool_def.description
-        == "What the provider says of its tool."
-    )
+    assert "gh_list_repos" not in after
     assert answer == "answered"
     assert seen == ["Bearer github-user-token"]
 

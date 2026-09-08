@@ -24,7 +24,7 @@ from starlette.routing import Route
 from octomate import deployment
 from octomate.config import AuthConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
 
@@ -181,10 +181,10 @@ async def test_verification_checks_protected_mcp_and_console_routes(
 ) -> None:
     config = OctomateConfig()
     config.host = IPv4Address(host)
-    config.agents.codex = CodexConfig(models={"gpt-5.6-sol"})
+    config.agents.codex = CodexConfig()
     config.channels["trunkline"] = TrunklineChannelConfig(
         enabled=console_enabled,
-        agents=[AgentModelConfig(agent="codex", model="gpt-5.6-sol")],
+        agents=["codex"],
     )
     if auth_configured:
         config.auth = AuthConfig(
@@ -228,10 +228,8 @@ def test_maintenance_requires_an_explicit_bind_address(
 ) -> None:
     config = OctomateConfig()
     config.host = IPv4Address(host)
-    config.agents.codex = CodexConfig(models={"gpt-5.6-sol"})
-    config.channels["trunkline"] = TrunklineChannelConfig(
-        agents=[AgentModelConfig(agent="codex", model="gpt-5.6-sol")]
-    )
+    config.agents.codex = CodexConfig()
+    config.channels["trunkline"] = TrunklineChannelConfig(agents=["codex"])
     monkeypatch.setattr(sys, "argv", ["maintenance", "check"])
     monkeypatch.setattr(deployment, "OctomateConfig", lambda: config)
     if host == "0.0.0.0":

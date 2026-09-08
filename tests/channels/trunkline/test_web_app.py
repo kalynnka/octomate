@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
@@ -42,7 +42,7 @@ from octomate.tentacles.trunkline.base import (
     TrunklineDirective,
 )
 from octomate.types.permissions import InklingPermissionMode
-from tests.support.agents import build_non_stream_agent, build_scripted_agent
+from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
 
 # The console drives one configured reception agent through octomate.kick.
@@ -83,7 +83,7 @@ async def _register(
             "trunkline",
             octomate,
             config=TrunklineChannelConfig(
-                agents=[AgentModelConfig(agent="inkling", model=RECEPTION_MODEL)],
+                agents=["inkling"],
             ),
         )
     )
@@ -162,9 +162,7 @@ def test_trunkline_router_requires_registered_channel() -> None:
     channel = TrunklineTentacle(
         "trunkline",
         octomate,
-        config=TrunklineChannelConfig(
-            agents=[AgentModelConfig(agent="inkling", model="test")]
-        ),
+        config=TrunklineChannelConfig(agents=["inkling"]),
     )
     assert isinstance(channel, ChannelTentacle)
     # connect mounts the channel's router (TrunklineTentacle.routers) — no
@@ -264,7 +262,7 @@ async def _register_routes(
                 agent_id, octomate, agent=agent, models={RECEPTION_MODEL: agent.model}
             )
         )
-        receptions.append(AgentModelConfig(agent=agent_id, model=RECEPTION_MODEL))
+        receptions.append(agent_id)
     channel = octomate.connect(
         TrunklineTentacle(
             "trunkline", octomate, config=TrunklineChannelConfig(agents=receptions)
@@ -326,26 +324,86 @@ async def test_route_change_after_first_directive_is_refused(
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
-async def test_routes_offer_every_agent_the_instance_runs(
+async def test_routes_offer_and_run_all_registered_agents(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    # Nobody walks into the console, so the operator picking an agent sees all of
-    # them — not just the entry routing this channel declares. The declared one
-    # still comes first, which is what the picker defaults to.
     octomate = Octomate()
+    inkling, _ = build_scripted_agent(["from inkling"])
+    claude, _ = build_scripted_agent(["from claude"])
     channel = await _register_routes(
         octomate,
-        {"inkling": build_non_stream_agent(), "claude": build_non_stream_agent()},
+        {"inkling": inkling, "claude": claude},
     )
-    channel.config.agents = [AgentModelConfig(agent="claude", model=RECEPTION_MODEL)]
+    channel.config.agents = ["claude"]
 
     offered = [
         (agent_config.agent, agent_config.model)
         for agent_config in channel.routable_agents()
     ]
 
-    assert offered[0] == ("claude", RECEPTION_MODEL)
-    assert set(offered) == {("claude", RECEPTION_MODEL), ("inkling", RECEPTION_MODEL)}
+    assert offered == [("claude", RECEPTION_MODEL), ("inkling", RECEPTION_MODEL)]
+    assert [
+        (route.agent_id, route.model)
+        for route in octomate.gateway.available_routes(
+            octomate.channels, octomate.agents
+        )[channel.id]
+    ] == offered
+
+    payload = await _post(
+        channel, "hello", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+    )
+
+    assert _events(payload)[-1]["event_kind"] == "run_result"
+    assert "from inkling" in _streamed_text(payload)
+    thread = await octomate.thread_manager.ensure(_console_address())
+    assert thread.active_agent_tentacle_id == "inkling"
+
+
+@pytest.mark.parametrize("other_agents", [[], ["codex", "deepseek"]])
+async def test_model_choices_keep_only_the_configured_entry_default(
+    in_memory_engine: AsyncEngine,
+    other_agents: list[str],
+) -> None:
+    class NativeDefaultAgent(FakeAgent):
+        @property
+        def default_model(self) -> None:
+            return None
+
+    octomate = Octomate()
+    for agent_id in other_agents:
+        octomate.connect(
+            NativeDefaultAgent(
+                id=agent_id,
+                octomate=octomate,
+                models={f"{agent_id}:future-model": "future-model"},
+            )
+        )
+    agent = NativeDefaultAgent(
+        id="claude",
+        octomate=octomate,
+        models={"anthropic:future-model": "future-model"},
+    )
+    octomate.connect(agent)
+    channel = TrunklineTentacle(
+        "trunkline", octomate, config=TrunklineChannelConfig(agents=["claude"])
+    )
+    octomate.connect(channel)
+    await channel.probe()
+
+    assert [(route.agent, route.model) for route in channel.routable_agents()] == [
+        ("claude", None),
+        ("claude", "anthropic:future-model"),
+        *((agent_id, f"{agent_id}:future-model") for agent_id in other_agents),
+    ]
+    selected_route = f"claude{ROUTE_SEP}"
+    reply = await _post(channel, "one", model=selected_route)
+    await _post(channel, "two", model=selected_route)
+
+    assert _events(reply)[-1]["output"] == "handled"
+    assert [turn.model for turn in agent.streams] == [None, None]
+    thread = await octomate.thread_manager.ensure(_console_address())
+    assert thread.active_model is None
+    assert len(thread.handoffs) == 1
 
 
 async def test_a_first_directive_files_the_thread_under_a_project(
@@ -805,9 +863,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         TrunklineTentacle(
             "trunkline",
             octomate,
-            config=TrunklineChannelConfig(
-                agents=[AgentModelConfig(agent="inkling", model="test")]
-            ),
+            config=TrunklineChannelConfig(agents=["inkling"]),
         )
     )
     project = a_project(Path("/srv/inky"))

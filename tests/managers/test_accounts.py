@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import AuthConfig, OctomateConfig
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import AsyncSession, async_session
 from octomate.managers.auth import AuthManager, InvalidCredentials, UsernameUnavailable
 from octomate.managers.user import UserManager
@@ -49,9 +49,7 @@ async def app(in_memory_engine: AsyncEngine) -> Octomate:
         TrunklineTentacle(
             "trunkline",
             application,
-            config=TrunklineChannelConfig(
-                agents=[AgentModelConfig(agent="inkling", model="test")]
-            ),
+            config=TrunklineChannelConfig(agents=["inkling"]),
         )
     )
     await channel.probe()

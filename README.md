@@ -100,10 +100,18 @@ terminal and a run summoned from Slack are the same kind of thing afterwards. `i
 is the one that runs in-process, and it is the chat-side generalist rather than the
 point of the project.
 
-Models are advertised through **claims** — what a route is for, and which thinking
-efforts it accepts. A model with no claim is not summonable, so what an agent offers is
-config rather than a hardcoded list. Nothing is defaulted: an agent names the models you
-hold keys for, or it is absent.
+Claude, Codex and DeepSeek Harness supply their model catalogs and providers at
+startup. Default model selection stays with each harness, including a resumed
+session's selection. Channels bind agent IDs and expose all of those agents' models.
+**Claims** describe routes and supported thinking efforts; harness metadata wins,
+with optional configured claims for missing metadata. Inkling still uses its
+configured model list, with the first model as its default.
+
+Unknown config keys are ignored, including the three harnesses' obsolete `models`
+keys; their full catalogs come from the harnesses.
+Replace channel `{agent, model}` entries with agent IDs. Set provider overrides
+in the harness itself; Octomate reads them there. Explicit routes and optional claim
+keys use `provider:model` names from the catalog.
 
 ## Trunkline — the web console 🚧
 
@@ -227,13 +235,7 @@ Declare one agent:
 ```bash
 cat > .octomate/config/agents.yaml <<'YAML'
 agents:
-  claude:
-    models: [opus, sonnet]
-    claims:
-      opus:
-        ability: Deep, multi-step engineering across a repository.
-      sonnet:
-        ability: Everyday software tasks and mid-sized changes.
+  claude: {}
 YAML
 ```
 
@@ -276,10 +278,7 @@ channels:
     app_id: A0123456789
     mention_only: true
     agents:
-      - agent: claude
-        model: sonnet
-      - agent: claude
-        model: opus
+      - claude
 YAML
 
 cat >> .env <<'ENV'
@@ -305,8 +304,7 @@ Optional, and no platform account needed — `type: trunkline` alongside the Sla
   trunkline:
     type: trunkline
     agents:
-      - agent: claude
-        model: sonnet
+      - claude
 ```
 
 ```bash
@@ -481,8 +479,9 @@ Ruff is the gate: its configured rule set in `pyproject.toml` is what "clean" me
 Foreign keys are enforced on every connection, in tests too, so a row needs its parents
 to exist.
 
-Tracing goes to [Logfire](https://logfire.pydantic.dev/) when a token is present, and
-nowhere otherwise.
+Optional [Logfire](https://logfire.pydantic.dev/) integration brings Octomate's
+execution traces, Claude and Codex spans, and DeepSeek session events into one
+timeline.
 
 ## In progress
 

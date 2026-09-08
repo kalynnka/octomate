@@ -12,6 +12,7 @@ separator and a literal dash.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
 from pathlib import Path
@@ -41,7 +42,7 @@ from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
 from tests.agent.test_codex_native_ingest import stream_rollout
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
-from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
+from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import a_project, a_registry
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
@@ -174,7 +175,7 @@ async def stream_transcript(tailer: ClaudeTranscriptTailer, transcript: Path) ->
     framed lines — the server never opens the file itself."""
     state, _ = await tailer.attach_remote(CLAUDE_SESSION, transcript, SENDER)
     offset = 0
-    for raw in transcript.read_bytes().split(b"\n")[:-1]:
+    for raw in (await asyncio.to_thread(transcript.read_bytes)).split(b"\n")[:-1]:
         end = offset + len(raw) + 1
         await tailer.feed_remote(state, None, raw.decode(), offset, end)
         offset = end
@@ -398,7 +399,7 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
     tentacle = ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=ClaudeCodeConfig(),
     )
 
     async with tentacle.run_stream_events(
@@ -425,7 +426,7 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
 
     async with tentacle:

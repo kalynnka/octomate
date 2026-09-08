@@ -951,19 +951,6 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
     assert tailer.sessions == {}
 
 
-async def test_a_driven_sessions_subagent_hooks_are_suppressed() -> None:
-    """A subagent event carries the parent's session id, so the driving claim covers
-    it for free — pinned here rather than trusted."""
-    octomate = Octomate()
-    ingest, tailer = wired(octomate)
-    with ingest.driving(SESSION_ID):
-        await ingest.handle(
-            subagent_hook("SubagentStart", prompt_id="p1", prompt="child work"), SENDER
-        )
-    assert await subagent_runs_of(octomate) == []
-    assert tailer.sessions == {}
-
-
 async def test_subagent_stop_with_no_stream_is_a_noop() -> None:
     """Nothing is streaming this session, so the stop has nothing to settle: the
     child stays absent until a tail streams its lines in. The server does not read

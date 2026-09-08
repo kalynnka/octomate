@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -71,7 +72,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import ClaudeCodeConfig
+from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
@@ -88,9 +89,14 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import agent_input_message_attributes, claude_logfire
+from octomate.telemetry import (
+    agent_input_message_attributes,
+    claude_logfire,
+    octomate_trace_environment,
+)
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.catalog import ClaudeServerInfo
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.mcp import octomate_mcp_server
@@ -158,12 +164,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.config = config
         self.description = description or self.description
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
         # One live Claude client per conversation, keyed by conversation id: a new
         # turn interrupts the prior run for the same conversation (Phase 6). Not
@@ -173,7 +174,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
             weakref.WeakValueDictionary()
         )
-        self.models = {model: model for model in config.models}
+        self.models = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
@@ -240,13 +241,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and refuse
-        what cannot stream — a stale protocol loudly (the session still degrades to
-        hooks-only ingest), and a session this tentacle is driving itself, whose
-        transcript ingested here would write the conversation a second time
-        (`ClaudeHookIngest.driving`). Authentication already happened at the
-        handshake, and `sender` is the verified bearer's own profile — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -264,13 +263,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if hello.session_id in self.session_ingest.driven:
-            # A live claim only — the counter is in-memory, so a session resumed
-            # natively after a restart is not caught; its ingest then lands in its
-            # own native thread rather than colliding with the driven runs. A
-            # durable guard is still to come.
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
         with sqlalchemy_materia():
@@ -433,10 +425,55 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
-    async def __aexit__(self, *exc: object) -> None:
+    @property
+    def default_model(self) -> None:
+        # Omitting --model preserves Claude's own settings and resume selection.
+        return None
+
+    async def discover_models(self) -> None:
+        async with ClaudeSDKClient() as client:
+            info = ClaudeServerInfo.model_validate(await client.get_server_info())
+        provider = info.account.api_provider
+        if provider is None or provider == "firstParty":
+            provider = "anthropic"
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        for model in info.models:
+            key = f"{provider}:{model.value}"
+            configured = self.config.claims.get(key)
+            if model.supported_effort_levels is not None:
+                efforts: tuple[ThinkingEffort, ...] = tuple(
+                    effort
+                    for effort in ThinkingEfforts
+                    if ("low" if effort == "minimal" else effort)
+                    in model.supported_effort_levels
+                )
+            elif model.supports_effort is False:
+                efforts = ()
+            else:
+                efforts = configured.efforts if configured else ()
+            models[key] = model.value
+            claims[key] = Claim(
+                model.description
+                or (configured.ability if configured else model.display_name),
+                efforts,
+            )
+        self.set_model_catalog(models, claims)
+
+    async def __aenter__(self) -> ClaudeCodeTentacle:
+        await self.discover_models()
+        return await super().__aenter__()
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
+        await super().__aexit__(exc_type, exc_value, traceback)
         for future in list(self.pending.values()):
             if not future.done():
                 future.cancel()
@@ -469,10 +506,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        cli_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -485,6 +525,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         if deferred_tool_results is not None:
             # A resumed run. The CLI takes no tool result back, so the graph's
@@ -518,14 +559,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             if output_schema is not None
             else None
         )
-        # Per-run model override (e.g. Sonnet for triage, Opus for reception);
-        # the SDK takes a CLI model string, so a pydantic-ai Model yields its name.
-        if isinstance(model, Model):
-            cli_model = model.model_name
-        elif isinstance(model, str):
-            cli_model = model
-        else:
-            cli_model = None
 
         async def can_use_tool(
             tool_name: str,
@@ -686,6 +719,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             if part
         )
+        env = {"CLAUDE_CODE_ENTRYPOINT": "cli"}
+        if self.config.instrument:
+            trace_environment = octomate_trace_environment()
+            if trace_environment is not None:
+                env.update(trace_environment.as_env())
+                env.update(
+                    CLAUDE_CODE_ENABLE_TELEMETRY="1",
+                    CLAUDE_CODE_ENHANCED_TELEMETRY_BETA="1",
+                )
         options = ClaudeAgentOptions(
             cwd=run_cwd,
             # A project's other roots are directories this work legitimately spans —
@@ -727,7 +769,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             ),
             # Native Claude clients hide sdk-py transcripts from history. Tag these
             # user-routed sessions like CLI runs so they stay visible there too.
-            env={"CLAUDE_CODE_ENTRYPOINT": "cli"},
+            env=env,
             # The CLI's stderr is the only place it says why it exited: the SDK's
             # `ProcessError` carries the exit code and "check stderr", nothing else.
             stderr=lambda line: logger.warning(
@@ -753,28 +795,25 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         #     if self.config.ssh is not None
         #     else None
         # )
-        with (
-            claude_logfire.span(
-                "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
-                agent_id=self.id,
-                run_name=run_name or "claude",
-                conversation_address=str(conversation_address),
-                **agent_input_message_attributes(user_prompt),
-                # transport=(
-                #     f"ssh:{self.config.ssh.host}"
-                #     if self.config.ssh is not None
-                #     else "local"
-                # ),
-                transport="local",
-            ),
-            # Taken before the CLI is launched and held until its teardown has waited
-            # the process out, so it spans every hook this session can fire.
-            self.session_ingest.driving(session_id),
+        with claude_logfire.span(
+            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
+            agent_id=self.id,
+            run_name=run_name or "claude",
+            conversation_address=str(conversation_address),
+            **agent_input_message_attributes(user_prompt),
+            # transport=(
+            #     f"ssh:{self.config.ssh.host}"
+            #     if self.config.ssh is not None
+            #     else "local"
+            # ),
+            transport="local",
         ):
             # Entered first so it leaves last: the tree exists before the CLI is
             # launched into it, and a chat thread's is only thrown away once the CLI
             # holding it open has been waited out.
             # async with ClaudeSDKClient(options=options, transport=transport) as client:
+            # The SDK injects the active W3C context when connecting. Starting a
+            # client inside each run's span also reparents resumed sessions.
             async with (
                 workspace,
                 ClaudeSDKClient(options=options) as client,

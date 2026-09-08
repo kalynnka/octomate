@@ -8,6 +8,7 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 from uuid import uuid4
 
@@ -53,7 +54,7 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import DeepseekConfig
+from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
@@ -81,6 +82,8 @@ from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
     ErrResult,
+    HostDescription,
+    ModelCatalog,
     OkResult,
     QuestionRequestedFrame,
     RpcError,
@@ -133,12 +136,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     events dsh's `dsh-hooks-claude-code` bridge POSTs in, and the stream
     endpoint takes each session's history entries from the client-side tail
     (`octomate deepseek tail`, reading *its* machine's dsh gateway) for the
-    tailer to assemble into turns. Sessions this tentacle drives itself are
-    claimed (`DeepseekHookIngest.driving`) so their hooks are dropped and
-    their tails refused rather than recorded twice.
+    tailer to assemble into turns. All incoming ingest is recorded as external
+    sessions, including sessions started through this tentacle.
     """
 
     config: DeepseekConfig = field(init=False)
+    default_provider: str | None = field(init=False)
+    effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     client: DeepseekApiClient = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
@@ -192,14 +196,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.bridge_contexts = {}
         self.interaction_tasks = set()
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
-        self.models = {model: model for model in config.models}
+        self.models = {}
+        self.default_provider = None
+        self.effort_maps = {}
         # Serializes turns per conversation: dsh queues a second prompt into a
         # live turn as steering, which would interleave two runs' frames.
         self.conversation_locks = SessionLocks()
@@ -253,12 +254,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and
-        refuse what cannot stream — a stale protocol loudly, and a session this
-        tentacle is driving itself, whose events ingested here would write the
-        conversation a second time (`DeepseekHookIngest.driving`). `sender` is
-        the verified bearer's own profile, resolved at the handshake — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -276,9 +276,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if hello.session_id in self.session_ingest.driven:
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request.
         with sqlalchemy_materia():
@@ -410,6 +407,60 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
         return process
 
+    @property
+    def default_model(self) -> None:
+        # dsh owns both the live default and a resumed session's selection.
+        return None
+
+    async def discover_models(self) -> None:
+        host = HostDescription.model_validate(
+            self.unwrap(await self.client.call("host.describe", {}), "host.describe")
+        )
+        catalog = ModelCatalog.model_validate(
+            self.unwrap(await self.client.call("llm.models", {}), "llm.models")
+        )
+        for failure in catalog.failures:
+            logger.warning(
+                "dsh provider %s model discovery failed: %s",
+                failure.id,
+                failure.message,
+            )
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        effort_maps: dict[str, dict[ThinkingEffort, str]] = {}
+        for provider in catalog.groups:
+            for model in provider.models:
+                key = f"{provider.id}:{model.id}"
+                configured = self.config.claims.get(key)
+                mapping: dict[ThinkingEffort, str] = {}
+                if model.reasoning is not None:
+                    supported = {effort.id for effort in model.reasoning.efforts}
+                    for effort in ThinkingEfforts:
+                        native = (
+                            effort
+                            if effort in supported
+                            else self.config.efforts.get(effort)
+                        )
+                        if native is not None and native in supported:
+                            mapping[effort] = native
+                elif configured is not None:
+                    mapping = {
+                        effort: self.config.efforts.get(effort, effort)
+                        for effort in configured.efforts
+                    }
+                models[key] = key
+                effort_maps[key] = mapping
+                claims[key] = Claim(
+                    model.description
+                    or (configured.ability if configured else model.name),
+                    tuple(mapping),
+                )
+        if not models:
+            raise ValueError("DeepSeek Harness advertised no available models")
+        self.set_model_catalog(models, claims)
+        self.effort_maps = effort_maps
+        self.default_provider = host.provider
+
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
         await self.client.__aenter__()
@@ -420,6 +471,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         # than retrying.
         try:
             self.process = await self.attach_or_start()
+            await self.discover_models()
             socket = await self.client.open_mux()
         except BaseException:
             await self.client.__aexit__()
@@ -429,9 +481,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             raise
         self.mux_socket = socket
         self.mux_task = asyncio.create_task(self.pump_mux(self.client, socket))
-        return self
+        return await super().__aenter__()
 
-    async def __aexit__(self, *exc: object) -> None:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await super().__aexit__(exc_type, exc_value, traceback)
         self.closing = True
         self.session_ingest.shutdown()
         await self.session_tailer.shutdown()
@@ -455,7 +513,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 future.cancel()
         self.pending.clear()
         self.bridge_contexts.clear()
-        await self.client.__aexit__(*exc)
+        await self.client.__aexit__(exc_type, exc_value, traceback)
         if self.process is not None:
             await self.process.stop()
             self.process = None
@@ -712,6 +770,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        deepseek_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         client = self.client
@@ -728,7 +787,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -741,16 +802,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         accumulator = DeepseekRunAccumulator()
         accumulator.begin(user_prompt)
-
-        if isinstance(model, Model):
-            deepseek_model = model.model_name
-        elif isinstance(model, str):
-            deepseek_model = model
-        else:
-            deepseek_model = None
 
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
@@ -806,13 +861,23 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     )
                     session_id = created.session_id
                 if deepseek_model is not None:
+                    provider_id, separator, model_id = deepseek_model.partition(":")
+                    provider = provider_id if separator else self.default_provider
+                    if not separator:
+                        model_id = deepseek_model
+                    if provider is None:
+                        raise ValueError(
+                            "A DeepSeek model selection must include its provider"
+                        )
                     select_payload: JsonObject = {
                         "sessionId": session_id,
-                        "provider": self.config.provider,
-                        "model": deepseek_model,
+                        "provider": provider,
+                        "model": model_id,
                     }
                     reasoning_effort = (
-                        self.config.efforts.get(effort) if effort is not None else None
+                        self.effort_maps[f"{provider}:{model_id}"][effort]
+                        if effort is not None
+                        else None
                     )
                     if reasoning_effort is not None:
                         select_payload["reasoningEffort"] = reasoning_effort
@@ -858,60 +923,70 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     interactive=interactive,
                 )
                 prompted = False
-                # Claimed before the prompt goes out: the turn's hooks —
-                # `UserPromptSubmit` at pre-step, `Stop` inside turn-stopping,
-                # both ahead of the `turn/end` that ends this scope — must
-                # arrive claimed, or the native ingest would write this driven
-                # conversation a second time.
-                with self.session_ingest.driving(session_id):
-                    try:
-                        prompt_value = SessionPromptValue.model_validate(
-                            self.unwrap(
-                                await client.call(
-                                    "session.prompt",
-                                    {
-                                        "sessionId": session_id,
-                                        "mode": "queue",
-                                        "content": [
-                                            {"type": "text", "text": prompt_text}
-                                        ],
-                                    },
-                                ),
+                try:
+                    prompt_value = SessionPromptValue.model_validate(
+                        self.unwrap(
+                            await client.call(
                                 "session.prompt",
-                            )
+                                {
+                                    "sessionId": session_id,
+                                    "mode": "queue",
+                                    "content": [{"type": "text", "text": prompt_text}],
+                                },
+                            ),
+                            "session.prompt",
                         )
-                        if prompt_value.command is not None:
-                            # dsh intercepted the line as a slash command: no
-                            # turn opened, the command's answer is the whole
-                            # result.
-                            command_text = (
-                                prompt_value.command.text
-                                or f"{prompt_value.command.kind} command executed"
-                            )
-                            for event in accumulator.complete_command(command_text):
-                                yield event
-                        else:
-                            prompted = True
-                            while not accumulator.turn_ended:
-                                frame = await queue.get()
-                                if isinstance(frame, StreamErrorFrame):
-                                    accumulator.turn_error = (
-                                        "dsh event stream failed mid-turn: "
-                                        f"{frame.error.message}"
-                                    )
-                                    break
-                                for event in accumulator.consume(frame):
-                                    yield event
-                    finally:
-                        self.subscribers.pop(session_id, None)
-                        self.bridge_contexts.pop(session_id, None)
-                        if prompted and not accumulator.turn_ended:
-                            # The run is leaving mid-turn (cancelled, or its
-                            # stream died); don't leave dsh's turn burning.
-                            with contextlib.suppress(Exception):
-                                await client.call(
-                                    "session.cancel", {"sessionId": session_id}
+                    )
+                    if prompt_value.command is not None:
+                        # dsh intercepted the line as a slash command: no
+                        # turn opened, the command's answer is the whole
+                        # result.
+                        command_text = (
+                            prompt_value.command.text
+                            or f"{prompt_value.command.kind} command executed"
+                        )
+                        for event in accumulator.complete_command(command_text):
+                            yield event
+                    else:
+                        prompted = True
+                        while not accumulator.turn_ended:
+                            frame = await queue.get()
+                            if isinstance(frame, StreamErrorFrame):
+                                accumulator.turn_error = (
+                                    "dsh event stream failed mid-turn: "
+                                    f"{frame.error.message}"
                                 )
+                                break
+                            if (
+                                self.config.instrument
+                                and frame.event.type != "assistant/chunk"
+                                and (
+                                    accumulator.turn_started
+                                    or frame.event.type == "turn/start"
+                                )
+                            ):
+                                # dsh's native OTel backend exports logs, with no
+                                # span exporter or inbound parent context. Keep
+                                # events under this kick, not the shared mux task;
+                                # see docs/agent-telemetry.md for checked releases.
+                                deepseek_logfire.info(
+                                    "deepseek.event {event_type}",
+                                    event_type=frame.event.type,
+                                    session_id=session_id,
+                                    event=frame.event.model_dump(mode="json"),
+                                )
+                            for event in accumulator.consume(frame):
+                                yield event
+                finally:
+                    self.subscribers.pop(session_id, None)
+                    self.bridge_contexts.pop(session_id, None)
+                    if prompted and not accumulator.turn_ended:
+                        # The run is leaving mid-turn (cancelled, or its
+                        # stream died); don't leave dsh's turn burning.
+                        with contextlib.suppress(Exception):
+                            await client.call(
+                                "session.cancel", {"sessionId": session_id}
+                            )
 
                 run_id = str(uuid7())
                 recorded_run = await self.octomate.conversations.record_agent_run(

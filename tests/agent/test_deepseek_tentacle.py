@@ -13,13 +13,16 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
+from logfire.testing import CaptureLogfire
+from logfire.testing import capfire as capfire
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
 from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import PartStartEvent
 
 from octomate import Octomate
-from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config import ChannelConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -46,7 +49,6 @@ from octomate.tentacles.deepseek.wire import (
 )
 from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject, JsonValue
-from tests.support.agents import DEEPSEEK_MODELS
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversation,
@@ -168,7 +170,34 @@ class FakeDeepseekApi:
     def reset(cls, turn_script: list[TurnEntry] | None = None) -> None:
         cls.serving = set()
         cls.results = {
-            "host.describe": OkResult(value={}),
+            "host.describe": OkResult(
+                value={"provider": "deepseek-official", "model": "deepseek-v4-pro"}
+            ),
+            "llm.models": OkResult(
+                value={
+                    "groups": [
+                        {
+                            "id": "deepseek-official",
+                            "name": "DeepSeek",
+                            "models": [
+                                {
+                                    "id": model,
+                                    "name": model,
+                                    "reasoning": {
+                                        "efforts": [
+                                            {"id": "off"},
+                                            {"id": "high"},
+                                            {"id": "max"},
+                                        ]
+                                    },
+                                }
+                                for model in ("deepseek-v4-flash", "deepseek-v4-pro")
+                            ],
+                        }
+                    ],
+                    "failures": [],
+                }
+            ),
             "session.create": OkResult(value={"sessionId": "sess-1"}),
             "session.selectModel": OkResult(value={"selected": {}}),
             "session.prompt": OkResult(value={"accepted": True}),
@@ -254,11 +283,7 @@ class FakeFeelers:
 def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
     """The `im` channel the tentacle presents approvals and questions through,
     its feelers recording what was asked."""
-    channel = FakeChannelTentacle(
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
-        )
-    )
+    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
     channel.feelers = cast(Feelers, feelers)
     return channel
 
@@ -294,7 +319,7 @@ def _tentacle(
     return DeepseekTentacle(
         "deepseek",
         octomate or Octomate(conversations=conversations),
-        config=config or DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+        config=config or DeepseekConfig(),
     )
 
 
@@ -329,30 +354,57 @@ def interaction_octomate(
     )
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_creates_session_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
+    capfire: CaptureLogfire,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events("done"))
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(conversations, config=DeepseekConfig(instrument=instrument))
 
     events = []
-    async with tentacle:
-        async with tentacle.run_stream_events(
-            "fix it",
-            conversation_address=KEY,
-            thread_id=_THREAD,
-            run_name="react",
-            model="deepseek-v4-pro",
-            effort="xhigh",
-        ) as stream:
-            async for event in stream:
-                events.append(event)
+    with use_span(NonRecordingSpan(SpanContext(91, 92, False, TraceFlags(1)))):
+        async with tentacle:
+            async with tentacle.run_stream_events(
+                "fix it",
+                conversation_address=KEY,
+                thread_id=_THREAD,
+                run_name="react",
+                model="deepseek-v4-pro",
+                effort="xhigh",
+            ) as stream:
+                async for event in stream:
+                    events.append(event)
 
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    records = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.attributes and "event_type" in span.attributes
+    ]
+    assert [span.attributes["event_type"] for span in records if span.attributes] == (
+        ["turn/start", "assistant/message", "turn/end"] if instrument else []
+    )
+    [driving_span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name.startswith("DeepseekTentacle ")
+        and span.attributes
+        and span.attributes.get("logfire.span_type") == "span"
+    ]
+    assert driving_span.context is not None
+    assert driving_span.context.trace_id == 91
+    assert driving_span.parent is not None
+    assert driving_span.parent.span_id == 92
+    for record in records:
+        assert record.context is not None
+        assert record.context.trace_id == 91
+        assert record.parent == driving_span.context
 
     [create_payload] = calls_of("session.create")
     # A thread in no project runs in a workspace forked for the run, not at the
@@ -412,7 +464,7 @@ async def test_agent_preset_and_the_chat_cwd_reach_session_create(
     FakeDeepseekApi.reset(turn_events())
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), agent_preset="octopus"),
+        config=DeepseekConfig(agent_preset="octopus"),
     )
 
     async with tentacle:
@@ -755,7 +807,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), approval_timeout=0.01),
+        config=DeepseekConfig(approval_timeout=0.01),
         octomate=octomate,
     )
     octomate.connect(tentacle)
@@ -972,7 +1024,7 @@ async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
     FakeDeepseekApi.reset()
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), port=4090),
+        config=DeepseekConfig(port=4090),
     )
 
     async with tentacle:
