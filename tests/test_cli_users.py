@@ -14,7 +14,7 @@ from typer.testing import CliRunner
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.database import async_session
-from octomate.managers.auth import AuthManager
+from octomate.managers.auth import AuthManager, InvalidCredentials
 from octomate.schemas.auth import UserApiKey, UserInvitation, UserSession
 from octomate.schemas.user import User
 from tests.support.users import auth_config
@@ -221,3 +221,69 @@ def test_create_requires_the_server_package(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_login_is_not_a_cli_command() -> None:
     assert runner.invoke(cli, ["login"]).exit_code != 0
+
+
+@pytest.mark.parametrize("prompt", [False, True])
+async def test_reset_password_ends_sessions_and_allows_login(
+    auth: AuthManager, prompt: bool
+) -> None:
+    user = await auth.register(
+        "alice", SecretStr(PASSWORD), await auth.invite(), name="Alice"
+    )
+    tokens = await auth.login("alice", SecretStr(PASSWORD))
+    replacement = "Replacement password1!"
+    args = ["user", "reset-password", "--username", "alice"]
+    if not prompt:
+        args += ["--password", replacement]
+    result = await asyncio.to_thread(
+        runner.invoke,
+        cli,
+        args,
+        input=f"{replacement}\n{replacement}\n" if prompt else None,
+    )
+    assert result.exit_code == 0, result.output
+    assert replacement not in result.output
+    assert "Browser sessions have been signed out" in result.output
+    assert await auth.authenticate_session(tokens.access_token) is None
+    with pytest.raises(InvalidCredentials):
+        await auth.refresh_session(tokens.refresh_token)
+    with pytest.raises(InvalidCredentials):
+        await auth.login("alice", SecretStr(PASSWORD))
+    assert (await auth.login("alice", SecretStr(replacement))).user_id == user.id
+
+
+@pytest.mark.parametrize("password", ["Abcdefg1!", "NoSymbols123"])
+async def test_reset_rejects_weak_passwords_without_changing_the_account(
+    auth: AuthManager, password: str
+) -> None:
+    await auth.register("alice", SecretStr(PASSWORD), await auth.invite(), name="Alice")
+    result = await asyncio.to_thread(
+        runner.invoke,
+        cli,
+        ["user", "reset-password", "--username", "alice", "--password", password],
+    )
+    assert result.exit_code != 0
+    assert "--password" in result.output
+    assert "validation error" not in result.output
+    assert password not in result.output
+    await auth.login("alice", SecretStr(PASSWORD))
+
+
+@pytest.mark.parametrize("passwordless", [False, True])
+async def test_reset_does_not_register_an_account(
+    auth: AuthManager, passwordless: bool
+) -> None:
+    if passwordless:
+        async with async_session() as session:
+            session.add(User(username="missing", name="Unenrolled"))
+            await session.commit()
+    result = await asyncio.to_thread(
+        runner.invoke,
+        cli,
+        ["user", "reset-password", "--username", "missing", "--password", PASSWORD],
+    )
+    assert result.exit_code != 0
+    async with async_session() as session:
+        users = await session.list(User)
+        assert len(users) == int(passwordless)
+        assert all(user.password_hash is None for user in users)

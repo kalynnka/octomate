@@ -99,6 +99,8 @@ async def test_registration_password_schema_describes_requirements(
     for requirement in ("lowercase", "uppercase", "digit", "symbol"):
         assert requirement in password["description"]
     assert schemas["LoginBody"]["properties"]["password"]["minLength"] == 1
+    assert schemas["PasswordBody"]["properties"]["password"] == password
+    assert set(schemas["PasswordBody"]["required"]) == {"current_password", "password"}
 
 
 @pytest.mark.parametrize(
@@ -277,6 +279,104 @@ async def test_registered_identity_and_bindings_survive_restart(
     assert owner is not None
     assert owner.name == "Alice"
     assert (await auth.login("alice", SecretStr(PASSWORD))).user_id == user_id
+
+
+@pytest.mark.parametrize("cookies", ["refresh-only", "expired-access", "access-only"])
+async def test_logout_revokes_sessions_with_partial_or_expired_cookies(
+    client: httpx.AsyncClient, auth: AuthManager, cookies: str
+) -> None:
+    await enroll(client, auth)
+    access = SecretStr(client.cookies["octomate_access"])
+    refresh = SecretStr(client.cookies["octomate_refresh"])
+    if cookies == "refresh-only":
+        client.cookies.delete("octomate_access")
+    elif cookies == "access-only":
+        client.cookies.delete("octomate_refresh")
+    else:
+        async with async_session() as session:
+            [current] = await session.list(UserSession)
+            current.access_expires_at = datetime.now(UTC) - timedelta(seconds=1)
+            await session.commit()
+    assert (await client.post("/api/auth/logout")).status_code == 204
+    assert not client.cookies
+    assert await auth.authenticate_session(access) is None
+    with pytest.raises(InvalidCredentials):
+        await auth.refresh_session(refresh)
+    assert (await client.post("/api/auth/logout")).status_code == 204
+
+
+async def test_logout_clears_invalid_cookies_without_requiring_a_session(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.post(
+        "/api/auth/logout",
+        headers={"Cookie": "octomate_access=unknown; octomate_refresh=unknown"},
+    )
+    assert response.status_code == 204
+    assert len(response.headers.get_list("set-cookie")) == 2
+    assert all(
+        "Max-Age=0" in cookie for cookie in response.headers.get_list("set-cookie")
+    )
+    assert response.headers["cache-control"] == "no-store"
+
+
+async def test_password_change_requires_current_password_and_ends_only_own_sessions(
+    client: httpx.AsyncClient, auth: AuthManager
+) -> None:
+    await enroll(client, auth, "bob")
+    bob = await auth.login("bob", SecretStr(PASSWORD))
+    await enroll(client, auth)
+    alice = await auth.login("alice", SecretStr(PASSWORD))
+    refresh = SecretStr(client.cookies["octomate_refresh"])
+    key = await auth.create_api_key(alice.user_id, name="laptop", scopes=["hooks"])
+    replacement = "Replacement password1!"
+    response = await client.post(
+        "/api/auth/password",
+        json={"current_password": PASSWORD, "password": replacement},
+    )
+    assert response.status_code == 204
+    assert not client.cookies
+    assert (await client.get("/api/auth/me")).status_code == 401
+    assert await auth.authenticate_session(alice.access_token) is None
+    for token in (refresh, alice.refresh_token):
+        with pytest.raises(InvalidCredentials):
+            await auth.refresh_session(token)
+    with pytest.raises(InvalidCredentials):
+        await auth.login("alice", SecretStr(PASSWORD))
+    assert (await auth.login("alice", SecretStr(replacement))).user_id == alice.user_id
+    assert await auth.authenticate_session(bob.access_token) is not None
+    assert await auth.authenticate_api_key(key.token, scope="hooks") is not None
+
+
+@pytest.mark.parametrize(
+    ("body", "status"),
+    [
+        ({"current_password": "wrong", "password": "Replacement password1!"}, 403),
+        ({"current_password": PASSWORD, "password": "Abcde1!"}, 422),
+        ({"password": "Replacement password1!"}, 422),
+    ],
+)
+async def test_rejected_password_change_preserves_credentials(
+    client: httpx.AsyncClient, auth: AuthManager, body: dict[str, str], status: int
+) -> None:
+    await enroll(client, auth)
+    response = await client.post("/api/auth/password", json=body)
+    assert response.status_code == status
+    for value in body.values():
+        assert value not in response.text
+    assert (await client.get("/api/auth/me")).status_code == 200
+    await auth.login("alice", SecretStr(PASSWORD))
+
+
+async def test_password_change_requires_session_and_browser_header(
+    client: httpx.AsyncClient, auth: AuthManager
+) -> None:
+    body = {"current_password": PASSWORD, "password": "Replacement password1!"}
+    assert (await client.post("/api/auth/password", json=body)).status_code == 401
+    await enroll(client, auth)
+    client.headers.pop("X-Octomate-Request")
+    assert (await client.post("/api/auth/password", json=body)).status_code == 403
+    assert (await client.post("/api/auth/logout")).status_code == 403
 
 
 async def test_anonymous_invitations_are_independent_and_single_use(

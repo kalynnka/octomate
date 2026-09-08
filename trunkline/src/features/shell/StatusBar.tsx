@@ -4,11 +4,12 @@
  * /api/health; the account chips from the session. Ported from the comp's
  * "STATUS BAR" block.
  */
-import type { CSSProperties, ReactNode } from 'react'
+import { useState, type CSSProperties, type ReactNode } from 'react'
 import { Icon } from '@/components/Icon'
 import { mono } from '@/components/text'
 import { useHealth } from '@/lib/api/hooks'
 import type { StatusChip } from '@/lib/api/types'
+import { refusalText } from '@/lib/api/auth'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 
@@ -51,7 +52,20 @@ export function StatusBar() {
   const onAccount = useConsole((s) => s.mgmtSec === 'account')
   const user = useAuth((s) => s.user)
   const { signOut } = useAuth((s) => s.actions)
+  const [signingOut, setSigningOut] = useState(false)
+  const [signOutError, setSignOutError] = useState<string | null>(null)
   const health = useHealth().data
+
+  const leave = async () => {
+    setSigningOut(true)
+    setSignOutError(null)
+    try {
+      await signOut()
+    } catch (error) {
+      setSignOutError(refusalText(error) ?? 'Sign-out failed. Check your connection and try again.')
+      setSigningOut(false)
+    }
+  }
 
   const relay: StatusChip | null = health
     ? !health.reachable
@@ -163,8 +177,13 @@ export function StatusBar() {
           >
             @{user?.username}
           </Chip>
-          <Chip tip="end this session on the relay" onClick={() => void signOut()}>
-            <span style={{ opacity: 0.7 }}>⏻</span> sign out
+          <Chip
+            tip={signOutError ?? 'end this session on the relay'}
+            onClick={signingOut ? undefined : () => void leave()}
+            style={{ color: signOutError ? 'var(--color-red)' : undefined }}
+          >
+            <span style={{ opacity: 0.7 }}>⏻</span>
+            {signingOut ? 'signing out…' : signOutError ? 'sign-out failed · retry' : 'sign out'}
           </Chip>
           {right.map((s) => (
             <Chip key={s.t} tip={s.tip}>

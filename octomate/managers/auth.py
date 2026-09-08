@@ -9,6 +9,7 @@ from anyio import CapacityLimiter, to_thread
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 from pydantic import AwareDatetime, SecretStr
+from sqlalchemy import or_
 from sqlalchemy.orm.exc import StaleDataError
 from uuid_utils.compat import uuid7
 
@@ -191,6 +192,69 @@ class AuthManager(Manager, Locks[str]):
                     UserSession["refresh_expires_at"] > now,
                 ],
             )
+
+    async def set_password(
+        self,
+        username: str,
+        password: SecretStr,
+        *,
+        current_password: SecretStr | None = None,
+    ) -> None:
+        """Replace a password and end browser sessions; HTTP callers must supply the old password."""
+        password = NewPasswordAdapter.validate_python(password)
+        async with self.lock(username), async_session() as session:
+            user = await session.one_or_none(
+                User, expressions=[User["username"] == username]
+            )
+            if user is None or user.password_hash is None:
+                raise InvalidCredentials
+            if current_password is not None:
+                try:
+                    await to_thread.run_sync(
+                        self.password_hasher.verify,
+                        user.password_hash.get_secret_value(),
+                        current_password.get_secret_value(),
+                        limiter=self.password_limiter,
+                    )
+                except VerifyMismatchError as error:
+                    raise InvalidCredentials from error
+            user.password_hash = await self.hash_password(password)
+            now = datetime.now(UTC)
+            for current in await session.list(
+                UserSession,
+                expressions=[
+                    UserSession["user_id"] == user.id,
+                    UserSession["revoked_at"].is_(None),
+                ],
+                limit=None,
+            ):
+                current.revoked_at = now
+            await session.commit()
+
+    async def logout(
+        self, access_token: SecretStr | None, refresh_token: SecretStr | None
+    ) -> None:
+        expressions = []
+        if access_token is not None:
+            expressions.append(
+                UserSession["access_token_hash"]
+                == self.hash_token(access_token, self.config.access_token_salt)
+            )
+        if refresh_token is not None:
+            expressions.append(
+                UserSession["refresh_token_hash"]
+                == self.hash_token(refresh_token, self.config.refresh_token_salt)
+            )
+        if not expressions:
+            return
+        async with async_session() as session:
+            for current in await session.list(
+                UserSession,
+                expressions=[or_(*expressions), UserSession["revoked_at"].is_(None)],
+                limit=None,
+            ):
+                current.revoked_at = datetime.now(UTC)
+            await session.commit()
 
     async def refresh_session(self, token: SecretStr) -> SessionTokens:
         now = datetime.now(UTC)

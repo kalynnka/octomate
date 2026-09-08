@@ -18,7 +18,7 @@ import { useApiKeys } from '@/lib/api/hooks'
 import { queryClient } from '@/lib/queryClient'
 import { refusalText } from '@/lib/api/auth'
 import { useAuth } from '@/state/auth'
-import { Refusal } from './parts'
+import { Field, Refusal } from './parts'
 
 const SCOPES: { id: ApiKeyScope; note: string }[] = [
   { id: 'hooks', note: 'native session hooks · transcript streams' },
@@ -52,6 +52,77 @@ function Section({ first, children }: { first?: boolean; children: string }) {
     >
       {children}
     </div>
+  )
+}
+
+function PasswordForm() {
+  const { changePassword } = useAuth((s) => s.actions)
+  const [current, setCurrent] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirm, setConfirm] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const matches = confirm === password
+
+  const submit = async (event: FormEvent) => {
+    event.preventDefault()
+    if (busy || !current || !password || !matches) return
+    setBusy(true)
+    setError(null)
+    try {
+      await changePassword({ current_password: current, password })
+    } catch (caught) {
+      setError(refusalText(caught) ?? 'The relay did not answer. Try again.')
+      setBusy(false)
+    }
+  }
+
+  return (
+    <form onSubmit={submit} style={{ margin: '0 16px 12px', maxWidth: 400 }}>
+      <Field name="Current password">
+        <input
+          className="trk-input"
+          type="password"
+          name="current_password"
+          autoComplete="current-password"
+          value={current}
+          onChange={(e) => setCurrent(e.target.value)}
+        />
+      </Field>
+      <Field name="New password">
+        <input
+          className="trk-input"
+          type="password"
+          name="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+      </Field>
+      <p style={{ ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
+        Use 11–1024 characters with a lowercase letter, an uppercase letter, a digit,
+        and a symbol. Changing your password signs out all browser sessions.
+      </p>
+      <Field name="Confirm new password" error={confirm && !matches ? 'The two passwords differ.' : null}>
+        <input
+          className="trk-input"
+          type="password"
+          name="confirm"
+          autoComplete="new-password"
+          value={confirm}
+          onChange={(e) => setConfirm(e.target.value)}
+        />
+      </Field>
+      {error && <Refusal>{error}</Refusal>}
+      <Button
+        type="submit"
+        variant="accent"
+        disabled={busy || !current || !password || !matches}
+        style={{ marginTop: 14 }}
+      >
+        {busy ? 'Changing…' : 'Change password'}
+      </Button>
+    </form>
   )
 }
 
@@ -207,7 +278,8 @@ function IssuedKey({ issued, onDone }: { issued: ApiIssuedKey; onDone: () => voi
     }
     setTimeout(() => setCopied(null), 2200)
   }
-  const configure = `octomate configure --url ${window.location.origin} --token '${issued.token}'`
+  const apiUrl = import.meta.env.DEV ? import.meta.env.VITE_API_URL : window.location.origin
+  const configure = `octomate configure --url ${apiUrl} --token '${issued.token}'`
   return (
     <div
       className="lt-fade-in"
@@ -381,6 +453,9 @@ export function AccountPanel() {
           {user?.id}
         </span>
       </div>
+
+      <Section>Password</Section>
+      <PasswordForm />
 
       <Section>API keys</Section>
       <p style={{ margin: '0 16px 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>

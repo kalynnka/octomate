@@ -75,8 +75,24 @@ owner. The channel account connection and binding flow will be designed separate
 
 Account endpoints are `/api/auth/register`, `/login`, `/refresh`, `/logout`, and
 `/me` under the same `/api/auth` prefix. They use browser cookies; passwords and
-session tokens are excluded from response bodies. Channel-initiated binding,
-password reset, and MCP OAuth are separate follow-up work.
+session tokens are excluded from response bodies. Channel-initiated binding and
+MCP OAuth are separate follow-up work.
+
+Change your password in Trunkline's Account panel. `POST /api/auth/password` accepts
+`current_password` and `password`, applying the same requirements as registration.
+It requires the current password and signs out all of the account's browser sessions.
+API keys remain valid and can be revoked separately in the Account panel.
+
+For a forgotten password, an administrator can reset an existing account locally,
+using the server's config home and database:
+
+```sh
+uv run octomate user reset-password --username alice
+```
+
+The command prompts for the new password and confirmation without echoing them.
+`--password` can also supply it directly. A reset ends all browser sessions; the
+user then signs in through Trunkline with the new password.
 
 ## CLI and API tokens
 

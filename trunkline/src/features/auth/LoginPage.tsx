@@ -58,7 +58,7 @@ export function LoginPage() {
             onChange={(e) => setUsername(e.target.value)}
           />
         </Field>
-        <Field name="Password">
+        <Field name="Password" hint="Forgot it? Ask octomate operator for a reset.">
           <input
             className="trk-input"
             type="password"

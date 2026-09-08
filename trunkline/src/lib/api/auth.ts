@@ -46,6 +46,11 @@ export interface RegistrationBody {
   invitation: string
 }
 
+export interface PasswordBody {
+  current_password: string
+  password: string
+}
+
 export interface ApiKeyBody {
   name: string
   scopes: ApiKeyScope[]
@@ -192,10 +197,16 @@ export async function register(body: RegistrationBody): Promise<ApiUser> {
   return (await res.json()) as ApiUser
 }
 
-/** End the session. A 401 means it had already ended, which is the outcome asked for. */
+/** End the session, including when only its refresh cookie remains. */
 export async function logout(): Promise<void> {
+  if (refreshing) await refreshing
   const res = await apiFetch('/api/auth/logout', { method: 'POST', retry: false })
-  if (!res.ok && res.status !== 401) return refuse(res)
+  if (!res.ok) return refuse(res)
+}
+
+export async function changePassword(body: PasswordBody): Promise<void> {
+  const res = await apiFetch('/api/auth/password', { method: 'POST', json: body })
+  if (!res.ok) return refuse(res)
 }
 
 export async function fetchApiKeys(): Promise<ApiApiKey[]> {

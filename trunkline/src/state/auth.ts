@@ -7,12 +7,14 @@
 import { create } from 'zustand'
 import {
   ApiError,
+  changePassword,
   fetchMe,
   login,
   logout,
   onSessionLost,
   register,
   type ApiUser,
+  type PasswordBody,
   type RegistrationBody,
 } from '@/lib/api/auth'
 
@@ -32,6 +34,7 @@ export interface AuthActions {
   signIn(username: string, password: string): Promise<void>
   register(body: RegistrationBody): Promise<void>
   signOut(): Promise<void>
+  changePassword(body: PasswordBody): Promise<void>
   goRegister(): void
   goLogin(): void
 }
@@ -111,13 +114,16 @@ export const useAuth = create<AuthState>()((set, get) => {
     },
 
     async signOut() {
-      // Leaving is the outcome asked for, whatever the relay answered: a
-      // sign-out the relay never heard leaves a session that lapses on its own.
-      try {
-        await logout()
-      } finally {
-        set({ status: 'signed-out', user: null, page: 'login', notice: null })
-      }
+      await logout()
+      set({ status: 'signed-out', user: null, page: 'login', notice: null })
+    },
+
+    async changePassword(body) {
+      await changePassword(body)
+      set({
+        status: 'signed-out', user: null, page: 'login',
+        notice: 'Password changed. Sign in with your new password.',
+      })
     },
 
     goRegister: () => set({ page: 'register' }),

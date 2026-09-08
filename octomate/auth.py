@@ -47,9 +47,19 @@ def browser_request(request: Request, response: Response) -> None:
 
 
 def session_cookies(
-    response: Response, tokens: SessionTokens, manager: AuthManager
+    response: Response, tokens: SessionTokens | None, manager: AuthManager
 ) -> None:
     response.headers["Cache-Control"] = "no-store"
+    if tokens is None:
+        for name in ("octomate_access", "octomate_refresh"):
+            response.delete_cookie(
+                name,
+                path="/api",
+                secure=manager.config.cookie_secure,
+                httponly=True,
+                samesite="strict",
+            )
+        return
     for name, token, expires in (
         ("octomate_access", tokens.access_token, tokens.access_expires_at),
         ("octomate_refresh", tokens.refresh_token, tokens.refresh_expires_at),
@@ -75,6 +85,11 @@ class RegistrationBody(TypedDict):
     password: NewPassword
     name: Annotated[str, Field(min_length=1, max_length=100)]
     invitation: SecretStr
+
+
+class PasswordBody(TypedDict):
+    current_password: Annotated[SecretStr, Field(min_length=1, max_length=1024)]
+    password: NewPassword
 
 
 class ApiKeyBody(TypedDict):
@@ -147,20 +162,33 @@ async def refresh(
 
 @auth_router.post("/logout", status_code=204, response_model=None)
 async def logout(
+    request: Request,
     response: Response,
-    current: Annotated[UserSession, Depends(current_session)],
     manager: Annotated[AuthManager, Depends(auth_manager)],
 ) -> None:
-    await manager.revoke_session(current.user_id, current.id)
-    response.headers["Cache-Control"] = "no-store"
-    for name in ("octomate_access", "octomate_refresh"):
-        response.delete_cookie(
-            name,
-            path="/api",
-            secure=manager.config.cookie_secure,
-            httponly=True,
-            samesite="strict",
-        )
+    access = request.cookies.get("octomate_access")
+    refresh = request.cookies.get("octomate_refresh")
+    await manager.logout(
+        SecretStr(access) if access is not None else None,
+        SecretStr(refresh) if refresh is not None else None,
+    )
+    session_cookies(response, None, manager)
+
+
+@auth_router.post("/password", status_code=204, response_model=None)
+async def change_password(
+    body: PasswordBody,
+    response: Response,
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[AuthManager, Depends(auth_manager)],
+) -> None:
+    try:
+        await manager.set_password(user.username, **body)
+    except InvalidCredentials as error:
+        raise HTTPException(
+            status_code=403, detail="Current password is incorrect"
+        ) from error
+    session_cookies(response, None, manager)
 
 
 @auth_router.get("/me", response_model=User)
