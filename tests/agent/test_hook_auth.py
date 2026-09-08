@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from contextvars import Context
 
 import pytest
 from fastapi import FastAPI
@@ -16,6 +17,7 @@ from octomate_cli.tentacles.codex import CODEX_HOOK_PATH
 from octomate_cli.tentacles.deepseek import DEEPSEEK_HOOK_PATH
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.testclient import WebSocketDenialResponse
 
 from octomate import Octomate
 from octomate.config import (
@@ -107,3 +109,26 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
         config=ClaudeCodeConfig(),
     )
     assert len(tentacle.routers()) == 1
+
+
+@pytest.mark.parametrize("token", ["wrong", SECRET.get_secret_value()])
+async def test_stream_authentication_has_its_own_database_context(token: str) -> None:
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    app.connect(ClaudeCodeTentacle("claude", app, config=ClaudeCodeConfig()))
+    user = await a_user()
+    await a_api_key(user, SECRET.get_secret_value())
+
+    def connect() -> None:
+        with TestClient(app).websocket_connect(
+            f"{CLAUDE_HOOK_PATH}/stream",
+            headers={"Authorization": f"Bearer {token}"},
+        ):
+            pass
+
+    # Uvicorn's request tasks do not inherit the fixture's active materia.
+    if token == SECRET.get_secret_value():
+        Context().run(connect)
+    else:
+        with pytest.raises(WebSocketDenialResponse) as denial:
+            Context().run(connect)
+        assert denial.value.status_code == 401

@@ -4,14 +4,14 @@ import asyncio
 import colorsys
 import logging
 import zlib
-from collections.abc import AsyncGenerator, Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from functools import cached_property, lru_cache
 from itertools import count
 from typing import TypeVar
 
-from fastapi import FastAPI, Request, Response
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -19,7 +19,7 @@ from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
-from starlette.types import ASGIApp
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from octomate.config.base import OctomateConfig
 from octomate.managers.auth import AuthManager
@@ -166,14 +166,6 @@ class Octomate(FastAPI):
             encryption_key=self.oauth_encryption_key,
         )
 
-        @self.middleware("http")
-        async def activate_materia(
-            request: Request,
-            call_next: Callable[[Request], Awaitable[Response]],
-        ) -> Response:
-            with sqlalchemy_materia():
-                return await call_next(request)
-
         @self.exception_handler(RequestValidationError)
         async def validation_error(
             request: Request, error: RequestValidationError
@@ -188,6 +180,10 @@ class Octomate(FastAPI):
                     ]
                 },
             )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        with sqlalchemy_materia():
+            await super().__call__(scope, receive, send)
 
     @property
     def projects(self) -> ProjectManager:
