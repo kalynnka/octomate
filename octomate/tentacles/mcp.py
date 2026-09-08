@@ -213,6 +213,10 @@ class BareMcpTentacle(McpTentacle):
     the config names another, and it has no instructions of its own: the tools'
     descriptions are all a runtime reads."""
 
+    @property
+    def log_names(self) -> tuple[str, ...]:
+        return (__name__,)
+
     def __init__(self, id: str, octomate: Octomate, *, config: BareMcpConfig) -> None:
         super().__init__(id=id, octomate=octomate)
         self.label = id
