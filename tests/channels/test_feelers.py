@@ -610,39 +610,42 @@ def test_text_stream_batcher_flushes_by_time_and_size() -> None:
         clock=clock,
     )
 
-    assert batcher.push_text("he") == []
+    first = batcher.push_text("he")
+    assert first[0].delta_text == "he"
+    assert batcher.push_text("l") == []
     now = 0.3
-    updates = batcher.push_text("y")
+    updates = batcher.push_text("lo")
 
     assert len(updates) == 1
-    assert updates[0].delta_text == "hey"
-    assert updates[0].full_text == "hey"
+    assert updates[0].delta_text == "llo"
+    assert updates[0].full_text == "hello"
 
     updates = batcher.push_text("x" * 10)
 
     assert len(updates) == 1
     assert updates[0].delta_text == "x" * 10
-    assert updates[0].full_text == "hey" + ("x" * 10)
+    assert updates[0].full_text == "hello" + ("x" * 10)
 
 
 def test_text_stream_batcher_final_flush_and_block_switching() -> None:
     batcher = TextStreamBatcher(flush_interval=999, min_chars=100)
 
-    assert batcher.push_text("answer") == []
-    updates = batcher.push_text(
-        "thinking",
-        block=StreamBlock(id="think-1", type="thinking", title="Thinking"),
-    )
+    assert batcher.push_text("answer")[0].delta_text == "answer"
+    assert batcher.push_text(" rest") == []
+    thinking = StreamBlock(id="think-1", type="thinking", title="Thinking")
+    updates = batcher.push_text("thinking", block=thinking)
 
-    assert len(updates) == 1
+    assert len(updates) == 2
     assert updates[0].block_id == "answer"
-    assert updates[0].delta_text == "answer"
+    assert updates[0].delta_text == " rest"
+    assert updates[1].delta_text == "thinking"
+    assert batcher.push_text(" more", block=thinking) == []
 
     final_updates = batcher.finish_all()
 
     assert len(final_updates) == 1
     assert final_updates[0].block_id == "think-1"
-    assert final_updates[0].delta_text == "thinking"
+    assert final_updates[0].delta_text == " more"
     assert final_updates[0].is_final is True
 
 

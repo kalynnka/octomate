@@ -559,7 +559,6 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert FakeCodex.last_config.client_name == runtime.client_name
     assert FakeCodex.last_config.env == {
         "EXISTING_RUNTIME_VALUE": "kept",
-        "OCTOMATE_CODEX_DRIVEN": "1",
     }
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
@@ -1241,7 +1240,6 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     assert config.env[codex_base.MCP_TOKEN_ENV] == "lu-token"
 
     assert config.env[codex_base.MCP_CONVERSATION_ENV] == str(conversation.id)
-    assert config.env[codex_base.DRIVEN_ENV] == "1"
     assert config.config_overrides == (codex_base.NETWORK_ACCESS,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {

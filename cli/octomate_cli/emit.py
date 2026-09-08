@@ -15,10 +15,9 @@ imports the package.
 
 Anything added here must keep that property: stdlib imports only. The environment
 variable names, the hook path, and the client-config resolution below are duplicated
-from `octomate_cli/config.py` and `octomate_cli/tentacles/codex/hooks.py` (and octomate's
-`tentacles/codex/hooks.py` holds `DRIVEN_ENV`) for the same reason — this
-module cannot import them without paying for a package. Change them together; the
-tests hold the copies to the canonical ones.
+from `octomate_cli/config.py` and `octomate_cli/tentacles/codex/hooks.py` for the same
+reason — this module cannot import them without paying for a package. Change them
+together; the tests hold the copies to the canonical ones.
 """
 
 from __future__ import annotations
@@ -33,7 +32,6 @@ from pathlib import Path
 
 SECRET_ENV = "OCTOMATE_CLI_SECRET"
 OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
-DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
 CODEX_HOOK_PATH = "/hooks/codex"
 HOOK_TIMEOUT = 10
 
@@ -79,11 +77,6 @@ def resolved(key: str, env: str, tables: list[dict[str, object]]) -> str | None:
 
 def main(url: str, secret: str | None) -> int:
     payload = json.load(sys.stdin)
-    if os.environ.get(DRIVEN_ENV) == "1":
-        # Octomate is driving this session itself and already records the run; the
-        # router drops the event rather than writing the conversation a second time.
-        payload["octomate_driven"] = True
-
     if not secret:
         print(
             f"octomate: no credential — {SECRET_ENV} is unset and the "

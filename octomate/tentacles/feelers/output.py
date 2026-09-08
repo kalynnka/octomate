@@ -307,6 +307,8 @@ class TextStreamBatcher:
         return buffer.full_text if buffer is not None else ""
 
     def should_flush(self, buffer: TextStreamBuffer) -> bool:
+        if buffer.sequence == 0:
+            return True
         if self.flush_interval <= 0:
             return True
         if len(buffer.pending_delta) >= self.max_chars:

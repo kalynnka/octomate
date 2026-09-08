@@ -216,7 +216,7 @@ class ReflexDeps:
             # external runtime's tool call finds this turn's session by the
             # conversation it already knows.
             conversation = await self.conversation_manager.ensure(
-                thread_id, agent_tentacle_id=agent.id
+                thread_id, agent_tentacle_id=agent.id, with_history=False
             )
             session.conversation_id = conversation.id
         return session

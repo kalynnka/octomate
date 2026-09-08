@@ -25,6 +25,7 @@ from octomate_protocol.stream import (
     server_message_adapter,
 )
 from pydantic import SecretStr
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse
 from starlette.websockets import WebSocketDisconnect
@@ -32,6 +33,7 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
 from octomate.managers.user import UserManager
+from octomate.schemas.conversation import Conversation
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
 from tests.agent.test_deepseek_native_ingest import (
@@ -40,6 +42,7 @@ from tests.agent.test_deepseek_native_ingest import (
     turn_events,
 )
 from tests.support.config import registered
+from tests.support.managers import a_thread
 
 SECRET = SecretStr("the-hook-secret")
 AUTH = {"Authorization": f"Bearer {SECRET.get_secret_value()}"}
@@ -163,17 +166,36 @@ def test_a_stale_protocol_is_refused_loudly() -> None:
     assert "protocol" in (disconnect.value.reason or "")
 
 
-def test_a_driven_session_is_refused() -> None:
-    """Octomate records the sessions it drives itself; streaming their events
-    would write those conversations a second time."""
+def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
     client, tentacle = stream_client()
-    with client, tentacle.session_ingest.driving(SESSION_ID):
+
+    async def register_sdk_session() -> Conversation:
+        octomate = tentacle.octomate
+        sdk_conversation = await octomate.conversations.ensure(
+            await a_thread(), agent_tentacle_id="deepseek"
+        )
+        await octomate.conversations.record_agent_run(
+            sdk_conversation,
+            run_id="sdk-run",
+            messages=[ModelRequest(parts=[UserPromptPart(content="SDK prompt")])],
+            external_id=SESSION_ID,
+        )
+        return sdk_conversation
+
+    with client:
+        assert client.portal is not None
+        sdk = client.portal.call(register_sdk_session)
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
-            with pytest.raises(WebSocketDisconnect) as disconnect:
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            [state] = tentacle.session_tailer.sessions.values()
+            assert state.conversation is not None
+            assert state.conversation.id != sdk.id
+            assert state.conversation.agent_tentacle_id == "deepseek-native"
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
-    assert disconnect.value.code == 1008
-    assert "drives" in (disconnect.value.reason or "")
 
 
 def test_a_seq_gap_closes_for_resync() -> None:

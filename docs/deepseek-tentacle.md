@@ -48,12 +48,9 @@ limitations the first version accepts, and why.
      The ledger row joins every `source.kind == "user"` message of the turn —
      steered prompts included — and leaves the harness's own injections
      (`agent-instructions`, `plugin` context) to the replay metadata.
-   - Suppression of octomate's own driven sessions is a live claim around each
-     driven turn: their hooks are dropped and their tails refused at the
-     stream handshake. A driven session later prompted *natively* (dsh's web
-     UI on the same session, or after an octomate restart) ingests as a native
-     thread and re-records its turns there — the same exposure the Claude and
-     Codex ingests accept.
+   - All hook and stream traffic is ingested as external sessions, including
+     sessions started by Octomate. Their native threads remain separate from
+     the SDK conversations, as with Claude and Codex.
    - The hooks bridge mounts via `$DSH_HOME/cordis.patch.yml`, which every dsh
      process sharing that home loads — but the bridge package ships outside
      dsh's bundled dependency closure, so the first install must link it

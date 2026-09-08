@@ -98,10 +98,7 @@ from octomate.tentacles.codex.adapter import (
     CodexRunAccumulator,
     json_object_adapter,
 )
-from octomate.tentacles.codex.hooks import (
-    DRIVEN_ENV,
-    CodexHookInput,
-)
+from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.telemetry import TracedCodexClient
@@ -413,13 +410,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and refuse
-        what cannot stream — a stale protocol loudly (the session still degrades to
-        hooks-only ingest), and a session this tentacle is driving itself, whose
-        rollout ingested here would write the conversation a second time
-        (`CodexHookIngest.driving`). Authentication already happened at the
-        handshake, and `sender` is the verified bearer's own profile — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -437,9 +432,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if hello.session_id in self.session_ingest.driven:
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
         with sqlalchemy_materia():
@@ -611,7 +603,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         def new_client(
             conversation_id: uuid.UUID, mcp_bearer: SecretStr | None
         ) -> AsyncCodex:
-            env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
+            env = dict(self.config.runtime.env or {})
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
@@ -1062,7 +1054,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -1075,6 +1069,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         if deferred_tool_results is not None:
             # A resumed run. The app-server takes no tool result back, so the graph's
@@ -1237,48 +1232,45 @@ class CodexTentacle(AgentTentacle[str, None]):
                         session_allowed=set(conversation.allowed_tools),
                     )
                     try:
-                        with self.session_ingest.driving(codex_thread.id):
-                            # No `sandbox=` here. The thread already carries the
-                            # mode, and a turn's is sent as a whole policy built
-                            # from the SDK's defaults — which would stamp
-                            # `networkAccess: false` back over what the config
-                            # resolved, and narrow the writable roots with it.
-                            turn = await codex_thread.turn(
-                                prompt_text,
-                                approval_mode=plan.sdk_mode,
-                                cwd=run_cwd,
-                                effort=turn_effort,
-                                model=sdk_model,
-                                output_schema=output_schema,
-                                personality=personality,
-                                summary=summary,
-                            )
-                            previous = self.live_turns.get(conversation.id)
-                            self.live_turns[conversation.id] = turn
-                            if previous is not None and previous is not turn:
-                                with contextlib.suppress(Exception):
-                                    await previous.interrupt()
-                            interrupted = False
-                            try:
-                                async for notification in turn.stream():
-                                    for event in accumulator.consume(notification):
-                                        yield event
-                                    if (
-                                        not interrupted
-                                        and session is not None
-                                        and isinstance(
-                                            session.decision, TeleportDecision
-                                        )
-                                    ):
-                                        # Moving mid-run: the move is the graph's to
-                                        # perform, and this process is still where
-                                        # it was, so the turn ends now — as the
-                                        # deferral the graph performs and resumes from.
-                                        interrupted = True
-                                        await turn.interrupt()
-                            finally:
-                                if self.live_turns.get(conversation.id) is turn:
-                                    self.live_turns.pop(conversation.id, None)
+                        # No `sandbox=` here. The thread already carries the
+                        # mode, and a turn's is sent as a whole policy built
+                        # from the SDK's defaults — which would stamp
+                        # `networkAccess: false` back over what the config
+                        # resolved, and narrow the writable roots with it.
+                        turn = await codex_thread.turn(
+                            prompt_text,
+                            approval_mode=plan.sdk_mode,
+                            cwd=run_cwd,
+                            effort=turn_effort,
+                            model=sdk_model,
+                            output_schema=output_schema,
+                            personality=personality,
+                            summary=summary,
+                        )
+                        previous = self.live_turns.get(conversation.id)
+                        self.live_turns[conversation.id] = turn
+                        if previous is not None and previous is not turn:
+                            with contextlib.suppress(Exception):
+                                await previous.interrupt()
+                        interrupted = False
+                        try:
+                            async for notification in turn.stream():
+                                for event in accumulator.consume(notification):
+                                    yield event
+                                if (
+                                    not interrupted
+                                    and session is not None
+                                    and isinstance(session.decision, TeleportDecision)
+                                ):
+                                    # Moving mid-run: the move is the graph's to
+                                    # perform, and this process is still where
+                                    # it was, so the turn ends now — as the
+                                    # deferral the graph performs and resumes from.
+                                    interrupted = True
+                                    await turn.interrupt()
+                        finally:
+                            if self.live_turns.get(conversation.id) is turn:
+                                self.live_turns.pop(conversation.id, None)
                     finally:
                         self.bridge_contexts.pop(conversation.id, None)
                 finally:

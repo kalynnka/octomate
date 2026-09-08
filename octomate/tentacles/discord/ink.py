@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import asyncio
+import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
-from typing import TypeAlias, TypedDict
+from typing import TypedDict
 from urllib.parse import urlparse
 
 import discord
@@ -16,7 +18,9 @@ from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.utils import strip_markdown
 
-DiscordMessageable: TypeAlias = discord.DMChannel | discord.TextChannel | discord.Thread
+type DiscordMessageable = discord.DMChannel | discord.TextChannel | discord.Thread
+
+logger = logging.getLogger(__name__)
 
 
 class DiscordSendKwargs(TypedDict, total=False):
@@ -176,9 +180,25 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
 
     @asynccontextmanager
     async def typing(self, channel_id: str) -> AsyncGenerator[None]:
-        destination = await self.resolve_messageable(channel_id)
-        async with destination.typing():
+        async def keep_typing() -> None:
+            destination = await self.resolve_messageable(channel_id)
+            async with destination.typing():
+                await asyncio.Future[None]()
+
+        # Typing is a UI hint; neither its channel lookup nor its first HTTP request
+        # should stand between an incoming message and starting the agent.
+        task = asyncio.create_task(keep_typing())
+        try:
             yield
+        finally:
+            task.cancel()
+            try:
+                with suppress(asyncio.CancelledError):
+                    await task
+            except Exception:
+                logger.warning(
+                    "Discord typing hint failed for %s", channel_id, exc_info=True
+                )
 
     async def start_public_thread(self, chat_id: str, hint_text: str) -> str:
         destination = await self.resolve_messageable(chat_id)
