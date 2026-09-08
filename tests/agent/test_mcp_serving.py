@@ -32,6 +32,8 @@ from octomate.managers.user import UserManager
 from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
+    CALL_MCP_TOOL,
+    LIST_MCP_TOOLS,
     OCTOMATE_MCP_PATH,
     gateway_tool,
     history_tool,
@@ -163,7 +165,8 @@ def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once
 
     assert list(octomate.mcps) == ["a", "b"]
     assert f"`{CONNECT_TOOL}` with the provider's id (`a`, `b`)" in instructions
-    assert instructions.count("A fake provider's own contract.") == 1
+    assert "A fake provider's own contract." not in instructions
+    assert "`a` (Tools), `b` (Tools)" in instructions
     assert instructions.count("## Linking accounts") == 1
 
 
@@ -173,14 +176,12 @@ def test_the_instructions_carry_the_linking_contract_only_with_a_provider() -> N
 
     assert "## Linking accounts" not in bare
     assert "## Linking accounts" in with_tools
-    assert "Tools — are listed here" in with_tools
-    assert "A fake provider's own contract." in with_tools
+    assert "Tools — act as the person" in with_tools
+    assert "A fake provider's own contract." not in with_tools
 
 
 async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> None:
-    # Nobody has linked the fake, so its proxy lists nothing; what a caller
-    # sees is the linking pair, after Octomate's own families — and the pair
-    # knows only the tentacles served here.
+    # Initial discovery exposes local helpers even before an account is linked.
     octomate = a_driven_deployment()
     octomate.connect(ToolsTentacle(id="a"))
     async with served(octomate) as (octomate, app):
@@ -196,6 +197,8 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
 
     assert [tool.name for tool in tools] == [
         *OCTOMATE_TOOLS,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
     ]
