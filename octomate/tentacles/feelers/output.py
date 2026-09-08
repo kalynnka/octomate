@@ -18,10 +18,8 @@ from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
-    Generic,
     Literal,
     Protocol,
-    TypeAlias,
     cast,
 )
 
@@ -49,7 +47,6 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_core import to_json
-from typing_extensions import TypeVar
 
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
 from octomate.capabilities.harness.events import (
@@ -91,14 +88,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-IMMessageID: TypeAlias = str
-MessageT = TypeVar("MessageT")
-RawT = TypeVar("RawT")
-OutputT = TypeVar(
-    "OutputT",
-    bound=JsonValue | Sequence[MessageSegment] | DeferredToolRequests,
-    infer_variance=True,
-)
+type IMMessageID = str
 
 
 @dataclass(frozen=True)
@@ -355,7 +345,9 @@ class StreamFlusher:
             self.task = None
 
 
-def render_stream_event_delta(
+def render_stream_event_delta[
+    OutputT: JsonValue | Sequence[MessageSegment] | DeferredToolRequests
+](
     event: AgentStreamEvent | AgentRunResultEvent[OutputT],
 ) -> StreamEventDelta | None:
     if isinstance(event, PartStartEvent):
@@ -1000,7 +992,7 @@ def split_reply(
     return reply_to, body
 
 
-async def present_markdown(
+async def present_markdown[MessageT, RawT](
     *,
     ink: Ink[MessageT],
     chromo: Chromo[RawT, MessageT],
@@ -1031,7 +1023,7 @@ async def present_markdown(
         return first_message_id
 
 
-class DefaultMarkdownFeeler(Generic[RawT, MessageT]):
+class DefaultMarkdownFeeler[RawT, MessageT]:
     def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
         self.ink = ink
         self.chromo = chromo
@@ -1063,7 +1055,7 @@ class SegmentsFeeler(Protocol):
     ) -> IMMessageID | None: ...
 
 
-class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
+class DefaultSegmentsFeeler[RawT, MessageT]:
     def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
         self.ink = ink
         self.chromo = chromo
@@ -1099,7 +1091,7 @@ class DefaultSegmentsFeeler(Generic[RawT, MessageT]):
 
 
 @dataclass
-class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
+class DefaultTimelineState[RawT, MessageT](TimelineState):
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
     address: ChannelAddress
@@ -1152,7 +1144,7 @@ class DefaultTimelineState(TimelineState, Generic[RawT, MessageT]):
         )
 
 
-class DefaultTimelineFeeler(TimelineFeeler, Generic[RawT, MessageT]):
+class DefaultTimelineFeeler[RawT, MessageT](TimelineFeeler):
     """Answer-only timeline for platforms with no streaming transport (NapCat).
 
     Stateless; `open(address)` yields a fresh `DefaultTimelineState`. Thinking/tool

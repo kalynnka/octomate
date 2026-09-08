@@ -4,6 +4,7 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import anyio
 import pytest
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -131,7 +132,7 @@ async def stream_rollout(
     lines, detach — the server never opens the file itself."""
     state, _ = await tailer.attach_remote(session_id, rollout, SENDER)
     offset = 0
-    for raw in rollout.read_bytes().split(b"\n")[:-1]:
+    for raw in (await anyio.Path(rollout).read_bytes()).split(b"\n")[:-1]:
         end = offset + len(raw) + 1
         await tailer.feed_remote(state, None, raw.decode(), offset, end)
         offset = end
