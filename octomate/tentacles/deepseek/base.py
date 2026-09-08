@@ -967,6 +967,24 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                                         f"{frame.error.message}"
                                     )
                                     break
+                                if (
+                                    self.config.instrument
+                                    and frame.event.type != "assistant/chunk"
+                                    and (
+                                        accumulator.turn_started
+                                        or frame.event.type == "turn/start"
+                                    )
+                                ):
+                                    # dsh's native OTel backend exports logs, with no
+                                    # span exporter or inbound parent context. Keep
+                                    # events under this kick, not the shared mux task;
+                                    # see docs/agent-telemetry.md for checked releases.
+                                    deepseek_logfire.info(
+                                        "deepseek.event {event_type}",
+                                        event_type=frame.event.type,
+                                        session_id=session_id,
+                                        event=frame.event.model_dump(mode="json"),
+                                    )
                                 for event in accumulator.consume(frame):
                                     yield event
                     finally:

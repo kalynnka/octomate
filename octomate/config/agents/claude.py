@@ -45,6 +45,11 @@ class ClaudeCodeConfig(AgentConfig):
         default=True,
         description="Whether to register the Claude tentacle when the config block exists.",
     )
+    instrument: bool = Field(
+        default=False,
+        description="Export native Claude OTLP spans to Octomate's Logfire project "
+        "under the driving trace.",
+    )
     claims: dict[str, Claim] = Field(
         default_factory=dict,
         description="Metadata for models whose harness omits descriptions or effort "

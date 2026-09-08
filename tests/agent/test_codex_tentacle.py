@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from ipaddress import ip_address
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
+from unittest.mock import Mock
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
@@ -51,6 +52,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
+from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.feelers.base import Feelers
@@ -427,13 +429,23 @@ async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uui
     return next(iter(tentacle.pending))
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    trace_environment = TraceEnvironment(
+        "https://logfire.example/v1/traces", SecretStr("test-token")
+    )
+    trace_config = Mock(return_value=trace_environment)
+    monkeypatch.setattr(codex_base, "octomate_trace_environment", trace_config)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(
+        conversations,
+        config=CodexConfig(instrument=instrument, permission_mode="deny_all"),
+    )
 
     events = []
     async with tentacle:
@@ -450,6 +462,18 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    assert trace_config.call_count == int(instrument)
+    runtime = FakeCodex.last_config
+    assert runtime is not None
+    assert runtime.env is not None
+    if instrument:
+        assert trace_environment.as_env().items() <= runtime.env.items()
+        assert (
+            'otel.trace_exporter.otlp-http.endpoint="https://logfire.example/v1/traces"'
+            in runtime.config_overrides
+        )
+    else:
+        assert "OTEL_TRACES_EXPORTER" not in runtime.env
 
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "start"

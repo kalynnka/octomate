@@ -13,6 +13,9 @@ from pathlib import Path
 from typing import ClassVar, cast
 
 import pytest
+from logfire.testing import CaptureLogfire
+from logfire.testing import capfire as capfire
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
 from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
@@ -353,30 +356,57 @@ def interaction_octomate(
     )
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_creates_session_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
+    capfire: CaptureLogfire,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events("done"))
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(conversations, config=DeepseekConfig(instrument=instrument))
 
     events = []
-    async with tentacle:
-        async with tentacle.run_stream_events(
-            "fix it",
-            conversation_address=KEY,
-            thread_id=_THREAD,
-            run_name="react",
-            model="deepseek-v4-pro",
-            effort="xhigh",
-        ) as stream:
-            async for event in stream:
-                events.append(event)
+    with use_span(NonRecordingSpan(SpanContext(91, 92, False, TraceFlags(1)))):
+        async with tentacle:
+            async with tentacle.run_stream_events(
+                "fix it",
+                conversation_address=KEY,
+                thread_id=_THREAD,
+                run_name="react",
+                model="deepseek-v4-pro",
+                effort="xhigh",
+            ) as stream:
+                async for event in stream:
+                    events.append(event)
 
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    records = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.attributes and "event_type" in span.attributes
+    ]
+    assert [span.attributes["event_type"] for span in records if span.attributes] == (
+        ["turn/start", "assistant/message", "turn/end"] if instrument else []
+    )
+    [driving_span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name.startswith("DeepseekTentacle ")
+        and span.attributes
+        and span.attributes.get("logfire.span_type") == "span"
+    ]
+    assert driving_span.context is not None
+    assert driving_span.context.trace_id == 91
+    assert driving_span.parent is not None
+    assert driving_span.parent.span_id == 92
+    for record in records:
+        assert record.context is not None
+        assert record.context.trace_id == 91
+        assert record.parent == driving_span.context
 
     [create_payload] = calls_of("session.create")
     # A thread in no project runs in a workspace forked for the run, not at the

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 import uuid
@@ -86,7 +87,11 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import agent_input_message_attributes, codex_logfire
+from octomate.telemetry import (
+    agent_input_message_attributes,
+    codex_logfire,
+    octomate_trace_environment,
+)
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.codex.adapter import (
     CODEX_PROVIDER_NAME,
@@ -99,6 +104,7 @@ from octomate.tentacles.codex.hooks import (
 )
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -610,6 +616,15 @@ class CodexTentacle(AgentTentacle[str, None]):
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
+            if self.config.instrument:
+                trace_environment = octomate_trace_environment()
+                if trace_environment is not None:
+                    env.update(trace_environment.as_env())
+                    overrides += (
+                        "otel.trace_exporter.otlp-http.endpoint="
+                        + json.dumps(trace_environment.endpoint),
+                        'otel.trace_exporter.otlp-http.protocol="binary"',
+                    )
             if mcp_bearer is not None:
                 env[MCP_TOKEN_ENV] = mcp_bearer.get_secret_value()
                 env[MCP_CONVERSATION_ENV] = str(conversation_id)
@@ -627,7 +642,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             def handler(method: str, params: JsonObject | None) -> JsonObject:
                 return self.handle_sdk_request(conversation_id, method, params)
 
-            client._client._sync = CodexClient(
+            client_type = TracedCodexClient if self.config.instrument else CodexClient
+            client._client._sync = client_type(
                 config=runtime,
                 approval_handler=handler,
             )

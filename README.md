@@ -495,8 +495,9 @@ Ruff is the gate: its configured rule set in `pyproject.toml` is what "clean" me
 Foreign keys are enforced on every connection, in tests too, so a row needs its parents
 to exist.
 
-Tracing goes to [Logfire](https://logfire.pydantic.dev/) when a token is present, and
-nowhere otherwise.
+Optional [Logfire](https://logfire.pydantic.dev/) integration brings Octomate's
+execution traces, Claude and Codex spans, and DeepSeek session events into one
+timeline.
 
 ## In progress
 

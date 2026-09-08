@@ -89,7 +89,11 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import agent_input_message_attributes, claude_logfire
+from octomate.telemetry import (
+    agent_input_message_attributes,
+    claude_logfire,
+    octomate_trace_environment,
+)
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.catalog import ClaudeServerInfo
@@ -721,6 +725,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             if part
         )
+        env = {"CLAUDE_CODE_ENTRYPOINT": "cli"}
+        if self.config.instrument:
+            trace_environment = octomate_trace_environment()
+            if trace_environment is not None:
+                env.update(trace_environment.as_env())
+                env.update(
+                    CLAUDE_CODE_ENABLE_TELEMETRY="1",
+                    CLAUDE_CODE_ENHANCED_TELEMETRY_BETA="1",
+                )
         options = ClaudeAgentOptions(
             cwd=run_cwd,
             # A project's other roots are directories this work legitimately spans —
@@ -762,7 +775,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             ),
             # Native Claude clients hide sdk-py transcripts from history. Tag these
             # user-routed sessions like CLI runs so they stay visible there too.
-            env={"CLAUDE_CODE_ENTRYPOINT": "cli"},
+            env=env,
             # The CLI's stderr is the only place it says why it exited: the SDK's
             # `ProcessError` carries the exit code and "check stderr", nothing else.
             stderr=lambda line: logger.warning(
@@ -810,6 +823,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # launched into it, and a chat thread's is only thrown away once the CLI
             # holding it open has been waited out.
             # async with ClaudeSDKClient(options=options, transport=transport) as client:
+            # The SDK injects the active W3C context when connecting. Starting a
+            # client inside each run's span also reparents resumed sessions.
             async with (
                 workspace,
                 ClaudeSDKClient(options=options) as client,
