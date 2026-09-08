@@ -4,7 +4,7 @@ from typing import Annotated
 from urllib.parse import urlencode
 
 import typer
-from pydantic import HttpUrl, SecretStr, TypeAdapter
+from pydantic import HttpUrl, SecretStr, TypeAdapter, ValidationError
 
 user_typer = typer.Typer(help="Manage local user accounts.", no_args_is_help=True)
 
@@ -79,6 +79,16 @@ def create(
 
     try:
         asyncio.run(register())
+    except ValidationError as error:
+        issue = error.errors(include_input=False, include_url=False)[0]
+        context = issue.get("ctx", {})
+        if issue["type"] == "too_short":
+            message = f"Use at least {context['min_length']} characters."
+        elif issue["type"] == "too_long":
+            message = f"Use at most {context['max_length']} characters."
+        else:
+            message = str(context.get("error", issue["msg"]))
+        raise typer.BadParameter(message, param_hint="--password") from error
     except ValueError as error:
         raise typer.BadParameter(str(error)) from error
     typer.echo(f"Registered {username}. Sign in through Trunkline.")

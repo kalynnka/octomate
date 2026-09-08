@@ -7,7 +7,7 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:create_app",
+        "octomate.app:create_app",
         "--factory",
       ],
       "cwd": "${workspaceFolder}",
@@ -30,7 +30,7 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:create_app",
+        "octomate.app:create_app",
         "--factory",
         "--reload",
         "--reload-dir",

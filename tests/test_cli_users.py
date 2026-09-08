@@ -151,7 +151,9 @@ async def test_create_rejects_invalid_codes(auth: AuthManager, code_state: str) 
     ("username", "password", "message"),
     [
         (" alice", PASSWORD, "Username must"),
-        ("alice", "Abcdefgh1!", "at least 11"),
+        ("alice", "Abcdefg1!", "Use at least 11 characters."),
+        ("alice", "Abcdefgh1!", "Use at least 11 characters."),
+        ("alice", "Aa1!" + "a" * 1021, "Use at most 1024 characters."),
         ("alice", "no uppercase or digits", "Password must"),
         ("alice", "NoSymbols123", "Password must"),
     ],
@@ -177,6 +179,13 @@ async def test_invalid_registration_preserves_the_invitation(
     assert result.exit_code != 0
     assert message in result.output
     assert password not in result.output
+    assert code not in result.output
+    assert "function-after" not in result.output
+    assert "validation error" not in result.output
+    assert "errors.pydantic.dev" not in result.output
+    assert "Value error" not in result.output
+    if username == "alice":
+        assert "--password" in result.output
     async with async_session() as session:
         [invitation] = await session.list(UserInvitation)
         assert invitation.consumed_at is None
