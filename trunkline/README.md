@@ -33,7 +33,7 @@ trunkline/
 ├── public/fonts/               # vendored Lonetrail faces (Novecento, Plus Jakarta)
 └── src/
     ├── main.tsx                # styles + root render
-    ├── App.tsx                 # query client, theme bootstrap, initial thread
+    ├── App.tsx                 # query client, theme bootstrap, the auth gate
     ├── styles/
     │   ├── lonetrail.css       # DS tokens (verbatim): colors, type, shape, both themes
     │   ├── motion.css          # DS motion (verbatim): lt-* utilities, keyframes
@@ -46,6 +46,7 @@ trunkline/
     │   │   ├── types.ts        # console domain types (render shapes)
     │   │   ├── events.ts       # wire types: 1:1 mirror of the trunkline SSE union
     │   │   ├── client.ts       # /api/trunkline endpoints + SSE reader
+    │   │   ├── auth.ts         # /api/auth endpoints; apiFetch (CSRF header, refresh-on-401)
     │   │   ├── live.ts         # wire payloads → render shapes (threads, feelers)
     │   │   ├── index.ts        # api = live thread data + mock shell surfaces
     │   │   ├── hooks.ts        # TanStack Query hooks
@@ -54,10 +55,14 @@ trunkline/
     │   ├── queryClient.ts      # shared QueryClient (store invalidates after runs)
     │   └── useRailDrag.ts      # drag-to-resize for the four rails
     ├── state/
-    │   └── console.ts          # zustand store: selection, panels, theme, ledger
-    │                           #   overlays, feelers, live run driving
+    │   ├── console.ts          # zustand store: selection, panels, theme, ledger
+    │   │                       #   overlays, feelers, live run driving
+    │   └── auth.ts             # session store: boot/restore, sign in/out, expiry
     └── features/
-        ├── shell/              # ConsoleShell (layout), StatusBar (live health)
+        ├── auth/               # AuthGate, LoginPage, RegisterPage (invitation
+        │                       #   link/code), AccountPanel (API keys)
+        ├── shell/              # ConsoleShell (layout, thread boot), StatusBar
+        │                       #   (live health, account, sign out)
         ├── threads/            # ThreadsSidebar: channel letter-rail + thread tree
         ├── chat/               # ChatMain, ChatHeader, Project/NewThread strips,
         │                       #   ChatLog + cards (tool/think/plan/feelers/files…),
@@ -86,11 +91,35 @@ Architecture rules of thumb:
   they would be rebuilt from is the agent's own and never leaves the relay.
   Other channels' threads are read-only views of the same ledger.
 
+## Accounts (`/api/auth`)
+
+The console is private to a [local account](../docs/users.md). `AuthGate` boots
+by asking `/api/auth/me`; a 401 anywhere is met with one `POST /refresh` and a
+retry (shared across concurrent requests, since the refresh token is
+single-use), and a 401 that survives that returns the console to the login
+page with a "session expired" notice. A `/#invitation=…` link from
+`octomate invite --url` opens the registration page with the token filled in
+and struck from the address bar; a bare code can be pasted instead. The status
+bar carries `@username` (opens the Account page: identity and API keys — issue
+with scopes and expiry, copy once, revoke) and Sign out, which also clears the
+query cache and the console's selection. Every write carries
+`X-Octomate-Request: 1`, which the relay requires of cookie-authenticated
+requests.
+
+| Endpoint | Use |
+| --- | --- |
+| `GET  /me` | session restore on boot; the signed-in identity (name, `@username`) |
+| `POST /login` · `POST /register` | the login and registration pages; cookies are the reply |
+| `POST /refresh` | one rotation per lapsed access token, shared by every request that met the 401 |
+| `POST /logout` | the status bar's Sign out |
+| `GET · POST /api-keys` · `DELETE /api-keys/{id}` | the Account page's key list, issue (name, scopes, expiry), and revoke |
+
 ## Backend endpoints used today (`/api/trunkline`)
 
 The reads answer with the backend's own rows (`octomate/schemas/`), not a
 console-shaped copy, and they nest the way the domain does — thread ›
-conversation › run. `lib/api/events.ts` mirrors them field for field.
+conversation › run. `lib/api/events.ts` mirrors them field for field. All of
+them are private to the signed-in account.
 
 | Endpoint | Use |
 | --- | --- |
@@ -164,9 +193,11 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
     artifacts + a `plan.apply_edits`-style tool contract.
 13. **Relay verbs** — `POST /api/threads/{id}/teleport` and relay/send to
     another channel (reflex verbs exist in-process; not exposed over HTTP).
-14. **Auth + CORS** — [invited local accounts](../docs/users.md) now use HttpOnly
-    sessions and private thread access. The console and API share an origin;
-    cross-origin access is not enabled.
+14. **Auth + CORS** — [invited local accounts](../docs/users.md) use HttpOnly
+    sessions and private thread access, and the console signs in through them
+    (see Accounts above). The console and API share an origin; cross-origin
+    access is not enabled. Password reset and channel-account binding remain
+    backend follow-ups, so the console has no page for either.
 15. **A title on the thread row** — the sidebar names each thread by its
     surface (the platform thread key), because a listing carries no messages
     and reading one line per thread would be a request per row. The fix is a

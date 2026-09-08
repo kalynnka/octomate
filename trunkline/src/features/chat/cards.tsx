@@ -5,29 +5,15 @@
  */
 import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import type { AgentBlock, AskOption, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
+import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
+import { Brackets } from '@/components/Brackets'
 import { Icon, type IconName } from '@/components/Icon'
 import { Disclose, Fold } from '@/components/Fold'
 import { Markdown } from '@/components/Markdown'
 import { cardKind, display, ellipsis, fieldLabel, label, metaLine, microMeta, microSection, mono, sectionLabel, serif, statusNote } from '@/components/text'
 
 const ghost3: CSSProperties = { color: 'var(--fg-3)' }
-
-/** Corner brackets that frame tool and file cards. */
-function Brackets() {
-  const c = (pos: CSSProperties, borders: CSSProperties) => (
-    <span style={{ position: 'absolute', width: 11, height: 11, ...pos, ...borders }} />
-  )
-  const b = '2px solid var(--trk-bracket)'
-  return (
-    <>
-      {c({ top: -1, left: -1 }, { borderTop: b, borderLeft: b })}
-      {c({ top: -1, right: -1 }, { borderTop: b, borderRight: b })}
-      {c({ bottom: -1, left: -1 }, { borderBottom: b, borderLeft: b })}
-      {c({ bottom: -1, right: -1 }, { borderBottom: b, borderRight: b })}
-    </>
-  )
-}
 
 /** Render `code` spans inside prose strings. */
 function InlineCode({ text, size = 12.5 }: { text: string; size?: number }) {
@@ -668,6 +654,9 @@ function SubRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'sub' }>;
 
 function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'approval' }>; cardMax: string; i?: number }) {
   const { resolveApproval } = useConsole((s) => s.actions)
+  // The thread is private to the signed-in account, so its feelers wait on —
+  // and were answered by — nobody else.
+  const operator = useAuth((s) => s.user?.username ?? 'operator')
   if (item.state !== 'waiting') {
     const approved = item.state === 'approved'
     const color = approved ? 'var(--color-sage)' : 'var(--fg-3)'
@@ -688,8 +677,8 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
           <span style={{ ...mono(10, 700), color, lineHeight: 1 }}>{approved ? '✓' : '○'}</span>
           <span style={{ ...label(8.5, '.12em'), color: 'var(--fg-1)' }}>
             {approved
-              ? `approved by kalynnka — ${item.tool} dispatched`
-              : `dismissed by kalynnka — ${item.tool} dropped, run resumes`}
+              ? `approved by ${operator} — ${item.tool} dispatched`
+              : `dismissed by ${operator} — ${item.tool} dropped, run resumes`}
           </span>
           <span style={{ flex: 1, minWidth: 0, ...serif(12), fontStyle: 'italic', ...ghost3, ...ellipsis }}>
             {item.title.toLowerCase()}
@@ -707,7 +696,7 @@ function ApprovalRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: '
           <span style={{ flex: 1 }} />
           <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 1, ...microSection, color: 'var(--color-gold)', whiteSpace: 'nowrap' }}>
             <i style={{ width: 5, height: 5, borderRadius: 9999, background: 'var(--color-gold)', animation: 'trkPulse 1.2s infinite' }} />
-            {item.tool} · waiting · kalynnka
+            {item.tool} · waiting · {operator}
           </span>
         </div>
         <p style={{ margin: '5px 0 0', ...serif(12.5), lineHeight: 1.65, color: 'var(--fg-2)' }}>{item.desc}</p>
@@ -750,6 +739,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
   const [otherOpen, setOtherOpen] = useState(false)
   const [otherText, setOtherText] = useState('')
   const [ansOpen, setAnsOpen] = useState(false)
+  const operator = useAuth((s) => s.user?.username ?? 'operator')
 
   if (item.state === 'answered') {
     return (
@@ -769,7 +759,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               cursor: 'pointer',
             }}
           >
-            <span style={{ ...label(9, '.12em'), color: 'var(--color-sage)', flexShrink: 0 }}>✓ answered · kalynnka</span>
+            <span style={{ ...label(9, '.12em'), color: 'var(--color-sage)', flexShrink: 0 }}>✓ answered · {operator}</span>
             <span style={{ flex: 1, minWidth: 0, ...serif(12.5), fontStyle: 'italic', color: 'var(--fg-1)', ...ellipsis }}>“{item.answer}”</span>
             <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>▸</span>
             <span style={{ ...mono(8), ...ghost3, flexShrink: 0 }}>{item.resolvedT}</span>
@@ -777,7 +767,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
         ) : (
           <div className="lt-fade-in" style={{ border: '1px solid var(--line-divider)', borderLeft: '3px solid var(--color-sage)', background: 'var(--card-bg)', padding: '9px 12px 10px' }}>
             <div onClick={() => setAnsOpen(false)} style={{ display: 'flex', alignItems: 'baseline', gap: 9, cursor: 'pointer' }}>
-              <span style={{ ...label(9, '.12em'), color: 'var(--color-sage)' }}>✓ answered · kalynnka</span>
+              <span style={{ ...label(9, '.12em'), color: 'var(--color-sage)' }}>✓ answered · {operator}</span>
               <span style={{ flex: 1 }} />
               <span style={{ ...mono(10), ...ghost3 }}>▾</span>
               <span style={{ ...mono(8), ...ghost3 }}>{item.resolvedT}</span>
@@ -806,7 +796,7 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
             <span style={{ flex: 1 }} />
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, marginTop: 2, ...sectionLabel, color: 'var(--color-gold)', whiteSpace: 'nowrap' }}>
               <i style={{ width: 6, height: 6, borderRadius: 9999, background: 'var(--color-gold)', animation: 'trkPulse 1.2s infinite' }} />
-              {item.tool} · waiting · kalynnka
+              {item.tool} · waiting · {operator}
             </span>
           </div>
           <div

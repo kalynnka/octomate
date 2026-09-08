@@ -1,16 +1,56 @@
 /**
- * Bottom status bar — brand block, gateway/relay chips on the left, clock
- * chips on the right. The relay chip is derived live from /api/health; the
- * rest come from the status feed. Ported from the comp's "STATUS BAR" block.
+ * Bottom status bar — brand block, gateway/relay chips on the left, the
+ * account and clock chips on the right. The relay chip is derived live from
+ * /api/health; the account chips from the session. Ported from the comp's
+ * "STATUS BAR" block.
  */
+import type { CSSProperties, ReactNode } from 'react'
 import { Icon } from '@/components/Icon'
 import { mono } from '@/components/text'
 import { useHealth } from '@/lib/api/hooks'
 import type { StatusChip } from '@/lib/api/types'
+import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 
+function Chip({
+  tip,
+  onClick,
+  style,
+  children,
+}: {
+  tip: string
+  onClick?: () => void
+  style?: CSSProperties
+  children: ReactNode
+}) {
+  return (
+    <span
+      title={tip}
+      onClick={onClick}
+      className="hov-wash"
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 5,
+        height: 25,
+        padding: '0 9px',
+        opacity: 0.92,
+        whiteSpace: 'nowrap',
+        flexShrink: 0,
+        cursor: onClick ? 'pointer' : 'default',
+        ...style,
+      }}
+    >
+      {children}
+    </span>
+  )
+}
+
 export function StatusBar() {
-  const { toggleControl } = useConsole((s) => s.actions)
+  const { toggleControl, setControlSection } = useConsole((s) => s.actions)
+  const onAccount = useConsole((s) => s.mgmtSec === 'account')
+  const user = useAuth((s) => s.user)
+  const { signOut } = useAuth((s) => s.actions)
   const health = useHealth().data
 
   const relay: StatusChip | null = health
@@ -84,21 +124,7 @@ export function StatusBar() {
           }}
         >
           {left.map((s) => (
-            <span
-              key={s.t}
-              title={s.tip}
-              className="hov-wash"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                gap: 5,
-                height: 25,
-                padding: '0 9px',
-                opacity: 0.92,
-                whiteSpace: 'nowrap',
-                flexShrink: 0,
-              }}
-            >
+            <Chip key={s.t} tip={s.tip}>
               {s.dot && (
                 <i
                   style={{
@@ -110,7 +136,7 @@ export function StatusBar() {
                 />
               )}
               {s.t}
-            </span>
+            </Chip>
           ))}
         </span>
         <span
@@ -124,23 +150,26 @@ export function StatusBar() {
             overflow: 'hidden',
           }}
         >
+          {/* The signed-in account, and the way out. The name opens the Account
+              page — the keys this account issued, and who it is on the relay. */}
+          <Chip
+            tip={`${user?.name ?? ''} · account, api keys`}
+            onClick={() => setControlSection('account')}
+            style={{
+              fontWeight: 700,
+              color: onAccount ? 'var(--color-accent)' : undefined,
+              boxShadow: `inset 0 -2px 0 ${onAccount ? 'var(--color-accent)' : 'transparent'}`,
+            }}
+          >
+            @{user?.username}
+          </Chip>
+          <Chip tip="end this session on the relay" onClick={() => void signOut()}>
+            <span style={{ opacity: 0.7 }}>⏻</span> sign out
+          </Chip>
           {right.map((s) => (
-            <span
-              key={s.t}
-              title={s.tip}
-              className="hov-wash"
-              style={{
-                display: 'inline-flex',
-                alignItems: 'center',
-                height: 25,
-                padding: '0 9px',
-                opacity: 0.92,
-                whiteSpace: 'nowrap',
-                flexShrink: 0,
-              }}
-            >
+            <Chip key={s.t} tip={s.tip}>
               {s.t}
-            </span>
+            </Chip>
           ))}
         </span>
       </span>

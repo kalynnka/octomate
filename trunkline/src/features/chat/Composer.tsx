@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
+import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { usePermissionModes, useRoutes } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
@@ -304,6 +305,7 @@ export function Composer() {
   const ntModel = useConsole((s) => s.ntModel)
   const ntEffort = useConsole((s) => s.ntEffort)
   const { removeQueued } = useConsole((s) => s.actions)
+  const username = useAuth((s) => s.user?.username ?? 'operator')
 
   const isReview = useConsole((s) => s.pvOpen)
   const lastSes = detail?.sessions[detail.sessions.length - 1]
@@ -332,7 +334,7 @@ export function Composer() {
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 24px 6px', borderBottom: '1px solid var(--trk-vline)' }}>
           <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>&gt;_</span>
           <span style={{ ...mono(10.5), ...ellipsis, minWidth: 0 }}>
-            <span style={{ fontWeight: 700, color: 'var(--color-accent)' }}>kalynnka@trunkline</span>
+            <span style={{ fontWeight: 700, color: 'var(--color-accent)' }}>{username}@trunkline</span>
             <span style={{ color: 'var(--info-strong)' }}>:{routeChip}</span>{' '}
             <span style={{ color: 'var(--fg-2)' }}>{modelChip}</span>
           </span>

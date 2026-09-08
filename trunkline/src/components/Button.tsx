@@ -17,12 +17,17 @@ const variantStyle: Record<string, CSSProperties> = {
 /** Lonetrail Button — mono label chip with 150ms color-swap hover. */
 export function Button({
   variant = 'outline',
+  type = 'button',
+  disabled,
   onClick,
   title,
   style,
   children,
 }: {
   variant?: 'outline' | 'solid' | 'accent' | 'ghost'
+  /** submit inside a form, so ↵ in any of its fields sends it */
+  type?: 'button' | 'submit'
+  disabled?: boolean
   onClick?: () => void
   title?: string
   style?: CSSProperties
@@ -30,10 +35,11 @@ export function Button({
 }) {
   return (
     <button
-      type="button"
+      type={type}
+      disabled={disabled}
       onClick={onClick}
       title={title}
-      className={variantClass[variant]}
+      className={disabled ? undefined : variantClass[variant]}
       style={{
         display: 'inline-flex',
         alignItems: 'center',
@@ -45,7 +51,8 @@ export function Button({
         letterSpacing: '0.2em',
         padding: '9px 18px',
         border: '1px solid',
-        cursor: 'pointer',
+        cursor: disabled ? 'default' : 'pointer',
+        opacity: disabled ? 0.55 : 1,
         transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear, border-color var(--motion-fast) linear',
         ...variantStyle[variant],
         ...style,
