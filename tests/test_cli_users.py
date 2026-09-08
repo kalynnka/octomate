@@ -4,6 +4,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
+from click import unstyle
 from octomate_cli import users as user_cli
 from octomate_cli.config import project_config_path, user_config_path
 from octomate_cli.main import app as cli
@@ -185,7 +186,7 @@ async def test_invalid_registration_preserves_the_invitation(
     assert "errors.pydantic.dev" not in result.output
     assert "Value error" not in result.output
     if username == "alice":
-        assert "--password" in result.output
+        assert "--password" in unstyle(result.output)
     async with async_session() as session:
         [invitation] = await session.list(UserInvitation)
         assert invitation.consumed_at is None
@@ -197,7 +198,7 @@ def test_create_requires_an_invitation_code() -> None:
         cli, ["user", "create", "--username", "alice", "--password", PASSWORD]
     )
     assert result.exit_code != 0
-    assert "--invitationcode" in result.output
+    assert "--invitationcode" in unstyle(result.output)
 
 
 def test_create_requires_the_server_package(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -263,7 +264,7 @@ async def test_reset_rejects_weak_passwords_without_changing_the_account(
         ["user", "reset-password", "--username", "alice", "--password", password],
     )
     assert result.exit_code != 0
-    assert "--password" in result.output
+    assert "--password" in unstyle(result.output)
     assert "validation error" not in result.output
     assert password not in result.output
     await auth.login("alice", SecretStr(PASSWORD))
