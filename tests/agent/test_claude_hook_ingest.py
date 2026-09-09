@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.database import async_session
 from octomate.schemas.runs import AgentRun
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
@@ -201,6 +201,67 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     assert sdk.external_id == SESSION_ID
     assert [run.id for run in sdk.runs] == ["sdk-run"]
     assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
+
+
+async def test_hooks_for_a_driven_session_do_not_create_native_history() -> None:
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
+
+    with ingest.driving(SESSION_ID):
+        await submit(ingest, "p1", "hello")
+        await ingest.handle(
+            hook("SubagentStart", "p1", agent_id="child", prompt="investigate"),
+            SENDER,
+        )
+        await ingest.handle(
+            hook("SubagentStop", "p1", agent_id="child", last_assistant_message="done"),
+            SENDER,
+        )
+        await stop(ingest, "p1", "hi")
+        await ingest.handle(hook("SessionEnd"), SENDER)
+
+    assert ingest.driven == {}
+    assert ingest.tailer.sessions == {}
+    async with async_session() as session:
+        assert await session.list(Thread, limit=None, order_bys=[]) == []
+        assert await session.list(AgentRun, limit=None, order_bys=[]) == []
+
+
+async def test_driving_one_session_still_ingests_other_native_sessions() -> None:
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
+
+    with ingest.driving("other-session"):
+        await submit(ingest, "p1", "native prompt")
+
+    assert await ledger(octomate) == [("inbound", "p1", "native prompt")]
+
+
+async def test_overlapping_claims_hold_until_the_last_run_releases() -> None:
+    octomate = Octomate()
+    ingest = ClaudeHookIngest(
+        octomate,
+        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    )
+
+    with ingest.driving(SESSION_ID):
+        with pytest.raises(RuntimeError, match="run failed"):
+            with ingest.driving(SESSION_ID):
+                raise RuntimeError("run failed")
+        await submit(ingest, "p1", "SDK prompt")
+
+    assert ingest.driven == {}
+    async with async_session() as session:
+        assert await session.list(Thread, limit=None, order_bys=[]) == []
+
+    await submit(ingest, "p2", "native prompt")
+    assert await ledger(octomate) == [("inbound", "p2", "native prompt")]
 
 
 async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:

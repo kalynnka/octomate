@@ -4,7 +4,7 @@ import asyncio
 import gc
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 from unittest.mock import Mock
 
@@ -208,6 +208,57 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
     assert result.output == "done"
     assert child.external_id == "sess-xyz"  # the hand's own resumable session
     assert child.runs  # the turn recorded into the child conversation
+
+
+@pytest.mark.parametrize("external_id", [None, "resumed-session"])
+@pytest.mark.parametrize("connect_fails", [False, True])
+async def test_sdk_ingest_claim_brackets_client_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+    external_id: str | None,
+    connect_fails: bool,
+) -> None:
+    conversations = FakeConversationManager()
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="claude")
+    conversation.external_id = external_id
+    tentacle = _tentacle(conversations)
+    lifecycle: list[str] = []
+
+    async def enter(client: FakeClaudeClient) -> FakeClaudeClient:
+        options = FakeClaudeClient.last_options
+        assert isinstance(options, ClaudeAgentOptions)
+        session_id = options.resume or options.session_id
+        assert session_id is not None
+        assert options.resume == external_id
+        assert (options.session_id is None) == (external_id is not None)
+        assert tentacle.is_driving_session(session_id)
+        assert options.settings is None
+        assert options.setting_sources is None
+        lifecycle.append("enter")
+        if connect_fails:
+            raise RuntimeError("SDK connect failed")
+        return client
+
+    async def leave(
+        client: FakeClaudeClient,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert tentacle.session_ingest.driven
+        lifecycle.append("exit")
+
+    monkeypatch.setattr(FakeClaudeClient, "__aenter__", enter)
+    monkeypatch.setattr(FakeClaudeClient, "__aexit__", leave)
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+
+    if connect_fails:
+        with pytest.raises(RuntimeError, match="SDK connect failed"):
+            await tentacle.run("hello", conversation_address=KEY, thread_id=_THREAD)
+    else:
+        await tentacle.run("hello", conversation_address=KEY, thread_id=_THREAD)
+
+    assert lifecycle == (["enter"] if connect_fails else ["enter", "exit"])
+    assert tentacle.session_ingest.driven == {}
 
 
 async def test_instructions_land_in_the_system_prompt(

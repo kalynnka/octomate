@@ -32,7 +32,9 @@ from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, OctomateConfig
+from octomate.database import async_session
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.thread import Thread
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer, TailState
@@ -398,6 +400,60 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
             assert state.conversation is not None
             assert state.conversation.id != sdk.id
             assert state.conversation.agent_tentacle_id == "claude-native"
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+
+@pytest.mark.parametrize("other_tentacle", [False, True])
+def test_a_driven_session_is_skipped_by_both_ingest_endpoints(
+    other_tentacle: bool,
+) -> None:
+    client, tentacle = stream_client()
+    driver = (
+        tentacle.octomate.connect(
+            ClaudeCodeTentacle(
+                "other-claude", tentacle.octomate, config=ClaudeCodeConfig()
+            )
+        )
+        if other_tentacle
+        else tentacle
+    )
+
+    async def native_threads() -> list[Thread]:
+        async with async_session() as session:
+            return list(await session.list(Thread, limit=None, order_bys=[]))
+
+    with client:
+        with driver.session_ingest.driving(SESSION_ID):
+            posted = client.post(
+                CLAUDE_HOOK_PATH,
+                json={
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": SESSION_ID,
+                    "prompt_id": "p1",
+                    "prompt": "SDK prompt",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            assert posted.json() == {}
+            with client.websocket_connect(
+                CLAUDE_STREAM_PATH, headers=AUTH
+            ) as websocket:
+                websocket.send_text(hello_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+            assert disconnect.value.code == 1008
+            assert "drives" in (disconnect.value.reason or "")
+            assert tentacle.session_tailer.sessions == {}
+            assert client.portal is not None
+            assert client.portal.call(native_threads) == []
+
+        with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()

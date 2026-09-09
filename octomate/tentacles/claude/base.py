@@ -226,7 +226,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # fine with `str`), so the rule bends rather than the checked type.
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
-            await self.session_ingest.handle(event, sender)
+            if not self.is_driving_session(event.session_id):
+                await self.session_ingest.handle(event, sender)
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
@@ -239,6 +240,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             await self.stream_session(websocket, sender)
 
         return router
+
+    def is_driving_session(self, session_id: str) -> bool:
+        """All Claude tentacles share the hook URL, regardless of which mounted it."""
+        return session_id in self.session_ingest.driven or any(
+            isinstance(tentacle, ClaudeCodeTentacle)
+            and session_id in tentacle.session_ingest.driven
+            for tentacle in self.octomate.tentacles.values()
+        )
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
         """Validate the remote tail's protocol and attach it as an external session.
@@ -263,6 +272,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
+            return
+        if self.is_driving_session(hello.session_id):
+            await websocket.close(code=1008, reason="octomate drives this session")
             return
         # Its own materia context: a stream outlives any request, like a follow loop.
         with sqlalchemy_materia():
@@ -431,8 +443,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return None
 
     async def discover_models(self) -> None:
-        async with ClaudeSDKClient() as client:
-            info = ClaudeServerInfo.model_validate(await client.get_server_info())
+        session_id = str(uuid7())
+        with self.session_ingest.driving(session_id):
+            async with ClaudeSDKClient(
+                options=ClaudeAgentOptions(session_id=session_id)
+            ) as client:
+                info = ClaudeServerInfo.model_validate(await client.get_server_info())
         provider = info.account.api_provider
         if provider is None or provider == "firstParty":
             provider = "anthropic"
@@ -795,18 +811,21 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         #     if self.config.ssh is not None
         #     else None
         # )
-        with claude_logfire.span(
-            "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
-            agent_id=self.id,
-            run_name=run_name or "claude",
-            conversation_address=str(conversation_address),
-            **agent_input_message_attributes(user_prompt),
-            # transport=(
-            #     f"ssh:{self.config.ssh.host}"
-            #     if self.config.ssh is not None
-            #     else "local"
-            # ),
-            transport="local",
+        with (
+            self.session_ingest.driving(session_id),
+            claude_logfire.span(
+                "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
+                agent_id=self.id,
+                run_name=run_name or "claude",
+                conversation_address=str(conversation_address),
+                **agent_input_message_attributes(user_prompt),
+                # transport=(
+                #     f"ssh:{self.config.ssh.host}"
+                #     if self.config.ssh is not None
+                #     else "local"
+                # ),
+                transport="local",
+            ),
         ):
             # Entered first so it leaves last: the tree exists before the CLI is
             # launched into it, and a chat thread's is only thrown away once the CLI

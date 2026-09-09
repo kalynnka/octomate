@@ -1,6 +1,8 @@
+from types import TracebackType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from claude_agent_sdk import ClaudeAgentOptions
 from openai_codex.generated.v2_all import (
     ConfigReadResponse,
     ModelListResponse,
@@ -79,6 +81,50 @@ async def test_claude_uses_native_metadata_before_config(
             (),
         ]
     client.query.assert_not_called()
+
+
+@pytest.mark.parametrize("fails", [False, True])
+async def test_claude_discovery_claims_its_session_through_client_cleanup(
+    monkeypatch: pytest.MonkeyPatch, fails: bool
+) -> None:
+    tentacle = ClaudeCodeTentacle("claude", Octomate(), config=ClaudeCodeConfig())
+    client = AsyncMock()
+    factory = MagicMock(return_value=client)
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", factory)
+
+    async def enter() -> AsyncMock:
+        options = factory.call_args.kwargs["options"]
+        assert isinstance(options, ClaudeAgentOptions)
+        assert options.session_id is not None
+        assert tentacle.is_driving_session(options.session_id)
+        return client
+
+    async def info() -> dict[str, list[dict[str, str]]]:
+        assert tentacle.session_ingest.driven
+        if fails:
+            raise RuntimeError("Not logged in")
+        return {"models": [{"value": "model", "displayName": "Model"}]}
+
+    async def leave(
+        _exc_type: type[BaseException] | None,
+        _exc_value: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> bool:
+        assert tentacle.session_ingest.driven
+        return False
+
+    client.__aenter__.side_effect = enter
+    client.get_server_info.side_effect = info
+    client.__aexit__.side_effect = leave
+
+    if fails:
+        with pytest.raises(RuntimeError, match="Not logged in"):
+            await tentacle.discover_models()
+    else:
+        await tentacle.discover_models()
+
+    client.__aexit__.assert_awaited_once()
+    assert tentacle.session_ingest.driven == {}
 
 
 def codex_model(
