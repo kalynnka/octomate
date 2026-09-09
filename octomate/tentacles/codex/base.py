@@ -15,6 +15,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
 
+import anyio
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
@@ -341,6 +342,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
     )
+    conversation_locks: SessionLocks = field(default_factory=SessionLocks, init=False)
     bridge_contexts: dict[uuid.UUID, CodexBridgeContext] = field(
         default_factory=dict, init=False
     )
@@ -377,6 +379,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.description = description or self.description
         self.pool = None
         self.live_turns = {}
+        self.conversation_locks = SessionLocks()
         self.bridge_contexts = {}
         self.pending = {}
         self.claims = dict(config.claims)
@@ -715,19 +718,25 @@ class CodexTentacle(AgentTentacle[str, None]):
         traceback: TracebackType | None = None,
     ) -> None:
         await super().__aexit__(exc_type, exc_value, traceback)
-        await self.session_tailer.shutdown()
-        for turn in list(self.live_turns.values()):
-            with contextlib.suppress(Exception):
-                await turn.interrupt()
-        self.live_turns.clear()
-        self.bridge_contexts.clear()
-        for future in list(self.pending.values()):
-            if not future.done():
-                future.cancel()
-        self.pending.clear()
-        if self.pool is not None:
-            await self.pool.aclose()
-            self.pool = None
+        cancelled = False
+        with anyio.CancelScope(shield=True):
+            draining = asyncio.gather(*self.run_tasks)
+            while not draining.done():
+                try:
+                    await asyncio.shield(draining)
+                except asyncio.CancelledError:
+                    cancelled = True
+            await self.session_tailer.shutdown()
+            self.bridge_contexts.clear()
+            for future in list(self.pending.values()):
+                if not future.done():
+                    future.cancel()
+            self.pending.clear()
+            if self.pool is not None:
+                await self.pool.aclose()
+                self.pool = None
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _await_human(
         self,
@@ -1191,7 +1200,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             # Entered here so the tree exists before a turn is dispatched into it,
             # and a chat thread's is thrown away when the run leaves — after the
             # client is back in the pool, which is why the pool sits inside it.
-            async with workspace:
+            async with (
+                self.conversation_locks.hold(str(conversation.id)),
+                workspace,
+            ):
                 session = self.octomate.gateway.get(conversation.id)
                 user_id = (
                     session.user_profile.user_id
@@ -1268,11 +1280,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 personality=personality,
                                 summary=summary,
                             )
-                            previous = self.live_turns.get(conversation.id)
                             self.live_turns[conversation.id] = turn
-                            if previous is not None and previous is not turn:
-                                with contextlib.suppress(Exception):
-                                    await previous.interrupt()
                             interrupted = False
                             try:
                                 async for notification in turn.stream():
@@ -1469,22 +1477,24 @@ class CodexTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[str | RunOutputDataT]:
         result: AgentRunResult[str] | None = None
-        async for event in self._iter_events(
-            user_prompt,
-            conversation_address=conversation_address,
-            thread_id=thread_id,
-            source_thread_address=source_thread_address,
-            source_thread_message_ids=source_thread_message_ids,
-            run_name=run_name,
-            output_type=output_type,
-            model=model,
-            effort=effort,
-            conversation_id=conversation_id,
-            interactive=interactive,
-            instructions=instructions,
-            capabilities=capabilities,
-            deferred_tool_results=deferred_tool_results,
-            deferred_suspender=deferred_suspender,
+        async for event in self.observe_run(
+            self._iter_events(
+                user_prompt,
+                conversation_address=conversation_address,
+                thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=source_thread_message_ids,
+                run_name=run_name,
+                output_type=output_type,
+                model=model,
+                effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
+                instructions=instructions,
+                capabilities=capabilities,
+                deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
+            )
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -1586,21 +1596,23 @@ class CodexTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
         return ReactEventStream(
-            self._iter_events(
-                user_prompt,
-                conversation_address=conversation_address,
-                thread_id=thread_id,
-                source_thread_address=source_thread_address,
-                source_thread_message_ids=source_thread_message_ids,
-                run_name=run_name,
-                output_type=output_type,
-                model=model,
-                effort=effort,
-                conversation_id=conversation_id,
-                interactive=interactive,
-                instructions=instructions,
-                capabilities=capabilities,
-                deferred_tool_results=deferred_tool_results,
-                deferred_suspender=deferred_suspender,
+            self.observe_run(
+                self._iter_events(
+                    user_prompt,
+                    conversation_address=conversation_address,
+                    thread_id=thread_id,
+                    source_thread_address=source_thread_address,
+                    source_thread_message_ids=source_thread_message_ids,
+                    run_name=run_name,
+                    output_type=output_type,
+                    model=model,
+                    effort=effort,
+                    conversation_id=conversation_id,
+                    interactive=interactive,
+                    instructions=instructions,
+                    capabilities=capabilities,
+                    deferred_tool_results=deferred_tool_results,
+                    deferred_suspender=deferred_suspender,
+                )
             )
         )

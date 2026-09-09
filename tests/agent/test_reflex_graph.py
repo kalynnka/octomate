@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import TracebackType
 from typing import ClassVar, cast
 
 import pytest
@@ -22,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.managers.deferred import DeferredActionManager
@@ -73,7 +75,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel import ChannelSurfaces
+from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.feelers.output import TimelineState
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
@@ -1733,6 +1735,64 @@ async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
             state=ReflexState(source_target=target, target=target, decision=_summon()),
             deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
         )
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_reception_closes_agent_stream_before_releasing_gateway(
+    monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    address = _key()
+    agent = FakeAgent(id="other", reception_output="done")
+    conversations = FakeConversationManager()
+    registry = GatewayManager()
+    im = DroppingChannel(
+        config=ChannelConfig(
+            type="fake", stream=ChannelStreamConfig(enabled=True), agents=["other"]
+        )
+    )
+    closed_with_gateway: list[bool] = []
+    stream_exit = ReactEventStream.__aexit__
+
+    async def fail_render(
+        timeline: DroppingTimelineState,
+        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
+    ) -> None:
+        await anext(stream)
+        if cancel:
+            raise asyncio.CancelledError
+        raise RuntimeError("render failed")
+
+    async def close_stream(
+        stream: ReactEventStream[ChannelOutput],
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        closed_with_gateway.append(bool(registry.sessions))
+        await stream_exit(stream, exc_type, exc, traceback)
+
+    monkeypatch.setattr(DroppingTimelineState, "drive", fail_render)
+    monkeypatch.setattr(ReactEventStream, "__aexit__", close_stream)
+    target = _source_target(address)
+    with pytest.raises(asyncio.CancelledError) if cancel else nullcontext():
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                gateway=registry,
+            ),
+        )
+
+    assert closed_with_gateway == [True]
+    assert registry.sessions == {}
 
 
 async def test_route_runs_in_place_inside_flat_thread() -> None:
