@@ -18,7 +18,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ToolError, ValidationError
 from mcp.types import TextContent
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import Toolset
@@ -76,7 +76,7 @@ class TentaclesToolset(AbstractToolset[None]):
     ) -> dict[str, Any] | str:
         try:
             result = await self.server.call_tool(name, tool_args)
-        except ToolError as refusal:
+        except (ToolError, ValidationError) as refusal:
             # The same corrective sentence every runtime reads, as the retry
             # Inkling corrects from.
             raise ModelRetry(str(refusal)) from refusal

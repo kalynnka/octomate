@@ -18,6 +18,7 @@ from collections.abc import Sequence
 
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ValidationError as McpValidationError
 from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
@@ -35,7 +36,7 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
     async def handler(arguments: dict[str, JsonValue]) -> dict[str, JsonValue]:
         try:
             result = await tool.run(arguments)
-        except (ToolError, ValidationError) as refusal:
+        except (ToolError, McpValidationError, ValidationError) as refusal:
             # The same corrective sentence Inkling's ModelRetry carries, as a tool
             # error Claude retries from natively.
             return {
@@ -44,7 +45,7 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
             }
         response: dict[str, JsonValue] = {
             "content": [
-                block.model_dump(mode="json", exclude_none=True)
+                block.model_dump(mode="json", by_alias=True, exclude_none=True)
                 for block in result.content
             ]
         }

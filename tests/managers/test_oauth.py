@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 
-import httpx
+import httpx2
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
@@ -225,12 +225,12 @@ async def linked_user_manager() -> tuple[UserManager, UserProfile]:
     return users, profile
 
 
-async def _drive_auth(auth: McpConnectionAuth, *, status: int) -> httpx.Request:
+async def _drive_auth(auth: McpConnectionAuth, *, status: int) -> httpx2.Request:
     """Run one request/response round of the auth flow and return what it sent."""
-    flow = auth.async_auth_flow(httpx.Request("POST", "https://mcp.example/mcp"))
+    flow = auth.async_auth_flow(httpx2.Request("POST", "https://mcp.example/mcp"))
     request = await anext(flow)
     with contextlib.suppress(StopAsyncIteration):
-        await flow.asend(httpx.Response(status, request=request))
+        await flow.asend(httpx2.Response(status, request=request))
     return request
 
 

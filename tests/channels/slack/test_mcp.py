@@ -18,6 +18,7 @@ from typing import Self, cast
 from urllib.parse import parse_qs
 
 import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastmcp import Client, FastMCP
@@ -221,17 +222,17 @@ def a_slack_upstream() -> tuple[FastMCP, list[str]]:
     return upstream, seen
 
 
-def into(transport: httpx.AsyncBaseTransport) -> McpHttpClientFactory:
-    """An httpx client factory routing the proxy's calls into `transport` instead
+def into(transport: httpx2.AsyncBaseTransport) -> McpHttpClientFactory:
+    """An httpx2 client factory routing the proxy's calls into `transport` instead
     of Slack, with everything the proxy set on the client — the auth above all."""
 
     def factory(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         follow_redirects: bool = True,
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
+    ) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
             transport=transport,
             base_url="https://mcp.slack.com",
             headers=headers,
@@ -247,7 +248,7 @@ def into(transport: httpx.AsyncBaseTransport) -> McpHttpClientFactory:
 async def in_memory(
     channel: SlackTentacle,
     session: OctomateSession,
-    transport: httpx.AsyncBaseTransport,
+    transport: httpx2.AsyncBaseTransport,
 ) -> AsyncIterator[Client]:
     """The server mounted for one fixed turn on `channel`, Slack's upstream being
     `transport`."""
@@ -321,7 +322,7 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
 
         async with (
             upstream_app.router.lifespan_context(upstream_app),
-            in_memory(channel, away, httpx.ASGITransport(app=upstream_app)) as client,
+            in_memory(channel, away, httpx2.ASGITransport(app=upstream_app)) as client,
         ):
             tools = await client.list_tools()
             catalog = await discover(client, "slack")
@@ -414,7 +415,7 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
         async with (
             upstream_app.router.lifespan_context(upstream_app),
             in_memory(
-                channel, session, httpx.ASGITransport(app=upstream_app)
+                channel, session, httpx2.ASGITransport(app=upstream_app)
             ) as client,
         ):
             tools = await client.list_tools()
@@ -445,7 +446,7 @@ async def test_a_token_slack_has_revoked_retires_the_connection() -> None:
         async with over(octomate, app, naming(session)) as client:
             await connected(app, ink, client)
 
-        refusing = httpx.MockTransport(lambda request: httpx.Response(401))
+        refusing = httpx2.MockTransport(lambda request: httpx2.Response(401))
         async with in_memory(channel, session, refusing) as client:
             with pytest.raises(ToolError):
                 await client.call_tool(

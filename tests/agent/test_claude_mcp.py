@@ -10,7 +10,10 @@ wording verbatim, which is how Claude retries from it natively.
 from __future__ import annotations
 
 from claude_agent_sdk import SdkMcpTool
+from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+from fastmcp.tools import ToolResult
+from mcp.types import ImageContent
 from pydantic import JsonValue, SecretStr
 
 from octomate import Octomate
@@ -91,6 +94,25 @@ async def test_the_server_config_is_the_sdk_in_process_shape() -> None:
 
     assert config["type"] == "sdk"
     assert config["name"] == "octomate"
+
+
+async def test_image_content_keeps_the_mcp_wire_field_names() -> None:
+    server = FastMCP("images")
+
+    @server.tool(description="Return a picture.")
+    def picture() -> ToolResult:
+        return ToolResult(
+            content=[ImageContent(type="image", data="aW1hZ2U=", mime_type="image/png")]
+        )
+
+    picture_tool = await server.get_tool("picture")
+    assert picture_tool is not None
+    tool = sdk_tool(picture_tool)
+    result = await tool.handler({})
+
+    assert result == {
+        "content": [{"type": "image", "data": "aW1hZ2U=", "mimeType": "image/png"}]
+    }
 
 
 def test_the_instruction_names_the_tools_by_their_served_names() -> None:

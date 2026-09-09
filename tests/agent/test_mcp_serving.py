@@ -13,9 +13,10 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Self
+from typing import Literal, Self
 
 import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastmcp import Client
@@ -95,17 +96,23 @@ async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
         assert started == ["agent", "channel"]
 
 
-def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
+def over(
+    octomate: Octomate,
+    app: FastAPI,
+    headers: dict[str, str],
+    *,
+    mode: Literal["auto", "legacy", "2026-07-28"] = "auto",
+) -> Client:
     """An MCP client speaking streamable HTTP into `app` without a socket."""
 
     def asgi(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         follow_redirects: bool = True,
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
+    ) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
             base_url="http://octomate",
             headers=headers,
             timeout=timeout,
@@ -118,7 +125,8 @@ def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
             f"http://octomate{OCTOMATE_MCP_PATH}",
             headers=headers,
             httpx_client_factory=asgi,
-        )
+        ),
+        mode=mode,
     )
 
 
@@ -258,21 +266,28 @@ async def test_the_server_refuses_an_unauthenticated_call(
     assert response.headers["www-authenticate"].startswith("Bearer")
 
 
-async def test_an_api_token_opens_the_six_spells_and_the_history_tools() -> None:
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
+    mode: Literal["legacy", "2026-07-28"],
+) -> None:
     async with served(await a_driven_deployment()) as (octomate, app):
-        async with over(octomate, app, DRIVEN_BEARER) as client:
+        async with over(octomate, app, DRIVEN_BEARER, mode=mode) as client:
             tools = await client.list_tools()
 
     assert [tool.name for tool in tools] == OCTOMATE_TOOLS
 
 
-async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_a_served_call_runs_against_the_turn_its_header_names(
+    mode: Literal["legacy", "2026-07-28"],
+) -> None:
     async with served(await a_driven_deployment()) as (octomate, app):
         session = await a_driven_turn(octomate)
         async with over(
             octomate,
             app,
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
+            mode=mode,
         ) as client:
             result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
 

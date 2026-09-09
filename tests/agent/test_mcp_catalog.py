@@ -243,7 +243,7 @@ async def test_discovery_and_calls_stay_in_the_selected_namespace() -> None:
             assert catalog.instructions == "Instructions for second."
             assert [tool.name for tool in catalog.tools] == ["answer"]
             assert catalog.tools[0].description == "What the provider says of its tool."
-            assert catalog.tools[0].inputSchema["type"] == "object"
+            assert catalog.tools[0].input_schema["type"] == "object"
             assert [tool.name for tool in await client.list_tools()] == [
                 tool.name for tool in initial
             ]

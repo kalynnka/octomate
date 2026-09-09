@@ -9,11 +9,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Awaitable, Callable
 
-import httpx
+import httpx2
 from pydantic import SecretStr
 
 
-class McpConnectionAuth(httpx.Auth):
+class McpConnectionAuth(httpx2.Auth):
     """One user's bearer credentials for an MCP session, and the 401 that ends them.
 
     Sitting on the transport rather than in a tool hook is what makes this cover
@@ -38,8 +38,8 @@ class McpConnectionAuth(httpx.Auth):
 
     async def async_auth_flow(
         self,
-        request: httpx.Request,
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        request: httpx2.Request,
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         request.headers["Authorization"] = (
             f"Bearer {self.access_token.get_secret_value()}"
         )

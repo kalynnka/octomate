@@ -11,18 +11,26 @@ from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
+from typing import Literal
 
-import httpx
+import httpx2
 import pytest
 from fastmcp import Client, FastMCP
+from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_headers
+from mcp.types import Tool
 from pydantic import AnyHttpUrl, SecretStr
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
@@ -56,7 +64,12 @@ from octomate.tentacles.github import GitHubTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.linear import LinearTentacle
-from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle, build_mcp
+from octomate.tentacles.mcp import (
+    BareMcpTentacle,
+    OAuthMcpTentacle,
+    PerCallerProxy,
+    build_mcp,
+)
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import FakeConversationManager, fixed_session
 from tests.support.mcp import discover
@@ -145,11 +158,11 @@ def a_turn(profile: UserProfile | None = None) -> OctomateSession:
 @asynccontextmanager
 async def upstream_of(
     upstream: FastMCP,
-) -> AsyncIterator[httpx.AsyncBaseTransport]:
+) -> AsyncIterator[httpx2.AsyncBaseTransport]:
     """`upstream` served, as a transport a proxy's client can be routed into."""
     app = upstream.http_app()
     async with app.router.lifespan_context(app):
-        yield httpx.ASGITransport(app=app)
+        yield httpx2.ASGITransport(app=app)
 
 
 @asynccontextmanager
@@ -208,6 +221,45 @@ async def test_a_bare_server_speaks_the_operator_credential_for_everyone() -> No
     assert [tool.name for tool in catalog.tools] == ["linear_list_issues"]
     assert result.data == "answered"
     assert seen == ["Bearer lin_x"]
+
+
+@pytest.mark.parametrize("upstream_mode", ["legacy", "2026-07-28"])
+@pytest.mark.parametrize("downstream_mode", ["legacy", "2026-07-28"])
+async def test_proxy_forwards_tools_across_protocol_eras(
+    upstream_mode: Literal["legacy", "2026-07-28"],
+    downstream_mode: Literal["legacy", "2026-07-28"],
+) -> None:
+    upstream = FastMCP("upstream")
+
+    @upstream.tool
+    def answer(question: str) -> dict[str, str]:
+        if question == "refuse":
+            raise ToolError("The upstream refused this question")
+        return {"answer": question}
+
+    async with upstream_of(upstream) as transport:
+
+        async def connect() -> Client:
+            return Client(
+                StreamableHttpTransport(
+                    "https://mcp.example/mcp", httpx_client_factory=into(transport)
+                ),
+                mode=upstream_mode,
+            )
+
+        async def list_tools() -> list[Tool]:
+            async with await connect() as client:
+                return await client.list_tools()
+
+        server = FastMCP("proxy")
+        server.add_provider(PerCallerProxy(connect, list_tools))
+        async with Client(server, mode=downstream_mode) as client:
+            [tool] = await client.list_tools()
+            assert tool.input_schema["required"] == ["question"]
+            result = await client.call_tool("answer", {"question": "hello"})
+            assert result.structured_content == {"answer": "hello"}
+            with pytest.raises(ToolError, match="The upstream refused"):
+                await client.call_tool("answer", {"question": "refuse"})
 
 
 async def test_an_explicit_prefix_overrides_the_key() -> None:
@@ -386,6 +438,8 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
             )
         )
         before = await toolset.get_tools(ctx)
+        with pytest.raises(ModelRetry, match="Missing required argument"):
+            await toolset.call_tool(CONNECT_TOOL, {}, ctx, before[CONNECT_TOOL])
         with pytest.raises(ModelRetry, match=f"`{CONNECT_TOOL}` with `gh`"):
             await toolset.call_tool(
                 LIST_MCP_TOOLS, {"namespace": "gh"}, ctx, before[LIST_MCP_TOOLS]
@@ -415,13 +469,18 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
 
     async def reply(
         messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | DeltaToolCalls]:
         offered.append(
             (
                 {tool.name: tool.defer_loading for tool in info.function_tools},
                 info.instructions,
             )
         )
+        if len(offered) == 1:
+            yield {
+                0: DeltaToolCall(name="load_capability", json_args='{"id":"tentacles"}')
+            }
+            return
         yield "noted"
 
     inkling = an_inkling(
@@ -438,12 +497,13 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
         async for _event in stream:
             pass
 
-    # The tentacles reach the model deferred, for the session its gateway
-    # capability carries: the catalog line, the tool that loads them, and their
-    # tools flagged so the model layer keeps them off the wire until discovered.
-    [(tools, instructions)] = offered
+    # The model sees the catalog first, then the tools after loading the capability.
+    [(tools, instructions), (loaded_tools, _loaded_instructions)] = offered
     assert tools["load_capability"] is False
-    assert (tools[CONNECT_TOOL], tools[CONFIRM_TOOL]) == (True, True)
+    assert CONNECT_TOOL not in tools
+    assert CONFIRM_TOOL not in tools
+    assert CONNECT_TOOL in loaded_tools
+    assert CONFIRM_TOOL in loaded_tools
     assert instructions is not None
     assert "- tentacles: The tools of Provider" in instructions
 
