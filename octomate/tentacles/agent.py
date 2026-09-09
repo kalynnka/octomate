@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
-from contextlib import asynccontextmanager
+from contextlib import aclosing, asynccontextmanager
 from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
+import anyio
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -34,7 +36,7 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.harness.react import ReactEventStream
+from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -82,6 +84,78 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     def native_sessions(self) -> Counter[str]:
         """Accepted native transcript streams currently attached to this agent."""
         return Counter()
+
+    @cached_property
+    def run_tasks(self) -> set[asyncio.Task[None]]:
+        """Collectors registered by agent harnesses that opt into `observe_run`.
+
+        Created on first access. Participating harnesses drain these tasks
+        during shutdown; other harnesses do not need this registry.
+        """
+        return set()
+
+    async def observe_run(
+        self, events: AsyncGenerator[ReactStreamEvent[RunOutputDataT], None]
+    ) -> AsyncGenerator[ReactStreamEvent[RunOutputDataT], None]:
+        """Collect a run to completion even when its observer closes or cancels.
+
+        Agent harnesses opt in by wrapping their event generators with this
+        method and draining `run_tasks` during shutdown. Inheriting it alone
+        does not change a harness's lifecycle.
+
+        Joining before leaving keeps the caller's gateway and other enclosing
+        resources available to the agent until its final notifications are recorded.
+        """
+        send, receive = anyio.create_memory_object_stream[
+            ReactStreamEvent[RunOutputDataT]
+        ](100)
+        errors: list[Exception | asyncio.CancelledError] = []
+
+        async def collect() -> None:
+            try:
+                async with aclosing(events):
+                    async for event in events:
+                        try:
+                            await send.send(event)
+                        except anyio.BrokenResourceError:
+                            # Only the observer is gone; keep ingesting the run.
+                            pass
+            except (Exception, asyncio.CancelledError) as error:
+                errors.append(error)
+            finally:
+                send.close()
+
+        task = asyncio.create_task(collect())
+        self.run_tasks.add(task)
+        observed_end = False
+        cancelled = False
+        try:
+            async with receive:
+                async for event in receive:
+                    yield event
+            observed_end = True
+            for error in errors:
+                raise error
+        finally:
+            receive.close()
+            # AnyIO scopes repeatedly cancel at checkpoints; asyncio callers can
+            # also cancel more than once. Neither may cancel the collector.
+            with anyio.CancelScope(shield=True):
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        cancelled = True
+            self.run_tasks.discard(task)
+            if not observed_end:
+                for error in errors:
+                    logging.getLogger(type(self).__module__).error(
+                        "Agent %s run failed after observer detached",
+                        self.id,
+                        exc_info=error,
+                    )
+            if cancelled:
+                raise asyncio.CancelledError
 
     @cached_property
     def routes(self) -> list[AgentRoute]:

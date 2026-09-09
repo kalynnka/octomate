@@ -12,6 +12,7 @@ from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 from uuid import uuid4
 
+import anyio
 import httpx
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -493,33 +494,40 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         traceback: TracebackType | None = None,
     ) -> None:
         await super().__aexit__(exc_type, exc_value, traceback)
-        self.closing = True
-        self.session_ingest.shutdown()
-        await self.session_tailer.shutdown()
-        for session_id in list(self.subscribers):
-            with contextlib.suppress(Exception):
-                await self.client.call("session.cancel", {"sessionId": session_id})
-        if self.mux_task is not None:
-            self.mux_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.mux_task
-            self.mux_task = None
-        if self.mux_socket is not None:
-            with contextlib.suppress(Exception):
-                await self.mux_socket.close()
-            self.mux_socket = None
-        for task in list(self.interaction_tasks):
-            task.cancel()
-        self.interaction_tasks.clear()
-        for future in list(self.pending.values()):
-            if not future.done():
-                future.cancel()
-        self.pending.clear()
-        self.bridge_contexts.clear()
-        await self.client.__aexit__(exc_type, exc_value, traceback)
-        if self.process is not None:
-            await self.process.stop()
-            self.process = None
+        cancelled = False
+        with anyio.CancelScope(shield=True):
+            draining = asyncio.gather(*self.run_tasks)
+            while not draining.done():
+                try:
+                    await asyncio.shield(draining)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self.closing = True
+            self.session_ingest.shutdown()
+            await self.session_tailer.shutdown()
+            if self.mux_task is not None:
+                self.mux_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.mux_task
+                self.mux_task = None
+            if self.mux_socket is not None:
+                with contextlib.suppress(Exception):
+                    await self.mux_socket.close()
+                self.mux_socket = None
+            for task in list(self.interaction_tasks):
+                task.cancel()
+            self.interaction_tasks.clear()
+            for future in list(self.pending.values()):
+                if not future.done():
+                    future.cancel()
+            self.pending.clear()
+            self.bridge_contexts.clear()
+            await self.client.__aexit__(exc_type, exc_value, traceback)
+            if self.process is not None:
+                await self.process.stop()
+                self.process = None
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def pump_mux(
         self, client: DeepseekApiClient, socket: ClientConnection
@@ -848,8 +856,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             # it as a cwd, and a chat thread's is only thrown away once the turn
             # using it is finished with it.
             async with (
-                workspace,
                 self.conversation_locks.hold(str(conversation.id)),
+                workspace,
             ):
                 session_id = conversation.external_id
                 if not session_id:
@@ -1139,20 +1147,22 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[str | RunOutputDataT]:
         result: AgentRunResult[str] | None = None
-        async for event in self._iter_events(
-            user_prompt,
-            conversation_address=conversation_address,
-            thread_id=thread_id,
-            source_thread_address=source_thread_address,
-            source_thread_message_ids=source_thread_message_ids,
-            run_name=run_name,
-            output_type=output_type,
-            model=model,
-            effort=effort,
-            conversation_id=conversation_id,
-            interactive=interactive,
-            instructions=instructions,
-            capabilities=capabilities,
+        async for event in self.observe_run(
+            self._iter_events(
+                user_prompt,
+                conversation_address=conversation_address,
+                thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=source_thread_message_ids,
+                run_name=run_name,
+                output_type=output_type,
+                model=model,
+                effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
+                instructions=instructions,
+                capabilities=capabilities,
+            )
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -1252,19 +1262,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
         return ReactEventStream(
-            self._iter_events(
-                user_prompt,
-                conversation_address=conversation_address,
-                thread_id=thread_id,
-                source_thread_address=source_thread_address,
-                source_thread_message_ids=source_thread_message_ids,
-                run_name=run_name,
-                output_type=output_type,
-                model=model,
-                effort=effort,
-                conversation_id=conversation_id,
-                interactive=interactive,
-                instructions=instructions,
-                capabilities=capabilities,
+            self.observe_run(
+                self._iter_events(
+                    user_prompt,
+                    conversation_address=conversation_address,
+                    thread_id=thread_id,
+                    source_thread_address=source_thread_address,
+                    source_thread_message_ids=source_thread_message_ids,
+                    run_name=run_name,
+                    output_type=output_type,
+                    model=model,
+                    effort=effort,
+                    conversation_id=conversation_id,
+                    interactive=interactive,
+                    instructions=instructions,
+                    capabilities=capabilities,
+                )
             )
         )

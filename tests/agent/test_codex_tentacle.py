@@ -9,6 +9,7 @@ from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 from unittest.mock import Mock
 
+import anyio
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.api import ApprovalMode, Sandbox
@@ -34,7 +35,7 @@ from openai_codex.generated.v2_all import (
 from openai_codex.models import Notification, NotificationPayload
 from pydantic import BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.messages import PartStartEvent
+from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -892,19 +893,267 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     assert len(feelers.requests) == 1
 
 
-async def test_shutdown_interrupts_live_turns(
+@pytest.mark.parametrize(
+    "detach", ["cancel_run", "cancel_stream", "close_stream", "consumer_error", "scope"]
+)
+@pytest.mark.parametrize("fails", [False, True])
+async def test_detached_run_drains_before_releasing_resources(
     monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    detach: str,
+    fails: bool,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex([])
-    tentacle = _tentacle(FakeConversationManager())
-    turn = FakeTurn()
-    tentacle.live_turns[uuid.uuid4()] = cast(codex_base.AsyncTurnHandle, turn)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    started = asyncio.Event()
+    observed = asyncio.Event()
+    detach_stream = asyncio.Event()
+    finish = asyncio.Event()
+    stopped = asyncio.Event()
+    scopes: list[anyio.CancelScope] = []
+    workspace_exits: list[bool] = []
+    workspace_exit = ChatWorkspace.__aexit__
+    tentacle.octomate.connect(tentacle)
 
-    await tentacle.__aexit__()
+    async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
+        script = text_script("finished", thread_id="thread-new")
+        yield script[0]
+        started.set()
+        await finish.wait()
+        # More than the observer buffer: detached collection must keep draining.
+        for _ in range(150):
+            yield script[0]
+        yield script[1]
+        yield (
+            failed_script("runtime failed", thread_id="thread-new")[0]
+            if fails
+            else script[2]
+        )
+        stopped.set()
 
-    assert turn.interrupted
+    async def close_workspace(
+        workspace: ChatWorkspace,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert stopped.is_set()
+        workspace_exits.append(True)
+        await workspace_exit(workspace, exc_type, exc, traceback)
+
+    async def consume() -> None:
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            if detach == "cancel_run":
+                await tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
+                return
+            async with tentacle.run_stream_events(
+                "work", conversation_address=KEY, thread_id=_THREAD
+            ) as stream:
+                async for _ in stream:
+                    observed.set()
+                    if detach in {"close_stream", "consumer_error"}:
+                        await detach_stream.wait()
+                        if detach == "consumer_error":
+                            raise ValueError("observer failed")
+                        break
+
+    monkeypatch.setattr(FakeTurn, "stream", gated_stream)
+    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    async with tentacle:
+        task = asyncio.create_task(consume())
+        try:
+            async with asyncio.timeout(2):
+                await started.wait()
+                if detach != "cancel_run":
+                    await observed.wait()
+            if detach in {"cancel_run", "cancel_stream"}:
+                task.cancel()
+            elif detach == "scope":
+                scopes[0].cancel()
+            else:
+                detach_stream.set()
+            await asyncio.sleep(0)
+            if detach in {"cancel_run", "cancel_stream"}:
+                task.cancel()
+            await asyncio.sleep(0)
+
+            assert not task.done()
+            assert tentacle.driven_sessions == {"thread-new": 1}
+            assert not tentacle.should_ingest_session("thread-new")
+            assert len(tentacle.live_turns) == 1
+            assert len(tentacle.bridge_contexts) == 1
+            assert len(tentacle.run_tasks) == 1
+            assert tentacle.pool is not None
+            [client] = tentacle.pool.clients.values()
+            assert client.in_use == 1
+            cwd = FakeCodex.turn_calls[0].cwd
+            assert cwd is not None
+            assert await anyio.Path(cwd).is_dir()
+            assert FakeCodex.closed == 0
+            assert not FakeCodex.turns[0].interrupted
+            assert workspace_exits == []
+            assert conversations.runs == []
+        finally:
+            finish.set()
+            async with asyncio.timeout(2):
+                if detach in {"cancel_run", "cancel_stream"}:
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                elif detach == "consumer_error":
+                    with pytest.raises(ValueError, match="observer failed"):
+                        await task
+                else:
+                    await task
+
+        assert stopped.is_set()
+        assert workspace_exits == [True]
+        assert tentacle.driven_sessions == {}
+        assert tentacle.live_turns == {}
+        assert tentacle.bridge_contexts == {}
+        assert tentacle.run_tasks == set()
+        assert client.in_use == 0
+        assert len(conversations.runs) == 1
+        assert any(
+            isinstance(part, TextPart) and part.content == "finished"
+            for message in conversations.runs[0][2]
+            for part in message.parts
+        )
+        assert not FakeCodex.turns[0].interrupted
+        if fails:
+            assert "Agent codex run failed after observer detached" in caplog.text
+            assert "runtime failed" in caplog.text
+            record = next(
+                record
+                for record in caplog.records
+                if "run failed after observer detached" in record.getMessage()
+            )
+            assert tentacle.octomate.log_tag(record.name) == (
+                tentacle.id,
+                CodexTentacle.brand_color,
+            )
+
+
+@pytest.mark.parametrize("cancel_shutdown", [False, True])
+async def test_shutdown_drains_live_turns_without_interrupting(
+    monkeypatch: pytest.MonkeyPatch,
+    cancel_shutdown: bool,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
+        started.set()
+        await finish.wait()
+        for event in FakeCodex.script:
+            yield event
+
+    monkeypatch.setattr(FakeTurn, "stream", gated_stream)
+    await tentacle.__aenter__()
+    run = asyncio.create_task(
+        tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
+    )
+    async with asyncio.timeout(2):
+        await started.wait()
+    shutdown = asyncio.create_task(tentacle.__aexit__())
+    try:
+        await asyncio.sleep(0)
+        if cancel_shutdown:
+            shutdown.cancel()
+            await asyncio.sleep(0)
+            shutdown.cancel()
+            await asyncio.sleep(0)
+        assert not shutdown.done()
+        assert tentacle.driven_sessions == {"thread-new": 1}
+        assert FakeCodex.closed == 0
+        assert not FakeCodex.turns[0].interrupted
+    finally:
+        finish.set()
+        async with asyncio.timeout(2):
+            await run
+            if cancel_shutdown:
+                with pytest.raises(asyncio.CancelledError):
+                    await shutdown
+            else:
+                await shutdown
+
+    assert len(conversations.runs) == 1
+    assert FakeCodex.closed == 1
+    assert tentacle.pool is None
     assert not tentacle.live_turns
+    assert not tentacle.driven_sessions
+
+
+async def test_same_conversation_waits_before_opening_another_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    second_waiting = asyncio.Event()
+    opened: list[Workspace] = []
+    workspace_enter = Workspace.__aenter__
+
+    async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
+        if len(FakeCodex.turns) == 1:
+            started.set()
+            await finish.wait()
+        for event in FakeCodex.script:
+            yield event
+
+    async def open_workspace(workspace: Workspace) -> Workspace:
+        opened.append(workspace)
+        return await workspace_enter(workspace)
+
+    # Signal the actual lock wait, rather than relying on task scheduling speed.
+    lock = asyncio.Lock()
+    acquire = lock.acquire
+
+    async def acquire_lock() -> bool:
+        if lock.locked():
+            second_waiting.set()
+        return await acquire()
+
+    monkeypatch.setattr(FakeTurn, "stream", gated_stream)
+    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
+    monkeypatch.setattr(lock, "acquire", acquire_lock)
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+    tentacle.conversation_locks.by_session[str(conversation.id)] = lock
+    async with tentacle:
+        first = asyncio.create_task(
+            tentacle.run("first", conversation_address=KEY, thread_id=_THREAD)
+        )
+        async with asyncio.timeout(2):
+            await started.wait()
+        second = asyncio.create_task(
+            tentacle.run("second", conversation_address=KEY, thread_id=_THREAD)
+        )
+        try:
+            async with asyncio.timeout(2):
+                await second_waiting.wait()
+            assert len(FakeCodex.turns) == 1
+            assert len(opened) == 1
+            assert not FakeCodex.turns[0].interrupted
+            assert tentacle.driven_sessions == {"thread-new": 1}
+        finally:
+            finish.set()
+            async with asyncio.timeout(2):
+                await first
+                await second
+
+        assert len(opened) == 2
+        assert len(conversations.runs) == 2
+        assert len(FakeCodex.turns) == 2
+        assert all(not turn.interrupted for turn in FakeCodex.turns)
 
 
 async def test_pool_reuses_client_per_thread_and_drains_on_exit(
