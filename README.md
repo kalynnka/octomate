@@ -211,10 +211,6 @@ CLI together with `pip install octomate`. Both include a compatible
 `octomate-protocol` package. The packages release independently; compatible server
 updates do not require CLI upgrades. `octomate --version` reports installed versions.
 
-For supervised server setup, migrations and manual release upgrades, follow the
-[deployment guide](docs/server-deployment.md). Package publishing is described in
-[the release guide](docs/releases.md).
-
 ## Quickstart
 
 **Requirements:** Python 3.12+ (development uses 3.13), [uv](https://docs.astral.sh/uv/). The database is a
@@ -240,15 +236,15 @@ YAML
 ```
 
 A configured `claude` serves an authenticated hook router. Accounts live in the
-database; see [local accounts](docs/users.md) for invitation and registration setup.
+database and require invitation-based registration.
 After configuring local accounts, start the server:
 
 ```bash
-uv run octomate serve --tmux
+uv run octomate service serve --tmux
 ```
 
 Register through an invitation and sign in through Trunkline. Issue an API token
-through the [account API](docs/users.md#cli-and-api-tokens), then configure the client:
+through the account API, then configure the client:
 
 ```bash
 octomate configure --url http://127.0.0.1:8000 --token '<api-token>'
@@ -290,13 +286,11 @@ ENV
 Restart, and `@`-mention the bot in a channel or DM it. `agents[0]` is what answers by
 default; the rest are summon candidates. Lark is the same shape with `type: lark` and an
 `app_id`/`app_secret` pair. Discord uses `type: discord` plus one environment-backed
-bot token; its [private-app setup and live verification](docs/discord.md) cover the
-required intent and least-privilege invite.
+bot token, the required intents and a least-privilege invite.
 
 ### 3. Add the web console
 
-Trunkline requires an invited local account. Follow [Local accounts](docs/users.md)
-to configure authentication and issue your first invitation.
+Trunkline requires configured authentication and an invited local account.
 
 Optional, and no platform account needed — `type: trunkline` alongside the Slack block:
 
@@ -313,38 +307,12 @@ cd trunkline && pnpm install && pnpm dev   # http://localhost:5173
 
 ### Running it
 
-`octomate serve` runs the API in the foreground. Add `--tmux` to run in a
+`octomate service serve` runs the API in the foreground. Add `--tmux` to run in a
 detached tmux session and attach to it, creating it if it is not already running —
 so the same command is both "start" and "go look at
 it". Octomate is meant to outlive the terminal that started it: channels hold their
 sockets open, and the tailers keep watching for native sessions started somewhere else
 entirely. `--reload` restarts on changes under `octomate/`.
-
-**`octomate upgrade` currently supports launchd services defined by a plist only.**
-Prepare and install the service definition first, then run these commands as its
-configured service user, without sudo:
-
-```bash
-octomate serve --plist /Library/LaunchDaemons/io.octomate.server.plist
-octomate upgrade
-```
-
-`upgrade` uses `/Library/LaunchDaemons/io.octomate.server.plist` by default. For a
-different installed definition, run `octomate upgrade --plist /absolute/path/to/server.plist`.
-Omitting `--plist` still requires that default file; it does not enable a general
-update mode. The command does not manage foreground `serve` processes, tmux sessions
-or other supervisors.
-
-`serve --plist <path>` backs up and migrates the configured SQLite database before
-starting the service. It uses the service definition's configuration and cannot be
-combined with foreground or tmux options. `upgrade` fetches the latest stable
-release and exits when already current. Otherwise it stops the service, backs up,
-checks out the release, syncs locked dependencies, migrates and restarts. Pending
-migrations are rehearsed on a copy;
-a failure leaves the service disabled for recovery. These management commands
-currently use a launchd service adapter. See the
-[server deployment guide](docs/server-deployment.md) for its required service
-definition and configuration. Tailcat setup is a separate networking step.
 
 Server-hosted agents need their checkouts and credentials on the server. Native
 transcript tailers stay on the client machine whose local files they read.
@@ -458,7 +426,7 @@ Unlike the hooks — whose scripts resolve the address and credential each time 
 +-- cli/octomate_cli/          # `octomate ...` - the client half, installable alone
 |   +-- tentacles/             # claude, codex, deepseek - commands, hooks and MCP config
 |   +-- streaming/             # File tails and the dsh gateway stream
-|   +-- serve.py               # Server startup and plist service upgrades
+|   +-- serve.py               # GUI service management
 |   +-- emit.py                # Stable hook entry point: forward an event
 |   `-- launch.py              # Stable hook entry point: launch a transcript tail
 +-- protocol/octomate_protocol/ # Shared contracts; depends only on Pydantic

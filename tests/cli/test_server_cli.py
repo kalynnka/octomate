@@ -50,6 +50,11 @@ class Operations:
         elif action == "bootout":
             self.loaded = False
 
+    def stop(self) -> None:
+        self.launchctl("disable", "gui/test")
+        if self.loaded:
+            self.launchctl("bootout", "gui/test")
+
     def git(
         self, arguments: list[str], *, cwd: Path, env: dict[str, str], text: bool
     ) -> str:
@@ -103,21 +108,27 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Oper
     directory = tmp_path / "app"
     (directory / ".venv/bin").mkdir(parents=True)
     (directory / ".venv/bin/python").touch()
-    database = tmp_path / "shared" / "octomate.db"
+    database = tmp_path / "octomate.db"
     plist = tmp_path / "server.plist"
     plist.write_bytes(
         plistlib.dumps(
             {
                 "Label": "io.octomate.server",
-                "WorkingDirectory": str(directory),
-                "UserName": pwd.getpwuid(os.getuid()).pw_name,
+                "WorkingDirectory": str(tmp_path),
+                "LimitLoadToSessionType": "Aqua",
+                "StandardOutPath": str(tmp_path / "logs/stdout.log"),
+                "StandardErrorPath": str(tmp_path / "logs/stderr.log"),
                 "ProgramArguments": [
                     str(directory / ".venv/bin/octomate"),
+                    "service",
                     "serve",
                 ],
                 "KeepAlive": True,
                 "EnvironmentVariables": {
                     "PATH": "/usr/bin:/bin",
+                    "HOME": pwd.getpwuid(os.getuid()).pw_dir,
+                    "USER": pwd.getpwuid(os.getuid()).pw_name,
+                    "LOGNAME": pwd.getpwuid(os.getuid()).pw_name,
                     "OCTOMATE_HOME": str(tmp_path / "config"),
                     "OCTOMATE_DB_URL": f"sqlite+aiosqlite:///{database}",
                 },
@@ -132,6 +143,9 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Oper
         ),
     )
     monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(PlistService, "path", staticmethod(lambda: plist))
+    monkeypatch.setattr(PlistService, "require_gui", lambda self: None)
+    monkeypatch.setattr(PlistService, "stop", lambda self: operations.stop())
     monkeypatch.setattr(PlistService, "loaded", lambda self: operations.loaded)
     monkeypatch.setattr(
         PlistService,
@@ -148,17 +162,16 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Oper
     return plist, operations
 
 
-def test_start_migrates_before_loading_service(
+def test_start_loads_without_migration(
     service: tuple[Path, Operations],
 ) -> None:
-    plist, operations = service
-    result = CliRunner().invoke(app, ["serve", "--plist", str(plist)])
+    _, operations = service
+    result = CliRunner().invoke(app, ["service", "start"])
     assert result.exit_code == 0, result.output
     assert operations.events == [
-        "check",
+        "ready",
         "disable",
-        "backup",
-        "migrate",
+        "stopped",
         "enable",
         "bootstrap",
         "verify",
@@ -167,39 +180,98 @@ def test_start_migrates_before_loading_service(
 
 
 def test_start_loaded_service_only_verifies(service: tuple[Path, Operations]) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
-    result = CliRunner().invoke(app, ["serve", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "start"])
     assert result.exit_code == 0, result.output
-    assert operations.events == ["check", "verify"]
+    assert operations.events == ["ready", "verify"]
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_schema_mismatch_does_not_interrupt_running_service(
+    service: tuple[Path, Operations], action: str
+) -> None:
+    _, operations = service
+    operations.loaded = True
+    operations.fail = "ready"
+    result = CliRunner().invoke(app, ["service", action])
+    assert result.exit_code == 1
+    assert operations.events == ["ready"]
+    assert operations.loaded
+
+
+def test_restart_preserves_code_and_database(service: tuple[Path, Operations]) -> None:
+    _, operations = service
+    operations.loaded = True
+    result = CliRunner().invoke(app, ["service", "restart"])
+    assert result.exit_code == 0, result.output
+    assert operations.events == [
+        "ready",
+        "disable",
+        "bootout",
+        "stopped",
+        "enable",
+        "bootstrap",
+        "verify",
+    ]
+    assert operations.loaded
+
+
+def test_busy_port_prevents_bootstrap(service: tuple[Path, Operations]) -> None:
+    _, operations = service
+    operations.fail = "stopped"
+    result = CliRunner().invoke(app, ["service", "start"])
+    assert result.exit_code == 1
+    assert operations.events == ["ready", "disable", "stopped", "disable"]
+    assert not operations.loaded
+
+
+def test_upgrade_refuses_its_own_environment_before_mutation(
+    service: tuple[Path, Operations], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plist, operations = service
+    monkeypatch.setattr(sys, "prefix", str(plist.parent / "app/.venv"))
+    result = CliRunner().invoke(app, ["service", "upgrade"])
+    assert result.exit_code == 2
+    assert "standalone CLI" in result.output
+    assert operations.events == []
+    assert not (plist.parent / "control").exists()
+
+
+def test_stop_does_not_require_valid_application_config(
+    service: tuple[Path, Operations],
+) -> None:
+    _, operations = service
+    operations.loaded = True
+    operations.fail = "check"
+    result = CliRunner().invoke(app, ["service", "stop"])
+    assert result.exit_code == 0, result.output
+    assert operations.events == ["disable", "bootout"]
+    assert not operations.loaded
 
 
 @pytest.mark.parametrize(
-    "options",
+    "command",
     [
-        ["--host", "127.0.0.1"],
-        ["--port", "9000"],
-        ["--reload"],
-        ["--tmux"],
-        ["--session", "test-server"],
+        ["service", "upgrade", "--plist", "unused"],
+        ["cli", "upgrade"],
+        ["serve"],
+        ["invite"],
+        ["user"],
     ],
 )
-def test_managed_serve_refuses_foreground_options(
-    service: tuple[Path, Operations], options: list[str]
-) -> None:
-    plist, operations = service
-    result = CliRunner().invoke(app, ["serve", "--plist", str(plist), *options])
+def test_removed_commands_are_rejected(command: list[str]) -> None:
+    result = CliRunner().invoke(app, command)
     assert result.exit_code == 2
-    assert "--plist uses the service configuration" in unstyle(result.output)
-    assert operations.events == []
+    assert "No such" in unstyle(result.output)
 
 
 def test_upgrade_fetches_release_before_stop_backup_checkout_sync_migrate_start(
     service: tuple[Path, Operations],
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
-    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 0, result.output
     assert operations.events == [
         "check",
@@ -220,10 +292,10 @@ def test_upgrade_fetches_release_before_stop_backup_checkout_sync_migrate_start(
 def test_failed_upgrade_stays_disabled(
     service: tuple[Path, Operations], failure: str
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
     operations.fail = failure
-    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert not operations.loaded
     assert "remains disabled" in result.output
@@ -236,10 +308,10 @@ def test_failed_upgrade_stays_disabled(
 def test_upgrade_refuses_unreviewed_checkout(
     service: tuple[Path, Operations],
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
     operations.dirty = True
-    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert operations.events == ["check"]
     assert operations.loaded
@@ -253,7 +325,7 @@ def test_operation_lock_prevents_overlapping_updates(
     control.mkdir()
     with (control / "server.lock").open("a") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+        result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 2
     assert "Another server operation" in result.output
     assert operations.events == []
@@ -262,9 +334,9 @@ def test_operation_lock_prevents_overlapping_updates(
 def test_upgrade_refuses_local_commits_ahead_of_remote(
     service: tuple[Path, Operations],
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.ahead = True
-    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert "refusing a downgrade" in result.output
     assert "disable" not in operations.events
@@ -276,10 +348,10 @@ def test_upgrade_refuses_local_commits_ahead_of_remote(
 def test_current_release_does_not_change_service(
     service: tuple[Path, Operations], loaded: bool
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = loaded
     operations.current = True
-    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 0, result.output
     assert "Already at octomate-v0.0.2" in result.output
     assert operations.events == ["check", "fetch"]
@@ -289,10 +361,10 @@ def test_current_release_does_not_change_service(
 def test_failed_release_fetch_keeps_service_running(
     service: tuple[Path, Operations],
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
     operations.fail = "fetch"
-    result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+    result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert operations.events == ["check", "fetch"]
     assert operations.loaded
@@ -301,10 +373,10 @@ def test_failed_release_fetch_keeps_service_running(
 def test_release_lookup_failure_keeps_service_running(
     service: tuple[Path, Operations],
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
     with patch("octomate_cli.serve.urlopen", side_effect=URLError("unavailable")):
-        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+        result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert "unavailable" in result.output
     assert operations.events == ["check"]
@@ -325,7 +397,7 @@ def test_release_lookup_failure_keeps_service_running(
 def test_upgrade_skips_other_packages_and_unstable_tags(
     service: tuple[Path, Operations], tag: str, draft: bool, prerelease: bool
 ) -> None:
-    plist, operations = service
+    _, operations = service
     payload = json.dumps(
         [
             {"tag_name": tag, "draft": draft, "prerelease": prerelease},
@@ -333,7 +405,7 @@ def test_upgrade_skips_other_packages_and_unstable_tags(
         ]
     ).encode()
     with patch("octomate_cli.serve.urlopen", return_value=io.BytesIO(payload)):
-        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+        result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 0, result.output
     assert "octomate-v0.0.2" in result.output
     assert "fetch" in operations.events
@@ -370,10 +442,10 @@ def test_server_release_lookup_paginates_and_compares_versions() -> None:
 def test_missing_or_invalid_server_release_keeps_service_running(
     service: tuple[Path, Operations], payload: bytes
 ) -> None:
-    plist, operations = service
+    _, operations = service
     operations.loaded = True
     with patch("octomate_cli.serve.urlopen", return_value=io.BytesIO(payload)):
-        result = CliRunner().invoke(app, ["upgrade", "--plist", str(plist)])
+        result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert operations.events == ["check"]
     assert operations.loaded
@@ -389,82 +461,6 @@ def test_version_reports_installed_packages() -> None:
     }
 
 
-def test_foreground_run_passes_bind_and_reload_options(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setenv("OCTOMATE__PORT", "8000")
-    with patch("uvicorn.run") as run:
-        result = CliRunner().invoke(
-            app,
-            ["serve", "--host", "127.0.0.1", "--port", "9000", "--reload"],
-        )
-    assert result.exit_code == 0, result.output
-    run.assert_called_once()
-    assert run.call_args.args == ("octomate.app:create_app",)
-    assert run.call_args.kwargs["factory"] is True
-    assert run.call_args.kwargs["host"] == "127.0.0.1"
-    assert run.call_args.kwargs["port"] == 9000
-    assert run.call_args.kwargs["reload"] is True
-    assert os.environ["OCTOMATE__PORT"] == "9000"
-
-
-def test_tmux_launches_the_serve_command(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    executable = tmp_path / ".venv/bin/octomate"
-    monkeypatch.setattr(sys, "argv", [str(executable)])
-    monkeypatch.delenv("TMUX", raising=False)
-    with (
-        patch("shutil.which", return_value="/usr/bin/tmux"),
-        patch(
-            "subprocess.run",
-            side_effect=[
-                subprocess.CompletedProcess(["tmux"], 1),
-                subprocess.CompletedProcess(["tmux"], 0),
-                subprocess.CompletedProcess(["tmux"], 0),
-            ],
-        ) as run,
-    ):
-        result = CliRunner().invoke(
-            app,
-            [
-                "serve",
-                "--tmux",
-                "--session",
-                "test-server",
-                "--host",
-                "127.0.0.1",
-                "--port",
-                "9000",
-                "--reload",
-            ],
-        )
-    assert result.exit_code == 0, result.output
-    assert run.call_count == 3
-    assert run.call_args_list[1].args[0] == [
-        "tmux",
-        "new-session",
-        "-d",
-        "-s",
-        "test-server",
-        "-c",
-        str(tmp_path),
-        str(executable),
-        "serve",
-        "--host",
-        "127.0.0.1",
-        "--port",
-        "9000",
-        "--reload",
-    ]
-    assert run.call_args_list[2].args[0] == [
-        "tmux",
-        "attach-session",
-        "-t",
-        "test-server",
-    ]
-
-
 def test_server_group_is_removed() -> None:
     result = CliRunner().invoke(app, ["server"])
     assert result.exit_code == 2
@@ -473,7 +469,16 @@ def test_server_group_is_removed() -> None:
 
 @pytest.mark.parametrize(
     "command",
-    [[], ["serve"], ["upgrade"]],
+    [
+        [],
+        ["upgrade"],
+        ["service"],
+        ["service", "start"],
+        ["service", "serve"],
+        ["service", "upgrade"],
+        ["service", "invite"],
+        ["service", "user"],
+    ],
 )
 def test_client_cli_help_does_not_import_server_package(command: list[str]) -> None:
     result = subprocess.run(

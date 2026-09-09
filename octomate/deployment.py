@@ -67,7 +67,10 @@ def revisions(database: Path) -> tuple[str, ...]:
 def backup_database(database: Path) -> DatabaseBackup:
     if not database.exists():
         return DatabaseBackup(database=database, backup=None)
-    backups = Path.cwd().parent / "backups"
+    root = Path(os.environ.get("OCTOMATE_DEPLOYMENT_ROOT", str(Path.cwd())))
+    if not root.is_absolute():
+        raise ValueError("OCTOMATE_DEPLOYMENT_ROOT must be absolute.")
+    backups = root / "backups"
     backups.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(
         prefix="octomate-", suffix=".sqlite3", dir=backups
@@ -177,13 +180,22 @@ async def verify(config: OctomateConfig) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("check", "backup", "migrate", "verify"))
+    parser.add_argument(
+        "action", choices=("check", "ready", "stopped", "backup", "migrate", "verify")
+    )
     action = parser.parse_args().action
     config = OctomateConfig()
     database = database_path()
     if not isinstance(config.host, IPv4Address) or config.host.is_unspecified:
         raise ValueError("The managed server requires an explicit IPv4 bind address.")
-    if action == "backup":
+    if action == "ready":
+        head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()
+        if head is None or revisions(database) != (head,):
+            raise ValueError(
+                "The database schema is not current; deploy or upgrade before starting."
+            )
+        print(f"Database is current at {head}.")
+    elif action in {"backup", "stopped"}:
         deadline = time.monotonic() + 30
         while True:
             try:
@@ -199,7 +211,10 @@ def main() -> None:
                         "The server did not stop within 30 seconds."
                     ) from error
                 time.sleep(0.25)
-        print(backup_database(database).model_dump_json())
+        if action == "backup":
+            print(backup_database(database).model_dump_json())
+        else:
+            print("The service port is available.")
     elif action == "migrate":
         migrate(DatabaseBackup.model_validate_json(sys.stdin.read()))
     elif action == "verify":

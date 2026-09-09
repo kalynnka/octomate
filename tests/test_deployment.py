@@ -61,11 +61,55 @@ def test_missing_database_has_no_backup(database: Path) -> None:
     assert not database.exists()
 
 
-@pytest.mark.parametrize("stops", [True, False])
-def test_backup_waits_for_server_shutdown(
-    database: Path, monkeypatch: pytest.MonkeyPatch, stops: bool
+def test_backup_uses_the_explicit_service_root(
+    database: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(sys, "argv", ["maintenance", "backup"])
+    root = tmp_path / "service"
+    monkeypatch.setenv("OCTOMATE_DEPLOYMENT_ROOT", str(root))
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE work (content TEXT)")
+    snapshot = deployment.backup_database(database)
+    assert snapshot.backup is not None
+    assert snapshot.backup.parent == root / "backups"
+
+
+@pytest.mark.parametrize("current", [True, False])
+def test_ready_checks_revision_without_writing_database(
+    database: Path, monkeypatch: pytest.MonkeyPatch, current: bool
+) -> None:
+    head = ScriptDirectory.from_config(
+        Config(str(deployment.ALEMBIC_INI))
+    ).get_current_head()
+    with sqlite3.connect(database) as connection:
+        connection.execute("CREATE TABLE alembic_version (version_num TEXT)")
+        connection.execute(
+            "INSERT INTO alembic_version VALUES (?)", (head if current else "old",)
+        )
+    before = database.read_bytes()
+    monkeypatch.setattr(sys, "argv", ["maintenance", "ready"])
+    if current:
+        deployment.main()
+    else:
+        with pytest.raises(ValueError, match="schema is not current"):
+            deployment.main()
+    assert database.read_bytes() == before
+
+
+def test_ready_does_not_initialize_missing_database(
+    database: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["maintenance", "ready"])
+    with pytest.raises(ValueError, match="schema is not current"):
+        deployment.main()
+    assert not database.exists()
+
+
+@pytest.mark.parametrize("stops", [True, False])
+@pytest.mark.parametrize("action", ["backup", "stopped"])
+def test_backup_waits_for_server_shutdown(
+    database: Path, monkeypatch: pytest.MonkeyPatch, stops: bool, action: str
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["maintenance", action])
     monkeypatch.setattr(deployment, "OctomateConfig", OctomateConfig)
     monkeypatch.setattr(deployment.time, "sleep", lambda duration: None)
     busy = OSError(errno.EADDRINUSE, "Server is still listening")
