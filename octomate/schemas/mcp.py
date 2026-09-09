@@ -19,7 +19,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.models import mcp as mcp_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.types.oauth import HttpsUrl
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus
 
 
 class NoAuth(BaseModel):
@@ -32,7 +32,34 @@ class BearerAuth(BaseModel):
 
 
 class OAuth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     kind: Literal["oauth"] = "oauth"
+    tentacle_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Tentacle supplying app configuration; omit for automatic registration.",
+    )
+
+
+class McpAuthorizationStatus(BaseModel):
+    status: OAuthConnectionStatus | Literal[None]
+
+
+class McpBrowserAuthorizationPending(BaseModel):
+    status: Literal["pending_browser"] = "pending_browser"
+
+
+class McpDeviceAuthorizationPending(BaseModel):
+    status: Literal["pending_device"] = "pending_device"
+    retry_after_seconds: int = Field(ge=1)
+
+
+type McpAuthorizationResult = Annotated[
+    McpAuthorizationStatus
+    | McpBrowserAuthorizationPending
+    | McpDeviceAuthorizationPending,
+    Field(discriminator="status"),
+]
 
 
 class McpInstallRequest(BaseModel):
@@ -85,7 +112,7 @@ class BearerMcp(Mcp):
 @sqlalchemy_materia.bless(mcp_models.OAuthMcp)
 class OAuthMcp(Mcp):
     auth_kind: Literal["oauth"] = "oauth"
-    oauth_connection_id: uuid.UUID | None = None
+    tentacle_id: str | None = None
 
 
 type McpVariant = NoAuthMcp | BearerMcp | OAuthMcp

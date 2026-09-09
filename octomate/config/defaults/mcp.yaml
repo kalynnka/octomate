@@ -3,7 +3,7 @@
 # linked account, the connector its tokens live under — so one vendor can be
 # mounted once per account. `type` picks the tentacle that builds it.
 #
-# Enabling a `github` or `linear` block requires `oauth.encryption_key`; boot
+# Enabling a `github` block requires `oauth.encryption_key`; boot
 # refuses without it.
 
 # mcp:
@@ -19,13 +19,3 @@
 #     scopes: [repo, read:org]    # fixed at authorization; widening = reconnect
 #     read_only: false            # true => the /readonly endpoint variant
 #     prefix: gh                  # tool-name prefix (default: the key above)
-#   linear_me:                    # authorization code: approved in a browser
-#     type: linear
-#     client_id: xxxxx            # required — OAuth application in Linear settings
-#     client_secret: xxxxx        # optional (PKCE covers it); prefer the env var
-#     # Where the authorizing BROWSER reaches Octomate, not where the internet
-#     # does — Linear redirects the user agent, it never connects here. Register
-#     # <callback_base_uri>/oauth/<key>/callback on the Linear application; it
-#     # must match character for character.
-#     callback_base_uri: http://localhost:8000
-#     scopes: [read, write]

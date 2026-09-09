@@ -41,7 +41,6 @@ from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.mcp import (
     BareMcpConfig,
     GitHubMcpConfig,
-    LinearMcpConfig,
     McpConfig,
     McpConfigVariant,
     OAuthMcpConfig,
@@ -109,7 +108,6 @@ __all__ = [  # noqa: RUF022
     # mcp
     "BareMcpConfig",
     "GitHubMcpConfig",
-    "LinearMcpConfig",
     "McpConfig",
     "McpConfigVariant",
     "McpPoolConfig",

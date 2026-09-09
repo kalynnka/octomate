@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, suppress
+from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from typing import NamedTuple
 
@@ -18,19 +18,32 @@ from octomate.config.mcp.pool import McpPoolConfig
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.oauth import NoPendingAuthorization, OAuthLockKey, OAuthManager
 from octomate.managers.user import UserManager
 from octomate.mcp.transport import mcp_http_client
+from octomate.oauth.base import McpBearerAuth
 from octomate.schemas.mcp import (
     BearerAuth,
     BearerMcp,
     Mcp,
+    McpAuthorizationResult,
+    McpAuthorizationStatus,
+    McpBrowserAuthorizationPending,
+    McpDeviceAuthorizationPending,
     McpInstallRequest,
     NoAuth,
     NoAuthMcp,
     OAuth,
     OAuthMcp,
 )
-from octomate.schemas.oauth import OAuthCipher
+from octomate.schemas.oauth import (
+    DeviceOAuthFlow,
+    OAuthCipher,
+    OAuthOperation,
+    OAuthPending,
+    OAuthStartResult,
+)
+from octomate.schemas.user import User, UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +64,17 @@ class McpManager(Manager, Locks[uuid.UUID]):
         users: UserManager,
         cipher: OAuthCipher | None,
         *,
-        config: McpPoolConfig | None = None,
+        idle_timeout: float | None = None,
         httpx_client_factory: McpHttpClientFactory = mcp_http_client,
+        oauth: OAuthManager | None = None,
     ) -> None:
         self.users: UserManager = users
         self.cipher: OAuthCipher | None = cipher
-        self.config: McpPoolConfig = config if config is not None else McpPoolConfig()
+        self.idle_timeout: float = (
+            idle_timeout if idle_timeout is not None else McpPoolConfig().idle_timeout
+        )
         self.httpx_client_factory: McpHttpClientFactory = httpx_client_factory
+        self.oauth = oauth
         self.clients: dict[McpClientKey, Client] = {}
         self.sweaps: dict[McpClientKey, asyncio.Task[None]] = {}
 
@@ -83,7 +100,30 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     ),
                 )
             case OAuth():
-                raise ValueError("OAuth MCP authentication is not implemented yet")
+                if self.cipher is None or self.oauth is None:
+                    raise ValueError(
+                        "Configure oauth.encryption_key before installing OAuth MCPs"
+                    )
+                if request.auth.tentacle_id is not None:
+                    connector = self.oauth.connector(request.auth.tentacle_id)
+                    if connector.mcp_url is None or str(connector.mcp_url) != str(
+                        request.url
+                    ):
+                        raise ValueError(
+                            "MCP URL must match the configured OAuth tentacle"
+                        )
+                elif self.oauth.callback_base_uri is None:
+                    raise ValueError(
+                        "Configure oauth.callback_base_uri before installing dynamic OAuth MCPs"
+                    )
+                instance = OAuthMcp(
+                    id=mcp_id,
+                    user_id=user_id,
+                    name=request.name,
+                    namespace=namespace,
+                    url=str(request.url),
+                    tentacle_id=request.auth.tentacle_id,
+                )
             case NoAuth():
                 instance = NoAuthMcp(
                     id=mcp_id,
@@ -146,9 +186,20 @@ class McpManager(Manager, Locks[uuid.UUID]):
                 )
                 if instance is None:
                     raise McpUnavailable
-                instance.enabled = False
-                instance.updated_at = datetime.now(UTC)
-                await session.commit()
+                async with (
+                    self.oauth.lock(
+                        OAuthLockKey(
+                            user_id=user_id,
+                            mcp_id=mcp_id,
+                            connector_id=instance.tentacle_id or "mcp",
+                        )
+                    )
+                    if isinstance(instance, OAuthMcp) and self.oauth is not None
+                    else nullcontext()
+                ):
+                    instance.enabled = False
+                    instance.updated_at = datetime.now(UTC)
+                    await session.commit()
             await self.evict(McpClientKey(user_id=user_id, mcp_id=mcp_id))
             return instance
 
@@ -164,9 +215,106 @@ class McpManager(Manager, Locks[uuid.UUID]):
                 )
                 if instance is None:
                     raise McpUnavailable
-                await session.delete(instance)
-                await session.commit()
+                async with (
+                    self.oauth.lock(
+                        OAuthLockKey(
+                            user_id=user_id,
+                            mcp_id=mcp_id,
+                            connector_id=instance.tentacle_id or "mcp",
+                        )
+                    )
+                    if isinstance(instance, OAuthMcp) and self.oauth is not None
+                    else nullcontext()
+                ):
+                    await session.delete(instance)
+                    await session.commit()
             await self.evict(McpClientKey(user_id=user_id, mcp_id=mcp_id))
+
+    async def authorizable(
+        self,
+        user_id: uuid.UUID,
+        *,
+        mcp_id: uuid.UUID | None = None,
+        namespace: str | None = None,
+    ) -> OAuthMcp:
+        if mcp_id is None and namespace is None:
+            raise ValueError("MCP ID or namespace is required")
+        expressions = [
+            OAuthMcp["user_id"] == user_id,
+            OAuthMcp["enabled"].is_(True),
+        ]
+        if mcp_id is not None:
+            expressions.append(OAuthMcp["id"] == mcp_id)
+        if namespace is not None:
+            expressions.append(OAuthMcp["namespace"] == namespace)
+        async with async_session() as session:
+            instance = await session.one_or_none(OAuthMcp, expressions=expressions)
+        if instance is None:
+            raise McpUnavailable
+        return instance
+
+    async def connect(
+        self,
+        user: User,
+        mcp_id: uuid.UUID,
+        *,
+        profile: UserProfile | None = None,
+    ) -> OAuthStartResult:
+        if self.oauth is None:
+            raise McpUnavailable
+        instance = await self.authorizable(user_id=user.id, mcp_id=mcp_id)
+        async with self.oauth.lock(
+            OAuthLockKey(
+                user_id=user.id,
+                mcp_id=mcp_id,
+                connector_id=instance.tentacle_id or "mcp",
+            )
+        ):
+            return await self.oauth.start(
+                user, instance.tentacle_id or "mcp", mcp_id=mcp_id, profile=profile
+            )
+
+    async def confirm(
+        self,
+        user: User,
+        mcp_id: uuid.UUID,
+        *,
+        profile: UserProfile | None = None,
+    ) -> McpAuthorizationResult:
+        if self.oauth is None:
+            raise McpUnavailable
+        instance = await self.authorizable(user_id=user.id, mcp_id=mcp_id)
+        connector_id = instance.tentacle_id or "mcp"
+        connector = await self.oauth.resolve_connector(
+            connector_id, user_id=user.id, mcp_id=mcp_id
+        )
+        if isinstance(connector.flow, DeviceOAuthFlow):
+            try:
+                result = await self.oauth.complete_latest(
+                    user, connector_id, mcp_id=mcp_id, profile=profile
+                )
+            except NoPendingAuthorization:
+                pass
+            else:
+                if isinstance(result, OAuthPending):
+                    return McpDeviceAuthorizationPending(
+                        retry_after_seconds=result.retry_after_seconds
+                    )
+        status = await self.oauth.connection_status(user, connector_id, mcp_id=mcp_id)
+        if status is None:
+            async with async_session() as session:
+                pending = await session.first(
+                    OAuthOperation,
+                    expressions=[
+                        OAuthOperation["user_id"] == user.id,
+                        OAuthOperation["mcp_id"] == mcp_id,
+                        OAuthOperation["consumed_at"].is_(None),
+                        OAuthOperation["expires_at"] > datetime.now(UTC),
+                    ],
+                )
+            if pending is not None:
+                return McpBrowserAuthorizationPending()
+        return McpAuthorizationStatus(status=status)
 
     @asynccontextmanager
     async def acquire(
@@ -199,7 +347,13 @@ class McpManager(Manager, Locks[uuid.UUID]):
                 )
             if current is None or not current.enabled or current.user_id != user_id:
                 raise McpUnavailable
-            if isinstance(current, OAuthMcp):
+            if isinstance(current, OAuthMcp) and (
+                self.oauth is None
+                or await self.oauth.connection_status(
+                    user, current.tentacle_id or "mcp", mcp_id=current.id
+                )
+                != "active"
+            ):
                 raise McpUnavailable
             key = McpClientKey(user_id=user_id, mcp_id=current.id)
             client = self.clients.get(key)
@@ -219,6 +373,15 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     transport=StreamableHttpTransport(
                         url=current.url,
                         headers=headers,
+                        auth=McpBearerAuth(
+                            manager=self.oauth,
+                            user=user,
+                            mcp_id=current.id,
+                            connector_id=current.tentacle_id or "mcp",
+                            url=current.url,
+                        )
+                        if isinstance(current, OAuthMcp) and self.oauth is not None
+                        else None,
                         httpx_client_factory=self.httpx_client_factory,
                     ),
                     mode="2026-07-28",
@@ -251,7 +414,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
                             await self.evict(key)
 
     async def expire(self, key: McpClientKey) -> None:
-        await asyncio.sleep(self.config.idle_timeout)
+        await asyncio.sleep(self.idle_timeout)
         async with self.lock(key.mcp_id):
             await self.evict(key)
 

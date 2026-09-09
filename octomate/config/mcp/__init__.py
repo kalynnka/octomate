@@ -12,16 +12,15 @@ the scopes it documents, over the shapes every MCP tentacle shares in `base`.
 
 from __future__ import annotations
 
-from typing import Annotated, TypeAlias
+from typing import Annotated
 
 from pydantic import Field
 
 from octomate.config.mcp.base import BareMcpConfig, McpConfig, OAuthMcpConfig
 from octomate.config.mcp.github import GitHubMcpConfig
-from octomate.config.mcp.linear import LinearMcpConfig
 
-McpConfigVariant: TypeAlias = Annotated[
-    BareMcpConfig | GitHubMcpConfig | LinearMcpConfig,
+type McpConfigVariant = Annotated[
+    BareMcpConfig | GitHubMcpConfig,
     Field(discriminator="type"),
 ]
 """One configured MCP tentacle, resolved from its `type` to the tentacle that builds
@@ -31,7 +30,6 @@ it. A new provider is a module here, a variant in this union and a branch in
 __all__ = [
     "BareMcpConfig",
     "GitHubMcpConfig",
-    "LinearMcpConfig",
     "McpConfig",
     "McpConfigVariant",
     "OAuthMcpConfig",

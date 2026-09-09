@@ -11,7 +11,7 @@ import httpx2
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
-from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
+from pydantic import AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -19,11 +19,14 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
+from octomate.config import OAuthConfig, OctomateConfig
 from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import (
     OAuthConnector,
+    OAuthLockKey,
     OAuthManager,
     UnusableOAuthOperation,
 )
@@ -45,6 +48,7 @@ from octomate.schemas.oauth import (
     OAuthGrant,
     OAuthOperation,
     OAuthPending,
+    OAuthStartResult,
     RelayOAuthCallbackTransport,
 )
 from octomate.schemas.user import UserProfile
@@ -246,12 +250,40 @@ def test_connector_requires_the_transport_appropriate_to_its_flow() -> None:
         OAuthConnector(id="linear", flow=FakeAuthorizationCodeFlow())
 
 
+@pytest.mark.parametrize(
+    ("connector_id", "url"),
+    [
+        ("", "https://mcp.example/mcp"),
+        ("github", "http://mcp.example/mcp"),
+        ("github", "not a URL"),
+    ],
+)
+def test_connector_validates_its_id_and_endpoint(connector_id: str, url: str) -> None:
+    with pytest.raises(ValidationError):
+        OAuthConnector.model_validate(
+            {"id": connector_id, "flow": FakeDeviceFlow(), "mcp_url": url}
+        )
+
+
 def test_manager_rejects_duplicate_connector_ids() -> None:
     manager = OAuthManager(users=UserManager(), encryption_key=ENCRYPTION_KEY)
     manager.register(OAuthConnector(id="github", flow=FakeDeviceFlow()))
 
     with pytest.raises(ValueError, match="already registered"):
         manager.register(OAuthConnector(id="github", flow=FakeDeviceFlow()))
+
+
+@pytest.mark.parametrize("seconds", [0, 60])
+def test_manager_uses_configured_refresh_leeway(seconds: int) -> None:
+    host = Octomate(
+        config=OctomateConfig(
+            oauth=OAuthConfig(token_refresh_leeway=timedelta(seconds=seconds))
+        )
+    )
+    assert host.oauth.expiring(datetime.now(UTC) + timedelta(seconds=30)) == (
+        seconds == 60
+    )
+    assert host.oauth.expiring(datetime.now(UTC) - timedelta(seconds=1))
 
 
 async def test_device_flow_uses_the_registered_channel_owner() -> None:
@@ -263,12 +295,18 @@ async def test_device_flow_uses_the_registered_channel_owner() -> None:
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
 
-    authorization = await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    authorization = await manager.start(owner, "github", profile=profile)
 
     assert isinstance(authorization, DeviceAuthorization)
+    assert authorization.model_dump(mode="json")["user_code"] == "**********"
+    assert "ABCD-EFGH" not in authorization.model_dump_json()
+    assert b"ABCD-EFGH" not in TypeAdapter(OAuthStartResult).dump_json(authorization)
     assert flow.context is not None
     assert flow.context.operation_id == authorization.operation_id
     assert flow.context.user.username == "luhui"
+    assert flow.context.profile is not None
     assert flow.context.profile.id == profile.id
 
 
@@ -285,16 +323,20 @@ async def test_visitor_cannot_start_oauth() -> None:
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
 
-    with pytest.raises(ValueError, match="registered user"):
-        await manager.start(visitor, "github")
+    async with linking(manager, visitor, "github") as (client, feeler):
+        with pytest.raises(ToolError, match="registered user"):
+            await client.call_tool(CONNECT_TOOL, {"provider": "github"})
 
     assert flow.context is None
+    assert feeler.presented == []
 
 
 async def test_authorization_code_flow_uses_the_selected_transport() -> None:
     manager, profile, flow = await linear_manager()
 
-    authorization = await manager.start(profile, LINEAR_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    authorization = await manager.start(owner, LINEAR_CONNECTOR_ID, profile=profile)
 
     assert isinstance(authorization, AuthorizationLink)
     assert flow.callback == URL_ADAPTER.validate_python(
@@ -327,7 +369,9 @@ async def test_the_user_facing_link_carries_only_the_operation_uuid() -> None:
 async def test_a_started_authorization_seals_its_state_and_verifier() -> None:
     manager, profile, _ = await linear_manager()
 
-    await manager.start(profile, LINEAR_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, LINEAR_CONNECTOR_ID, profile=profile)
 
     async with async_session() as session:
         [operation] = await session.list(OAuthOperation, limit=None)
@@ -351,7 +395,9 @@ async def test_authorization_code_connector_can_select_a_relay() -> None:
         ],
     )
 
-    authorization = await manager.start(profile, LINEAR_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    authorization = await manager.start(owner, LINEAR_CONNECTOR_ID, profile=profile)
 
     assert isinstance(authorization, AuthorizationLink)
     assert str(authorization.authorization_uri).startswith(
@@ -365,7 +411,9 @@ async def started(
     flow: FakeAuthorizationCodeFlow,
 ) -> tuple[AuthorizationLink, str]:
     """Start an authorization and read back the state only the provider would know."""
-    authorization = await manager.start(profile, LINEAR_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    authorization = await manager.start(owner, LINEAR_CONNECTOR_ID, profile=profile)
     assert isinstance(authorization, AuthorizationLink)
     assert flow.state is not None
     return authorization, flow.state.get_secret_value()
@@ -382,7 +430,9 @@ async def test_the_callback_stores_an_owner_bound_encrypted_token() -> None:
     assert grant.account_label == "Alice"
     # The verifier the operation was holding is what the exchange spent.
     assert flow.exchanges == [("auth-code", "pkce-verifier")]
-    token = await manager.access_token(profile, LINEAR_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    token = await manager.access_token(owner, LINEAR_CONNECTOR_ID)
     assert token is not None
     assert token.get_secret_value() == "linear-token"
     async with async_session() as session:
@@ -451,17 +501,21 @@ async def test_completion_and_refresh_lock_only_the_matching_connection() -> Non
             callback_transport=direct_http(),
         )
     )
-    await manager.start(profile, "other")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, "other", profile=profile)
     assert other_flow.state is not None
 
     async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
-        async with manager.lock((user.id, LINEAR_CONNECTOR_ID)):
+        async with manager.lock(
+            OAuthLockKey(user_id=user.id, mcp_id=None, connector_id=LINEAR_CONNECTOR_ID)
+        ):
             completion = tasks.create_task(
                 manager.complete_callback(
                     LINEAR_CONNECTOR_ID, state=state, code="auth-code"
                 )
             )
-            refresh = tasks.create_task(manager.refresh(profile, LINEAR_CONNECTOR_ID))
+            refresh = tasks.create_task(manager.refresh(owner, LINEAR_CONNECTOR_ID))
             await asyncio.sleep(0)
             await manager.complete_callback(
                 "other", state=other_flow.state.get_secret_value(), code="other-code"
@@ -502,7 +556,9 @@ async def test_a_guessed_state_cannot_finish_an_authorization() -> None:
         )
 
     assert flow.exchanges == []
-    assert await manager.access_token(profile, LINEAR_CONNECTOR_ID) is None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.access_token(owner, LINEAR_CONNECTOR_ID) is None
 
 
 async def test_another_connectors_operation_is_not_reachable() -> None:
@@ -525,7 +581,9 @@ async def test_a_declined_authorization_is_closed() -> None:
         await manager.complete_callback(
             LINEAR_CONNECTOR_ID, state=state, code="auth-code"
         )
-    assert await manager.connection_status(profile, LINEAR_CONNECTOR_ID) is None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.connection_status(owner, LINEAR_CONNECTOR_ID) is None
 
 
 async def test_unlinking_the_profile_stops_its_callback() -> None:
@@ -554,7 +612,9 @@ async def test_a_near_expiry_token_is_refreshed_before_it_is_used() -> None:
     )
     await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
 
-    token = await manager.access_token(profile, LINEAR_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    token = await manager.access_token(owner, LINEAR_CONNECTOR_ID)
 
     # Spent while there is still room to replace it: a token that dies mid-run fails
     # the same way a revoked one does.
@@ -574,11 +634,13 @@ async def test_a_refused_refresh_retires_the_connection() -> None:
     await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
     flow.refresh_refused = True
 
-    assert await manager.access_token(profile, LINEAR_CONNECTOR_ID) is None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.access_token(owner, LINEAR_CONNECTOR_ID) is None
 
     # A provider that will not renew the grant has ended it, which reads the same as
     # the 401 a revoked token answers with.
-    assert await manager.connection_status(profile, LINEAR_CONNECTOR_ID) == "invalid"
+    assert await manager.connection_status(owner, LINEAR_CONNECTOR_ID) == "invalid"
 
 
 async def test_concurrent_reads_spend_one_refresh_token_once() -> None:
@@ -589,8 +651,10 @@ async def test_concurrent_reads_spend_one_refresh_token_once() -> None:
     )
     await manager.complete_callback(LINEAR_CONNECTOR_ID, state=state, code="auth-code")
 
+    owner = await manager.users.owner(profile)
+    assert owner is not None
     tokens = await asyncio.gather(
-        *(manager.access_token(profile, LINEAR_CONNECTOR_ID) for _ in range(4))
+        *(manager.access_token(owner, LINEAR_CONNECTOR_ID) for _ in range(4))
     )
 
     # A rotating refresh token is spendable once, so the runs that lost the race
@@ -607,15 +671,17 @@ async def test_device_completion_persists_an_owner_bound_encrypted_token() -> No
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
-    await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, "github", profile=profile)
     async with async_session() as session:
         [operation] = await session.list(OAuthOperation, limit=None)
     assert b"device-secret" not in operation.encrypted_data
 
-    grant = await manager.complete_latest(profile, "github")
+    grant = await manager.complete_latest(owner, "github", profile=profile)
 
     assert isinstance(grant, OAuthGrant)
-    token = await manager.access_token(profile, "github")
+    token = await manager.access_token(owner, "github")
     assert token is not None
     assert token.get_secret_value() == "github-token"
     async with async_session() as session:
@@ -632,10 +698,12 @@ async def test_pending_device_completion_keeps_the_operation_available() -> None
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
-    await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, "github", profile=profile)
 
-    first = await manager.complete_latest(profile, "github")
-    second = await manager.complete_latest(profile, "github")
+    first = await manager.complete_latest(owner, "github", profile=profile)
+    second = await manager.complete_latest(owner, "github", profile=profile)
 
     assert first == OAuthPending(retry_after_seconds=7)
     assert second == OAuthPending(retry_after_seconds=7)
@@ -652,13 +720,15 @@ async def test_complete_latest_orders_uuid7_operation_ids() -> None:
     # The first authorization has to be past its deadline, or starting again would
     # resume it instead of leaving two operations to order.
     flow.lifetime = timedelta(seconds=-1)
-    first = await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    first = await manager.start(owner, "github", profile=profile)
     await asyncio.sleep(0.002)
     flow.lifetime = timedelta(minutes=15)
-    second = await manager.start(profile, "github")
+    second = await manager.start(owner, "github", profile=profile)
     assert second.operation_id.int > first.operation_id.int
 
-    await manager.complete_latest(profile, "github")
+    await manager.complete_latest(owner, "github", profile=profile)
 
     assert flow.context is not None
     assert flow.context.operation_id == second.operation_id
@@ -673,8 +743,10 @@ async def test_start_resumes_a_device_authorization_that_is_still_live() -> None
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
 
-    first = await manager.start(profile, "github")
-    second = await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    first = await manager.start(owner, "github", profile=profile)
+    second = await manager.start(owner, "github", profile=profile)
 
     # Asking again hands back the code the user is already looking at; a second
     # trip upstream would mint a new one and strand the first.
@@ -692,9 +764,11 @@ async def test_start_replaces_a_device_authorization_that_has_expired() -> None:
         connectors=[OAuthConnector(id="github", flow=flow)],
     )
 
-    first = await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    first = await manager.start(owner, "github", profile=profile)
     flow.lifetime = timedelta(minutes=15)
-    second = await manager.start(profile, "github")
+    second = await manager.start(owner, "github", profile=profile)
 
     assert flow.starts == 2
     assert second.operation_id != first.operation_id
@@ -719,10 +793,33 @@ async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() 
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flow=FakeDeviceFlow())],
     )
-    authorization = await manager.start(slack, "github")
+    owner = await users.owner(slack)
+    assert owner is not None
+    authorization = await manager.start(owner, "github", profile=slack)
 
     with pytest.raises(ValueError, match="unknown OAuth operation"):
-        await manager.complete(lark, authorization.operation_id)
+        await manager.complete(owner, authorization.operation_id, profile=lark)
+
+    await manager.complete(owner, authorization.operation_id, profile=slack)
+    other_profile_owner = await users.owner(lark)
+    assert other_profile_owner is not None
+    assert await manager.access_token(other_profile_owner, "github") == SecretStr(
+        "github-token"
+    )
+
+
+async def test_authorization_rejects_a_profile_belonging_to_another_user() -> None:
+    users, profile = await linked_user_manager()
+    other = await a_user("other")
+    flow = FakeDeviceFlow()
+    manager = OAuthManager(
+        users=users,
+        encryption_key=ENCRYPTION_KEY,
+        connectors=[OAuthConnector(id="github", flow=flow)],
+    )
+    with pytest.raises(ValueError, match="does not belong"):
+        await manager.start(other, "github", profile=profile)
+    assert flow.context is None
 
 
 class Provider(OAuthMcpTentacle):
@@ -740,6 +837,7 @@ def provider(manager: OAuthManager, connector_id: str) -> Provider:
     host = object.__new__(Octomate)
     host.users = manager.users
     host.oauth = manager
+    host.mcp = McpManager(users=manager.users, cipher=manager.cipher, oauth=manager)
     host.deferred_actions = DeferredActionManager()
     return Provider(connector_id, host)
 
@@ -787,7 +885,9 @@ async def linking(
     feeler = RecordingOAuthFeeler(channel.ink)
     channel.feelers.oauth = feeler
     session = a_session(profile, channel)
-    server = tentacles_mcp(fixed_session(session), [tentacle])
+    server = tentacles_mcp(
+        fixed_session(session), [tentacle], manager=tentacle.octomate.mcp
+    )
     async with Client(server) as client:
         yield client, feeler
 
@@ -838,14 +938,16 @@ async def test_github_confirm_activates_the_connection() -> None:
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())],
     )
-    await manager.start(profile, "github")
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, "github", profile=profile)
 
     async with linking(manager, profile, GITHUB_CONNECTOR_ID) as (client, _feeler):
         result = await client.call_tool(CONFIRM_TOOL, {"provider": "github"})
 
     # Nothing secret to hide here, so the outcome is the model's to relay.
     assert "@luhui" in str(result.data)
-    assert await manager.access_token(profile, "github") is not None
+    assert await manager.access_token(owner, "github") is not None
 
 
 async def _connected(
@@ -857,8 +959,10 @@ async def _connected(
     manager.register(
         OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=flow or FakeDeviceFlow())
     )
-    await manager.start(profile, GITHUB_CONNECTOR_ID)
-    await manager.complete_latest(profile, GITHUB_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, GITHUB_CONNECTOR_ID, profile=profile)
+    await manager.complete_latest(owner, GITHUB_CONNECTOR_ID, profile=profile)
     return manager, profile
 
 
@@ -870,7 +974,9 @@ async def test_an_unauthorized_mcp_response_retires_the_connection() -> None:
 
     # The provider is the only thing that can say a token is gone, so the session
     # that heard it is what records it.
-    assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.access_token(owner, GITHUB_CONNECTOR_ID) is None
 
 
 async def test_a_retired_connection_is_refused_and_told_apart_from_never() -> None:
@@ -895,8 +1001,10 @@ async def test_reconnecting_restores_the_credential() -> None:
         await provider_auth(manager, profile, GITHUB_CONNECTOR_ID), status=401
     )
 
-    await manager.start(profile, GITHUB_CONNECTOR_ID)
-    await manager.complete_latest(profile, GITHUB_CONNECTOR_ID)
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    await manager.start(owner, GITHUB_CONNECTOR_ID, profile=profile)
+    await manager.complete_latest(owner, GITHUB_CONNECTOR_ID, profile=profile)
     request = await _drive_auth(
         await provider_auth(manager, profile, GITHUB_CONNECTOR_ID), status=200
     )
@@ -912,7 +1020,9 @@ async def test_an_ordinary_mcp_failure_leaves_the_connection_alone() -> None:
     )
 
     # A server that broke says nothing about the credential it was handed.
-    assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is not None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.access_token(owner, GITHUB_CONNECTOR_ID) is not None
 
 
 async def test_the_token_still_reaches_the_provider() -> None:
@@ -936,7 +1046,9 @@ async def test_an_expired_connection_records_itself_on_the_way_out() -> None:
         connection.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
 
-    assert await manager.access_token(profile, GITHUB_CONNECTOR_ID) is None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.access_token(owner, GITHUB_CONNECTOR_ID) is None
 
     # Expiry is the one death the row can announce by itself; reading it once is
     # enough to stop it being offered again.

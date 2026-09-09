@@ -86,7 +86,9 @@ async def test_the_callback_connects_and_says_who() -> None:
 
     assert response.status_code == 200
     assert "Connected as Alice" in response.text
-    assert await manager.access_token(profile, LINEAR_CONNECTOR_ID) is not None
+    owner = await manager.users.owner(profile)
+    assert owner is not None
+    assert await manager.access_token(owner, LINEAR_CONNECTOR_ID) is not None
 
 
 async def test_a_replayed_callback_gives_the_same_finished_page() -> None:

@@ -66,9 +66,8 @@ class BearerMcp(Mcp):
 class OAuthMcp(Mcp):
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "oauth"}
 
-    oauth_connection_id: Mapped[uuid.UUID | None] = mapped_column(
-        Uuid,
-        ForeignKey("oauth_connections.id", ondelete="SET NULL"),
+    tentacle_id: Mapped[str | None] = mapped_column(
+        String,
         nullable=True,
-        comment="Linked OAuth connection; null until authorization or after the connection is removed.",
+        comment="Tentacle supplying pre-registered app configuration; null for automatic OAuth client registration.",
     )

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from pydantic import AnyHttpUrl
+
 from octomate.config.mcp.github import GitHubMcpConfig
 from octomate.managers.oauth import OAuthConnector
 from octomate.oauth.github import GitHubDeviceOAuthFlow
@@ -37,6 +39,7 @@ class GitHubTentacle(OAuthMcpTentacle):
         octomate.oauth.register(
             OAuthConnector(
                 id=id,
+                mcp_url=AnyHttpUrl(self.upstream),
                 flow=GitHubDeviceOAuthFlow(
                     client_id=config.client_id, scopes=config.scopes
                 ),

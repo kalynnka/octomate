@@ -41,7 +41,6 @@ from pydantic import SecretStr
 from octomate.config.mcp import (
     BareMcpConfig,
     GitHubMcpConfig,
-    LinearMcpConfig,
     McpConfigVariant,
 )
 from octomate.managers.gateway import OctomateSession
@@ -194,17 +193,18 @@ class OAuthMcpTentacle(McpTentacle):
                 "nobody registered did."
             )
         oauth = self.octomate.oauth
-        access_token = await oauth.access_token(profile, self.id)
-        if access_token is None:
+        user = await self.octomate.users.owner(profile)
+        access_token = (
+            await oauth.access_token(user, self.id) if user is not None else None
+        )
+        if user is None or access_token is None:
             raise ToolError(
                 f"This user has not linked their {self.label} account `{self.id}`. "
                 f"Call `{CONNECT_TOOL}` with `{self.id}` to send them the "
                 "authorization link — it goes to their direct messages — and "
                 f"`{CONFIRM_TOOL}` to check it went through."
             )
-        return McpConnectionAuth(
-            access_token, lambda: oauth.invalidate(profile, self.id)
-        )
+        return McpConnectionAuth(access_token, lambda: oauth.invalidate(user, self.id))
 
 
 class BareMcpTentacle(McpTentacle):
@@ -253,7 +253,3 @@ def build_mcp(id: str, config: McpConfigVariant, octomate: Octomate) -> McpTenta
             from octomate.tentacles.github import GitHubTentacle
 
             return GitHubTentacle(id, octomate, config=config)
-        case LinearMcpConfig():
-            from octomate.tentacles.linear import LinearTentacle
-
-            return LinearTentacle(id, octomate, config=config)

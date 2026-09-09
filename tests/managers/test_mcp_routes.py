@@ -120,6 +120,7 @@ async def test_oauth_cannot_silently_create_an_unauthenticated_instance(
     response = await client.post(URL, json={**REQUEST, "auth": {"kind": "oauth"}})
     assert response.status_code == 400
     assert (
-        response.json()["detail"] == "OAuth MCP authentication is not implemented yet"
+        response.json()["detail"]
+        == "Configure oauth.callback_base_uri before installing dynamic OAuth MCPs"
     )
     assert (await client.get(URL)).json() == []

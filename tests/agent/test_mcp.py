@@ -42,18 +42,17 @@ from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
-from octomate.config import BareMcpConfig, GitHubMcpConfig, LinearMcpConfig
+from octomate.config import BareMcpConfig, GitHubMcpConfig
 from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
-from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCP_TOOLS, tentacles_mcp
+from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCP_TOOLS, LIST_MCPS, tentacles_mcp
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
-    DirectHttpOAuthCallbackTransport,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
@@ -63,7 +62,6 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.github import GitHubTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
-from octomate.tentacles.linear import LinearTentacle
 from octomate.tentacles.mcp import (
     BareMcpTentacle,
     OAuthMcpTentacle,
@@ -174,7 +172,10 @@ async def proxied(
     """The tentacles' server for `session`, `tentacle`'s upstream being `upstream`."""
     async with upstream_of(upstream) as transport:
         server = tentacles_mcp(
-            fixed_session(session), [tentacle], httpx_client_factory=into(transport)
+            fixed_session(session),
+            [tentacle],
+            httpx_client_factory=into(transport),
+            manager=tentacle.octomate.mcp,
         )
         async with Client(server) as client:
             yield client
@@ -217,7 +218,13 @@ async def test_a_bare_server_speaks_the_operator_credential_for_everyone() -> No
             {"namespace": "linear", "name": "linear_list_issues", "arguments": {}},
         )
 
-    assert [tool.name for tool in tools] == [LIST_MCP_TOOLS, CALL_MCP_TOOL]
+    assert {tool.name for tool in tools} == {
+        LIST_MCPS,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+    }
     assert [tool.name for tool in catalog.tools] == ["linear_list_issues"]
     assert result.data == "answered"
     assert seen == ["Bearer lin_x"]
@@ -286,11 +293,9 @@ def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
         host,
     )
     github = build_mcp("gh", GitHubMcpConfig(client_id="Iv1.test"), host)
-    linear = build_mcp("linear_home", LinearMcpConfig(client_id="lin"), host)
 
     assert isinstance(notion, BareMcpTentacle)
     assert isinstance(github, GitHubTentacle)
-    assert isinstance(linear, LinearTentacle)
     assert (notion.id, notion.prefix, notion.upstream) == (
         "notion",
         "notion",
@@ -301,40 +306,29 @@ def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
         "gh",
         "https://api.githubcopilot.com/mcp/",
     )
-    assert (linear.id, linear.prefix, linear.upstream) == (
-        "linear_home",
-        "linear_home",
-        LINEAR_URL,
-    )
-    assert sorted(host.oauth.connectors) == ["gh", "linear_home"]
-    # Only the authorization-code half carries a transport, and it is what makes
-    # Octomate serve the routes its URIs point at.
+    assert sorted(host.oauth.connectors) == ["gh"]
     assert host.oauth.connector("gh").callback_transport is None
-    assert isinstance(
-        host.oauth.connector("linear_home").callback_transport,
-        DirectHttpOAuthCallbackTransport,
-    )
 
 
 def test_two_accounts_of_one_vendor_get_their_own_connectors_and_prefixes() -> None:
     host = Octomate()
-    work = build_mcp("linear_work", LinearMcpConfig(client_id="a"), host)
-    home = build_mcp("linear_home", LinearMcpConfig(client_id="b"), host)
+    work = build_mcp("github_work", GitHubMcpConfig(client_id="a"), host)
+    home = build_mcp("github_home", GitHubMcpConfig(client_id="b"), host)
 
     # Separate connectors, so separate stored connections and separate tool
     # names — the model is never offered two identically named sets.
-    assert sorted(host.oauth.connectors) == ["linear_home", "linear_work"]
-    assert (work.prefix, home.prefix) == ("linear_work", "linear_home")
+    assert sorted(host.oauth.connectors) == ["github_home", "github_work"]
+    assert (work.prefix, home.prefix) == ("github_work", "github_home")
 
 
 def test_a_configured_prefix_overrides_the_id() -> None:
     # The id is durable — it keys stored connections — so the prefix is what
     # moves when one vendor is mounted twice.
-    linear = build_mcp(
-        "linear_personal", LinearMcpConfig(client_id="a", prefix="linme"), Octomate()
+    github = build_mcp(
+        "github_personal", GitHubMcpConfig(client_id="a", prefix="ghme"), Octomate()
     )
 
-    assert (linear.id, linear.prefix) == ("linear_personal", "linme")
+    assert (github.id, github.prefix) == ("github_personal", "ghme")
 
 
 def test_read_only_selects_the_readonly_endpoint() -> None:
@@ -349,12 +343,14 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
     host, tentacle, profile = await a_linked_host()
     upstream, seen = an_upstream("list_repos")
 
+    owner = await host.users.owner(profile)
+    assert owner is not None
     async with proxied(tentacle, a_turn(profile), upstream) as client:
         unlinked = await client.list_tools()
         with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `gh`"):
             await discover(client, "gh")
-        await host.oauth.start(profile, "gh")
-        await host.oauth.complete_latest(profile, "gh")
+        await host.oauth.start(owner, "gh", profile=profile)
+        await host.oauth.complete_latest(owner, "gh", profile=profile)
         linked = await client.list_tools()
         catalog = await discover(client, "gh")
         result = await client.call_tool(
@@ -365,6 +361,7 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
     # Linking enables discovery without changing the initial tool list.
     assert [tool.name for tool in unlinked] == [tool.name for tool in linked]
     assert [tool.name for tool in linked] == [
+        LIST_MCPS,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -389,6 +386,7 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
             )
 
     assert [tool.name for tool in tools] == [
+        LIST_MCPS,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -403,7 +401,9 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     _host, tentacle, profile = await a_linked_host()
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
 
-    capability = tentacles_capability(a_turn(profile), [tentacle])
+    capability = tentacles_capability(
+        a_turn(profile), [tentacle], manager=tentacle.octomate.mcp
+    )
     toolset = capability.get_toolset()
     assert toolset is not None
     tools = await toolset.get_tools(ctx)
@@ -414,12 +414,18 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     # the provider's, under the served contract.
     assert capability.defer_loading
     assert capability.id == "tentacles"
-    assert "Provider" in str(capability.description)
+    assert "user's installed MCP tools" in str(capability.description)
     assert isinstance(instructions, str)
     assert "## Linking accounts" in instructions
     assert "The provider's own contract." not in instructions
     assert "`gh` (Provider)" in instructions
-    assert set(tools) == {CONNECT_TOOL, CONFIRM_TOOL, LIST_MCP_TOOLS, CALL_MCP_TOOL}
+    assert set(tools) == {
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+        LIST_MCPS,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+    }
 
 
 async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retry() -> (
@@ -429,12 +435,15 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
     upstream, seen = an_upstream("list_repos")
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
 
+    owner = await host.users.owner(profile)
+    assert owner is not None
     async with upstream_of(upstream) as transport:
         toolset = TentaclesToolset(
             tentacles_mcp(
                 fixed_session(a_turn(profile)),
                 [tentacle],
                 httpx_client_factory=into(transport),
+                manager=host.mcp,
             )
         )
         before = await toolset.get_tools(ctx)
@@ -444,8 +453,8 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
             await toolset.call_tool(
                 LIST_MCP_TOOLS, {"namespace": "gh"}, ctx, before[LIST_MCP_TOOLS]
             )
-        await host.oauth.start(profile, "gh")
-        await host.oauth.complete_latest(profile, "gh")
+        await host.oauth.start(owner, "gh", profile=profile)
+        await host.oauth.complete_latest(owner, "gh", profile=profile)
         after = await toolset.get_tools(ctx)
         answer = await toolset.call_tool(
             CALL_MCP_TOOL,

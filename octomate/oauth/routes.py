@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from html import escape
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from mcp.client.auth.exceptions import OAuthFlowError
 
 from octomate.dependencies import oauth_manager
 from octomate.managers.oauth import OAuthManager, UnusableOAuthOperation
@@ -84,6 +86,7 @@ async def callback(
     state: Annotated[str, Query()] = "",
     code: Annotated[str, Query()] = "",
     error: Annotated[str, Query()] = "",
+    iss: Annotated[str | None, Query()] = None,
 ) -> HTMLResponse:
     if not state:
         return page(
@@ -96,15 +99,21 @@ async def callback(
         # about, so the operation is closed rather than left live until it ages out.
         # Failing to close it is not worth telling the user about.
         try:
-            await manager.abandon_callback(connector_id, state=state)
-        except UnusableOAuthOperation as unusable:
-            logger.info("Could not close a declined authorization: %s", unusable)
+            await manager.abandon_callback(connector_id, state=state, issuer=iss)
+        except (ValueError, OAuthFlowError):
+            return page(
+                "This link is invalid",
+                "The authorization response could not be verified.",
+                status_code=400,
+            )
         return page(
             "Not connected",
             "The authorization was declined. You can ask again in the chat any time.",
         )
     try:
-        grant = await manager.complete_callback(connector_id, state=state, code=code)
+        grant = await manager.complete_callback(
+            connector_id, state=state, code=code, issuer=iss
+        )
     except UnusableOAuthOperation as unusable:
         logger.info("Refused an OAuth callback: %s", unusable)
         return page(
@@ -112,11 +121,19 @@ async def callback(
             "Ask again in the chat where you requested it and a fresh one will arrive.",
             status_code=404,
         )
-    except Exception:
+    except OAuthFlowError:
+        return page(
+            "This link is invalid",
+            "The authorization response could not be verified.",
+            status_code=400,
+        )
+    except Exception as failure:
         # The provider refused the exchange, or never answered. The operation is
         # spent either way, so there is nothing to do but say so and let them ask
         # for another.
-        logger.exception("Failed to complete an OAuth callback")
+        logger.warning(
+            "Failed to complete an OAuth callback (%s)", type(failure).__name__
+        )
         return page(
             "Something went wrong",
             "The connection could not be completed. Ask again in the chat and a "
@@ -124,6 +141,8 @@ async def callback(
             status_code=502,
         )
     return page(
-        f"Connected as {grant.account_label}",
+        f"Connected as {escape(grant.account_label)}"
+        if grant.account_label
+        else "Connected",
         "You can close this tab and go back to the chat.",
     )

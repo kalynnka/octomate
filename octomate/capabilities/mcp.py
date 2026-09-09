@@ -100,7 +100,7 @@ def tentacles_capability(
     session: OctomateSession,
     tentacles: Sequence[McpTentacle],
     *,
-    manager: McpManager | None = None,
+    manager: McpManager,
 ) -> Toolset[None]:
     """The capability a run mounts: the tentacles' server built over `session`,
     deferred behind a catalog line naming what it holds."""
@@ -109,17 +109,12 @@ def tentacles_capability(
         return session
 
     server = tentacles_mcp(fixed, tentacles, manager=manager)
-    labels = ", ".join(dict.fromkeys(tentacle.label for tentacle in tentacles))
     return Toolset(
         TentaclesToolset(server),
         id=server.name,
         description=(
-            (
-                "The user's installed MCP tools and configured providers, "
-                if manager is not None
-                else f"The tools of {labels}, "
-            )
-            + "acting as the person you are answering, and "
+            "The user's installed MCP tools and configured providers, "
+            "acting as the person you are answering, and "
             "the linking of their accounts."
         ),
         defer_loading=True,

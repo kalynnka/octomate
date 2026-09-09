@@ -67,7 +67,7 @@ async def octomate_mcp_server(
     thread_manager: ThreadManager,
     tentacles: Sequence[McpTentacle] = (),
     *,
-    manager: McpManager | None = None,
+    manager: McpManager,
 ) -> McpSdkServerConfig:
     """The served server, mounted in process for this turn: every call runs
     against `session`, a delivering spell writes through `thread_manager`, which

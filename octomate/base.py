@@ -166,11 +166,15 @@ class Octomate(FastAPI):
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=self.oauth_encryption_key,
+            callback_base_uri=self.config.oauth.callback_base_uri,
+            client_metadata_url=self.config.oauth.client_metadata_url,
+            token_refresh_leeway=self.config.oauth.token_refresh_leeway,
         )
         self.mcp = McpManager(
             users=self.users,
             cipher=self.oauth.cipher,
-            config=self.config.mcp_pool,
+            idle_timeout=self.config.mcp_pool.idle_timeout,
+            oauth=self.oauth,
         )
 
         @self.exception_handler(RequestValidationError)
@@ -424,7 +428,7 @@ class Octomate(FastAPI):
         # only when a registered connector actually points a browser at it — the two
         # routes are the deployment's public surface, and a deployment with no
         # authorization-code integration should not be serving them at all.
-        if any(
+        if self.oauth.callback_base_uri is not None or any(
             isinstance(connector.callback_transport, DirectHttpOAuthCallbackTransport)
             for connector in self.oauth.connectors.values()
         ):

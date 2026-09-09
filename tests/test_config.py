@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from base64 import urlsafe_b64encode
+from datetime import timedelta
 from pathlib import Path
 from typing import ClassVar, get_args
 
@@ -24,7 +25,6 @@ from octomate.config import (
     GitHubMcpConfig,
     InklingConfig,
     LarkChannelConfig,
-    LinearMcpConfig,
     ModelConfig,
     NapcatChannelConfig,
     OctomateConfig,
@@ -902,6 +902,22 @@ def test_mcp_pool_timeout_loads_from_yaml_and_environment(
     assert OctomateConfig().mcp_pool.idle_timeout == 600
 
 
+def test_oauth_refresh_leeway_loads_from_yaml_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
+    assert OctomateConfig().oauth.token_refresh_leeway == timedelta(minutes=5)
+    (tmp_path / "oauth.yaml").write_text("oauth:\n  token_refresh_leeway: 60\n")
+    assert OctomateConfig().oauth.token_refresh_leeway == timedelta(seconds=60)
+    monkeypatch.setenv("OCTOMATE__OAUTH__TOKEN_REFRESH_LEEWAY", "PT2M")
+    assert OctomateConfig().oauth.token_refresh_leeway == timedelta(minutes=2)
+
+
+def test_oauth_refresh_leeway_rejects_negative_durations() -> None:
+    with pytest.raises(ValidationError, match="token_refresh_leeway"):
+        OctomateConfig.model_validate({"oauth": {"token_refresh_leeway": -1}})
+
+
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
 def test_mcp_pool_rejects_invalid_timeout(timeout: float) -> None:
     with pytest.raises(ValidationError, match="idle_timeout"):
@@ -945,28 +961,26 @@ def test_a_projects_block_error_says_what_the_block_held() -> None:
 
 
 def test_one_vendor_can_be_mounted_once_per_account() -> None:
-    # The key is the connector id, so two Linears differ by name rather than by
+    # The key is the connector id, so two GitHubs differ by name rather than by
     # anything the config has to invent.
     config = OctomateConfig.model_validate(
         {
             "mcp": {
-                "linear_work": {"type": "linear", "client_id": "lin_a"},
-                "linear_home": {
-                    "type": "linear",
-                    "client_id": "lin_b",
-                    "callback_base_uri": "http://localhost:9000",
+                "github_work": {"type": "github", "client_id": "Iv1.a"},
+                "github_home": {
+                    "type": "github",
+                    "client_id": "Iv1.b",
                 },
             },
             "oauth": {"encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
         }
     )
 
-    work = config.mcp["linear_work"]
-    home = config.mcp["linear_home"]
-    assert isinstance(work, LinearMcpConfig)
-    assert isinstance(home, LinearMcpConfig)
-    assert (work.client_id, home.client_id) == ("lin_a", "lin_b")
-    assert str(home.callback_base_uri) == "http://localhost:9000/"
+    work = config.mcp["github_work"]
+    home = config.mcp["github_home"]
+    assert isinstance(work, GitHubMcpConfig)
+    assert isinstance(home, GitHubMcpConfig)
+    assert (work.client_id, home.client_id) == ("Iv1.a", "Iv1.b")
 
 
 def test_an_mcp_block_without_a_type_is_refused() -> None:

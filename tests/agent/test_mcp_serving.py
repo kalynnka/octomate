@@ -281,6 +281,8 @@ async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
         LIST_MCPS,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
     ]
 
 

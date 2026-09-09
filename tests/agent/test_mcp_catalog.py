@@ -15,9 +15,11 @@ from pydantic import SecretStr
 from octomate import Octomate
 from octomate.config import BareMcpConfig
 from octomate.managers.gateway import OctomateSession
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     LIST_MCP_TOOLS,
+    LIST_MCPS,
     octomate_mcp,
     tentacles_mcp,
 )
@@ -61,13 +63,17 @@ async def test_catalog_reused_across_concurrent_and_later_mounts(empty: bool) ->
                 fixed_session(a_turn()),
                 [tentacle],
                 httpx_client_factory=into(transport),
+                manager=tentacle.octomate.mcp,
             )
             for _ in range(3)
         ]
         for mount in mounts:
             assert [tool.name for tool in await mount.list_tools()] == [
+                LIST_MCPS,
                 LIST_MCP_TOOLS,
                 CALL_MCP_TOOL,
+                CONNECT_TOOL,
+                CONFIRM_TOOL,
             ]
         assert requests.bearers == []
         first, concurrent = await asyncio.gather(
@@ -114,6 +120,7 @@ async def test_catalog_uses_current_credentials_and_callers(
                 fixed_session(session),
                 [tentacle],
                 httpx_client_factory=into(transport),
+                manager=tentacle.octomate.mcp,
             )
             for session in (alice, bob)
         ]
@@ -157,7 +164,10 @@ async def test_expired_catalog_fetches_changed_schema(
 
     async with upstream_of(upstream) as transport:
         server = tentacles_mcp(
-            fixed_session(a_turn()), [tentacle], httpx_client_factory=into(transport)
+            fixed_session(a_turn()),
+            [tentacle],
+            httpx_client_factory=into(transport),
+            manager=tentacle.octomate.mcp,
         )
         assert (await discover(server, "provider")).tools == []
 
@@ -186,7 +196,10 @@ async def test_initial_listing_never_resolves_provider_auth(
 
     monkeypatch.setattr(tentacle, "auth", unavailable)
     server = octomate_mcp(
-        fixed_session(a_turn()), FakeThreadManager(), tentacles=[tentacle]
+        fixed_session(a_turn()),
+        FakeThreadManager(),
+        tentacles=[tentacle],
+        manager=tentacle.octomate.mcp,
     )
     async with Client(server) as client:
         names = {tool.name for tool in await client.list_tools()}
@@ -196,7 +209,10 @@ async def test_initial_listing_never_resolves_provider_auth(
             LIST_MCP_TOOLS,
             CALL_MCP_TOOL,
         } <= names
-        assert all(name.startswith(("gateway_", "history_", "mcp_")) for name in names)
+        assert all(
+            name.startswith(("gateway_", "history_", "mcp_", "oauth_"))
+            for name in names
+        )
         with pytest.raises(ToolError, match="Unknown MCP namespace"):
             await discover(client, "missing")
         with pytest.raises(ToolError, match="Unknown MCP namespace"):
@@ -233,7 +249,10 @@ async def test_discovery_and_calls_stay_in_the_selected_namespace() -> None:
 
     async with upstream_of(upstream) as transport:
         server = tentacles_mcp(
-            fixed_session(a_turn()), tentacles, httpx_client_factory=into(transport)
+            fixed_session(a_turn()),
+            tentacles,
+            httpx_client_factory=into(transport),
+            manager=host.mcp,
         )
         async with Client(server) as client:
             initial = await client.list_tools()

@@ -163,18 +163,19 @@ async def test_oauth_instance_roundtrips_without_unauthenticated_upstream_reques
         name="Research",
         namespace="personal/research",
         url="https://mcp.example/mcp",
-        oauth_connection_id=grant.id if linked else None,
+        tentacle_id="research",
     )
     async with async_session() as session:
-        if linked:
-            session.add(grant)
-            await session.flush()
         session.add(instance)
+        await session.flush()
+        if linked:
+            grant.mcp_id = instance.id
+            session.add(grant)
         await session.commit()
 
     stored = (await manager.list(user.id))[0]
     assert isinstance(stored, OAuthMcp)
-    assert stored.oauth_connection_id == (grant.id if linked else None)
+    assert stored.tentacle_id == "research"
     serialized = TypeAdapter(McpVariant).dump_python(stored, mode="json")
     assert serialized["auth_kind"] == "oauth"
     assert "encrypted_token" not in serialized
@@ -197,7 +198,7 @@ async def test_oauth_instance_roundtrips_without_unauthenticated_upstream_reques
             await session.commit()
         remaining = (await manager.list(user.id))[0]
         assert isinstance(remaining, OAuthMcp)
-        assert remaining.oauth_connection_id is None
+        assert remaining.tentacle_id == "research"
 
 
 @pytest.mark.parametrize(
@@ -480,8 +481,8 @@ async def test_same_owner_mcps_and_reinstalls_have_separate_clients(
 async def test_idle_client_expires_and_next_acquisition_creates_a_new_one(
     manager: McpManager,
 ) -> None:
-    assert manager.config.idle_timeout == 3600
-    manager.config = McpPoolConfig(idle_timeout=0.001)
+    assert manager.idle_timeout == 3600
+    manager.idle_timeout = 0.001
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
@@ -494,17 +495,17 @@ async def test_idle_client_expires_and_next_acquisition_creates_a_new_one(
         await asyncio.wait_for(manager.sweaps[key], timeout=5)
         assert requests.closed == 1
         assert manager.clients == manager.sweaps == {}
-        manager.config = McpPoolConfig()
+        manager.idle_timeout = McpPoolConfig().idle_timeout
         async with manager.acquire(scope, instance.namespace) as second:
             assert second is not first
             await second.list_tools()
     assert requests.closed == 2
 
 
-def test_host_passes_global_mcp_pool_config_to_manager() -> None:
+def test_host_passes_global_mcp_idle_timeout_to_manager() -> None:
     config = OctomateConfig(mcp_pool=McpPoolConfig(idle_timeout=1200))
     host = Octomate(config=config)
-    assert host.mcp.config is config.mcp_pool
+    assert host.mcp.idle_timeout == 1200
 
 
 async def test_each_acquisition_refreshes_cleanup(
@@ -525,7 +526,7 @@ async def test_each_acquisition_refreshes_cleanup(
             refreshed_cleanup = manager.sweaps[key]
             assert refreshed_cleanup is not previous_cleanup
             await asyncio.sleep(0)
-            manager.config = McpPoolConfig(idle_timeout=0.001)
+            manager.idle_timeout = 0.001
             async with manager.acquire(scope, instance.namespace) as third:
                 assert third is first
                 assert refreshed_cleanup.cancelled()

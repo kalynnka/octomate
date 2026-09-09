@@ -99,7 +99,9 @@ def tentacle_instructions(
         parts.append(
             f"Call `{LIST_MCPS}` to discover the current user's installed MCPs. "
             f"Use `{LIST_MCP_TOOLS}` with a returned namespace, then `{CALL_MCP_TOOL}` "
-            "with the exact listed tool name and arguments."
+            "with the exact listed tool name and arguments. "
+            "For OAuth authorization, call `oauth_connect` with the personal namespace; "
+            "the link is sent privately. Use `oauth_confirm` after approval."
         )
     return "\n".join(parts)
 
@@ -119,7 +121,7 @@ def tentacles_mcp(
     tentacles: Sequence[McpTentacle],
     *,
     httpx_client_factory: McpHttpClientFactory | None = None,
-    manager: McpManager | None = None,
+    manager: McpManager,
 ) -> FastMCP:
     """The tentacles as a server of their own: every one of `tentacles` listing
     and calling as the caller `resolve_session` resolves, and the link tools for
@@ -129,32 +131,28 @@ def tentacles_mcp(
     upstream."""
     mcp = FastMCP(
         name=TENTACLES_SERVER_NAME,
-        instructions=tentacle_instructions(tentacles, personal=manager is not None),
+        instructions=tentacle_instructions(tentacles, personal=True),
     )
     linkable = [t for t in tentacles if isinstance(t, OAuthMcpTentacle)]
-    if linkable:
-        oauth = FastMCP(OAUTH_NAMESPACE)
-        mount_oauth(oauth, Depends(resolve_session), linkable)
-        mcp.mount(oauth, namespace=OAUTH_NAMESPACE)
-    if not tentacles and manager is None:
-        return mcp
-    if manager is not None:
+    oauth = FastMCP(OAUTH_NAMESPACE)
+    mount_oauth(oauth, Depends(resolve_session), linkable, manager=manager)
+    mcp.mount(oauth, namespace=OAUTH_NAMESPACE)
 
-        @mcp.tool(
-            name=LIST_MCPS,
-            description="Discover the current user's enabled MCP instances.",
-        )
-        async def list_servers() -> list[McpServerSummary]:
-            scope = await resolve_session()
-            if scope.user_profile is None:
-                return []
-            owner = await manager.users.owner(scope.user_profile)
-            if owner is None:
-                return []
-            return [
-                McpServerSummary(namespace=instance.namespace, name=instance.name)
-                for instance in await manager.list(user_id=owner.id, enabled=True)
-            ]
+    @mcp.tool(
+        name=LIST_MCPS,
+        description="Discover the current user's enabled MCP instances.",
+    )
+    async def list_servers() -> list[McpServerSummary]:
+        scope = await resolve_session()
+        if scope.user_profile is None:
+            return []
+        owner = await manager.users.owner(scope.user_profile)
+        if owner is None:
+            return []
+        return [
+            McpServerSummary(namespace=instance.namespace, name=instance.name)
+            for instance in await manager.list(user_id=owner.id, enabled=True)
+        ]
 
     namespaces = {
         tentacle.id: (
@@ -180,7 +178,7 @@ def tentacles_mcp(
         description=f"Load one provider's tool schemas and instructions. Namespaces: {names}.",
     )
     async def list_tools(namespace: str) -> McpToolCatalog:
-        if manager is not None and namespace.startswith("personal/"):
+        if namespace.startswith("personal/"):
             try:
                 async with manager.acquire(
                     await resolve_session(), namespace
@@ -213,7 +211,7 @@ def tentacles_mcp(
         ],
         arguments: dict[str, JsonValue],
     ) -> ToolResult:
-        if manager is not None and namespace.startswith("personal/"):
+        if namespace.startswith("personal/"):
             try:
                 async with manager.acquire(
                     await resolve_session(), namespace
@@ -247,7 +245,7 @@ def octomate_mcp(
     bearers: KnownBearers | None = None,
     tentacles: Sequence[McpTentacle] = (),
     httpx_client_factory: McpHttpClientFactory | None = None,
-    manager: McpManager | None = None,
+    manager: McpManager,
 ) -> FastMCP:
     """The server, built by whoever mounts it: `resolve_session` is the session a
     call runs against — one fixed turn for a server mounted in-process, a
@@ -261,7 +259,7 @@ def octomate_mcp(
     session = Depends(resolve_session)
     mcp = FastMCP(
         name=OCTOMATE_SERVER_NAME,
-        instructions=octomate_instructions(tentacles, personal=manager is not None),
+        instructions=octomate_instructions(tentacles, personal=True),
         auth=bearers,
     )
     gateway = FastMCP(GATEWAY_NAMESPACE)
