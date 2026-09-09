@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click import unstyle
 from octomate_cli.main import app
 from typer.testing import CliRunner
 
@@ -18,8 +19,8 @@ def test_service_serve_help_is_available() -> None:
         text=True,
         check=True,
     )
-    assert "--port" in result.stdout
-    assert "--reload" in result.stdout
+    assert "--port" in unstyle(result.stdout)
+    assert "--reload" in unstyle(result.stdout)
 
 
 def test_foreground_run_passes_bind_and_reload_options(

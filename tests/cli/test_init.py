@@ -11,6 +11,7 @@ from unittest.mock import Mock
 
 import pytest
 import typer
+from click import unstyle
 from octomate_cli import init as init_cli
 from octomate_cli import service as service_cli
 from octomate_cli.service import PlistService, Release, service_typer
@@ -131,7 +132,7 @@ def test_unknown_agent_is_refused_before_preparation(
         ],
     )
     assert result.exit_code == 2
-    assert "supported --agent" in result.output
+    assert "supported --agent" in unstyle(result.output)
     assert not (tmp_path / "service").exists()
     commands.assert_not_called()
 
@@ -152,7 +153,7 @@ def test_yes_requires_explicit_settings(
         arguments += ["--channel", "none"]
     result = runner.invoke(service_typer, arguments)
     assert result.exit_code == 2
-    assert "--yes requires" in result.output
+    assert "--yes requires" in unstyle(result.output)
     assert not root.exists()
     commands.assert_not_called()
 
@@ -565,7 +566,7 @@ def test_unsupported_channel_refused_before_preparation(
         ],
     )
     assert result.exit_code == 2
-    assert "Supported --channel" in result.output
+    assert "Supported --channel" in unstyle(result.output)
     assert not root.exists()
     commands.assert_not_called()
 
