@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
 from types import SimpleNamespace, TracebackType
@@ -44,6 +44,7 @@ from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -199,6 +200,8 @@ class FakeThread:
         sandbox: Sandbox | None = None,
         summary: ReasoningSummary | None = None,
     ) -> FakeTurn:
+        if FakeCodex.on_turn is not None:
+            FakeCodex.on_turn(self.id)
         turn = FakeTurn()
         FakeCodex.turns.append(turn)
         FakeCodex.turn_calls.append(
@@ -227,6 +230,7 @@ class FakeCodex:
     approval_responses: ClassVar[list[JsonObject]] = []
     builds: ClassVar[int] = 0
     closed: ClassVar[int] = 0
+    on_turn: ClassVar[Callable[[str], None] | None] = None
 
     def __init__(self, config: CodexSdkConfig | None = None) -> None:
         FakeCodex.last_config = config
@@ -399,6 +403,7 @@ def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.approval_responses = []
     FakeCodex.builds = 0
     FakeCodex.closed = 0
+    FakeCodex.on_turn = None
 
 
 def _tentacle(
@@ -927,6 +932,79 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     # Exiting the tentacle drains the pool, closing every warm client.
     assert FakeCodex.closed == 2
     assert tentacle.pool is None
+
+
+@pytest.mark.parametrize("external_id", [None, "thread-prior"])
+@pytest.mark.parametrize("fails", [False, True])
+async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
+    monkeypatch: pytest.MonkeyPatch, external_id: str | None, fails: bool
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    session_id = external_id or "thread-new"
+    reset_fake_codex(
+        failed_script("boom", thread_id=session_id)
+        if fails
+        else text_script("done", thread_id=session_id)
+    )
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
+        thread_id=_THREAD, external_id=external_id
+    )
+    tentacle = _tentacle(conversations)
+    dispatched: list[str] = []
+    lifecycle: list[str] = []
+    workspace_enter = Workspace.__aenter__
+    workspace_exit = ChatWorkspace.__aexit__
+
+    async def open_workspace(workspace: Workspace) -> Workspace:
+        assert tentacle.driven_sessions == {}
+        lifecycle.append("workspace-enter")
+        result = await workspace_enter(workspace)
+        assert tentacle.driven_sessions == {}
+        return result
+
+    async def close_workspace(
+        workspace: ChatWorkspace,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert tentacle.driven_sessions == {}
+        assert tentacle.live_turns == {}
+        assert tentacle.bridge_contexts == {}
+        lifecycle.append("workspace-exit")
+        await workspace_exit(workspace, exc_type, exc, traceback)
+
+    def check_driving(thread_id: str) -> None:
+        assert thread_id == session_id
+        assert tentacle.driven_sessions == {session_id: 1}
+        assert tentacle.native_sessions == {}
+        assert not tentacle.should_ingest_session(session_id)
+        assert tentacle.should_ingest_session("native-other")
+        dispatched.append(thread_id)
+        lifecycle.append("turn")
+
+    monkeypatch.setattr(FakeCodex, "on_turn", check_driving)
+    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
+    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    assert tentacle.driven_sessions == {}
+    async with tentacle:
+        for _ in range(2):
+            if fails:
+                with pytest.raises(RuntimeError, match="boom"):
+                    await tentacle.run(
+                        "work", conversation_address=KEY, thread_id=_THREAD
+                    )
+            else:
+                await tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
+            assert tentacle.driven_sessions == {}
+            assert tentacle.should_ingest_session(session_id)
+        assert FakeCodex.builds == 1
+        [thread_call] = FakeCodex.thread_calls
+        assert thread_call.kind == ("resume" if external_id else "start")
+    assert dispatched == [session_id, session_id]
+    assert lifecycle == ["workspace-enter", "turn", "workspace-exit"] * 2
+    assert tentacle.driven_sessions == {}
 
 
 async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(

@@ -57,7 +57,6 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -136,8 +135,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     events dsh's `dsh-hooks-claude-code` bridge POSTs in, and the stream
     endpoint takes each session's history entries from the client-side tail
     (`octomate deepseek tail`, reading *its* machine's dsh gateway) for the
-    tailer to assemble into turns. All incoming ingest is recorded as external
-    sessions, including sessions started through this tentacle.
+    tailer to assemble into turns. Sessions this tentacle is driving are excluded
+    from native ingest because their runs are already recorded here.
     """
 
     config: DeepseekConfig = field(init=False)
@@ -161,6 +160,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     in_process: ClassVar[bool] = True
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(DeepseekPermissionMode)
+    native_id: ClassVar[str] = DEEPSEEK_NATIVE_ID
 
     @property
     def default_permission_mode(self) -> str | None:
@@ -231,14 +231,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
         verifier = hook_guard(self.octomate.bearers)
-        resolve_sender = hook_sender(self.octomate.users, DEEPSEEK_NATIVE_ID, verifier)
+        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
         router = APIRouter(tags=["deepseek"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")
         async def receive_hook(event: DeepseekHookInput) -> JSONResponse:
             # No principal needed: dsh's hook dialect writes no ledger rows —
             # every durable row is the stream's, attributed at its handshake.
-            await self.session_ingest.handle(event)
+            if self.should_ingest_session(event.session_id):
+                await self.session_ingest.handle(event)
             return JSONResponse({})
 
         @router.websocket("/hooks/deepseek/stream")
@@ -277,8 +278,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        # Its own materia context: a stream outlives any request.
-        with sqlalchemy_materia():
+        if not self.should_ingest_session(hello.session_id):
+            await websocket.close(code=1008, reason="octomate drives this session")
+            return
+        async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
 
     async def stream_attached(
@@ -860,133 +863,139 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         )
                     )
                     session_id = created.session_id
-                if deepseek_model is not None:
-                    provider_id, separator, model_id = deepseek_model.partition(":")
-                    provider = provider_id if separator else self.default_provider
-                    if not separator:
-                        model_id = deepseek_model
-                    if provider is None:
-                        raise ValueError(
-                            "A DeepSeek model selection must include its provider"
-                        )
-                    select_payload: JsonObject = {
-                        "sessionId": session_id,
-                        "provider": provider,
-                        "model": model_id,
-                    }
-                    reasoning_effort = (
-                        self.effort_maps[f"{provider}:{model_id}"][effort]
-                        if effort is not None
-                        else None
-                    )
-                    if reasoning_effort is not None:
-                        select_payload["reasoningEffort"] = reasoning_effort
-                    self.unwrap(
-                        await client.call("session.selectModel", select_payload),
-                        "session.selectModel",
-                    )
-                # No permission RPC exists: the preset switches through the
-                # remotes-plane command, which opens no turn.
-                executed = self.unwrap(
-                    await client.remote(
-                        "commands/execute",
-                        {
-                            "agentId": session_id,
-                            "line": f"/permission {permission_mode}",
-                        },
-                    ),
-                    "commands/execute",
-                )
-                if executed is None:
-                    raise AgentRunError(
-                        "dsh has no /permission command, so the run's posture "
-                        f"({permission_mode}) cannot be set"
-                    )
-                execution = CommandExecutionValue.model_validate(executed)
-                if execution.result is not None and execution.result.kind == "error":
-                    raise AgentRunError(
-                        f"dsh refused /permission {permission_mode}: "
-                        f"{execution.result.text or 'unknown preset'}"
-                    )
-
-                # Subscribe before prompting, so the turn's first frames cannot
-                # slip between the prompt and the queue.
-                queue: asyncio.Queue[SessionEventFrame | StreamErrorFrame] = (
-                    asyncio.Queue()
-                )
-                self.subscribers[session_id] = queue
-                self.bridge_contexts[session_id] = DeepseekBridgeContext(
-                    conversation=conversation,
-                    conversation_address=conversation_address,
-                    run_name=run_name,
-                    session_allowed=set(conversation.allowed_tools),
-                    interactive=interactive,
-                )
-                prompted = False
-                try:
-                    prompt_value = SessionPromptValue.model_validate(
-                        self.unwrap(
-                            await client.call(
-                                "session.prompt",
-                                {
-                                    "sessionId": session_id,
-                                    "mode": "queue",
-                                    "content": [{"type": "text", "text": prompt_text}],
-                                },
-                            ),
-                            "session.prompt",
-                        )
-                    )
-                    if prompt_value.command is not None:
-                        # dsh intercepted the line as a slash command: no
-                        # turn opened, the command's answer is the whole
-                        # result.
-                        command_text = (
-                            prompt_value.command.text
-                            or f"{prompt_value.command.kind} command executed"
-                        )
-                        for event in accumulator.complete_command(command_text):
-                            yield event
-                    else:
-                        prompted = True
-                        while not accumulator.turn_ended:
-                            frame = await queue.get()
-                            if isinstance(frame, StreamErrorFrame):
-                                accumulator.turn_error = (
-                                    "dsh event stream failed mid-turn: "
-                                    f"{frame.error.message}"
-                                )
-                                break
-                            if (
-                                self.config.instrument
-                                and frame.event.type != "assistant/chunk"
-                                and (
-                                    accumulator.turn_started
-                                    or frame.event.type == "turn/start"
-                                )
-                            ):
-                                # dsh's native OTel backend exports logs, with no
-                                # span exporter or inbound parent context. Keep
-                                # events under this kick, not the shared mux task;
-                                # see docs/agent-telemetry.md for checked releases.
-                                deepseek_logfire.info(
-                                    "deepseek.event {event_type}",
-                                    event_type=frame.event.type,
-                                    session_id=session_id,
-                                    event=frame.event.model_dump(mode="json"),
-                                )
-                            for event in accumulator.consume(frame):
-                                yield event
-                finally:
-                    self.subscribers.pop(session_id, None)
-                    self.bridge_contexts.pop(session_id, None)
-                    if prompted and not accumulator.turn_ended:
-                        # The run is leaving mid-turn (cancelled, or its
-                        # stream died); don't leave dsh's turn burning.
-                        with contextlib.suppress(Exception):
-                            await client.call(
-                                "session.cancel", {"sessionId": session_id}
+                async with self.driving(session_id):
+                    if deepseek_model is not None:
+                        provider_id, separator, model_id = deepseek_model.partition(":")
+                        provider = provider_id if separator else self.default_provider
+                        if not separator:
+                            model_id = deepseek_model
+                        if provider is None:
+                            raise ValueError(
+                                "A DeepSeek model selection must include its provider"
                             )
+                        select_payload: JsonObject = {
+                            "sessionId": session_id,
+                            "provider": provider,
+                            "model": model_id,
+                        }
+                        reasoning_effort = (
+                            self.effort_maps[f"{provider}:{model_id}"][effort]
+                            if effort is not None
+                            else None
+                        )
+                        if reasoning_effort is not None:
+                            select_payload["reasoningEffort"] = reasoning_effort
+                        self.unwrap(
+                            await client.call("session.selectModel", select_payload),
+                            "session.selectModel",
+                        )
+                    # No permission RPC exists: the preset switches through the
+                    # remotes-plane command, which opens no turn.
+                    executed = self.unwrap(
+                        await client.remote(
+                            "commands/execute",
+                            {
+                                "agentId": session_id,
+                                "line": f"/permission {permission_mode}",
+                            },
+                        ),
+                        "commands/execute",
+                    )
+                    if executed is None:
+                        raise AgentRunError(
+                            "dsh has no /permission command, so the run's posture "
+                            f"({permission_mode}) cannot be set"
+                        )
+                    execution = CommandExecutionValue.model_validate(executed)
+                    if (
+                        execution.result is not None
+                        and execution.result.kind == "error"
+                    ):
+                        raise AgentRunError(
+                            f"dsh refused /permission {permission_mode}: "
+                            f"{execution.result.text or 'unknown preset'}"
+                        )
+
+                    # Subscribe before prompting, so the turn's first frames cannot
+                    # slip between the prompt and the queue.
+                    queue: asyncio.Queue[SessionEventFrame | StreamErrorFrame] = (
+                        asyncio.Queue()
+                    )
+                    self.subscribers[session_id] = queue
+                    self.bridge_contexts[session_id] = DeepseekBridgeContext(
+                        conversation=conversation,
+                        conversation_address=conversation_address,
+                        run_name=run_name,
+                        session_allowed=set(conversation.allowed_tools),
+                        interactive=interactive,
+                    )
+                    prompted = False
+                    try:
+                        prompt_value = SessionPromptValue.model_validate(
+                            self.unwrap(
+                                await client.call(
+                                    "session.prompt",
+                                    {
+                                        "sessionId": session_id,
+                                        "mode": "queue",
+                                        "content": [
+                                            {"type": "text", "text": prompt_text}
+                                        ],
+                                    },
+                                ),
+                                "session.prompt",
+                            )
+                        )
+                        if prompt_value.command is not None:
+                            # dsh intercepted the line as a slash command: no
+                            # turn opened, the command's answer is the whole
+                            # result.
+                            command_text = (
+                                prompt_value.command.text
+                                or f"{prompt_value.command.kind} command executed"
+                            )
+                            for event in accumulator.complete_command(command_text):
+                                yield event
+                        else:
+                            prompted = True
+                            while not accumulator.turn_ended:
+                                frame = await queue.get()
+                                if isinstance(frame, StreamErrorFrame):
+                                    accumulator.turn_error = (
+                                        "dsh event stream failed mid-turn: "
+                                        f"{frame.error.message}"
+                                    )
+                                    break
+                                if (
+                                    self.config.instrument
+                                    and frame.event.type != "assistant/chunk"
+                                    and (
+                                        accumulator.turn_started
+                                        or frame.event.type == "turn/start"
+                                    )
+                                ):
+                                    # dsh's native OTel backend exports logs, with no
+                                    # span exporter or inbound parent context. Keep
+                                    # events under this kick, not the shared mux task;
+                                    # see docs/agent-telemetry.md for checked releases.
+                                    deepseek_logfire.info(
+                                        "deepseek.event {event_type}",
+                                        event_type=frame.event.type,
+                                        session_id=session_id,
+                                        event=frame.event.model_dump(mode="json"),
+                                    )
+                                for event in accumulator.consume(frame):
+                                    yield event
+                    finally:
+                        self.subscribers.pop(session_id, None)
+                        self.bridge_contexts.pop(session_id, None)
+                        if prompted and not accumulator.turn_ended:
+                            # The run is leaving mid-turn (cancelled, or its
+                            # stream died); don't leave dsh's turn burning.
+                            with contextlib.suppress(Exception):
+                                await client.call(
+                                    "session.cancel", {"sessionId": session_id}
+                                )
 
                 run_id = str(uuid7())
                 recorded_run = await self.octomate.conversations.record_agent_run(

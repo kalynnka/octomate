@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, cast
@@ -19,14 +19,15 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_s
 from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
-from pydantic_ai.messages import PartStartEvent
+from pydantic_ai.messages import ModelMessage, PartStartEvent
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.workspaces.base import ChatWorkspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -677,6 +678,98 @@ async def test_a_mid_turn_stream_error_persists_cancels_and_raises(
     assert messages
     [cancel_payload] = calls_of("session.cancel")
     assert cancel_payload == {"sessionId": "sess-1"}
+
+
+@pytest.mark.parametrize("cancel_fails", [False, True])
+async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_exit(
+    monkeypatch: pytest.MonkeyPatch, cancel_fails: bool
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(
+        [
+            {"type": "turn/start", "seq": 1, "time": 1.0, "data": {"turn": 1}},
+            StreamErrorFrame(
+                type="stream/error",
+                error=RpcError(code="internal", message="socket died"),
+            ),
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    tentacle.octomate.connect(tentacle)
+    original_call = FakeDeepseekApi.call
+    original_claim = tentacle.octomate.workspaces.claim
+    original_discard = tentacle.octomate.workspaces.discard
+    original_record = conversations.record_agent_run
+    observed: list[str] = []
+
+    async def claim(workspace: ChatWorkspace) -> None:
+        assert tentacle.driven_sessions == {}
+        observed.append("workspace.enter")
+        await original_claim(workspace)
+
+    async def discard(workspace: ChatWorkspace) -> None:
+        assert tentacle.driven_sessions == {}
+        observed.append("workspace.exit")
+        await original_discard(workspace)
+
+    async def record(
+        conversation: Conversation,
+        *,
+        run_id: str,
+        messages: Sequence[ModelMessage],
+        name: str | None,
+        cwd: Path,
+        external_id: str,
+    ) -> None:
+        assert tentacle.driven_sessions == {}
+        observed.append("record")
+        await original_record(
+            conversation,
+            run_id,
+            messages,
+            name=name,
+            cwd=cwd,
+            external_id=external_id,
+        )
+
+    async def call(
+        client: FakeDeepseekApi, method: str, payload: JsonValue
+    ) -> RpcResult:
+        if method == "session.create":
+            assert tentacle.driven_sessions == {}
+            observed.append(method)
+        if method in {"session.prompt", "session.cancel"}:
+            assert isinstance(payload, dict)
+            session_id = payload["sessionId"]
+            assert isinstance(session_id, str)
+            assert tentacle.driven_sessions == {session_id: 1}
+            assert not tentacle.should_ingest_session(session_id)
+            observed.append(method)
+            if method == "session.cancel" and cancel_fails:
+                raise RuntimeError("cancel failed")
+        return await original_call(client, method, payload)
+
+    monkeypatch.setattr(FakeDeepseekApi, "call", call)
+    monkeypatch.setattr(tentacle.octomate.workspaces, "claim", claim)
+    monkeypatch.setattr(tentacle.octomate.workspaces, "discard", discard)
+    monkeypatch.setattr(conversations, "record_agent_run", record)
+    async with tentacle:
+        with pytest.raises(AgentRunError, match="socket died"):
+            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+        assert tentacle.subscribers == {}
+        assert tentacle.bridge_contexts == {}
+        assert tentacle.driven_sessions == {}
+        assert tentacle.should_ingest_session("sess-1")
+
+    assert observed == [
+        "workspace.enter",
+        "session.create",
+        "session.prompt",
+        "session.cancel",
+        "record",
+        "workspace.exit",
+    ]
 
 
 async def test_an_error_turn_raises_dshs_own_message(

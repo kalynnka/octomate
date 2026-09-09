@@ -4,7 +4,7 @@ import asyncio
 import gc
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 from unittest.mock import Mock
 
@@ -37,6 +37,7 @@ from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.telemetry import TraceEnvironment
@@ -208,6 +209,90 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
     assert result.output == "done"
     assert child.external_id == "sess-xyz"  # the hand's own resumable session
     assert child.runs  # the turn recorded into the child conversation
+
+
+@pytest.mark.parametrize("external_id", [None, "resumed-session"])
+@pytest.mark.parametrize("connect_fails", [False, True])
+async def test_sdk_ingest_claim_brackets_client_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+    external_id: str | None,
+    connect_fails: bool,
+) -> None:
+    conversations = FakeConversationManager()
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="claude")
+    conversation.external_id = external_id
+    tentacle = _tentacle(conversations)
+    lifecycle: list[str] = []
+    workspace_enter = Workspace.__aenter__
+    workspace_exit = ChatWorkspace.__aexit__
+
+    async def open_workspace(workspace: Workspace) -> Workspace:
+        assert tentacle.driven_sessions == {}
+        lifecycle.append("workspace-enter")
+        result = await workspace_enter(workspace)
+        assert tentacle.driven_sessions == {}
+        return result
+
+    async def close_workspace(
+        workspace: ChatWorkspace,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert tentacle.driven_sessions == {}
+        lifecycle.append("workspace-exit")
+        await workspace_exit(workspace, exc_type, exc, traceback)
+
+    async def enter(client: FakeClaudeClient) -> FakeClaudeClient:
+        options = FakeClaudeClient.last_options
+        assert isinstance(options, ClaudeAgentOptions)
+        session_id = options.resume or options.session_id
+        assert session_id is not None
+        assert options.resume == external_id
+        assert (options.session_id is None) == (external_id is not None)
+        assert tentacle.driven_sessions == {session_id: 1}
+        assert options.settings is None
+        assert options.setting_sources is None
+        lifecycle.append("enter")
+        if connect_fails:
+            raise RuntimeError("SDK connect failed")
+        return client
+
+    async def leave(
+        client: FakeClaudeClient,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert tentacle.driven_sessions
+        lifecycle.append("exit")
+
+    monkeypatch.setattr(FakeClaudeClient, "__aenter__", enter)
+    monkeypatch.setattr(FakeClaudeClient, "__aexit__", leave)
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
+    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+
+    if connect_fails:
+        with pytest.raises(RuntimeError, match="SDK connect failed"):
+            await tentacle.run("hello", conversation_address=KEY, thread_id=_THREAD)
+    else:
+        async with tentacle.run_stream_events(
+            "hello", conversation_address=KEY, thread_id=_THREAD
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, AgentRunResultEvent):
+                    assert tentacle.driven_sessions == {}
+                    assert lifecycle[-1] == "workspace-exit"
+                else:
+                    assert tentacle.driven_sessions
+
+    assert lifecycle == (
+        ["workspace-enter", "enter", "workspace-exit"]
+        if connect_fails
+        else ["workspace-enter", "enter", "exit", "workspace-exit"]
+    )
+    assert tentacle.driven_sessions == {}
 
 
 async def test_instructions_land_in_the_system_prompt(

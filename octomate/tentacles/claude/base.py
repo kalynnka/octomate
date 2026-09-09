@@ -75,7 +75,6 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -132,6 +131,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """
 
     config: ClaudeCodeConfig = field(init=False)
+    native_id: ClassVar[str] = CLAUDE_NATIVE_ID
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -212,7 +212,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         profile, on the guard's single per-request check — as the ledger's
         principal."""
         verifier = hook_guard(self.octomate.bearers)
-        resolve_sender = hook_sender(self.octomate.users, CLAUDE_NATIVE_ID, verifier)
+        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
         router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
 
         @router.post(
@@ -226,7 +226,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # fine with `str`), so the rule bends rather than the checked type.
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
-            await self.session_ingest.handle(event, sender)
+            if self.should_ingest_session(event.session_id):
+                await self.session_ingest.handle(event, sender)
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
@@ -264,8 +265,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        # Its own materia context: a stream outlives any request, like a follow loop.
-        with sqlalchemy_materia():
+        if not self.should_ingest_session(hello.session_id):
+            await websocket.close(code=1008, reason="octomate drives this session")
+            return
+        async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
 
     async def stream_attached(
@@ -292,7 +295,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         else:
             project = None
         await self.octomate.thread_manager.ensure(
-            ThreadKey(CLAUDE_NATIVE_ID, "thread", hello.session_id),
+            ThreadKey(self.native_id, "thread", hello.session_id),
             project=project,
         )
         state, offsets = await self.session_tailer.attach_remote(
@@ -431,7 +434,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return None
 
     async def discover_models(self) -> None:
-        async with ClaudeSDKClient() as client:
+        session_id = str(uuid7())
+        async with (
+            self.driving(session_id),
+            ClaudeSDKClient(
+                options=ClaudeAgentOptions(session_id=session_id)
+            ) as client,
+        ):
             info = ClaudeServerInfo.model_validate(await client.get_server_info())
         provider = info.account.api_provider
         if provider is None or provider == "firstParty":
@@ -816,6 +825,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # client inside each run's span also reparents resumed sessions.
             async with (
                 workspace,
+                self.driving(session_id),
                 ClaudeSDKClient(options=options) as client,
             ):
                 # One live run per conversation: register this client and interrupt
