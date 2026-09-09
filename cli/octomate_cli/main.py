@@ -14,7 +14,7 @@ import typer
 
 from octomate_cli.cli import upgrade
 from octomate_cli.config import configure
-from octomate_cli.serve import service_typer
+from octomate_cli.service import service_typer
 from octomate_cli.tentacles.claude import claude_typer
 from octomate_cli.tentacles.codex import codex_typer
 from octomate_cli.tentacles.deepseek import deepseek_typer

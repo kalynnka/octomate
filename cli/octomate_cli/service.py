@@ -24,12 +24,14 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, TypeAdapter
 from rich.console import Console
 from rich.table import Table
 
+from octomate_cli.init import init
 from octomate_cli.users import user_typer
 
 RELEASE_URL = "https://api.github.com/repos/kalynnka/octomate/releases"
-service_typer = typer.Typer(help="Run the server and manage its macOS GUI service.")
-service_typer.add_typer(user_typer, name="user")
 console = Console(stderr=True, markup=False, highlight=False)
+service_typer = typer.Typer(help="Run the server and manage its macOS GUI service.")
+service_typer.command()(init)
+service_typer.add_typer(user_typer, name="user")
 
 
 class Release(BaseModel):
@@ -225,7 +227,7 @@ class PlistService(BaseModel):
             [
                 str(self.checkout / ".venv/bin/python"),
                 "-m",
-                "octomate.deployment",
+                "octomate_cli.deployment",
                 action,
             ],
             cwd=self.directory,

@@ -12,21 +12,256 @@ from unittest.mock import patch
 
 import httpx
 import pytest
+import yaml
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
+from octomate_cli import deployment
 from octomate_protocol.deployment import DatabaseBackup
 from pydantic import SecretStr
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from octomate import deployment
-from octomate.config import AuthConfig, OctomateConfig
+from octomate.config import CONFIG_FILES, AuthConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
+
+
+@pytest.fixture
+def preparation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path / "config"))
+    url = f"sqlite+aiosqlite:///{tmp_path / 'octomate.db'}"
+    monkeypatch.setenv("OCTOMATE_DB_URL", url)
+    monkeypatch.setattr(database_settings, "db_url", url)
+    monkeypatch.setitem(OctomateConfig.model_config, "env_file", ".env")
+    return tmp_path
+
+
+@pytest.mark.parametrize("console", [True, False])
+def test_prepare_creates_valid_private_claude_configuration(
+    preparation: Path, console: bool, capsys: pytest.CaptureFixture[str]
+) -> None:
+    deployment.prepare(8123, ["trunkline"] if console else [], ["claude"])
+    config = OctomateConfig()
+    assert config.host == IPv4Address("127.0.0.1")
+    assert config.port == 8123
+    assert [agent.id for agent in config.agents.configured_agents] == ["claude"]
+    assert list(config.channels) == (["trunkline"] if console else [])
+    assert config.projects == {}
+    assert config.mcp == {}
+    assert all(value is None for value in config.providers.model_dump().values())
+    assert config.auth is not None
+    salts = {
+        config.auth.access_token_salt.get_secret_value(),
+        config.auth.refresh_token_salt.get_secret_value(),
+        config.auth.api_key_salt.get_secret_value(),
+    }
+    assert len(salts) == 3
+    assert all(len(salt) >= 32 for salt in salts)
+    output = capsys.readouterr().out
+    assert all(salt not in output for salt in salts)
+    home = preparation / "config"
+    assert {path.name for path in home.iterdir()} == set(CONFIG_FILES)
+    auth_yaml = yaml.safe_load((home / "auth.yaml").read_text())["auth"]
+    assert not any(name.endswith("_salt") for name in auth_yaml)
+    assert "**********" not in (home / "auth.yaml").read_text()
+    assert preparation.stat().st_mode & 0o777 == 0o700
+    assert home.stat().st_mode & 0o777 == 0o700
+    for path in [
+        preparation / ".env",
+        preparation / "CONFIGURATION.md",
+        *home.iterdir(),
+    ]:
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert not (preparation / "octomate.db").exists()
+    assert {path.name for path in preparation.iterdir()} == {
+        "config",
+        ".env",
+        "CONFIGURATION.md",
+    }
+
+
+@pytest.mark.parametrize(
+    "agents",
+    [["codex"], ["claude", "codex"], ["deepseek"], ["claude", "codex", "deepseek"]],
+)
+def test_prepare_enables_selected_agents_and_routes_console(
+    preparation: Path, agents: list[str]
+) -> None:
+    deployment.prepare(8123, ["trunkline"], agents)
+    config = OctomateConfig()
+    assert [agent.id for agent in config.agents.configured_agents] == agents
+    assert config.channels["trunkline"].agents == agents
+    if "deepseek" in agents:
+        assert config.agents.deepseek is not None
+        assert config.agents.deepseek.executable == "dsh"
+        checklist = (preparation / "CONFIGURATION.md").read_text()
+        assert "DSH (experimental)" in checklist
+        assert "agents.deepseek.executable" in checklist
+    assert not (preparation / "octomate.db").exists()
+
+
+def test_prepare_scaffolds_selected_channels_without_collecting_credentials(
+    preparation: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "OCTOMATE__CHANNELS__SLACK__BOT_TOKEN", "existing-secret-do-not-copy"
+    )
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "another-secret-do-not-copy")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "maintenance",
+            "prepare",
+            "--port",
+            "8123",
+            "--agent",
+            "claude",
+            "--agent",
+            "codex",
+            "--channel",
+            "slack",
+            "--channel",
+            "lark",
+            "--channel",
+            "discord",
+            "--channel",
+            "trunkline",
+        ],
+    )
+    deployment.main()
+    config = OctomateConfig()
+    assert list(config.channels) == ["slack", "lark", "discord", "trunkline"]
+    for name, channel in config.channels.items():
+        assert channel.agents == ["claude", "codex"]
+        assert channel.enabled == (name == "trunkline")
+        assert not channel.mcp
+    home = preparation / "config"
+    channel_yaml = yaml.safe_load((home / "channels.yaml").read_text())["channels"]
+    assert channel_yaml["slack"]["app_id"] == "FILL_IN_SLACK_APP_ID"
+    assert channel_yaml["slack"]["bot_token"] == "FILL_IN_SLACK_BOT_TOKEN"
+    assert channel_yaml["slack"]["app_token"] == "FILL_IN_SLACK_APP_TOKEN"
+    assert channel_yaml["lark"]["app_id"] == "FILL_IN_LARK_APP_ID"
+    assert channel_yaml["lark"]["app_secret"] == "FILL_IN_LARK_APP_SECRET"
+    assert channel_yaml["discord"]["bot_token"] == "FILL_IN_DISCORD_BOT_TOKEN"
+    assert "**********" not in (home / "channels.yaml").read_text()
+    dotenv = (preparation / ".env").read_text()
+    assert len(dotenv.splitlines()) == 3
+    assert all(line.startswith("OCTOMATE__AUTH__") for line in dotenv.splitlines())
+    for path in [
+        *home.iterdir(),
+        preparation / ".env",
+        preparation / "CONFIGURATION.md",
+    ]:
+        assert "existing-secret-do-not-copy" not in path.read_text()
+        assert "another-secret-do-not-copy" not in path.read_text()
+    assert not (preparation / "octomate.db").exists()
+
+
+@pytest.mark.parametrize(
+    "channels", [[], ["slack"], ["lark"], ["discord"], ["trunkline"]]
+)
+def test_checklist_and_templates_only_include_selected_components(
+    preparation: Path, channels: list[str]
+) -> None:
+    deployment.prepare(8123, channels, ["codex"])
+    home = preparation / "config"
+    config = OctomateConfig()
+    assert list(config.channels) == channels
+    agent_yaml = yaml.safe_load((home / "agents.yaml").read_text())["agents"]
+    assert list(agent_yaml) == ["codex"]
+    checklist = (preparation / "CONFIGURATION.md").read_text()
+    assert "agents.codex.runtime" in checklist
+    assert "agents.claude" not in checklist
+    for name in ("slack", "lark", "discord", "trunkline"):
+        assert (f"channels.{name}." in checklist) == (name in channels)
+    assert "template structure only" in checklist
+    assert "schema check does not verify credentials" in checklist
+    assert f"octomate service init --prepare --root {preparation}" in checklist
+    assert "without source or selection flags" in checklist
+    assert "connector tool call" in checklist
+    assert "restart the GUI service" in checklist
+    if channels and channels != ["trunkline"]:
+        assert "YAML overrides `.env`" in checklist
+        assert f"channels.{channels[0]}.enabled: true" in checklist
+    assert (preparation / "CONFIGURATION.md").stat().st_mode & 0o777 == 0o600
+
+
+def test_claude_checklist_preserves_native_login(preparation: Path) -> None:
+    deployment.prepare(8123, [], ["claude"])
+    checklist = (preparation / "CONFIGURATION.md").read_text()
+    assert "Keychain credentials" in checklist
+    assert "plugins and Claude.ai connectors" in checklist
+    assert "do not replace that login with a setup token" in checklist
+    assert "agents.codex" not in checklist
+
+
+@pytest.mark.parametrize("channels", [["trunkline", "trunkline"], ["napcat"]])
+def test_prepare_refuses_duplicate_or_unsupported_channels(
+    preparation: Path, channels: list[str]
+) -> None:
+    with pytest.raises(ValueError, match="Choose"):
+        deployment.prepare(8123, channels, ["claude"])
+    assert list(preparation.iterdir()) == []
+
+
+@pytest.mark.parametrize("existing", [".env", "config/agents.yaml", "CONFIGURATION.md"])
+def test_prepare_does_not_overwrite_existing_configuration(
+    preparation: Path, existing: str
+) -> None:
+    path = preparation / existing
+    path.parent.mkdir(exist_ok=True)
+    path.write_text("keep this configuration")
+    with pytest.raises(ValueError, match="refusing"):
+        deployment.prepare(8000, [], ["claude"])
+    assert path.read_text() == "keep this configuration"
+    assert not (preparation / "octomate.db").exists()
+
+
+def test_prepare_validates_before_publishing(preparation: Path) -> None:
+    with patch(
+        "octomate_cli.deployment.subprocess.run",
+        side_effect=subprocess.CalledProcessError(1, "check"),
+    ):
+        with pytest.raises(subprocess.CalledProcessError):
+            deployment.prepare(8000, [], ["claude"])
+    assert list(preparation.iterdir()) == []
+
+
+@pytest.mark.parametrize("variable", ["OCTOMATE_HOME", "OCTOMATE_DB_URL"])
+def test_prepare_requires_explicit_installation_paths(
+    preparation: Path, monkeypatch: pytest.MonkeyPatch, variable: str
+) -> None:
+    monkeypatch.delenv(variable)
+    with pytest.raises(ValueError, match="OCTOMATE"):
+        deployment.prepare(8000, [], ["claude"])
+    assert list(preparation.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["prepare"],
+        ["prepare", "--port", "0"],
+        ["prepare", "--port", "65536"],
+        ["check", "--port", "8000"],
+        ["check", "--console"],
+        ["check", "--channel", "slack"],
+        ["prepare", "--port", "8123", "--agent", "claude", "--channel", "napcat"],
+    ],
+)
+def test_prepare_options_are_scoped_and_validated(
+    preparation: Path, monkeypatch: pytest.MonkeyPatch, arguments: list[str]
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["maintenance", *arguments])
+    with pytest.raises(SystemExit) as failure:
+        deployment.main()
+    assert failure.value.code == 2
+    assert list(preparation.iterdir()) == []
 
 
 @pytest.fixture
@@ -114,9 +349,10 @@ def test_backup_waits_for_server_shutdown(
     monkeypatch.setattr(deployment.time, "sleep", lambda duration: None)
     busy = OSError(errno.EADDRINUSE, "Server is still listening")
     with (
-        patch("octomate.deployment.socket.socket") as sockets,
+        patch("octomate_cli.deployment.socket.socket") as sockets,
         patch(
-            "octomate.deployment.time.monotonic", side_effect=[0, 0 if stops else 31]
+            "octomate_cli.deployment.time.monotonic",
+            side_effect=[0, 0 if stops else 31],
         ),
     ):
         listener = sockets.return_value.__enter__.return_value

@@ -426,7 +426,7 @@ Unlike the hooks — whose scripts resolve the address and credential each time 
 +-- cli/octomate_cli/          # `octomate ...` - the client half, installable alone
 |   +-- tentacles/             # claude, codex, deepseek - commands, hooks and MCP config
 |   +-- streaming/             # File tails and the dsh gateway stream
-|   +-- serve.py               # GUI service management
+|   +-- service.py             # GUI service management
 |   +-- emit.py                # Stable hook entry point: forward an event
 |   `-- launch.py              # Stable hook entry point: launch a transcript tail
 +-- protocol/octomate_protocol/ # Shared contracts; depends only on Pydantic

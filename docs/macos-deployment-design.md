@@ -5,15 +5,54 @@ Internal implementation design. This replaces the manual macOS bootstrap in
 the CLI is stable. It does not authorize a minidock redeployment or production
 database writes.
 
-The first implementation unit adds `upgrade` and GUI `service` lifecycle,
-upgrade, status, logs and basic verification commands. Installation scaffolding,
-the `deploy` wizard, daemon conversion, and live verification remain to be
-implemented in subsequent review units. Examples below describe the completed
-design, not the currently available installation workflow.
+The CLI implements `upgrade`, GUI `service` management and the preparation wizard
+`service init --prepare`. Preparation installs a checkout and its dependencies,
+generates private configuration and independent authentication salts, validates
+them in the installed interpreter, and saves a draft LaunchAgent under
+`<root>/control/io.octomate.server.plist`. It does not install that definition into
+launchd, create a database/account, or start a service. Daemon conversion,
+activation and live verification remain separate implementation units.
+
+For a local development demo, including uncommitted source changes:
+
+```sh
+uv run octomate service init --prepare --root /private/tmp/octomate-demo --source .
+```
+
+Choose an empty destination outside the source checkout. The wizard has separate
+Installation, Network, Agents, Channels, Review and Prepare steps. Select Claude
+Code, Codex and/or DSH (experimental; config key `deepseek`) under Agents;
+select Trunkline, Slack, Lark and/or Discord
+under Channels using arrow keys, Space and Enter. Channel selection may be empty.
+Selections scaffold the corresponding agent and channel config templates. The
+wizard never requests or imports channel credentials. Fill the `FILL_IN_*` values
+in `config/channels.yaml` afterwards; Slack, Lark and Discord start disabled.
+Each installation includes `CONFIGURATION.md`, a checklist for a person or agent
+to complete the selected configuration and record live verification. Generated
+authentication salts stay in `.env`. Trunkline’s frontend build is separate;
+Napcat is not offered yet. The wizard uses neutral body text, dim hints, muted teal (`#5BA3B5`) for
+headings and active choices, green for completion, amber for cautions and red for
+failures. Color supports the labels rather than coloring every line.
+It snapshots Git-visible files into an independent checkout and excludes ignored
+local configuration/data. Without `--source`, it selects the latest stable release;
+that release must contain the preparation maintenance action.
+
+Repeat `service init --prepare --root <root>` to validate the saved configuration
+without rewriting files or rotating secrets. Existing settings cannot yet be edited
+through the wizard. `--yes` requires explicit `--root`, `--port`, `--agent` and
+`--channel` choices for new installations (repeat for multiple channels; use
+`--channel none` for no channels). No channel credentials are required, including
+with `--yes`. Template validation checks configuration structure; it does not
+establish readiness or authenticate with the selected services. A failed
+preparation leaves its build log under `<root>/logs/prepare.log`; it does not
+silently resume or overwrite a partially populated destination.
+
+The remaining examples below describe the completed design, beyond the currently
+available preparation workflow.
 
 “脚手架” is **scaffolding**: generating the files and directories an application
 needs. The interactive part is a **setup wizard**. Octomate needs both, behind one
-entry point: `octomate service deploy`.
+entry point: `octomate service init`.
 
 The primary minidock requirement is to reuse the desktop user's existing
 Keychain-backed Claude.ai login, with their connectors and plugins available to
@@ -28,14 +67,14 @@ home. Claude owns credential access and refresh through its normal login mechani
 With uv installed, the first installation can be one command:
 
 ```sh
-uvx --from octomate-cli octomate service deploy
+uvx --from octomate-cli octomate service init
 ```
 
 For a persistent command on PATH, use:
 
 ```sh
 uv tool install octomate-cli
-octomate service deploy
+octomate service init
 ```
 
 These examples require a future CLI release containing the wizard. The bootstrap
@@ -63,9 +102,9 @@ GUI LaunchAgent. The wizard asks only for missing choices:
    marketplaces. Existing configurations retain their configured agents.
 4. **Account and channels:** create the first Octomate account on a new database,
    or select an existing account. Optionally configure a supported IM channel;
-   skipping channels leaves a usable authenticated API. Prompt only for the chosen
-   channel's required fields and credentials. Projects are optional and explicitly
-   selected by the operator.
+   skipping channels leaves a usable authenticated API. Scaffold only the selected
+   channel templates and generate their completion checklist; the operator fills
+   credentials later. Projects are optional and explicitly selected by the operator.
 5. **Verification:** select an available Claude.ai connector and a specific safe
    read operation, such as reading an operator-selected test document. Show the
    operation and explain that verification makes model requests and records test
@@ -76,8 +115,8 @@ GUI LaunchAgent. The wizard asks only for missing choices:
    integrations, file changes, database initialization/migrations, account changes,
    and verification actions. One confirmation covers that concrete operation.
 
-Passwords and credentials use hidden input. Browser login and provider consent
-remain human steps; “one command” does not promise silent credential provisioning.
+Channel credentials are filled in the private config after scaffolding. Browser
+login and provider consent remain human steps; “one command” does not promise silent credential provisioning.
 Missing login or permissions leave a precise next step, not a successful result.
 
 ### CLI presentation
@@ -87,8 +126,8 @@ clear and pleasant to use. Follow the CLI's existing `Console` and `Panel` usage
 choose the appropriate Rich components during implementation without adding a UI
 framework or a general presentation abstraction.
 
-- Group wizard prompts into short, numbered steps with visible defaults and hidden
-  credential input. Use a compact table or panel for the final deployment review.
+- Group wizard prompts into short, numbered steps with visible defaults and
+  multi-select agent/channel menus. Use a compact table or panel for the final deployment review.
 - Show the current phase and elapsed time for downloads, dependency installation,
   migrations and verification. Use a progress bar when the total is known and a
   spinner otherwise; do not fabricate percentages or hide subprocess failures.
@@ -106,10 +145,10 @@ framework or a general presentation abstraction.
 
 | Command | Contract |
 | --- | --- |
-| `octomate service deploy` | First-run wizard; subsequently apply the saved deployment at the installed release, start if needed, and verify. No implicit release upgrade. |
-| `octomate service deploy --configure` | Revisit settings, validate and show the changes, then apply and restart if necessary. Preserve omitted values. |
-| `octomate service deploy --prepare` | Install the checkout/dependencies and scaffold or validate config; do not start/stop services, initialize/migrate databases, create accounts, or run live requests. |
-| `octomate service deploy --yes` | Apply complete saved inputs without the final prompt. Fail on missing input; never invent credentials or bypass provider approval. |
+| `octomate service init` | First-run wizard; subsequently apply the saved deployment at the installed release, start if needed, and verify. No implicit release upgrade. |
+| `octomate service init --configure` | Revisit settings, validate and show the changes, then apply and restart if necessary. Preserve omitted values. |
+| `octomate service init --prepare` | Install the checkout/dependencies and scaffold or validate config; do not start/stop services, initialize/migrate databases, create accounts, or run live requests. |
+| `octomate service init --yes` | Apply complete saved inputs without the final prompt. Fail on missing input; never invent credentials or bypass provider approval. |
 | `octomate upgrade` | Update the separately installed operator CLI through its package installer. Does not change the deployed service. |
 | `octomate service upgrade` | Upgrade the deployed application to the latest stable server release, with locked dependencies, backup, rehearsal, migration, restart and verification. Does not update the separately installed operator CLI. |
 | `octomate service invite` / `octomate service user …` | Manage invitations and accounts in the service database. |
@@ -128,7 +167,7 @@ creation still needs hidden input or an explicitly supplied protected input file
 Deployment and service upgrade include live verification when the saved requirements
 call for it. They make the same check available separately through `service verify`.
 Ordinary restart performs basic verification without issuing paid requests.
-An unchanged, already running `deploy` verifies without restarting or migrating.
+An unchanged, already running `init` verifies without restarting or migrating.
 
 `--root <path>` selects a new installation directory. Once installed, commands find
 the checkout and environment from the standard user plist, independent of the
@@ -143,10 +182,10 @@ CLI command for foreground execution. It also supports foreground/tmux
 development. `service start` manages the installed GUI LaunchAgent. Use `configure`
 for client settings.
 CLI operations belong at the root; all server operations belong under `service`,
-including `service deploy`, `service invite` and `service user`. Remove
+including `service init`, `service invite` and `service user`. Remove
 the old plist options and `cli` group; do not retain aliases. Routine
 service commands manage only the installed GUI service. An existing system daemon
-must go through the deploy wizard's one-time conversion first.
+must go through the setup wizard's one-time conversion first.
 
 ### Independent upgrades
 
@@ -217,15 +256,18 @@ Generate config using the selected release's models and packaged examples:
 
 - Explicit loopback bind, selected port, Claude agent, and empty channel/project/MCP
   mappings unless selected. Never enable an integration because an example has it.
-- Reuse existing `OctomateConfig` and channel models for validation. The first guided
-  channel form covers minidock's selected channel; importing valid configuration
-  supports the other existing channel types without building a generic form engine.
+- Reuse existing `OctomateConfig` and channel models for template validation.
+  Pass only selected names to the generator; no preparation models belong in the
+  shared protocol. Credential-requiring channel templates remain disabled until
+  the operator completes their fields and enables them.
 - New installations generate independent auth salts and, when needed, an OAuth
   encryption key. Existing installations preserve all such material exactly;
   missing encryption material is an error, not a reason to replace it.
-- Put secrets in `.env`; omit corresponding YAML fields. Current precedence is
-  environment, then YAML, then `.env`. Do not emit fake values that shadow secrets.
-  Preserve imported environment overrides and show their effective source.
+- Generate authentication salts in `.env`, omitting their YAML fields. Channel
+  templates have explicit `FILL_IN_*` placeholders in private `channels.yaml`. The
+  operator replaces these, or removes those YAML fields when moving their values
+  into `.env`: environment overrides YAML, which overrides `.env`. The generated
+  checklist explains this and lists only the selected agents and channels.
 - Validate with a fresh process in the service working directory and its exact
   environment. Do not inherit arbitrary `OCTOMATE_*` variables from the caller.
 - New private directories use mode `0700`; secret/config/backup files use `0600`.
@@ -376,7 +418,7 @@ Add a narrow project-owned verification router bound to the existing Octomate
 instance, plus its CLI client. It must call Octomate's normal dispatch and deferred
 approval handling; it must not launch a second SDK client from the deploy process.
 This is an explicit implementation requirement, not a capability of today's
-`octomate.deployment.verify`.
+`octomate_cli.deployment.verify`.
 
 Use an authenticated, short-lived API key with a dedicated verification scope and
 the selected user's identity, issued through `AuthManager`. Keep the token in memory,
@@ -398,7 +440,7 @@ After installing the CLI release with this support, log into minidock's desktop
 as its service account and run:
 
 ```sh
-octomate service deploy
+octomate service init
 ```
 
 The wizard detects `/Library/LaunchDaemons/io.octomate.server.plist` and offers
@@ -439,11 +481,11 @@ Keep three separately reviewable units, presented in dependency order:
 1. **Service model and lifecycle:** GUI service ownership, correct account
    environment, installation root distinct from checkout, generated plist and
    unprivileged `service` commands. Reuse the existing launchctl logic in
-   `cli/octomate_cli/serve.py`, removing its plist-based command interface. Keep
+   `cli/octomate_cli/service.py`, removing its plist-based command interface. Keep
    system-domain handling confined to the one-time conversion; do not add a
    cross-platform service framework.
 2. **Configuration and wizard:** config/verification input models first, then
-   existing maintenance/auth owners, then `deploy` and CLI registration. Reuse
+   existing maintenance/auth owners, then `init` and CLI registration. Reuse
    config defaults and release selection. Keep server imports out of client-only
    CLI startup. Do not expose “deployment complete” until live verification exists.
    Register root `upgrade` for the CLI and `service upgrade` for the deployed
@@ -467,7 +509,7 @@ Automated tests use mocked launchctl and test-created databases/directories:
   root; no shared directory or config links into mirrors/workspaces are generated.
 - First-run defaults validate; secrets resolve from `.env`; repeat setup preserves
   keys/accounts/files; invalid or partial configuration cannot overwrite good config.
-- Preparation never writes a database or starts a service. Unchanged deploy never
+- Preparation never writes a database or starts a service. Unchanged setup never
   restarts/migrates. Upgrade retains copy rehearsal and resolved-target checks.
 - Import preserves paths/environment/release and retains the original definition;
   each failure leaves the documented enabled/loaded state and rollback information.

@@ -16,7 +16,7 @@ from urllib.error import URLError
 import pytest
 from click import unstyle
 from octomate_cli.main import app
-from octomate_cli.serve import PlistService, latest_server_release
+from octomate_cli.service import PlistService, latest_server_release
 from octomate_protocol.deployment import DatabaseBackup
 from typer.testing import CliRunner
 
@@ -137,7 +137,7 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[Path, Oper
     )
     operations = Operations(database=database)
     monkeypatch.setattr(
-        "octomate_cli.serve.urlopen",
+        "octomate_cli.service.urlopen",
         lambda request, timeout: io.BytesIO(
             b'[{"tag_name":"octomate-v0.0.2","draft":false,"prerelease":false}]'
         ),
@@ -254,6 +254,7 @@ def test_stop_does_not_require_valid_application_config(
     "command",
     [
         ["service", "upgrade", "--plist", "unused"],
+        ["service", "deploy"],
         ["cli", "upgrade"],
         ["serve"],
         ["invite"],
@@ -375,7 +376,7 @@ def test_release_lookup_failure_keeps_service_running(
 ) -> None:
     _, operations = service
     operations.loaded = True
-    with patch("octomate_cli.serve.urlopen", side_effect=URLError("unavailable")):
+    with patch("octomate_cli.service.urlopen", side_effect=URLError("unavailable")):
         result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert "unavailable" in result.output
@@ -404,7 +405,7 @@ def test_upgrade_skips_other_packages_and_unstable_tags(
             {"tag_name": "octomate-v0.0.2", "draft": False, "prerelease": False},
         ]
     ).encode()
-    with patch("octomate_cli.serve.urlopen", return_value=io.BytesIO(payload)):
+    with patch("octomate_cli.service.urlopen", return_value=io.BytesIO(payload)):
         result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 0, result.output
     assert "octomate-v0.0.2" in result.output
@@ -421,7 +422,7 @@ def test_server_release_lookup_paginates_and_compares_versions() -> None:
         ],
     ]
     with patch(
-        "octomate_cli.serve.urlopen",
+        "octomate_cli.service.urlopen",
         side_effect=[io.BytesIO(json.dumps(page).encode()) for page in pages],
     ) as request:
         assert latest_server_release().tag_name == "octomate-v0.0.11"
@@ -444,7 +445,7 @@ def test_missing_or_invalid_server_release_keeps_service_running(
 ) -> None:
     _, operations = service
     operations.loaded = True
-    with patch("octomate_cli.serve.urlopen", return_value=io.BytesIO(payload)):
+    with patch("octomate_cli.service.urlopen", return_value=io.BytesIO(payload)):
         result = CliRunner().invoke(app, ["service", "upgrade"])
     assert result.exit_code == 1
     assert operations.events == ["check"]
@@ -475,6 +476,7 @@ def test_server_group_is_removed() -> None:
         ["service"],
         ["service", "start"],
         ["service", "serve"],
+        ["service", "init"],
         ["service", "upgrade"],
         ["service", "invite"],
         ["service", "user"],
