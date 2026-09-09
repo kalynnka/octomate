@@ -35,8 +35,8 @@ requests without that header are refused.
 Create an invitation code using the same config home and database as the server:
 
 ```sh
-uv run octomate invite
-uv run octomate user create --username alice --password 'YourPassword1!' --invitationcode '<code>'
+uv run octomate service invite
+uv run octomate service user create --username alice --password 'YourPassword1!' --invitationcode '<code>'
 ```
 
 Both commands require the server package and use its configured database.
@@ -50,7 +50,7 @@ session or API token. Sign in through the Trunkline UI afterwards.
 To issue a registration link for the UI instead of a raw code:
 
 ```sh
-uv run octomate invite --url https://octomate.example.com
+uv run octomate service invite --url https://octomate.example.com
 ```
 
 Each invocation creates an independent, anonymous invitation. Anyone with the
@@ -87,7 +87,7 @@ For a forgotten password, an administrator can reset an existing account locally
 using the server's config home and database:
 
 ```sh
-uv run octomate user reset-password --username alice
+uv run octomate service user reset-password --username alice
 ```
 
 The command prompts for the new password and confirmation without echoing them.

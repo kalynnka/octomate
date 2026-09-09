@@ -62,7 +62,7 @@ OCTOMATE__CHANNELS__DISCORD__BOT_TOKEN=<bot token>
 Restart Octomate after changing either file:
 
 ```bash
-uv run octomate serve --tmux
+uv run octomate service serve --tmux
 ```
 
 With `mention_only: true`, a new server-channel conversation must mention the bot or

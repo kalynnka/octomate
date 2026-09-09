@@ -47,7 +47,7 @@ async def auth(in_memory_engine: AsyncEngine) -> AuthManager:
 async def test_invite_prints_a_usable_code_or_link(
     auth: AuthManager, link: bool
 ) -> None:
-    args = ["invite"]
+    args = ["service", "invite"]
     if link:
         args += ["--url", "https://octomate.example.com"]
     result = await asyncio.to_thread(runner.invoke, cli, args)
@@ -71,6 +71,7 @@ async def test_create_consumes_the_code_and_can_sign_in_through_the_ui(
 ) -> None:
     code = (await auth.invite()).get_secret_value()
     args = [
+        "service",
         "user",
         "create",
         "--username",
@@ -127,6 +128,7 @@ async def test_create_rejects_invalid_codes(auth: AuthManager, code_state: str) 
         runner.invoke,
         cli,
         [
+            "service",
             "user",
             "create",
             "--username",
@@ -167,6 +169,7 @@ async def test_invalid_registration_preserves_the_invitation(
         runner.invoke,
         cli,
         [
+            "service",
             "user",
             "create",
             "--username",
@@ -195,7 +198,8 @@ async def test_invalid_registration_preserves_the_invitation(
 
 def test_create_requires_an_invitation_code() -> None:
     result = runner.invoke(
-        cli, ["user", "create", "--username", "alice", "--password", PASSWORD]
+        cli,
+        ["service", "user", "create", "--username", "alice", "--password", PASSWORD],
     )
     assert result.exit_code != 0
     assert "--invitationcode" in unstyle(result.output)
@@ -206,6 +210,7 @@ def test_create_requires_the_server_package(monkeypatch: pytest.MonkeyPatch) -> 
     result = runner.invoke(
         cli,
         [
+            "service",
             "user",
             "create",
             "--username",
@@ -233,7 +238,7 @@ async def test_reset_password_ends_sessions_and_allows_login(
     )
     tokens = await auth.login("alice", SecretStr(PASSWORD))
     replacement = "Replacement password1!"
-    args = ["user", "reset-password", "--username", "alice"]
+    args = ["service", "user", "reset-password", "--username", "alice"]
     if not prompt:
         args += ["--password", replacement]
     result = await asyncio.to_thread(
@@ -261,7 +266,15 @@ async def test_reset_rejects_weak_passwords_without_changing_the_account(
     result = await asyncio.to_thread(
         runner.invoke,
         cli,
-        ["user", "reset-password", "--username", "alice", "--password", password],
+        [
+            "service",
+            "user",
+            "reset-password",
+            "--username",
+            "alice",
+            "--password",
+            password,
+        ],
     )
     assert result.exit_code != 0
     assert "--password" in unstyle(result.output)
@@ -281,7 +294,15 @@ async def test_reset_does_not_register_an_account(
     result = await asyncio.to_thread(
         runner.invoke,
         cli,
-        ["user", "reset-password", "--username", "missing", "--password", PASSWORD],
+        [
+            "service",
+            "user",
+            "reset-password",
+            "--username",
+            "missing",
+            "--password",
+            PASSWORD,
+        ],
     )
     assert result.exit_code != 0
     async with async_session() as session:
