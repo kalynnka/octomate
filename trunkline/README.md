@@ -93,12 +93,12 @@ Architecture rules of thumb:
 
 ## Accounts (`/api/auth`)
 
-The console is private to a [local account](../docs/users.md). `AuthGate` boots
+The console is private to a local account. `AuthGate` boots
 by asking `/api/auth/me`; a 401 anywhere is met with one `POST /refresh` and a
 retry (shared across concurrent requests, since the refresh token is
 single-use), and a 401 that survives that returns the console to the login
 page with a "session expired" notice. A `/#invitation=…` link from
-`octomate invite --url` opens the registration page with the token filled in
+`octomate service invite --url` opens the registration page with the token filled in
 and struck from the address bar; a bare code can be pasted instead. The status
 bar carries `@username` (opens the Account page: identity and API keys — issue
 with scopes and expiry, copy once, revoke) and Sign out, which also clears the
@@ -193,7 +193,7 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
     artifacts + a `plan.apply_edits`-style tool contract.
 13. **Relay verbs** — `POST /api/threads/{id}/teleport` and relay/send to
     another channel (reflex verbs exist in-process; not exposed over HTTP).
-14. **Auth + CORS** — [invited local accounts](../docs/users.md) use HttpOnly
+14. **Auth + CORS** — invited local accounts use HttpOnly
     sessions and private thread access, and the console signs in through them
     (see Accounts above). The console and API share an origin; cross-origin
     access is not enabled. Password reset and channel-account binding remain

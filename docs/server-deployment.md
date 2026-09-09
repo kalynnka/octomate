@@ -1,5 +1,10 @@
 # FastAPI server deployment
 
+Historical deployment notes, retained as an implementation reference. The plist
+command interface described below has been removed. Current implementation work is
+tracked in the [macOS deployment design](macos-deployment-design.md); this is not a
+public installation guide.
+
 This guide covers installing Octomate's FastAPI server, managing it through the CLI,
 and optionally exposing its API with a separate Tailcat setup.
 The baseline below serves the API on loopback; the optional LAN console setup in

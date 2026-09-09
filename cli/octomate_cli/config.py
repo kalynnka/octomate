@@ -10,7 +10,7 @@ oversight to be tidied away later. They exist to stay off the import cost of a
 package on a hook the session blocks on, several times a turn: `tomllib` costs ~7ms
 against `pydantic_settings`' ~230ms, on a script whose whole budget is ~25ms. So they
 re-spell the variable names and the same file precedence in stdlib. Two tests in
-`tests/agent/test_codex_emit.py` are what stop them drifting — one holds the names
+`tests/cli/test_codex_emit.py` are what stop them drifting — one holds the names
 against `CLISettings.env`, the other that both halves still pick the same file — so
 a renamed field fails a test rather than a session going unauthenticated.
 """
