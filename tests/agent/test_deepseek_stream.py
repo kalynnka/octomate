@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -33,7 +34,9 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.config.agents import DeepseekConfig
+from octomate.database import async_session
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.thread import Thread
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
 from tests.agent.test_deepseek_native_ingest import (
@@ -55,10 +58,8 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 def stream_client() -> tuple[TestClient, DeepseekTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    tentacle = DeepseekTentacle(
-        "deepseek",
-        octomate,
-        config=DeepseekConfig(),
+    tentacle = octomate.connect(
+        DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
     )
 
     @asynccontextmanager
@@ -67,10 +68,8 @@ def stream_client() -> tuple[TestClient, DeepseekTentacle]:
         await a_api_key(user, SECRET.get_secret_value())
         yield
 
-    app = FastAPI(lifespan=lifespan)
-    for router in tentacle.routers():
-        app.include_router(router)
-    return TestClient(app), tentacle
+    octomate.router.lifespan_context = lifespan
+    return TestClient(octomate), tentacle
 
 
 def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) -> str:
@@ -194,6 +193,118 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
+
+
+@pytest.mark.parametrize("other_tentacle", [False, True])
+async def test_driven_sessions_skip_hooks_and_streams_until_released(
+    other_tentacle: bool,
+) -> None:
+    client, tentacle = stream_client()
+    driver = (
+        tentacle.octomate.connect(
+            DeepseekTentacle(
+                "other-deepseek", tentacle.octomate, config=DeepseekConfig()
+            )
+        )
+        if other_tentacle
+        else tentacle
+    )
+
+    async def native_threads() -> list[Thread]:
+        async with async_session() as session:
+            return list(await session.list(Thread, limit=None, order_bys=[]))
+
+    with client:
+        async with driver.driving(SESSION_ID):
+            for event in ("UserPromptSubmit", "Stop"):
+                posted = client.post(
+                    DEEPSEEK_HOOK_PATH,
+                    json={"hook_event_name": event, "session_id": SESSION_ID},
+                    headers=AUTH,
+                )
+                assert posted.status_code == 200
+                assert posted.json() == {}
+            with client.websocket_connect(
+                DEEPSEEK_STREAM_PATH, headers=AUTH
+            ) as websocket:
+                websocket.send_text(hello_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+            assert disconnect.value.code == 1008
+            assert "drives" in (disconnect.value.reason or "")
+            assert tentacle.session_tailer.sessions == {}
+            assert tentacle.native_sessions == {}
+            assert tentacle.session_ingest.tasks == set()
+            assert client.portal is not None
+            assert client.portal.call(native_threads) == []
+
+        assert driver.driven_sessions == {}
+        posted = client.post(
+            DEEPSEEK_HOOK_PATH,
+            json={"hook_event_name": "UserPromptSubmit", "session_id": SESSION_ID},
+            headers=AUTH,
+        )
+        assert posted.status_code == 200
+        assert len(client.portal.call(native_threads)) == 1
+        with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+
+
+@pytest.mark.parametrize(
+    "next_message",
+    [StreamEof(), StreamLine(start=0, end=1, line="{}")],
+    ids=["eof", "line"],
+)
+async def test_an_accepted_stream_continues_when_the_session_becomes_driven(
+    next_message: StreamEof | StreamLine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, tentacle = stream_client()
+    fed = AsyncMock()
+    monkeypatch.setattr(tentacle.session_tailer, "feed_remote", fed)
+
+    with client:
+        with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            async with tentacle.driving(SESSION_ID):
+                websocket.send_text(next_message.model_dump_json())
+                if isinstance(next_message, StreamLine):
+                    websocket.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+                assert disconnect.value.code == 1000
+        assert tentacle.session_tailer.sessions == {}
+        assert tentacle.native_sessions == {}
+
+    assert fed.await_count == int(isinstance(next_message, StreamLine))
+
+
+def test_native_session_counts_overlap_and_release_on_eof_and_disconnect() -> None:
+    client, tentacle = stream_client()
+    with client:
+        with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as first:
+            first.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(first.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as second:
+                second.send_text(hello_json())
+                welcome = server_message_adapter.validate_json(second.receive_text())
+                assert isinstance(welcome, StreamWelcome)
+                assert tentacle.native_sessions == {SESSION_ID: 2}
+                second.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    second.receive_text()
+                assert disconnect.value.code == 1000
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+        assert tentacle.native_sessions == {}
 
 
 def test_a_seq_gap_closes_for_resync() -> None:

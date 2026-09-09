@@ -14,6 +14,7 @@ import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -38,9 +39,10 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
+from octomate.database import async_session
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
@@ -314,10 +316,12 @@ async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
 
 def stream_client() -> tuple[TestClient, CodexTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    tentacle = CodexTentacle(
-        "codex",
-        octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+    tentacle = octomate.connect(
+        CodexTentacle(
+            "codex",
+            octomate,
+            config=CodexConfig(permission_mode="deny_all"),
+        )
     )
 
     @asynccontextmanager
@@ -326,10 +330,8 @@ def stream_client() -> tuple[TestClient, CodexTentacle]:
         await a_api_key(user, SECRET.get_secret_value())
         yield
 
-    app = FastAPI(lifespan=lifespan)
-    for router in tentacle.routers():
-        app.include_router(router)
-    return TestClient(app), tentacle
+    octomate.router.lifespan_context = lifespan
+    return TestClient(octomate), tentacle
 
 
 def hello_json(session_id: str = SESSION_ID, protocol: int = STREAM_PROTOCOL) -> str:
@@ -356,7 +358,7 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
     """End to end through the endpoint: hello/welcome, framed lines, eof, and the
     server's close. The next connect is welcomed at byte 0 again — Codex resumes by
     re-streaming, with the committed-turn guard as the dedup."""
-    client, _ = stream_client()
+    client, tentacle = stream_client()
 
     # One entered client, so both connects share a portal loop — the in-memory
     # database's connection is loop-bound, and two portals would strand it.
@@ -366,6 +368,7 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
             assert welcome.offsets == {SESSION_FILE: 0}
+            assert tentacle.native_sessions == {SESSION_ID: 1}
             for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
                 websocket.send_text(
                     StreamLine(
@@ -376,11 +379,14 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
+        assert tentacle.native_sessions == {}
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
             assert welcome.offsets == {SESSION_FILE: 0}
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+        assert tentacle.native_sessions == {}
 
 
 def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
@@ -424,13 +430,14 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
 
 
 def test_a_stale_protocol_is_refused_loudly() -> None:
-    client, _ = stream_client()
+    client, tentacle = stream_client()
     with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
         websocket.send_text(hello_json(protocol=99))
         with pytest.raises(WebSocketDisconnect) as disconnect:
             websocket.receive_text()
     assert disconnect.value.code == 1008
     assert "protocol" in (disconnect.value.reason or "")
+    assert tentacle.native_sessions == {}
 
 
 def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
@@ -465,10 +472,116 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
                 websocket.receive_text()
 
 
+@pytest.mark.parametrize("other_tentacle", [False, True])
+async def test_a_driven_session_is_skipped_until_its_claim_is_released(
+    other_tentacle: bool,
+) -> None:
+    client, tentacle = stream_client()
+    driver = (
+        tentacle.octomate.connect(
+            CodexTentacle("other-codex", tentacle.octomate, config=CodexConfig())
+        )
+        if other_tentacle
+        else tentacle
+    )
+
+    async def native_threads() -> list[Thread]:
+        async with async_session() as session:
+            return list(await session.list(Thread, limit=None, order_bys=[]))
+
+    with client:
+        assert client.portal is not None
+        async with driver.driving(SESSION_ID):
+            assert driver.driven_sessions == {SESSION_ID: 1}
+            posted = client.post(
+                CODEX_HOOK_PATH,
+                json={
+                    "hook_event_name": "UserPromptSubmit",
+                    "session_id": SESSION_ID,
+                    "turn_id": "turn-a",
+                    "prompt": "SDK prompt",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            assert posted.json() == {}
+            with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+                websocket.send_text(hello_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+            assert disconnect.value.code == 1008
+            assert "drives" in (disconnect.value.reason or "")
+            assert tentacle.session_tailer.sessions == {}
+            assert tentacle.native_sessions == {}
+            assert client.portal.call(native_threads) == []
+
+        assert driver.driven_sessions == {}
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert tentacle.native_sessions == {}
+
+
+@pytest.mark.parametrize("eof", [False, True])
+async def test_an_accepted_stream_continues_when_octomate_starts_driving(
+    monkeypatch: pytest.MonkeyPatch, eof: bool
+) -> None:
+    client, tentacle = stream_client()
+    feed_remote = AsyncMock()
+    monkeypatch.setattr(tentacle.session_tailer, "feed_remote", feed_remote)
+
+    with client:
+        assert client.portal is not None
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert tentacle.native_sessions == {SESSION_ID: 1}
+            async with tentacle.driving(SESSION_ID):
+                if not eof:
+                    websocket.send_text(
+                        StreamLine(start=0, end=3, line="{}").model_dump_json()
+                    )
+                websocket.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect) as disconnect:
+                    websocket.receive_text()
+                assert disconnect.value.code == 1000
+        assert tentacle.session_tailer.sessions == {}
+        assert tentacle.native_sessions == {}
+        assert feed_remote.await_count == int(not eof)
+
+
+@pytest.mark.parametrize("clean", [False, True])
+def test_native_session_counts_overlapping_streams_and_cleans_up(clean: bool) -> None:
+    client, tentacle = stream_client()
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as first:
+        first.send_text(hello_json())
+        first.receive_text()
+        assert tentacle.native_sessions == {SESSION_ID: 1}
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as second:
+            second.send_text(hello_json())
+            second.receive_text()
+            assert tentacle.native_sessions == {SESSION_ID: 2}
+            if clean:
+                second.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect):
+                    second.receive_text()
+        assert tentacle.native_sessions == {SESSION_ID: 1}
+        first.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect):
+            first.receive_text()
+    assert tentacle.native_sessions == {}
+
+
 def test_an_offset_gap_closes_for_resync() -> None:
     """A gap means frames were lost; the close makes the client reconnect and re-ask
     where to resume, instead of the server assembling a mis-framed turn."""
-    client, _ = stream_client()
+    client, tentacle = stream_client()
     with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
         websocket.send_text(hello_json())
         websocket.receive_text()  # welcome
@@ -477,3 +590,4 @@ def test_an_offset_gap_closes_for_resync() -> None:
             websocket.receive_text()
     assert disconnect.value.code == 4000
     assert "offset gap" in (disconnect.value.reason or "")
+    assert tentacle.native_sessions == {}

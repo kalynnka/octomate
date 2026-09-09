@@ -96,11 +96,11 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         options = factory.call_args.kwargs["options"]
         assert isinstance(options, ClaudeAgentOptions)
         assert options.session_id is not None
-        assert tentacle.is_driving_session(options.session_id)
+        assert tentacle.driven_sessions == {options.session_id: 1}
         return client
 
     async def info() -> dict[str, list[dict[str, str]]]:
-        assert tentacle.session_ingest.driven
+        assert tentacle.driven_sessions
         if fails:
             raise RuntimeError("Not logged in")
         return {"models": [{"value": "model", "displayName": "Model"}]}
@@ -110,7 +110,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         _exc_value: BaseException | None,
         _traceback: TracebackType | None,
     ) -> bool:
-        assert tentacle.session_ingest.driven
+        assert tentacle.driven_sessions
         return False
 
     client.__aenter__.side_effect = enter
@@ -124,7 +124,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         await tentacle.discover_models()
 
     client.__aexit__.assert_awaited_once()
-    assert tentacle.session_ingest.driven == {}
+    assert tentacle.driven_sessions == {}
 
 
 def codex_model(

@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,29 +67,11 @@ class ClaudeHookIngest:
         # tailer so its run/ledger commits serialize against these writes too; the
         # registry reclaims a session's lock on its own once no one holds it.
         self.locks = locks if locks is not None else SessionLocks()
-        self.driven: Counter[str] = Counter()  # Live SDK runs holding each session.
-
-    @contextmanager
-    def driving(self, session_id: str) -> Generator[None]:
-        """Skip native ingest from before SDK launch through subprocess teardown.
-
-        Superseding runs can overlap, so each holds its own claim. Hooks belonging
-        to plugins and skills still run; only Octomate's duplicate ingest is skipped.
-        """
-        self.driven[session_id] += 1
-        try:
-            yield
-        finally:
-            self.driven[session_id] -= 1
-            if self.driven[session_id] == 0:
-                del self.driven[session_id]
 
     async def handle(self, event: ClaudeHookInput, sender: UserProfile) -> None:
         """`sender` is the verified bearer's own profile (the route's
         `hook_sender` dependency) — the person every ledger row this event
         writes is attributed to."""
-        if event.session_id in self.driven:
-            return
         match event.hook_event_name:
             case "SubagentStart":
                 await self.on_subagent_start(event)

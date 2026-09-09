@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from functools import cached_property
 from pathlib import Path
 from types import MappingProxyType, TracebackType
@@ -68,10 +70,57 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # must be on. Subclasses assign it from their config in `__init__`.
     gateway: bool = True
 
+    # Native hook/stream identity for this runtime, shared by its configured agents.
+    native_id: ClassVar[str | None] = None
+
+    @cached_property
+    def driven_sessions(self) -> Counter[str]:
+        """Live runs holding each external runtime session on this agent."""
+        return Counter()
+
+    @cached_property
+    def native_sessions(self) -> Counter[str]:
+        """Accepted native transcript streams currently attached to this agent."""
+        return Counter()
+
     @cached_property
     def routes(self) -> list[AgentRoute]:
         """Every served model, using discovered or configured routing metadata."""
         return self.build_routes()
+
+    @asynccontextmanager
+    async def driving(
+        self, session_id: str, *, native: bool = False
+    ) -> AsyncGenerator[None]:
+        """Count a driven runtime session or an accepted native stream.
+
+        Driven runs prepare their workspace before claiming a known runtime
+        session id. Claim before activity that Octomate's native endpoints ingest,
+        and hold through the run's cleanup, including interruption or cancellation;
+        release it before recording the run and before leaving the workspace.
+        Session creation may precede the claim only if native ingest ignores it.
+
+        Native streams claim after their handshake is accepted and keep the claim
+        through stream cleanup. Probes without a workspace, such as model
+        discovery, still claim before connecting to a hook-emitting runtime.
+        """
+        sessions = self.native_sessions if native else self.driven_sessions
+        sessions[session_id] += 1
+        try:
+            yield
+        finally:
+            sessions[session_id] -= 1
+            if sessions[session_id] == 0:
+                del sessions[session_id]
+
+    def should_ingest_session(self, session_id: str) -> bool:
+        """Native endpoints are shared by all configured agents for a runtime."""
+        if session_id in self.driven_sessions:
+            return False
+        return self.native_id is None or not any(
+            agent.native_id == self.native_id and session_id in agent.driven_sessions
+            for agent in self.octomate.agents.values()
+        )
 
     def build_routes(self) -> list[AgentRoute]:
         return [
