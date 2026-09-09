@@ -891,6 +891,23 @@ def test_a_workspaces_block_validates() -> None:
     assert config.workspaces.sweep_interval == 600
 
 
+def test_mcp_pool_timeout_loads_from_yaml_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
+    assert OctomateConfig().mcp_pool.idle_timeout == 3600
+    (tmp_path / "mcp.yaml").write_text("mcp_pool:\n  idle_timeout: 1200\n")
+    assert OctomateConfig().mcp_pool.idle_timeout == 1200
+    monkeypatch.setenv("OCTOMATE__MCP_POOL__IDLE_TIMEOUT", "600")
+    assert OctomateConfig().mcp_pool.idle_timeout == 600
+
+
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
+def test_mcp_pool_rejects_invalid_timeout(timeout: float) -> None:
+    with pytest.raises(ValidationError, match="idle_timeout"):
+        OctomateConfig.model_validate({"mcp_pool": {"idle_timeout": timeout}})
+
+
 def test_a_workspaces_block_defaults_to_a_day_and_an_hour() -> None:
     config = OctomateConfig()
 

@@ -23,6 +23,7 @@ from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
 from octomate.tentacles.mcp import McpTentacle
@@ -65,6 +66,8 @@ async def octomate_mcp_server(
     session: OctomateSession,
     thread_manager: ThreadManager,
     tentacles: Sequence[McpTentacle] = (),
+    *,
+    manager: McpManager | None = None,
 ) -> McpSdkServerConfig:
     """The served server, mounted in process for this turn: every call runs
     against `session`, a delivering spell writes through `thread_manager`, which
@@ -74,7 +77,7 @@ async def octomate_mcp_server(
     async def fixed() -> OctomateSession:
         return session
 
-    server = octomate_mcp(fixed, thread_manager, tentacles=tentacles)
+    server = octomate_mcp(fixed, thread_manager, tentacles=tentacles, manager=manager)
     return create_sdk_mcp_server(
         OCTOMATE_SERVER_NAME,
         tools=[sdk_tool(tool) for tool in await server.list_tools()],

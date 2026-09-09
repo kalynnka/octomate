@@ -29,6 +29,7 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
 
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.mcp.server import tentacles_mcp
 from octomate.tentacles.mcp import McpTentacle
 
@@ -86,6 +87,8 @@ class TentaclesToolset(AbstractToolset[None]):
         texts = [
             block.text for block in result.content if isinstance(block, TextContent)
         ]
+        if result.is_error:
+            raise ModelRetry("\n".join(texts) or "MCP tool call failed")
         if len(texts) == len(result.content):
             return "\n".join(texts)
         if result.structured_content is not None:
@@ -94,7 +97,10 @@ class TentaclesToolset(AbstractToolset[None]):
 
 
 def tentacles_capability(
-    session: OctomateSession, tentacles: Sequence[McpTentacle]
+    session: OctomateSession,
+    tentacles: Sequence[McpTentacle],
+    *,
+    manager: McpManager | None = None,
 ) -> Toolset[None]:
     """The capability a run mounts: the tentacles' server built over `session`,
     deferred behind a catalog line naming what it holds."""
@@ -102,13 +108,18 @@ def tentacles_capability(
     async def fixed() -> OctomateSession:
         return session
 
-    server = tentacles_mcp(fixed, tentacles)
+    server = tentacles_mcp(fixed, tentacles, manager=manager)
     labels = ", ".join(dict.fromkeys(tentacle.label for tentacle in tentacles))
     return Toolset(
         TentaclesToolset(server),
         id=server.name,
         description=(
-            f"The tools of {labels}, acting as the person you are answering, and "
+            (
+                "The user's installed MCP tools and configured providers, "
+                if manager is not None
+                else f"The tools of {labels}, "
+            )
+            + "acting as the person you are answering, and "
             "the linking of their accounts."
         ),
         defer_loading=True,

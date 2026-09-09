@@ -46,6 +46,7 @@ from octomate.config.agents import AgentsConfig
 from octomate.config.auth import AuthConfig
 from octomate.config.channels import ChannelConfigVariant, SlackChannelConfig
 from octomate.config.mcp import McpConfigVariant, OAuthMcpConfig
+from octomate.config.mcp.pool import McpPoolConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
@@ -141,6 +142,7 @@ class OctomateConfig(BaseSettings):
             "live under, so one vendor can be mounted once per account."
         ),
     )
+    mcp_pool: McpPoolConfig = Field(default_factory=McpPoolConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     auth: AuthConfig | None = Field(
         default=None,

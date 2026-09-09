@@ -505,7 +505,10 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
     assert CONNECT_TOOL in loaded_tools
     assert CONFIRM_TOOL in loaded_tools
     assert instructions is not None
-    assert "- tentacles: The tools of Provider" in instructions
+    assert (
+        "- tentacles: The user's installed MCP tools and configured providers"
+        in instructions
+    )
 
 
 class SpyToolset(FunctionToolset[None]):

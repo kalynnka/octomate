@@ -46,6 +46,7 @@ from octomate.config.mcp import (
     McpConfigVariant,
     OAuthMcpConfig,
 )
+from octomate.config.mcp.pool import McpPoolConfig
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.models import (
     AnthropicModelSettings,
@@ -111,6 +112,7 @@ __all__ = [  # noqa: RUF022
     "LinearMcpConfig",
     "McpConfig",
     "McpConfigVariant",
+    "McpPoolConfig",
     "OAuthMcpConfig",
     # users
     "AuthConfig",

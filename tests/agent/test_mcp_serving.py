@@ -34,6 +34,7 @@ from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     LIST_MCP_TOOLS,
+    LIST_MCPS,
     OCTOMATE_MCP_PATH,
     gateway_tool,
     history_tool,
@@ -217,6 +218,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
 
     assert [tool.name for tool in tools] == [
         *OCTOMATE_TOOLS,
+        LIST_MCPS,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -274,7 +276,12 @@ async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
         async with over(octomate, app, DRIVEN_BEARER, mode=mode) as client:
             tools = await client.list_tools()
 
-    assert [tool.name for tool in tools] == OCTOMATE_TOOLS
+    assert [tool.name for tool in tools] == [
+        *OCTOMATE_TOOLS,
+        LIST_MCPS,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+    ]
 
 
 @pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])

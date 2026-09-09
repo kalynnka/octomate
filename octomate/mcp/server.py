@@ -23,6 +23,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Sequence
 from typing import Annotated
 
+import httpx2
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
@@ -30,12 +31,14 @@ from fastmcp.server.context import Context
 from fastmcp.server.providers import Provider
 from fastmcp.tools import ToolResult
 from mcp.shared._httpx_utils import McpHttpClientFactory
+from mcp.shared.exceptions import MCPError
 from mcp.types import Tool
 from pydantic import BaseModel, Field, JsonValue
 
 from octomate.capabilities.gateway import gateway_instructions
 from octomate.capabilities.history import history_instructions
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import mount_gateway
@@ -55,11 +58,17 @@ HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
 LIST_MCP_TOOLS = "mcp_list_tools"
 CALL_MCP_TOOL = "mcp_call_tool"
+LIST_MCPS = "mcp_list_servers"
+
+
+class McpServerSummary(BaseModel):
+    namespace: str
+    name: str
 
 
 class McpToolCatalog(BaseModel):
     instructions: str = Field(description="The selected provider's tool instructions.")
-    tools: list[Tool] = Field(description="The provider's namespaced MCP tool schemas.")
+    tools: list[Tool] = Field(description="The selected provider's MCP tool schemas.")
 
 
 def gateway_tool(name: str) -> str:
@@ -72,7 +81,9 @@ def history_tool(name: str) -> str:
     return f"{HISTORY_NAMESPACE}_{HISTORY_TOOL_NAMES[name]}"
 
 
-def tentacle_instructions(tentacles: Sequence[McpTentacle]) -> str:
+def tentacle_instructions(
+    tentacles: Sequence[McpTentacle], *, personal: bool = False
+) -> str:
     """Discovery and linking instructions, without fetching upstream catalogs."""
     linkable = [t for t in tentacles if isinstance(t, OAuthMcpTentacle)]
     parts = [oauth_instructions(linkable)] if linkable else []
@@ -84,14 +95,22 @@ def tentacle_instructions(tentacles: Sequence[McpTentacle]) -> str:
             f"tool schemas, then `{CALL_MCP_TOOL}` with that namespace, the exact "
             "listed tool name, and its arguments."
         )
+    if personal:
+        parts.append(
+            f"Call `{LIST_MCPS}` to discover the current user's installed MCPs. "
+            f"Use `{LIST_MCP_TOOLS}` with a returned namespace, then `{CALL_MCP_TOOL}` "
+            "with the exact listed tool name and arguments."
+        )
     return "\n".join(parts)
 
 
-def octomate_instructions(tentacles: Sequence[McpTentacle]) -> str:
+def octomate_instructions(
+    tentacles: Sequence[McpTentacle], *, personal: bool = False
+) -> str:
     """The server's instructions: every family's contract under the served names."""
     parts = [gateway_instructions(gateway_tool), history_instructions(history_tool)]
-    if tentacles:
-        parts.append(tentacle_instructions(tentacles))
+    if tentacles or personal:
+        parts.append(tentacle_instructions(tentacles, personal=personal))
     return "\n".join(parts)
 
 
@@ -100,6 +119,7 @@ def tentacles_mcp(
     tentacles: Sequence[McpTentacle],
     *,
     httpx_client_factory: McpHttpClientFactory | None = None,
+    manager: McpManager | None = None,
 ) -> FastMCP:
     """The tentacles as a server of their own: every one of `tentacles` listing
     and calling as the caller `resolve_session` resolves, and the link tools for
@@ -108,15 +128,34 @@ def tentacles_mcp(
     alone. `httpx_client_factory` is how a test stands in for a tentacle's
     upstream."""
     mcp = FastMCP(
-        name=TENTACLES_SERVER_NAME, instructions=tentacle_instructions(tentacles)
+        name=TENTACLES_SERVER_NAME,
+        instructions=tentacle_instructions(tentacles, personal=manager is not None),
     )
     linkable = [t for t in tentacles if isinstance(t, OAuthMcpTentacle)]
     if linkable:
         oauth = FastMCP(OAUTH_NAMESPACE)
         mount_oauth(oauth, Depends(resolve_session), linkable)
         mcp.mount(oauth, namespace=OAUTH_NAMESPACE)
-    if not tentacles:
+    if not tentacles and manager is None:
         return mcp
+    if manager is not None:
+
+        @mcp.tool(
+            name=LIST_MCPS,
+            description="Discover the current user's enabled MCP instances.",
+        )
+        async def list_servers() -> list[McpServerSummary]:
+            scope = await resolve_session()
+            if scope.user_profile is None:
+                return []
+            owner = await manager.users.owner(scope.user_profile)
+            if owner is None:
+                return []
+            return [
+                McpServerSummary(namespace=instance.namespace, name=instance.name)
+                for instance in await manager.list(user_id=owner.id, enabled=True)
+            ]
+
     namespaces = {
         tentacle.id: (
             tentacle,
@@ -141,6 +180,19 @@ def tentacles_mcp(
         description=f"Load one provider's tool schemas and instructions. Namespaces: {names}.",
     )
     async def list_tools(namespace: str) -> McpToolCatalog:
+        if manager is not None and namespace.startswith("personal/"):
+            try:
+                async with manager.acquire(
+                    await resolve_session(), namespace
+                ) as client:
+                    return McpToolCatalog(
+                        instructions=client.instructions or "",
+                        tools=await client.list_tools(),
+                    )
+            except McpUnavailable as error:
+                raise ToolError(str(error)) from error
+            except (httpx2.HTTPError, MCPError, TimeoutError) as error:
+                raise ToolError("MCP upstream request failed") from error
         tentacle, provider = named(namespace)
         return McpToolCatalog(
             instructions=tentacle.instructions,
@@ -161,6 +213,21 @@ def tentacles_mcp(
         ],
         arguments: dict[str, JsonValue],
     ) -> ToolResult:
+        if manager is not None and namespace.startswith("personal/"):
+            try:
+                async with manager.acquire(
+                    await resolve_session(), namespace
+                ) as client:
+                    result = await client.call_tool_mcp(name, arguments)
+                    return ToolResult(
+                        content=result.content,
+                        structured_content=result.structured_content,
+                        is_error=result.is_error,
+                    )
+            except McpUnavailable as error:
+                raise ToolError(str(error)) from error
+            except (httpx2.HTTPError, MCPError, TimeoutError) as error:
+                raise ToolError("MCP upstream request failed") from error
         _, provider = named(namespace)
         tool = await provider.get_tool(name)
         if tool is None:
@@ -180,6 +247,7 @@ def octomate_mcp(
     bearers: KnownBearers | None = None,
     tentacles: Sequence[McpTentacle] = (),
     httpx_client_factory: McpHttpClientFactory | None = None,
+    manager: McpManager | None = None,
 ) -> FastMCP:
     """The server, built by whoever mounts it: `resolve_session` is the session a
     call runs against — one fixed turn for a server mounted in-process, a
@@ -193,7 +261,7 @@ def octomate_mcp(
     session = Depends(resolve_session)
     mcp = FastMCP(
         name=OCTOMATE_SERVER_NAME,
-        instructions=octomate_instructions(tentacles),
+        instructions=octomate_instructions(tentacles, personal=manager is not None),
         auth=bearers,
     )
     gateway = FastMCP(GATEWAY_NAMESPACE)
@@ -208,6 +276,7 @@ def octomate_mcp(
             resolve_session,
             tentacles,
             httpx_client_factory=httpx_client_factory,
+            manager=manager,
         )
     )
     return mcp

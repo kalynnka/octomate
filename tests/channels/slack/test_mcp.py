@@ -38,6 +38,7 @@ from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     LIST_MCP_TOOLS,
+    LIST_MCPS,
     octomate_instructions,
     octomate_mcp,
 )
@@ -61,6 +62,7 @@ SLACK = {"provider": "slack"}
 # own families and the linking pair; Slack's tools only once they have linked.
 LISTED_TO_ALL = [
     *OCTOMATE_TOOLS,
+    LIST_MCPS,
     LIST_MCP_TOOLS,
     CALL_MCP_TOOL,
     CONNECT_TOOL,
@@ -256,6 +258,7 @@ async def in_memory(
         fixed_session(session),
         FakeThreadManager(),
         tentacles=[channel],
+        manager=channel.octomate.mcp,
         httpx_client_factory=into(transport),
     )
     async with Client(server) as client:

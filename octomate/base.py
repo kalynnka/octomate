@@ -26,6 +26,7 @@ from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
+from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
@@ -124,6 +125,7 @@ class Octomate(FastAPI):
 
     auth: AuthManager | None = field(init=False)
     oauth: OAuthManager = field(init=False)
+    mcp: McpManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
 
     # Scoped API tokens, shared by MCP verification and hook guards.
@@ -164,6 +166,11 @@ class Octomate(FastAPI):
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=self.oauth_encryption_key,
+        )
+        self.mcp = McpManager(
+            users=self.users,
+            cipher=self.oauth.cipher,
+            config=self.config.mcp_pool,
         )
 
         @self.exception_handler(RequestValidationError)
@@ -326,7 +333,8 @@ class Octomate(FastAPI):
                 # transport's task group lives in that lifespan; the endpoint
                 # answers only inside it. Outermost, so the server is up
                 # before any tentacle starts and down after the last stops.
-                self.mcp.lifespan(self.mcp),
+                self.fastmcp.lifespan(self.fastmcp),
+                self.mcp.lifespan(),
                 AsyncExitStack() as outer_stack,
                 AsyncExitStack() as channel_stack,
             ):
@@ -383,7 +391,7 @@ class Octomate(FastAPI):
                         await sweeping
 
     @cached_property
-    def mcp(self) -> StarletteWithLifespan:
+    def fastmcp(self) -> StarletteWithLifespan:
         # A mounted app rather than a router: the MCP transport speaks all three
         # methods on one path, reads and writes the stream itself, and carries
         # its own bearer check — the deployment's known bearers, the same
@@ -395,6 +403,7 @@ class Octomate(FastAPI):
             kick=self.kick_soon,
             bearers=self.bearers,
             tentacles=list(self.mcps.values()),
+            manager=self.mcp,
         )
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name
@@ -404,10 +413,12 @@ class Octomate(FastAPI):
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
         from octomate.auth import auth_router
+        from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import TrunklineTentacle
 
         self.include_router(auth_router)
+        self.include_router(mcp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted
         # only when a registered connector actually points a browser at it — the two
@@ -419,7 +430,7 @@ class Octomate(FastAPI):
         ):
             self.include_router(oauth_router)
 
-        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.mcp, name=OCTOMATE_SERVER_NAME)
+        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.fastmcp, name=OCTOMATE_SERVER_NAME)
 
         for channel in self.channels.values():
             if (
