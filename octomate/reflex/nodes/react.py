@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Iterable, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
@@ -194,7 +195,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             assistant_replies_bound = False
             if target_channel.config.stream.enabled:
 
-                async def stream_events() -> AsyncIterator[
+                async def stream_events() -> AsyncGenerator[
                     StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                 ]:
                     async with agent.run_stream_events(
@@ -261,7 +262,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         with target_channel.feelers.driving(
                             target_address, timeline_state
                         ):
-                            await timeline_state.drive(stream_events())
+                            async with aclosing(stream_events()) as events:
+                                await timeline_state.drive(events)
                 except AgentRunError:
                     # A model/provider failure (e.g. invalid Bedrock credentials)
                     # surfaces here from the run stream itself, not the render. It
