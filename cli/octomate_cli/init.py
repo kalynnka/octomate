@@ -10,47 +10,21 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated
 
-import questionary
 import typer
-from prompt_toolkit.output import ColorDepth
 from pydantic import TypeAdapter
-from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 from rich.text import Text
-from rich.theme import Theme
+
+from octomate_cli.mcp import McpPreset
+from octomate_cli.wizard.agents import AGENTS, agents_step
+from octomate_cli.wizard.base import brand_color, console
+from octomate_cli.wizard.channels import CHANNELS, channels_step
+from octomate_cli.wizard.mcp import MCPS, mcps_step
 
 if TYPE_CHECKING:
     from octomate_cli.service import PlistService
-
-brand_color = "#5BA3B5"
-console = Console(
-    stderr=True,
-    markup=False,
-    highlight=False,
-    theme=Theme(
-        {
-            "prompt": "bold",
-            "prompt.default": "dim",
-            "prompt.choices": "dim",
-            "status.spinner": brand_color,
-        }
-    ),
-)
-selection_style = questionary.Style(
-    [
-        ("qmark", f"fg:{brand_color}"),
-        ("question", "bold"),
-        ("answer", "fg:ansigreen"),
-        ("pointer", f"fg:{brand_color} bold"),
-        ("highlighted", f"fg:{brand_color} bold"),
-        ("selected", "fg:ansigreen"),
-        ("text", ""),
-        ("instruction", "fg:ansibrightblack"),
-        ("separator", "fg:ansibrightblack"),
-    ]
-)
 
 
 def init(
@@ -95,7 +69,7 @@ def init(
         bool,
         typer.Option(
             "--yes",
-            help="Confirm preparation with explicit root, port, agent and channel choices.",
+            help="Confirm preparation with explicit root, port, agent and channel choices; skip optional MCP setup.",
         ),
     ] = False,
 ) -> None:
@@ -152,15 +126,16 @@ def init(
             "--yes requires --port, --agent and --channel (use none for no channels)."
         )
     port = network_step(port)
-    agent = agents_step(agent)
-    channels = channels_step(channel)
+    agent = agents_step(agent, console=console)
+    channels = channels_step(channel, console=console)
+    mcps = mcps_step(interactive=not yes, console=console)
     service = build_service(root, account.pw_dir, account.pw_name)
-    review_step(service, source, revision, port, agent, channels, yes)
-    prepare_step(service, source, revision, git, uv, port, agent, channels)
+    review_step(service, source, revision, port, agent, channels, mcps, yes)
+    prepare_step(service, source, revision, git, uv, port, agent, channels, mcps)
 
 
 def installation_step(root: Path | None, home: str, yes: bool) -> Path:
-    console.print("1/6 · Installation", style=f"bold {brand_color}")
+    console.print("1/7 · Installation", style=f"bold {brand_color}")
     if root is None:
         if yes:
             raise typer.BadParameter("--yes requires --root.")
@@ -253,7 +228,7 @@ def select_source(root: Path, source: Path | None, git: str) -> tuple[Path | Non
 
 
 def network_step(port: int | None) -> int:
-    console.print("2/6 · Network", style=f"bold {brand_color}")
+    console.print("2/7 · Network", style=f"bold {brand_color}")
     while port is None:
         value = IntPrompt.ask("Loopback port", default=8000, console=console)
         if 1 <= value <= 65535:
@@ -261,91 +236,6 @@ def network_step(port: int | None) -> int:
         else:
             console.print("Choose a port from 1 to 65535.", style="yellow")
     return port
-
-
-def agents_step(agent: list[str] | None) -> list[str]:
-    console.print("3/6 · Agents", style=f"bold {brand_color}")
-    if agent is None:
-        agent = select_many(
-            "Select agents",
-            [
-                questionary.Choice("Claude Code", value="claude", checked=True),
-                questionary.Choice("Codex", value="codex"),
-                questionary.Choice("DSH (experimental)", value="deepseek"),
-            ],
-            required=True,
-        )
-    if not agent or any(name not in {"claude", "codex", "deepseek"} for name in agent):
-        raise typer.BadParameter(
-            "Choose at least one supported --agent: claude, codex, deepseek (DSH; experimental)."
-        )
-    agent = list(dict.fromkeys(agent))
-    if "claude" in agent:
-        console.print(
-            "Claude uses this desktop account's existing login, settings and plugins. No setup token is requested."
-        )
-    if "codex" in agent:
-        console.print(
-            "Codex uses this desktop account's existing Codex login and configuration."
-        )
-    if "deepseek" in agent:
-        console.print(
-            "DSH is experimental; review agents.deepseek and its harness settings before activation.",
-            style="yellow",
-        )
-    return agent
-
-
-def select_many(
-    message: str, choices: list[questionary.Choice], *, required: bool = False
-) -> list[str]:
-    answer = questionary.checkbox(
-        message,
-        choices=choices,
-        style=selection_style,
-        instruction="(↑/↓ move · Space select · Enter continue)",
-        validate=lambda selected: (
-            bool(selected) or "Select at least one agent." if required else True
-        ),
-        color_depth=ColorDepth.DEPTH_1_BIT
-        if "NO_COLOR" in os.environ
-        else ColorDepth.TRUE_COLOR,
-    ).ask()
-    if answer is None:
-        raise typer.Abort()
-    return TypeAdapter(list[str]).validate_python(answer)
-
-
-def channels_step(channel: list[str] | None) -> list[str]:
-    console.print("4/6 · Channels", style=f"bold {brand_color}")
-    if channel is None:
-        channel = select_many(
-            "Select channels (optional)",
-            [
-                questionary.Choice(
-                    "Trunkline (API; frontend built separately)",
-                    value="trunkline",
-                    checked=True,
-                ),
-                questionary.Choice("Slack", value="slack"),
-                questionary.Choice("Lark", value="lark"),
-                questionary.Choice("Discord", value="discord"),
-            ],
-        )
-    if channel == ["none"]:
-        channel = []
-    if any(name not in {"slack", "lark", "discord", "trunkline"} for name in channel):
-        raise typer.BadParameter(
-            "Supported --channel values: slack, lark, discord, trunkline; use none alone for no channels."
-        )
-    console.print(
-        "Selected channels generate config templates. Fill their placeholders later; "
-        "Slack, Lark and Discord remain disabled until configured."
-    )
-    console.print(
-        "Follow CONFIGURATION.md in the installation to complete configuration."
-    )
-    return list(dict.fromkeys(channel))
 
 
 def build_service(root: Path, home: str, username: str) -> PlistService:
@@ -395,12 +285,13 @@ def review_step(
     port: int,
     agent: list[str],
     channels: list[str],
+    mcps: list[McpPreset],
     yes: bool,
 ) -> None:
     root = service.directory
     environment = service.environment
     draft = root / "control/io.octomate.server.plist"
-    console.print("5/6 · Review", style=f"bold {brand_color}")
+    console.print("6/7 · Review", style=f"bold {brand_color}")
     table = Table(box=None, header_style="bold")
     table.add_column("Setting", no_wrap=True, style="dim")
     table.add_column("Value", overflow="fold")
@@ -410,12 +301,21 @@ def review_step(
         ("Source", str(source) if source else "github.com/kalynnka/octomate"),
         ("Bind", f"127.0.0.1:{port}"),
         (
-            "Agents",
-            ", ".join(
-                "DSH (experimental)" if name == "deepseek" else name for name in agent
-            ),
+            "Agents Tentacles",
+            ", ".join(AGENTS[name].label for name in agent),
         ),
-        ("Channels", ", ".join(channels) or "None"),
+        (
+            "Channels Tentacles",
+            ", ".join(CHANNELS[name].label for name in channels) or "None",
+        ),
+        (
+            "MCP Tentacles",
+            ", ".join(
+                f"{MCPS[mcp.provider].label} ({mcp.name}, {'read-only' if mcp.read_only else 'read/write'})"
+                for mcp in mcps
+            )
+            or "None",
+        ),
         (
             "Claude home",
             environment.get(
@@ -455,6 +355,7 @@ def prepare_step(
     port: int,
     agent: list[str],
     channels: list[str],
+    mcps: list[McpPreset],
 ) -> None:
     root = service.directory
     environment = service.environment
@@ -464,7 +365,7 @@ def prepare_step(
     for directory in ("control", "logs", "backups"):
         (root / directory).mkdir(mode=0o700)
     log_path = root / "logs/prepare.log"
-    console.print("6/6 · Prepare and validate", style=f"bold {brand_color}")
+    console.print("7/7 · Prepare and validate", style=f"bold {brand_color}")
     console.print(f"Build log: {log_path}", style="dim")
     checkout = root / "app"
     build_env = {**environment, "UV_PROJECT_ENVIRONMENT": str(checkout / ".venv")}
@@ -519,7 +420,11 @@ def prepare_step(
                             for name in channels
                             for argument in ("--channel", name)
                         ),
+                        *(["--mcp-presets"] if mcps else []),
                     ],
+                    input=TypeAdapter(list[McpPreset]).dump_json(mcps)
+                    if mcps
+                    else None,
                     cwd=root,
                     env=environment,
                     stdout=log,

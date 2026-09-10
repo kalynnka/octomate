@@ -14,10 +14,13 @@ import typer
 from click import unstyle
 from octomate_cli import init as init_cli
 from octomate_cli import service as service_cli
+from octomate_cli.mcp import McpPreset
 from octomate_cli.service import PlistService, Release, service_typer
+from octomate_cli.wizard import base as wizard_base
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
+from pydantic import TypeAdapter
 from rich.console import Console
 from typer.testing import CliRunner
 
@@ -53,8 +56,9 @@ def commands(monkeypatch: pytest.MonkeyPatch) -> Mock:
 
 
 def test_abort_leaves_installation_directory_absent(
-    tmp_path: Path, commands: Mock
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    monkeypatch.setattr(wizard_base, "select_many", Mock(return_value=[]))
     root = tmp_path / "service"
     result = runner.invoke(
         service_typer,
@@ -81,8 +85,8 @@ def test_abort_leaves_installation_directory_absent(
 def test_agent_and_channel_selection_are_separate_steps(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    selections = Mock(side_effect=[["claude", "codex"], []])
-    monkeypatch.setattr(init_cli, "select_many", selections)
+    selections = Mock(side_effect=[["claude", "codex"], [], []])
+    monkeypatch.setattr(wizard_base, "select_many", selections)
     result = runner.invoke(
         service_typer,
         ["init", "--prepare", "--root", str(tmp_path / "service")],
@@ -90,16 +94,17 @@ def test_agent_and_channel_selection_are_separate_steps(
     )
     assert result.exit_code == 0, result.output
     headings = [
-        "1/6 · Installation",
-        "2/6 · Network",
-        "3/6 · Agents",
-        "4/6 · Channels",
-        "5/6 · Review",
-        "6/6 · Prepare and validate",
+        "1/7 · Installation",
+        "2/7 · Network",
+        "3/7 · Agents Tentacles",
+        "4/7 · Channels Tentacles",
+        "5/7 · MCP Tentacles",
+        "6/7 · Review",
+        "7/7 · Prepare and validate",
     ]
     positions = [result.output.index(heading) for heading in headings]
     assert positions == sorted(positions)
-    assert "claude, codex" in result.output
+    assert "Claude Code, Codex" in result.output
     assert "highest stable" in result.output
     preparation = commands.call_args_list[2].args[0]
     assert preparation[4:] == [
@@ -455,7 +460,11 @@ def test_checkbox_keyboard_selects_multiple_agents() -> None:
         create_app_session(input=keys, output=DummyOutput()),
     ):
         keys.send_text("\x1b[B \x1b[B \r")
-        assert init_cli.agents_step(None) == ["claude", "codex", "deepseek"]
+        assert init_cli.agents_step(None, console=init_cli.console) == [
+            "claude",
+            "codex",
+            "deepseek",
+        ]
 
 
 def test_checkbox_rejects_empty_agents_and_allows_no_channels() -> None:
@@ -465,9 +474,9 @@ def test_checkbox_rejects_empty_agents_and_allows_no_channels() -> None:
         create_app_session(input=keys, output=DummyOutput()),
     ):
         keys.send_text(" \r \r")
-        assert init_cli.agents_step(None) == ["claude"]
+        assert init_cli.agents_step(None, console=init_cli.console) == ["claude"]
         keys.send_text(" \r")
-        assert init_cli.channels_step(None) == []
+        assert init_cli.channels_step(None, console=init_cli.console) == []
 
 
 def test_checkbox_cancellation_aborts() -> None:
@@ -478,7 +487,7 @@ def test_checkbox_cancellation_aborts() -> None:
     ):
         keys.send_text("\x03")
         with pytest.raises(typer.Abort):
-            init_cli.agents_step(None)
+            init_cli.agents_step(None, console=init_cli.console)
 
 
 def test_channel_templates_do_not_read_credentials(
@@ -530,7 +539,7 @@ def test_channel_templates_do_not_read_credentials(
         "--channel",
         "trunkline",
     ]
-    assert "input" not in preparation.kwargs
+    assert preparation.kwargs["input"] is None
     assert "CONFIGURATION.md" in result.output
     for value in credentials.values():
         assert value not in result.output
@@ -596,3 +605,88 @@ def test_yes_prepares_channel_template_without_credentials(
     assert "Bot token" not in result.output
     assert "CONFIGURATION.md" in result.output
     assert commands.call_args_list[2].args[0][-2:] == ["--channel", "discord"]
+
+
+@pytest.mark.parametrize("confirm", [True, False])
+def test_wizard_collects_mcp_before_review_and_only_prepares_after_confirmation(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, confirm: bool
+) -> None:
+    root = tmp_path / "service"
+    monkeypatch.setattr(wizard_base, "select_many", Mock(return_value=["github"]))
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(root),
+            "--port",
+            "8123",
+            "--agent",
+            "codex",
+            "--channel",
+            "none",
+        ],
+        input="github_work\ntest-client\ny\n" + ("y\n" if confirm else "n\n"),
+    )
+    assert result.exit_code == (0 if confirm else 1), result.output
+    assert "GitHub (github_work, read-only)" in result.output
+    assert "workflow" in result.output
+    assert "authorize their own accounts later" in result.output
+    if not confirm:
+        assert not root.exists()
+        commands.assert_not_called()
+        return
+    preparation = commands.call_args_list[2]
+    assert preparation.args[0][-1] == "--mcp-presets"
+    mcps = TypeAdapter(list[McpPreset]).validate_json(preparation.kwargs["input"])
+    assert mcps == [
+        McpPreset(
+            provider="github",
+            name="github_work",
+            client_id="test-client",
+            read_only=True,
+        )
+    ]
+    assert "test-client" not in str(preparation.args)
+    assert "test-client" not in str(preparation.kwargs["env"])
+    assert not (root / "octomate.db").exists()
+
+
+def test_wizard_rejects_empty_mcp_client_id_before_preparation(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "service"
+    monkeypatch.setattr(wizard_base, "select_many", Mock(return_value=["github"]))
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--root",
+            str(root),
+            "--port",
+            "8123",
+            "--agent",
+            "codex",
+            "--channel",
+            "none",
+        ],
+        input="github_work\n \n",
+    )
+    assert result.exit_code == 2, result.output
+    assert "must not be empty" in unstyle(result.output)
+    assert not root.exists()
+    commands.assert_not_called()
+
+
+def test_mcp_checkbox_can_be_skipped_or_cancelled() -> None:
+    with (
+        create_pipe_input() as keys,
+        create_app_session(input=keys, output=DummyOutput()),
+    ):
+        keys.send_text("\r")
+        assert init_cli.mcps_step(interactive=True, console=init_cli.console) == []
+        keys.send_text("\x03")
+        with pytest.raises(typer.Abort):
+            init_cli.mcps_step(interactive=True, console=init_cli.console)

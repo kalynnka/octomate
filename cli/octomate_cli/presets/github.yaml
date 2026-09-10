@@ -1,0 +1,21 @@
+mcp:
+  ${name}:
+    type: oauth
+    url: https://api.githubcopilot.com/mcp/${endpoint}
+    client_id: ${client_id}
+    scopes:
+      - repo
+      - read:org
+      - read:user
+      - user:email
+      - write:packages
+      - project
+      - gist
+      - notifications
+      - workflow
+    scope_separator: ","
+    invalid_credentials_errors: [invalid_grant, invalid_client, bad_refresh_token, incorrect_client_credentials]
+    flow:
+      type: device
+      device_authorization_endpoint: https://github.com/login/device/code
+      token_endpoint: https://github.com/login/oauth/access_token

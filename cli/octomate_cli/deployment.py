@@ -25,7 +25,7 @@ import yaml
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from sqlalchemy.engine import make_url
 
 from octomate.config import (
@@ -47,7 +47,9 @@ from octomate.config.channels import (
     TrunklineChannelConfig,
 )
 from octomate.config.database import database_settings
+from octomate.config.mcp import McpConfigVariant
 from octomate.mcp.server import OCTOMATE_MCP_PATH
+from octomate_cli.mcp import McpPreset
 
 ALEMBIC_INI = Path(str(files("octomate").joinpath("migrations", "alembic.ini")))
 
@@ -149,7 +151,12 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
     return "\n".join(instructions)
 
 
-def prepare(port: int, channels: list[str], agents: list[str]) -> None:
+def prepare(
+    port: int,
+    channels: list[str],
+    agents: list[str],
+    mcps: list[McpPreset] | None = None,
+) -> None:
     if not agents or any(
         name not in {"claude", "codex", "deepseek"} for name in agents
     ):
@@ -180,6 +187,14 @@ def prepare(port: int, channels: list[str], agents: list[str]) -> None:
         name: secrets.token_urlsafe(32)
         for name in ("access_token_salt", "refresh_token_salt", "api_key_salt")
     }
+    if mcps is None:
+        mcps = []
+    if len({mcp.name for mcp in mcps}) != len(mcps):
+        raise ValueError("MCP tentacle names must be unique.")
+    configured_mcps = TypeAdapter(dict[str, McpConfigVariant]).validate_python(
+        {mcp.name: mcp.configuration() for mcp in mcps}
+    )
+    encryption_key = secrets.token_urlsafe(32) if configured_mcps else None
     routes = list(dict.fromkeys(agents))
     configured_channels: dict[str, ChannelConfigVariant] = {}
     for channel in channels:
@@ -223,10 +238,12 @@ def prepare(port: int, channels: list[str], agents: list[str]) -> None:
         channels=configured_channels,
         projects={},
         providers=ProvidersConfig(),
-        mcp={},
+        mcp=configured_mcps,
         logging=LoggingConfig(),
         logfire=LogfireConfig(),
-        oauth=OAuthConfig(),
+        oauth=OAuthConfig(
+            encryption_key=SecretStr(encryption_key) if encryption_key else None
+        ),
         mirrors=MirrorsConfig(),
         workspaces=WorkspacesConfig(),
     )
@@ -235,6 +252,7 @@ def prepare(port: int, channels: list[str], agents: list[str]) -> None:
         exclude={
             "auth": set(salts),
             "agents": set(AgentsConfig.model_fields) - set(agents),
+            "oauth": {"encryption_key"},
         },
     )
     for channel in channels:
@@ -268,6 +286,11 @@ def prepare(port: int, channels: list[str], agents: list[str]) -> None:
             "".join(
                 f"OCTOMATE__AUTH__{name.upper()}={salt}\n"
                 for name, salt in salts.items()
+            )
+            + (
+                f"OCTOMATE__OAUTH__ENCRYPTION_KEY={encryption_key}\n"
+                if encryption_key
+                else ""
             )
         )
         dotenv.chmod(0o600)
@@ -455,6 +478,11 @@ def main() -> None:
         choices=("slack", "lark", "discord", "trunkline"),
         default=[],
     )
+    parser.add_argument(
+        "--mcp-presets",
+        action="store_true",
+        help="Read MCP preset selections as JSON from stdin.",
+    )
     args = parser.parse_args()
     action = args.action
     if action == "prepare":
@@ -462,10 +490,17 @@ def main() -> None:
             parser.error("prepare requires --port between 1 and 65535")
         if not args.agent:
             parser.error("prepare requires at least one --agent")
-        prepare(args.port, args.channel, args.agent)
+        mcps = (
+            TypeAdapter(list[McpPreset]).validate_json(sys.stdin.read())
+            if args.mcp_presets
+            else []
+        )
+        prepare(args.port, args.channel, args.agent, mcps)
         return
-    if args.port is not None or args.agent or args.channel:
-        parser.error("--port, --agent and --channel apply only to prepare")
+    if args.port is not None or args.agent or args.channel or args.mcp_presets:
+        parser.error(
+            "--port, --agent, --channel and --mcp-presets apply only to prepare"
+        )
     config = OctomateConfig()
     database = database_path()
     if not isinstance(config.host, IPv4Address) or config.host.is_unspecified:

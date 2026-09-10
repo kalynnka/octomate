@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from functools import partial
+from io import StringIO
 from ipaddress import IPv4Address
 from pathlib import Path
 from unittest.mock import patch
@@ -17,13 +18,14 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
 from octomate_cli import deployment
+from octomate_cli.mcp import McpPreset
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from octomate.config import CONFIG_FILES, AuthConfig, OctomateConfig
+from octomate.config import CONFIG_FILES, AuthConfig, OAuthMcpConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.config.database import database_settings
@@ -518,3 +520,62 @@ def test_maintenance_requires_an_explicit_bind_address(
     else:
         deployment.main()
     assert not database.exists()
+
+
+def test_prepare_reads_mcp_presets_and_saves_private_oauth_configuration(
+    preparation: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mcps = [
+        McpPreset(provider="github", name="github_work", client_id="test-work"),
+        McpPreset(
+            provider="github",
+            name="github_personal",
+            client_id="test-personal",
+            read_only=True,
+        ),
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "maintenance",
+            "prepare",
+            "--port",
+            "8123",
+            "--agent",
+            "codex",
+            "--mcp-presets",
+        ],
+    )
+    monkeypatch.setattr(
+        sys, "stdin", StringIO(TypeAdapter(list[McpPreset]).dump_json(mcps).decode())
+    )
+    deployment.main()
+    config = OctomateConfig()
+    assert list(config.mcp) == ["github_work", "github_personal"]
+    for preset in mcps:
+        assert config.mcp[preset.name] == OAuthMcpConfig.model_validate(
+            preset.configuration()
+        )
+    assert config.oauth.encryption_key is not None
+    key = config.oauth.encryption_key.get_secret_value()
+    assert len(key) == 43
+    assert (
+        f"OCTOMATE__OAUTH__ENCRYPTION_KEY={key}" in (preparation / ".env").read_text()
+    )
+    for path in (preparation / "config").iterdir():
+        assert key not in path.read_text()
+        assert "**********" not in path.read_text()
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert key not in capsys.readouterr().out
+    assert (preparation / ".env").stat().st_mode & 0o777 == 0o600
+    assert not (preparation / "octomate.db").exists()
+
+
+def test_prepare_rejects_duplicate_mcp_names_without_writing(preparation: Path) -> None:
+    preset = McpPreset(provider="github", name="github", client_id="test-app")
+    with pytest.raises(ValueError, match="MCP tentacle names must be unique"):
+        deployment.prepare(8123, [], ["codex"], [preset, preset])
+    assert list(preparation.iterdir()) == []
