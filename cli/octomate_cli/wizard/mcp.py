@@ -6,7 +6,7 @@ from rich.console import Console
 from rich.prompt import Confirm, Prompt
 
 from octomate_cli.mcp import McpPreset
-from octomate_cli.wizard.base import TentacleSetup, brand_color, select_tentacles
+from octomate_cli.wizard.base import TentacleSetup
 
 
 def github(console: Console) -> McpPreset:
@@ -34,19 +34,5 @@ def github(console: Console) -> McpPreset:
 
 
 MCPS: dict[str, TentacleSetup[McpPreset]] = {
-    "github": TentacleSetup(label="GitHub", configure=github),
+    "github": TentacleSetup(label="GitHub", capabilities=("MCP",), configure=github),
 }
-
-
-def mcps_step(*, interactive: bool, console: Console) -> list[McpPreset]:
-    console.print("5/7 · MCP Tentacles", style=f"bold {brand_color}")
-    if not interactive:
-        console.print("Optional MCP setup skipped with --yes.")
-        return []
-    return select_tentacles(
-        MCPS,
-        None,
-        console=console,
-        prompt="Select MCP tentacles (optional)",
-        invalid_message="Choose a supported MCP preset: github.",
-    )

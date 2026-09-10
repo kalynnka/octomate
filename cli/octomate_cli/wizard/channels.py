@@ -4,7 +4,7 @@ from functools import partial
 
 from rich.console import Console
 
-from octomate_cli.wizard.base import TentacleSetup, brand_color, select_tentacles
+from octomate_cli.wizard.base import TentacleSetup
 
 
 def configure_channel(name: str, console: Console) -> str:
@@ -19,30 +19,24 @@ def configure_channel(name: str, console: Console) -> str:
 
 CHANNELS: dict[str, TentacleSetup[str]] = {
     "trunkline": TentacleSetup(
-        label="Trunkline (API; frontend built separately)",
+        label="Trunkline [Web]",
+        capabilities=("Channel",),
         configure=partial(configure_channel, "trunkline"),
         checked=True,
     ),
     "slack": TentacleSetup(
-        label="Slack", configure=partial(configure_channel, "slack")
+        label="Slack",
+        capabilities=("Channel", "MCP"),
+        configure=partial(configure_channel, "slack"),
     ),
-    "lark": TentacleSetup(label="Lark", configure=partial(configure_channel, "lark")),
+    "lark": TentacleSetup(
+        label="Lark",
+        capabilities=("Channel",),
+        configure=partial(configure_channel, "lark"),
+    ),
     "discord": TentacleSetup(
-        label="Discord", configure=partial(configure_channel, "discord")
+        label="Discord",
+        capabilities=("Channel",),
+        configure=partial(configure_channel, "discord"),
     ),
 }
-
-
-def channels_step(channel: list[str] | None, *, console: Console) -> list[str]:
-    console.print("4/7 · Channels Tentacles", style=f"bold {brand_color}")
-    channels = select_tentacles(
-        CHANNELS,
-        [] if channel == ["none"] else channel,
-        console=console,
-        prompt="Select channel tentacles (optional)",
-        invalid_message="Supported --channel values: slack, lark, discord, trunkline; use none alone for no channels.",
-    )
-    console.print(
-        "Follow CONFIGURATION.md in the installation to complete configuration."
-    )
-    return channels

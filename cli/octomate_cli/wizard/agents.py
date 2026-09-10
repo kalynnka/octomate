@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from rich.console import Console
 
-from octomate_cli.wizard.base import TentacleSetup, brand_color, select_tentacles
+from octomate_cli.wizard.base import TentacleSetup
 
 
 def claude(console: Console) -> str:
@@ -28,19 +28,11 @@ def deepseek(console: Console) -> str:
 
 
 AGENTS: dict[str, TentacleSetup[str]] = {
-    "claude": TentacleSetup(label="Claude Code", configure=claude, checked=True),
-    "codex": TentacleSetup(label="Codex", configure=codex),
-    "deepseek": TentacleSetup(label="DSH (experimental)", configure=deepseek),
+    "claude": TentacleSetup(
+        label="Claude Code", capabilities=("Agent",), configure=claude
+    ),
+    "codex": TentacleSetup(label="Codex", capabilities=("Agent",), configure=codex),
+    "deepseek": TentacleSetup(
+        label="DSH (experimental)", capabilities=("Agent",), configure=deepseek
+    ),
 }
-
-
-def agents_step(agent: list[str] | None, *, console: Console) -> list[str]:
-    console.print("3/7 · Agents Tentacles", style=f"bold {brand_color}")
-    return select_tentacles(
-        AGENTS,
-        agent,
-        console=console,
-        prompt="Select agent tentacles",
-        invalid_message="Choose at least one supported --agent: claude, codex, deepseek (DSH; experimental).",
-        required=True,
-    )

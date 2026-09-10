@@ -18,10 +18,11 @@ from rich.table import Table
 from rich.text import Text
 
 from octomate_cli.mcp import McpPreset
-from octomate_cli.wizard.agents import AGENTS, agents_step
+from octomate_cli.wizard import tentacles_step
+from octomate_cli.wizard.agents import AGENTS
 from octomate_cli.wizard.base import brand_color, console
-from octomate_cli.wizard.channels import CHANNELS, channels_step
-from octomate_cli.wizard.mcp import MCPS, mcps_step
+from octomate_cli.wizard.channels import CHANNELS
+from octomate_cli.wizard.mcp import MCPS
 
 if TYPE_CHECKING:
     from octomate_cli.service import PlistService
@@ -126,16 +127,33 @@ def init(
             "--yes requires --port, --agent and --channel (use none for no channels)."
         )
     port = network_step(port)
-    agent = agents_step(agent, console=console)
-    channels = channels_step(channel, console=console)
-    mcps = mcps_step(interactive=not yes, console=console)
+    tentacles = tentacles_step(agent, channel, interactive=not yes, console=console)
     service = build_service(root, account.pw_dir, account.pw_name)
-    review_step(service, source, revision, port, agent, channels, mcps, yes)
-    prepare_step(service, source, revision, git, uv, port, agent, channels, mcps)
+    review_step(
+        service,
+        source,
+        revision,
+        port,
+        tentacles.agents,
+        tentacles.channels,
+        tentacles.mcps,
+        yes,
+    )
+    prepare_step(
+        service,
+        source,
+        revision,
+        git,
+        uv,
+        port,
+        tentacles.agents,
+        tentacles.channels,
+        tentacles.mcps,
+    )
 
 
 def installation_step(root: Path | None, home: str, yes: bool) -> Path:
-    console.print("1/7 · Installation", style=f"bold {brand_color}")
+    console.print("1/6 · Installation", style=f"bold {brand_color}")
     if root is None:
         if yes:
             raise typer.BadParameter("--yes requires --root.")
@@ -228,7 +246,7 @@ def select_source(root: Path, source: Path | None, git: str) -> tuple[Path | Non
 
 
 def network_step(port: int | None) -> int:
-    console.print("2/7 · Network", style=f"bold {brand_color}")
+    console.print("2/6 · Network", style=f"bold {brand_color}")
     while port is None:
         value = IntPrompt.ask("Loopback port", default=8000, console=console)
         if 1 <= value <= 65535:
@@ -291,7 +309,7 @@ def review_step(
     root = service.directory
     environment = service.environment
     draft = root / "control/io.octomate.server.plist"
-    console.print("6/7 · Review", style=f"bold {brand_color}")
+    console.print("5/6 · Review", style=f"bold {brand_color}")
     table = Table(box=None, header_style="bold")
     table.add_column("Setting", no_wrap=True, style="dim")
     table.add_column("Value", overflow="fold")
@@ -365,7 +383,7 @@ def prepare_step(
     for directory in ("control", "logs", "backups"):
         (root / directory).mkdir(mode=0o700)
     log_path = root / "logs/prepare.log"
-    console.print("7/7 · Prepare and validate", style=f"bold {brand_color}")
+    console.print("6/6 · Prepare and validate", style=f"bold {brand_color}")
     console.print(f"Build log: {log_path}", style="dim")
     checkout = root / "app"
     build_env = {**environment, "UV_PROJECT_ENVIRONMENT": str(checkout / ".venv")}

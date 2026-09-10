@@ -14,9 +14,9 @@ import typer
 from click import unstyle
 from octomate_cli import init as init_cli
 from octomate_cli import service as service_cli
+from octomate_cli import wizard
 from octomate_cli.mcp import McpPreset
 from octomate_cli.service import PlistService, Release, service_typer
-from octomate_cli.wizard import base as wizard_base
 from prompt_toolkit.application import create_app_session
 from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
@@ -58,7 +58,7 @@ def commands(monkeypatch: pytest.MonkeyPatch) -> Mock:
 def test_abort_leaves_installation_directory_absent(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(wizard_base, "select_many", Mock(return_value=[]))
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["claude"]))
     root = tmp_path / "service"
     result = runner.invoke(
         service_typer,
@@ -82,11 +82,11 @@ def test_abort_leaves_installation_directory_absent(
     commands.assert_not_called()
 
 
-def test_agent_and_channel_selection_are_separate_steps(
+def test_tentacles_are_selected_together_before_detail_steps(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    selections = Mock(side_effect=[["claude", "codex"], [], []])
-    monkeypatch.setattr(wizard_base, "select_many", selections)
+    selections = Mock(return_value=["claude", "codex"])
+    monkeypatch.setattr(wizard, "select_tentacles", selections)
     result = runner.invoke(
         service_typer,
         ["init", "--prepare", "--root", str(tmp_path / "service")],
@@ -94,16 +94,18 @@ def test_agent_and_channel_selection_are_separate_steps(
     )
     assert result.exit_code == 0, result.output
     headings = [
-        "1/7 · Installation",
-        "2/7 · Network",
-        "3/7 · Agents Tentacles",
-        "4/7 · Channels Tentacles",
-        "5/7 · MCP Tentacles",
-        "6/7 · Review",
-        "7/7 · Prepare and validate",
+        "1/6 · Installation",
+        "2/6 · Network",
+        "3/6 · Tentacles",
+        "4/6 · Tentacle details",
+        "1/2 · Claude Code",
+        "2/2 · Codex",
+        "5/6 · Review",
+        "6/6 · Prepare and validate",
     ]
     positions = [result.output.index(heading) for heading in headings]
     assert positions == sorted(positions)
+    selections.assert_called_once_with(None, None)
     assert "Claude Code, Codex" in result.output
     assert "highest stable" in result.output
     preparation = commands.call_args_list[2].args[0]
@@ -459,24 +461,22 @@ def test_checkbox_keyboard_selects_multiple_agents() -> None:
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\x1b[B \x1b[B \r")
-        assert init_cli.agents_step(None, console=init_cli.console) == [
+        keys.send_text(" \x1b[B \x1b[B \r")
+        assert wizard.select_tentacles(None, None) == [
             "claude",
             "codex",
             "deepseek",
+            "trunkline",
         ]
 
 
-def test_checkbox_rejects_empty_agents_and_allows_no_channels() -> None:
-
+def test_checkbox_requires_an_agent_but_channels_are_optional() -> None:
     with (
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text(" \r \r")
-        assert init_cli.agents_step(None, console=init_cli.console) == ["claude"]
-        keys.send_text(" \r")
-        assert init_cli.channels_step(None, console=init_cli.console) == []
+        keys.send_text("\r \x1b[B\x1b[B\x1b[B \r")
+        assert wizard.select_tentacles(None, None) == ["claude"]
 
 
 def test_checkbox_cancellation_aborts() -> None:
@@ -487,7 +487,7 @@ def test_checkbox_cancellation_aborts() -> None:
     ):
         keys.send_text("\x03")
         with pytest.raises(typer.Abort):
-            init_cli.agents_step(None, console=init_cli.console)
+            wizard.select_tentacles(None, None)
 
 
 def test_channel_templates_do_not_read_credentials(
@@ -612,7 +612,9 @@ def test_wizard_collects_mcp_before_review_and_only_prepares_after_confirmation(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, confirm: bool
 ) -> None:
     root = tmp_path / "service"
-    monkeypatch.setattr(wizard_base, "select_many", Mock(return_value=["github"]))
+    monkeypatch.setattr(
+        wizard, "select_tentacles", Mock(return_value=["codex", "github"])
+    )
     result = runner.invoke(
         service_typer,
         [
@@ -657,7 +659,9 @@ def test_wizard_rejects_empty_mcp_client_id_before_preparation(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "service"
-    monkeypatch.setattr(wizard_base, "select_many", Mock(return_value=["github"]))
+    monkeypatch.setattr(
+        wizard, "select_tentacles", Mock(return_value=["codex", "github"])
+    )
     result = runner.invoke(
         service_typer,
         [
@@ -680,13 +684,50 @@ def test_wizard_rejects_empty_mcp_client_id_before_preparation(
     commands.assert_not_called()
 
 
-def test_mcp_checkbox_can_be_skipped_or_cancelled() -> None:
+def test_checkbox_selects_github_alongside_an_agent() -> None:
     with (
         create_pipe_input() as keys,
         create_app_session(input=keys, output=DummyOutput()),
     ):
-        keys.send_text("\r")
-        assert init_cli.mcps_step(interactive=True, console=init_cli.console) == []
-        keys.send_text("\x03")
-        with pytest.raises(typer.Abort):
-            init_cli.mcps_step(interactive=True, console=init_cli.console)
+        keys.send_text("\x1b[B" * 7 + " \r")
+        assert wizard.select_tentacles(["codex"], []) == ["codex", "github"]
+
+
+def test_selection_shows_each_tentacle_with_its_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    checkbox = Mock(
+        return_value=Mock(ask=Mock(return_value=["codex", "slack", "github"]))
+    )
+    monkeypatch.setattr(wizard.questionary, "checkbox", checkbox)
+    assert wizard.select_tentacles(None, None) == ["codex", "slack", "github"]
+    assert [
+        choice.value
+        for choice in checkbox.call_args.kwargs["choices"]
+        if choice.checked
+    ] == ["trunkline"]
+    assert [choice.title for choice in checkbox.call_args.kwargs["choices"]] == [
+        "Claude Code [Agent]",
+        "Codex [Agent]",
+        "DSH (experimental) [Agent]",
+        "Trunkline [Web] [Channel]",
+        "Slack [Channel · MCP]",
+        "Lark [Channel]",
+        "Discord [Channel]",
+        "GitHub [MCP]",
+    ]
+
+
+def test_selection_without_agent_does_not_start_details(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(wizard, "select_tentacles", Mock(return_value=["github"]))
+    root = tmp_path / "service"
+    result = runner.invoke(
+        service_typer, ["init", "--prepare", "--root", str(root), "--port", "8123"]
+    )
+    assert result.exit_code == 2, result.output
+    assert "Select at least one agent tentacle" in unstyle(result.output)
+    assert "GitHub OAuth application client ID" not in result.output
+    assert not root.exists()
+    commands.assert_not_called()
