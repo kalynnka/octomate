@@ -2,7 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { useConsole } from '@/state/console'
 import { useAgents, useMcpServers, useMcpTentacles, useProfile } from '@/lib/api/hooks'
+import { refusalText } from '@/lib/api/auth'
+import { enableMcp } from '@/lib/api/client'
 import { channelMeta } from '@/lib/api/live'
+import { queryClient } from '@/lib/queryClient'
 import type { ControlSection } from '@/state/console'
 import { Button } from '@/components/Button'
 import { BracketTabs } from '@/components/BracketTabs'
@@ -17,6 +20,7 @@ import {
   statusNote,
 } from '@/components/text'
 import { AccountPanel, ApiKeysPanel } from '@/features/auth/AccountPanel'
+import { Refusal } from '@/features/auth/parts'
 import type {
   ApiAgentInfo,
   ApiMcpServerSummary,
@@ -26,6 +30,8 @@ import type {
 } from '@/lib/api/events'
 import type { EffortStep } from '@/lib/api/types'
 import { SettingsPanel } from './SettingsPanel'
+import { McpInstallDialog } from './McpInstallDialog'
+import { McpAuthorizationDialog } from './McpAuthorizationDialog'
 import { controlHints } from './sections'
 
 const pages: Record<Exclude<ControlSection, ''>, { title: string; desc: string }> = {
@@ -35,7 +41,7 @@ const pages: Record<Exclude<ControlSection, ''>, { title: string; desc: string }
   },
   mcp: {
     title: 'MCP',
-    desc: 'Your installed MCPs and the configured tentacles you can install from.',
+    desc: 'Your installed MCPs and the configured tentacles you can connect to.',
   },
   profile: {
     title: 'Profile',
@@ -80,7 +86,10 @@ function Effort({ efforts }: { efforts: EffortStep[] }) {
 
 function DotCell({ color, children }: { color: string; children: ReactNode }) {
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+    <span style={{
+      display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600,
+      color: `color-mix(in srgb, ${color} 50%, var(--fg-1))`,
+    }}>
       <i style={{ width: 6, height: 6, background: color, display: 'block', flexShrink: 0 }} />
       {children}
     </span>
@@ -130,7 +139,11 @@ const agentColumns: TableColumn<ApiAgentInfo>[] = [
         {a.routes.map((m) => (
           <span
             key={m.model}
-            style={{ display: 'flex', alignItems: 'center', gap: 4, minWidth: 0, color: 'var(--fg-2)' }}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4, minWidth: 0,
+              color: m.model === a.default_model ? 'var(--fg-1)' : 'var(--fg-2)',
+              fontWeight: m.model === a.default_model ? 700 : 500,
+            }}
           >
             <span style={ellipsis}>{m.model}</span>
             {m.model === a.default_model && (
@@ -169,12 +182,17 @@ const serverColumns: TableColumn<ApiMcp>[] = [
     width: '22%',
     render: (m) => <span style={{ color: 'var(--fg-1)', fontWeight: 700 }}>{m.name}</span>,
   },
-  { key: 'namespace', label: 'Namespace', mono: true, render: (m) => m.namespace },
+  {
+    key: 'namespace',
+    label: 'Namespace',
+    mono: true,
+    render: (m) => <span style={{ color: 'color-mix(in srgb, var(--color-accent) 60%, var(--fg-1))', fontWeight: 600 }}>{m.namespace}</span>,
+  },
   {
     key: 'url',
     label: 'Endpoint',
     mono: true,
-    render: (m) => <span title={m.url} style={{ ...ellipsis, display: 'block', maxWidth: 240 }}>{m.url}</span>,
+    render: (m) => <span title={m.url} style={{ ...ellipsis, display: 'block', maxWidth: 240, fontWeight: 400 }}>{m.url}</span>,
   },
   { key: 'auth', label: 'Auth', mono: true, render: (m) => m.auth_kind },
   {
@@ -182,17 +200,6 @@ const serverColumns: TableColumn<ApiMcp>[] = [
     label: 'Tentacle',
     mono: true,
     render: (m) => m.tentacle_id ?? '—',
-  },
-  {
-    key: 'state',
-    label: 'State',
-    mono: true,
-    align: 'right',
-    render: (m) => (
-      <DotCell color={m.enabled ? 'var(--color-teal)' : 'var(--fg-3)'}>
-        {m.enabled ? 'enabled' : 'disabled'}
-      </DotCell>
-    ),
   },
 ]
 
@@ -209,17 +216,62 @@ const tentacleColumns: TableColumn<ApiMcpTentacle>[] = [
     key: 'url',
     label: 'Endpoint',
     mono: true,
-    render: (t) => <span title={t.url} style={{ ...ellipsis, display: 'block', maxWidth: 280 }}>{t.url}</span>,
+    render: (t) => <span title={t.url} style={{ ...ellipsis, display: 'block', maxWidth: 280, fontWeight: 400 }}>{t.url}</span>,
   },
   { key: 'auth', label: 'Auth', mono: true, align: 'right', render: (t) => t.auth_kind },
 ]
 
-/** Never connected and connected-then-lost are different answers, and the page
- *  keeps them apart: a grant that lapsed is not one that was never asked for. */
-function grantState(grant: ApiMcpServerSummary): { text: string; color: string } {
-  if (grant.oauth?.status === 'active') return { text: 'Authorized', color: 'var(--color-teal)' }
-  if (grant.oauth?.status === 'invalid') return { text: 'Reauthorize', color: 'var(--color-red)' }
-  return { text: 'Not authorized', color: 'var(--fg-3)' }
+function McpConnection({ mcp, grant, loading, onConnect }: {
+  mcp: ApiMcp
+  grant?: ApiMcpServerSummary
+  loading: boolean
+  onConnect: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const status = grant?.oauth?.status
+  const pending = status === 'pending_browser' || status === 'pending_device'
+  const ready = mcp.enabled && (mcp.auth_kind !== 'oauth' || status === 'active')
+  const unavailable = mcp.auth_kind === 'oauth' && !grant?.oauth
+  const text = !mcp.enabled ? 'Disabled' : ready ? 'Ready'
+    : unavailable ? loading ? 'Loading…' : 'Unavailable' : 'Pending'
+  const color = ready ? 'var(--color-teal)' : mcp.enabled && pending ? 'var(--color-accent)' : 'var(--fg-3)'
+
+  const enable = async () => {
+    if (busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      await enableMcp(mcp.id)
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['mcp-servers'] }),
+        queryClient.invalidateQueries({ queryKey: ['profile'] }),
+      ])
+    } catch (caught) {
+      setError(refusalText(caught) ?? 'The MCP could not be enabled.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="trk-mcp-connection">
+      {!mcp.enabled || pending ? (
+        <button
+          type="button"
+          className="trk-mcp-status hov-wash"
+          disabled={busy}
+          title={mcp.enabled ? 'Continue authorization' : 'Enable MCP'}
+          onClick={mcp.enabled ? onConnect : () => void enable()}
+        >
+          <DotCell color={color}>{busy ? 'Enabling…' : text}</DotCell>
+        </button>
+      ) : ready || unavailable ? (
+        <DotCell color={color}>{text}</DotCell>
+      ) : (
+        <Button style={{ padding: '4px 7px', fontSize: 9 }} onClick={onConnect}>Connect</Button>
+      )}
+      {error && <div role="alert"><Refusal>{error}</Refusal></div>}
+    </div>
+  )
 }
 
 function ChannelProfilePanel({ profile, onClose }: { profile: ApiUserProfile; onClose: () => void }) {
@@ -388,6 +440,9 @@ export function ControlPage() {
   const mgmtSec = useConsole((s) => s.mgmtSec)
   const { goChat } = useConsole((s) => s.actions)
   const [mcpView, setMcpView] = useState<McpView>('installed')
+  const [installOpen, setInstallOpen] = useState(false)
+  const [authorization, setAuthorization] = useState<ApiMcp | null>(null)
+  const [installed, setInstalled] = useState<ApiMcp | null>(null)
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null)
   const profileTrigger = useRef<HTMLButtonElement>(null)
   const agentsQuery = useAgents()
@@ -453,18 +508,10 @@ export function ControlPage() {
   const installedColumns: TableColumn<ApiMcp>[] = [
     ...serverColumns,
     {
-      key: 'authorization',
-      label: 'Authorization',
+      key: 'connection',
+      label: 'Connection',
       mono: true,
-      render: (mcp) => {
-        if (mcp.auth_kind !== 'oauth') {
-          return mcp.auth_kind === 'bearer' ? 'Token saved' : 'Not required'
-        }
-        const grant = grants.get(mcp.id)
-        if (!grant) return profileQuery.isPending ? 'Loading…' : 'Unavailable'
-        const { text, color } = grantState(grant)
-        return <DotCell color={color}>{text}</DotCell>
-      },
+      render: (mcp) => <McpConnection mcp={mcp} grant={grants.get(mcp.id)} loading={profileQuery.isPending} onConnect={() => setAuthorization(mcp)} />,
     },
   ]
   const count =
@@ -523,8 +570,31 @@ export function ControlPage() {
               <p className="trk-control-note">
                 {mcpView === 'installed'
                   ? 'These MCPs belong to you. Each namespace identifies a separate installation, including multiple workspaces from the same service.'
-                  : 'Server-configured tentacles available to install. Installing creates your own MCP; it does not connect other users.'}
+                  : 'Configured MCP templates. Choose a tentacle when installing your own MCP.'}
               </p>
+              {installed && (
+                <p className="trk-control-note" role="status">
+                  Installed {installed.name} as <strong>{installed.namespace}</strong>.
+                </p>
+              )}
+              {installOpen && (
+                <McpInstallDialog
+                  onClose={() => setInstallOpen(false)}
+                  onInstalled={(mcp) => {
+                    setInstalled(mcp)
+                    setMcpView('installed')
+                    setInstallOpen(false)
+                    if (mcp.auth_kind === 'oauth') setAuthorization(mcp)
+                  }}
+                />
+              )}
+              {authorization && <McpAuthorizationDialog key={authorization.id} mcp={authorization} onClose={() => setAuthorization(null)} />}
+              {mcpView === 'installed' && (
+                <button type="button" className="trk-create-button hov-accent-border-wash" onClick={() => {
+                  setInstalled(null)
+                  setInstallOpen(true)
+                }}>+ Install MCP</button>
+              )}
               {mcpView === 'installed' ? (servers ? (
                 <Table
                   columns={installedColumns}

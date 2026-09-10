@@ -209,12 +209,10 @@ class McpManager(Manager, Locks[uuid.UUID]):
             raise McpUnavailable
         summary = mcp.summary
         if isinstance(mcp, OAuthMcp):
-            status = None
+            authorization: McpAuthorizationResult = McpAuthorizationStatus(status=None)
             flows: list[OAuthFlowKind] = []
             if self.oauth is not None:
-                status = await self.oauth.connection_status(
-                    user, mcp.tentacle_id or "mcp", mcp_id=mcp.id
-                )
+                authorization = await self.authorization_status(user, mcp)
                 if mcp.tentacle_id is None:
                     if self.oauth.callback_base_uri is not None:
                         flows = ["authorization_code"]
@@ -222,7 +220,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     connector = self.oauth.connectors.get(mcp.tentacle_id)
                     if connector is not None:
                         flows = [flow.kind for flow in connector.flows]
-            summary.oauth = McpOAuthSummary(status=status, flows=flows)
+            summary.oauth = McpOAuthSummary(status=authorization.status, flows=flows)
         return summary
 
     async def enable(self, user_id: uuid.UUID, mcp_id: uuid.UUID) -> Mcp:
@@ -373,19 +371,33 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     return McpDeviceAuthorizationPending(
                         retry_after_seconds=result.retry_after_seconds
                     )
-        status = await self.oauth.connection_status(user, connector_id, mcp_id=mcp_id)
-        if status is None:
+        return await self.authorization_status(user, instance)
+
+    async def authorization_status(
+        self, user: User, mcp: OAuthMcp
+    ) -> McpAuthorizationResult:
+        if self.oauth is None or mcp.user_id != user.id:
+            raise McpUnavailable
+        connector_id = mcp.tentacle_id or "mcp"
+        status = await self.oauth.connection_status(user, connector_id, mcp_id=mcp.id)
+        if status != "active":
             async with async_session() as session:
                 pending = await session.first(
                     OAuthOperation,
                     expressions=[
                         OAuthOperation["user_id"] == user.id,
-                        OAuthOperation["mcp_id"] == mcp_id,
+                        OAuthOperation["mcp_id"] == mcp.id,
+                        OAuthOperation["connector_id"] == connector_id,
                         OAuthOperation["consumed_at"].is_(None),
                         OAuthOperation["expires_at"] > datetime.now(UTC),
                     ],
+                    order_bys=[OAuthOperation["id"].desc()],
                 )
             if pending is not None:
+                if pending.interval_seconds is not None:
+                    return McpDeviceAuthorizationPending(
+                        retry_after_seconds=pending.interval_seconds
+                    )
                 return McpBrowserAuthorizationPending()
         return McpAuthorizationStatus(status=status)
 

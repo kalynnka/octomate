@@ -1,7 +1,8 @@
 /** Account details, password dialog, and the dedicated API keys panel. */
 import { useEffect, useRef, useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
-import { chipLabel, ellipsis, fieldLabel, label, mono, serif } from '@/components/text'
+import { Table, type TableColumn } from '@/components/Table'
+import { chipLabel, fieldLabel, label, mono, serif } from '@/components/text'
 import {
   createApiKey,
   revokeApiKey,
@@ -321,7 +322,7 @@ function IssuedKey({ issued, onDone }: { issued: ApiIssuedKey; onDone: () => voi
   )
 }
 
-function KeyRow({ item }: { item: ApiApiKey }) {
+function KeyState({ item }: { item: ApiApiKey }) {
   const [arming, setArming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -354,36 +355,16 @@ function KeyRow({ item }: { item: ApiApiKey }) {
   }
 
   return (
-    <div style={{ padding: '5px 16px', opacity: live ? 1 : 0.7 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ ...mono(9.5, 700), color: 'var(--fg-1)', width: 120, flexShrink: 0, ...ellipsis }}>
-          {item.name}
-        </span>
-        <span style={{ ...mono(8.5), color: 'var(--fg-2)', flexShrink: 0 }}>{item.key_prefix}…</span>
-        <span style={{ display: 'inline-flex', gap: 3, flexShrink: 0 }}>
-          {item.scopes.map((scope) => (
-            <span
-              key={scope}
-              style={{
-                ...chipLabel,
-                color: 'var(--color-accent)',
-                border: '1px solid var(--color-accent)',
-                padding: '1px 4px',
-              }}
-            >
-              {scope}
-            </span>
-          ))}
-        </span>
-        <span style={{ ...mono(8), color: 'var(--fg-3)', flex: 1, ...ellipsis }}>
-          issued {day(item.created_at)}
-        </span>
-        <span style={{ ...label(7.5, '.1em'), color: state.color, whiteSpace: 'nowrap', flexShrink: 0 }}>
+    <div style={{ opacity: live ? 1 : 0.7 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
+        <span style={{ ...label(9, '.1em'), color: state.color }}>
           {state.text}
         </span>
         {live && (
-          <span
-            onClick={busy ? undefined : () => void revoke()}
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void revoke()}
             onMouseLeave={() => {
               if (!busy) setArming(false)
             }}
@@ -401,7 +382,7 @@ function KeyRow({ item }: { item: ApiApiKey }) {
             }}
           >
             {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
-          </span>
+          </button>
         )}
       </div>
       {error && <Refusal>{error}</Refusal>}
@@ -409,8 +390,32 @@ function KeyRow({ item }: { item: ApiApiKey }) {
   )
 }
 
+const keyColumns: TableColumn<ApiApiKey>[] = [
+  {
+    key: 'name', label: 'Name', mono: true,
+    render: (item) => <strong style={{ color: 'var(--fg-1)', overflowWrap: 'anywhere' }}>{item.name}</strong>,
+  },
+  { key: 'key_prefix', label: 'Key', mono: true, render: (item) => `${item.key_prefix}…` },
+  {
+    key: 'scopes', label: 'Scopes',
+    render: (item) => (
+      <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
+        {item.scopes.map((scope) => (
+          <span key={scope} style={{
+            ...chipLabel, color: 'var(--color-accent)',
+            border: '1px solid var(--color-accent)', padding: '1px 4px',
+          }}>{scope}</span>
+        ))}
+      </span>
+    ),
+  },
+  { key: 'created_at', label: 'Issued', mono: true, render: (item) => day(item.created_at) },
+  { key: 'state', label: 'Status', align: 'right', render: (item) => <KeyState item={item} /> },
+]
+
 function PasswordDialog({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const username = useAuth((s) => s.user?.username)
   useEffect(() => {
     const element = dialog.current!
     element.showModal()
@@ -418,12 +423,28 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
   }, [])
 
   return (
-    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" onCancel={onClose}>
-      <header className="trk-dialog-header">
-        <h2 id="password-title" style={{ ...label(14), margin: 0 }}>Change password</h2>
-        <Button variant="ghost" onClick={onClose}>Close</Button>
-      </header>
-      <div className="trk-dialog-body"><PasswordForm onCancel={onClose} /></div>
+    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" aria-describedby="password-effect" onCancel={onClose}>
+      <div className="trk-dialog-layout">
+        <aside className="trk-dialog-panel">
+          <span className="trk-dialog-index" aria-hidden="true">04</span>
+          <span className="trk-dialog-eyebrow">Account security</span>
+          <h2 id="password-title">Change password</h2>
+          <dl className="trk-dialog-summary">
+            <div><dt>Account</dt><dd>@{username}</dd></div>
+            <div><dt>Access</dt><dd>Password</dd></div>
+          </dl>
+          <p id="password-effect" className="trk-dialog-caption">
+            Changing your password signs out all browser sessions. Sign in again with your new password.
+          </p>
+        </aside>
+        <div className="trk-dialog-main">
+          <header className="trk-dialog-header">
+            <span>Password details</span>
+            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close password dialog" onClick={onClose}>×</button>
+          </header>
+          <PasswordForm onCancel={onClose} />
+        </div>
+      </div>
     </dialog>
   )
 }
@@ -461,59 +482,43 @@ export function ApiKeysPanel() {
   const [issued, setIssued] = useState<ApiIssuedKey | null>(null)
 
   return (
-    <div className="trk-control-scroll">
-      <p style={{ margin: '0 16px 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
-        A key lets a client machine speak for this account: <b>hooks</b> for native session
-        hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
-        hash and shows the token once, when it is issued.
-      </p>
-      {issued && (
-        <IssuedKey
-          issued={issued}
-          onDone={() => setIssued(null)}
-        />
-      )}
-      {issuing ? (
-        <NewKeyForm
-          onIssued={(key) => {
-            setIssued(key)
-            setIssuing(false)
-          }}
-          onCancel={() => setIssuing(false)}
-        />
-      ) : (
-        <span
-          onClick={() => setIssuing(true)}
-          className="hov-accent-border-wash"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '2px 16px 8px',
-            height: 22,
-            boxSizing: 'border-box',
-            border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
-            color: 'var(--color-accent)',
-            ...label(8, '.14em'),
-            cursor: 'pointer',
-          }}
-        >
-          + new key
-        </span>
-      )}
-      {loadError && (
-        <div style={{ padding: '0 16px' }}>
-          <Refusal>{refusalText(loadError) ?? 'The key list could not be read.'}</Refusal>
-        </div>
-      )}
-      {keys && keys.length === 0 && (
-        <div style={{ padding: '8px 16px 4px', ...mono(8.5), color: 'var(--fg-3)' }}>
-          no keys issued yet
-        </div>
-      )}
-      {(keys ?? []).map((item) => (
-        <KeyRow key={item.id} item={item} />
-      ))}
-    </div>
+    <>
+      <div className="trk-control-scroll" style={{ flexShrink: 0, maxHeight: '60%' }}>
+        <p style={{ margin: '0 0 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
+          A key lets a client machine speak for this account: <b>hooks</b> for native session
+          hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
+          hash and shows the token once, when it is issued.
+        </p>
+        {issued && (
+          <IssuedKey
+            issued={issued}
+            onDone={() => setIssued(null)}
+          />
+        )}
+        {issuing ? (
+          <NewKeyForm
+            onIssued={(key) => {
+              setIssued(key)
+              setIssuing(false)
+            }}
+            onCancel={() => setIssuing(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setIssuing(true)}
+            className="trk-create-button hov-accent-border-wash"
+          >
+            + new key
+          </button>
+        )}
+        {loadError && (
+          <div style={{ padding: '0 16px' }}>
+            <Refusal>{refusalText(loadError) ?? 'The key list could not be read.'}</Refusal>
+          </div>
+        )}
+      </div>
+      {keys && <Table columns={keyColumns} rows={keys} rowKey={(item) => item.id} dense empty="No keys issued yet." />}
+    </>
   )
 }

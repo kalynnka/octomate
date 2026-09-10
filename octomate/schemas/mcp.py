@@ -142,8 +142,10 @@ class McpTentacleInfo(BaseModel):
 
 
 class McpOAuthSummary(BaseModel):
-    status: OAuthConnectionStatus | None = Field(
-        description="Stored authorization status; null means no saved connection."
+    status: (
+        OAuthConnectionStatus | Literal["pending_browser", "pending_device", None]
+    ) = Field(
+        description="Stored grant or live authorization status; null means neither exists."
     )
     flows: list[OAuthFlowKind]
 

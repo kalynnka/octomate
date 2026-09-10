@@ -668,7 +668,7 @@ async def test_management_api_authorizes_only_the_logged_in_users_mcp(
         }
         await host.oauth.invalidate(user, "github", mcp_id=device.id)
         assert (await client.post(f"{base}/{device.id}/confirm")).json() == {
-            "status": "invalid"
+            "status": "pending_browser"
         }
         client.cookies.clear()
         assert (await client.post(f"{base}/{device.id}/connect")).status_code == 401

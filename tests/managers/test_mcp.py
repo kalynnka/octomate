@@ -4,6 +4,7 @@ import asyncio
 from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import httpx2
@@ -19,6 +20,7 @@ from octomate import Octomate
 from octomate.config import McpPoolConfig, OctomateConfig
 from octomate.database import async_session
 from octomate.managers.mcp import McpClientKey, McpManager, McpUnavailable
+from octomate.managers.oauth import OAuthManager
 from octomate.managers.user import UserManager
 from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCPS, tentacles_mcp
 from octomate.schemas.mcp import (
@@ -28,9 +30,10 @@ from octomate.schemas.mcp import (
     McpVariant,
     OAuthMcp,
 )
-from octomate.schemas.oauth import OAuthCipher, OAuthConnection
+from octomate.schemas.oauth import OAuthCipher, OAuthConnection, OAuthOperation
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.claude.mcp import sdk_tool
+from octomate.types.oauth import OAuthConnectionStatus
 from tests.agent.test_mcp import a_turn, an_upstream, upstream_of
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import fixed_session
@@ -49,6 +52,69 @@ def manager() -> McpManager:
         UserManager(),
         OAuthCipher(SecretStr(urlsafe_b64encode(bytes(range(32))).decode())),
     )
+
+
+@pytest.mark.parametrize(
+    ("interval", "expired", "consumed", "grant_status", "expected"),
+    [
+        (None, False, False, None, "pending_browser"),
+        (5, False, False, None, "pending_device"),
+        (5, True, False, None, None),
+        (None, False, True, None, None),
+        (None, False, False, "invalid", "pending_browser"),
+        (None, True, False, "invalid", "invalid"),
+        (5, False, True, "invalid", "invalid"),
+        (5, False, False, "active", "active"),
+    ],
+)
+async def test_summary_reports_live_authorization_without_polling(
+    manager: McpManager,
+    interval: int | None,
+    expired: bool,
+    consumed: bool,
+    grant_status: OAuthConnectionStatus | None,
+    expected: str | None,
+) -> None:
+    user, other = await a_user("alice"), await a_user("bob")
+    manager.oauth = OAuthManager(users=manager.users)
+    mcp = OAuthMcp(
+        user_id=user.id,
+        name="Work",
+        namespace="personal/work",
+        url="https://mcp.example/mcp",
+    )
+    now = datetime.now(UTC)
+    async with async_session() as session:
+        session.add(mcp)
+        await session.flush()
+        session.add(
+            OAuthOperation(
+                user_id=user.id,
+                mcp_id=mcp.id,
+                connector_id="mcp",
+                encrypted_data=b"never expose or decrypt this pending payload",
+                expires_at=now + timedelta(minutes=-1 if expired else 5),
+                consumed_at=now if consumed else None,
+                interval_seconds=interval,
+            )
+        )
+        if grant_status is not None:
+            session.add(
+                OAuthConnection(
+                    user_id=user.id,
+                    mcp_id=mcp.id,
+                    connector_id="mcp",
+                    status=grant_status,
+                    encrypted_tokens=b"never expose this token",
+                )
+            )
+        await session.commit()
+    summary = await manager.summary(user, mcp)
+    assert summary.oauth is not None
+    assert summary.oauth.status == expected
+    assert "never expose" not in summary.model_dump_json()
+    with pytest.raises(McpUnavailable):
+        await manager.authorization_status(other, mcp)
 
 
 def install_request(token: str | None = None) -> McpInstallRequest:

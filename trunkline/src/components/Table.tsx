@@ -33,7 +33,7 @@ function Row<R>({
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       style={{
-        background: hover ? 'var(--color-surface)' : 'transparent',
+        background: hover ? 'var(--card-bg-hover)' : 'transparent',
         transition: 'background .15s',
       }}
     >
@@ -45,8 +45,8 @@ function Row<R>({
             borderBottom: '1px solid var(--line-divider)',
             textAlign: column.align ?? 'left',
             ...(column.mono
-              ? { ...mono(12), color: 'var(--fg-2)' }
-              : { fontSize: 13.5, color: 'var(--fg-1)' }),
+              ? { ...mono(12, 500), color: 'var(--fg-2)' }
+              : { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--fg-1)' }),
           }}
         >
           {column.render(row)}
@@ -90,9 +90,9 @@ export function Table<R>({
                   position: 'sticky',
                   top: 0,
                   zIndex: 1,
-                  background: 'var(--card-bg)',
+                  background: 'var(--card-bg-hover)',
                   ...label(10, '.15em'),
-                  color: 'var(--fg-3)',
+                  color: 'var(--fg-2)',
                   textAlign: column.align ?? 'left',
                   padding: pad,
                   borderBottom: '2px solid var(--color-ink)',

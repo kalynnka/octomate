@@ -7,13 +7,15 @@
  * Every request goes through `apiFetch`: the reads are private to the signed-in
  * account, and the writes must carry the same-origin header (see lib/api/auth).
  */
-import { apiFetch } from './auth'
+import { apiFetch, refuse } from './auth'
 import type {
   ApiAgentInfo,
   ApiChannelInfo,
   ApiConversation,
   ApiDeferredBatch,
   ApiMcp,
+  ApiMcpAuthorization,
+  ApiMcpAuthorizationResult,
   ApiMcpTentacle,
   ApiPermissionModes,
   ApiProfileInfo,
@@ -23,6 +25,8 @@ import type {
   ApiThreadMessage,
   BatchResponseBody,
   DirectiveBody,
+  McpInstallBody,
+  OAuthFlowKind,
   WireEvent,
 } from './events'
 
@@ -79,13 +83,6 @@ export function fetchProfile(): Promise<ApiProfileInfo> {
   return getJson<ApiProfileInfo>('/api/trunkline/profile')
 }
 
-/*
- * The MCP reads live under /api/mcp, not /api/trunkline: they are the account's
- * own servers, and the agent-facing management tools work the same rows. The
- * console reads them and does not install here — installing is the tools' job,
- * and a second door onto it would be a second place to keep correct.
- */
-
 /** The MCP servers this account installed, enabled and disabled alike. */
 export function fetchMcpServers(): Promise<ApiMcp[]> {
   return getJson<ApiMcp[]>('/api/mcp')
@@ -94,6 +91,30 @@ export function fetchMcpServers(): Promise<ApiMcp[]> {
 /** The configured tentacles that can supply an MCP, with their auth kind. */
 export function fetchMcpTentacles(): Promise<ApiMcpTentacle[]> {
   return getJson<ApiMcpTentacle[]>('/api/mcp/tentacles')
+}
+
+export async function installMcp(body: McpInstallBody): Promise<ApiMcp> {
+  const res = await apiFetch('/api/mcp', { method: 'POST', json: body })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcp
+}
+
+export async function connectMcp(id: string, flow: OAuthFlowKind): Promise<ApiMcpAuthorization> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/connect?flow=${flow}`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcpAuthorization
+}
+
+export async function confirmMcp(id: string): Promise<ApiMcpAuthorizationResult> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/confirm`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcpAuthorizationResult
+}
+
+export async function enableMcp(id: string): Promise<ApiMcp> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/enable`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcp
 }
 
 /**

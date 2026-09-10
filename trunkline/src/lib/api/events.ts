@@ -389,6 +389,19 @@ export interface ApiAgentInfo {
 }
 
 export type McpAuthKind = 'none' | 'bearer' | 'oauth'
+export type OAuthFlowKind = 'device' | 'authorization_code'
+
+/** OAuthStartResult, returned only to the user starting authorization. */
+export type ApiMcpAuthorization = { operation_id: string; expires_at: string } & (
+  | { authorization_uri: string }
+  | { verification_uri: string; verification_uri_complete: string | null; user_code: string; interval_seconds: number }
+)
+
+/** McpAuthorizationResult from the confirmation endpoint. */
+export type ApiMcpAuthorizationResult =
+  | { status: 'active' | 'invalid' | null }
+  | { status: 'pending_browser' }
+  | { status: 'pending_device'; retry_after_seconds: number }
 
 /** One MCP server this user installed (`GET /api/mcp`). */
 export interface ApiMcp {
@@ -404,6 +417,12 @@ export interface ApiMcp {
   created_at: string
   updated_at: string
 }
+
+/** McpInstallRequest: a custom endpoint or a configured tentacle. */
+export type McpInstallBody = Pick<ApiMcp, 'name' | 'namespace' | 'url'> & (
+  | { auth: { kind: 'none' | 'oauth' } | { kind: 'bearer'; token: string }; tentacle_id?: never }
+  | { tentacle_id: string; auth?: never }
+)
 
 /** A configured tentacle that can supply an MCP (`GET /api/mcp/tentacles`). */
 export interface ApiMcpTentacle {
@@ -434,8 +453,8 @@ export interface ApiMcpServerSummary {
   enabled: boolean
   auth_kind: McpAuthKind
   oauth: {
-    flows: ('device' | 'authorization_code')[]
-    status: 'active' | 'invalid' | null
+    flows: OAuthFlowKind[]
+    status: ApiMcpAuthorizationResult['status']
   } | null
 }
 
