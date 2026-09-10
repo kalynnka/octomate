@@ -6,19 +6,19 @@ from datetime import UTC, datetime
 
 import pytest
 from pydantic import JsonValue
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config.users import UserConfig
 from octomate.database import async_session
-from octomate.managers.user import UserManager
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
-from tests.support.managers import a_loaded_thread
+from tests.support.managers import a_loaded_thread, a_thread
+from tests.support.users import a_user
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -171,67 +171,36 @@ async def test_hooks_sketch_the_turns_run_live() -> None:
     assert [(run.start_offset, run.end_offset) for run in runs] == [(None, None)]
 
 
-async def test_a_session_octomate_drives_is_answered_but_not_recorded() -> None:
-    """An operator's hook settings fire for the tentacle's own sessions too, and this
-    pipe does not reach around them to stop that. It just declines to record what the
-    tentacle is already recording as it drives it — otherwise the same conversation
-    would be written twice, once by the runner and once by its own hooks."""
+async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
         octomate,
         ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
     )
-
-    # as the tentacle holds it: from before the session is launched until its client's
-    # teardown has waited the CLI out.
-    with ingest.driving(SESSION_ID):
-        await submit(ingest, "p1", "hello")
-        await stop(ingest, "p1", "hi")
-        await ingest.handle(hook("SessionEnd", reason="other"), SENDER)
-
-    assert await ledger(octomate) == []  # no chat log
-    assert await sketched(octomate) == []  # no run
-    async with async_session() as session:
-        assert await session.list(AgentRun, limit=None, order_bys=[]) == []
-
-
-async def test_a_session_octomate_does_not_drive_is_still_recorded() -> None:
-    """Claiming one session says nothing about the next: a native client's session runs
-    alongside the tentacle's and is ingested as usual."""
-    octomate = Octomate()
-    ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+    sdk_conversation = await octomate.conversations.ensure(
+        await a_thread(), agent_tentacle_id="claude"
+    )
+    await octomate.conversations.record_agent_run(
+        sdk_conversation,
+        run_id="sdk-run",
+        messages=[ModelRequest(parts=[UserPromptPart(content="SDK prompt")])],
+        external_id=SESSION_ID,
     )
 
-    with ingest.driving("some-other-session"):
-        await submit(ingest, "p1", "hello")
+    await submit(ingest, "p1", "hello")
+    await stop(ingest, "p1", "hi")
+    await ingest.handle(hook("SessionEnd", reason="other"), SENDER)
 
-    assert await ledger(octomate) == [("inbound", "p1", "hello")]
-
-
-async def test_the_claim_outlives_the_first_of_two_overlapping_runs() -> None:
-    """A follow-up run supersedes a live one on the same session, and the two overlap
-    while the first unwinds. The claim is counted, so the run that ends first does not
-    strip it from the one still driving."""
-    octomate = Octomate()
-    ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
-    )
-
-    with ingest.driving(SESSION_ID):  # the superseded run
-        with ingest.driving(
-            SESSION_ID
-        ):  # the follow-up, taken before the first unwinds
-            pass
-        await submit(ingest, "p1", "hello")  # still driven, so still not ingested
-
-    assert await ledger(octomate) == []
-    assert ingest.driven == {}  # both released: nothing kept once no run holds it
-
-    await submit(ingest, "p2", "after")  # the claim is gone, so this is a native turn
-    assert await ledger(octomate) == [("inbound", "p2", "after")]
+    assert await ledger(octomate) == [
+        ("inbound", "p1", "hello"),
+        ("outbound", "p1", "hi"),
+    ]
+    assert await sketched(octomate) == [("p1", ["hello", "hi"])]
+    sdk = await octomate.conversations.get(sdk_conversation.id)
+    assert sdk is not None
+    assert sdk.external_id == SESSION_ID
+    assert [run.id for run in sdk.runs] == ["sdk-run"]
+    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
 
 
 async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
@@ -351,10 +320,8 @@ async def test_the_ledger_row_belongs_to_the_bearers_user() -> None:
     """The principal is the point: an ingested prompt's sender profile is owned
     by the user whose token authenticated the hook, so two humans' terminals
     write distinguishable history."""
-    octomate = Octomate(
-        users=UserManager({"lu": UserConfig.model_validate({"secret": "lu-token"})})
-    )
-    await octomate.users.reconcile()
+    await a_user("lu")
+    octomate = Octomate()
     ingest = ClaudeHookIngest(
         octomate,
         ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),

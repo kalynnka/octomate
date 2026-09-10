@@ -8,7 +8,6 @@ from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
 from sqlalchemy import (
     JSON,
-    DateTime,
     ForeignKey,
     Index,
     Integer,
@@ -19,7 +18,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, UTCDateTime
 from octomate.types.threads import (
     ChannelActorKind,
     MessageBindingKind,
@@ -69,7 +68,7 @@ class MessageBinding(Base, TransmuterProxiedMixin):
     position: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
@@ -194,13 +193,13 @@ class Thread(Base, TransmuterProxiedMixin):
     )
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
@@ -292,7 +291,9 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     reply_id: Mapped[str] = mapped_column(
         String, nullable=False, default="", index=True
     )
-    happened_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    happened_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, index=True
+    )
 
     direction: Mapped[ThreadMessageDirection] = mapped_column(
         String, nullable=False, index=True
@@ -326,7 +327,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     raw: Mapped[str] = mapped_column(String, nullable=False, default="")
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
@@ -408,7 +409,7 @@ class Handoff(Base, TransmuterProxiedMixin):
     brief: Mapped[str] = mapped_column(String, nullable=False, default="")
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,

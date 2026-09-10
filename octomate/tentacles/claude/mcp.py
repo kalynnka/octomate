@@ -1,7 +1,7 @@
 """Octomate's MCP server projected into Claude's native tool mechanism.
 
 A driven Claude run mounts the served server — the gateway's spells, the history
-tools, and every proxied provider's tools with the linking pair — in process,
+tools, and lazy provider discovery and calls with the linking pair — in process,
 with the turn's `OctomateSession` closed over — identity by closure, so nothing on
 the wire names a session, and the stdio control protocol carries the calls over
 an SSH transport unchanged. The server is the same one `/octomate/mcp` serves;
@@ -42,12 +42,15 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
                 "content": [{"type": "text", "text": str(refusal)}],
                 "is_error": True,
             }
-        return {
+        response: dict[str, JsonValue] = {
             "content": [
                 block.model_dump(mode="json", exclude_none=True)
                 for block in result.content
             ]
         }
+        if result.is_error:
+            response["is_error"] = True
+        return response
 
     return SdkMcpTool(
         name=tool.name,
@@ -65,7 +68,7 @@ async def octomate_mcp_server(
     """The served server, mounted in process for this turn: every call runs
     against `session`, a delivering spell writes through `thread_manager`, which
     the history tools read, and `tentacles` the MCP tentacles the turn may
-    reach — listed now, as the person the turn is for."""
+    reach through namespace discovery as the person the turn is for."""
 
     async def fixed() -> OctomateSession:
         return session

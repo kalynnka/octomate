@@ -41,9 +41,9 @@ def probing(monkeypatch: pytest.MonkeyPatch, *commands: tuple[str, ...]) -> None
     """Put the probe last among the real managers, so a tree carrying `probe.lock`
     resolves to it while everything else keeps answering as it does in production.
     """
-    monkeypatch.setattr(
-        dependencies, "MANAGERS", (*MANAGERS, Probe(commands or (RAN,)))
-    )
+    probe = Probe()
+    monkeypatch.setattr(probe, "commands", commands or (RAN,))
+    monkeypatch.setattr(dependencies, "MANAGERS", (*MANAGERS, probe))
 
 
 def runs(tree: Path) -> int:

@@ -8,6 +8,7 @@ from anyio import to_thread
 from sqlalchemy import delete
 
 from octomate.database import async_session
+from octomate.managers.base import Manager
 from octomate.schemas.spills import ToolOutputSpill
 
 # zlib's default. What a spill actually holds — MCP JSON, logs, source — measures
@@ -17,7 +18,7 @@ COMPRESSION_LEVEL = 6
 
 
 @dataclass
-class SpillStore:
+class SpillStore(Manager):
     """The tool-output-limits `OverflowStore`, backed by the Octomate database.
 
     The harness ships only a local-file store, whose handles resolve against one

@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING, ClassVar, Literal
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
-from sqlalchemy import JSON, DateTime, ForeignKey, String, Uuid
+from sqlalchemy import JSON, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base, MapperArgs
+from octomate.models.base import Base, MapperArgs, UTCDateTime
 
 if TYPE_CHECKING:
     from octomate.models.runs import AgentRun
@@ -35,7 +35,7 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     kind: Mapped[str] = mapped_column(String, nullable=False, index=True)
     parts: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     timestamp: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True, index=True
+        UTCDateTime, nullable=True, index=True
     )
     # `metadata` is reserved by SQLAlchemy's DeclarativeBase for the table
     # MetaData; expose the column as `meta` on Python and `metadata` in the DB.

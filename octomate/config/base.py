@@ -43,6 +43,7 @@ from pydantic_settings import (
 )
 
 from octomate.config.agents import AgentsConfig
+from octomate.config.auth import AuthConfig
 from octomate.config.channels import ChannelConfigVariant, SlackChannelConfig
 from octomate.config.mcp import McpConfigVariant, OAuthMcpConfig
 from octomate.config.mirrors import MirrorsConfig
@@ -50,7 +51,6 @@ from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
-from octomate.config.users import UsersConfig
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
 
@@ -63,7 +63,7 @@ CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
     "agents.yaml",
     "channels.yaml",
-    "users.yaml",
+    "auth.yaml",
     "projects.yaml",
     "providers.yaml",
     "mcp.yaml",
@@ -127,8 +127,7 @@ class OctomateConfig(BaseSettings):
         description=(
             "Channel tentacles keyed by instance id, `type` selecting the platform — "
             "so one platform can be mounted more than once, a key per app. The key is "
-            "the channel tentacle id throughout: what `users[].profiles` names, and "
-            "what a thread records as its origin."
+            "the channel tentacle id throughout, including a thread's origin."
         ),
     )
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
@@ -143,12 +142,9 @@ class OctomateConfig(BaseSettings):
         ),
     )
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
-    users: UsersConfig = Field(
-        default_factory=UsersConfig,
-        description=(
-            "Registered cross-channel users keyed by stable username; profiles are "
-            "reconciled into the registry at startup."
-        ),
+    auth: AuthConfig | None = Field(
+        default=None,
+        description="Local account credentials; required to sign in to Trunkline.",
     )
     projects: ProjectsConfig = Field(
         default_factory=ProjectsConfig,
@@ -212,76 +208,23 @@ class OctomateConfig(BaseSettings):
 
     @model_validator(mode="after")
     def validate_channel_agent_routes(self) -> Self:
-        """Every channel route must name an agent that is configured, and a model
-        that agent actually offers.
-
-        Neither half names a channel or an agent: the channels are whatever the map
-        holds, and `AgentsConfig.configured_models` owns the knowledge of which
-        agents exist and where each keeps its model names. Adding a platform or an
-        agent therefore changes one place, not this one.
-        """
-        configured = self.agents.configured_models()
+        """Every channel binding must name an enabled, configured agent."""
+        configured = {agent.id for agent in self.agents.configured_agents}
         errors: list[InitErrorDetails] = []
-
         for channel_id, channel in self.channels.items():
-            for index, route in enumerate(channel.agents):
-                location = ("channels", channel_id, "agents", index)
-                models = configured.get(route.agent)
-                if models is None:
-                    # One message whether the name is a typo or an agent left
-                    # undeclared: from a route's point of view there is no
-                    # difference, and both are fixed in the same two places.
+            for index, agent_id in enumerate(channel.agents):
+                if agent_id not in configured:
                     errors.append(
                         InitErrorDetails(
                             type=PydanticCustomError(
                                 "channel_agent_route",
                                 "{agent} does not match a configured agent tentacle",
-                                {"agent": repr(route.agent)},
+                                {"agent": repr(agent_id)},
                             ),
-                            loc=(*location, "agent"),
-                            input=route.agent,
+                            loc=("channels", channel_id, "agents", index),
+                            input=agent_id,
                         )
                     )
-                    continue
-                if route.model not in models:
-                    errors.append(
-                        InitErrorDetails(
-                            type=PydanticCustomError(
-                                "channel_agent_route",
-                                "{model} is not configured in agents.{agent}.models",
-                                {"model": repr(route.model), "agent": route.agent},
-                            ),
-                            loc=(*location, "model"),
-                            input=route.model,
-                        )
-                    )
-        if errors:
-            raise ValidationError.from_exception_data(type(self).__name__, errors)
-        return self
-
-    @model_validator(mode="after")
-    def validate_user_links(self) -> Self:
-        """A typo'd channel id in a user's links must fail the boot, not
-        silently produce a link no channel will ever resolve.
-
-        The native pseudo-channels are not admissible either: a native session
-        is registered by the user's own `secret`, which anchors it on a
-        transient profile — no claimed row exists for a link to seed, so a
-        pseudo-channel link is as unresolvable as any typo."""
-        errors: list[InitErrorDetails] = [
-            InitErrorDetails(
-                type=PydanticCustomError(
-                    "user_link_channel",
-                    "{channel} does not match a configured channel",
-                    {"channel": repr(channel_id)},
-                ),
-                loc=("users", username, "profiles", channel_id),
-                input=profile.channel_user_id,
-            )
-            for username, user in self.users.items()
-            for channel_id, profile in user.profiles.items()
-            if channel_id not in self.channels
-        ]
         if errors:
             raise ValidationError.from_exception_data(type(self).__name__, errors)
         return self

@@ -4,7 +4,9 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import anyio
 import pytest
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -16,7 +18,7 @@ from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from octomate.tentacles.codex.transcript import rollout_line_adapter
 from octomate.tentacles.locks import SessionLocks
-from tests.support.managers import a_loaded_thread
+from tests.support.managers import a_loaded_thread, a_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -130,7 +132,7 @@ async def stream_rollout(
     lines, detach — the server never opens the file itself."""
     state, _ = await tailer.attach_remote(session_id, rollout, SENDER)
     offset = 0
-    for raw in rollout.read_bytes().split(b"\n")[:-1]:
+    for raw in (await anyio.Path(rollout).read_bytes()).split(b"\n")[:-1]:
         end = offset + len(raw) + 1
         await tailer.feed_remote(state, None, raw.decode(), offset, end)
         offset = end
@@ -217,41 +219,58 @@ async def test_a_session_start_hook_never_tails_the_claimed_path(
     assert tailer.sessions == {}
 
 
-async def test_driven_session_hooks_are_ignored() -> None:
+async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     octomate = Octomate()
     ingest, tailer = wired(octomate)
-    with ingest.driving(SESSION_ID):
-        await ingest.handle(
-            CodexHookInput(
-                hook_event_name="UserPromptSubmit",
-                session_id=SESSION_ID,
-                turn_id=TURN_ID,
-                prompt="do not ingest",
-            ),
-            SENDER,
-        )
-
-    thread = await a_loaded_thread(
-        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    sdk_conversation = await octomate.conversations.ensure(
+        await a_thread(), agent_tentacle_id="codex"
     )
-    assert thread.messages == []
-    await tailer.shutdown()
-
-
-async def test_marked_session_start_is_ignored_before_the_sdk_returns_its_id() -> None:
-    octomate = Octomate()
-    ingest, tailer = wired(octomate)
+    await octomate.conversations.record_agent_run(
+        sdk_conversation,
+        run_id="sdk-run",
+        messages=[ModelRequest(parts=[UserPromptPart(content="SDK prompt")])],
+        external_id=SESSION_ID,
+    )
 
     await ingest.handle(
         CodexHookInput(
-            hook_event_name="SessionStart",
+            hook_event_name="UserPromptSubmit",
             session_id=SESSION_ID,
-            octomate_driven=True,
+            turn_id=TURN_ID,
+            prompt="ingest this",
         ),
         SENDER,
     )
 
-    assert await octomate.thread_manager.list_threads() == []
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
+    assert [message.message_text for message in thread.messages] == ["ingest this"]
+    sdk = await octomate.conversations.get(sdk_conversation.id)
+    assert sdk is not None
+    assert sdk.external_id == SESSION_ID
+    assert [run.id for run in sdk.runs] == ["sdk-run"]
+    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
+    await tailer.shutdown()
+
+
+async def test_a_legacy_driven_flag_does_not_suppress_ingestion() -> None:
+    octomate = Octomate()
+    ingest, tailer = wired(octomate)
+
+    await ingest.handle(
+        CodexHookInput.model_validate(
+            {
+                "hook_event_name": "SessionStart",
+                "session_id": SESSION_ID,
+                "octomate_driven": True,
+            }
+        ),
+        SENDER,
+    )
+
+    [thread] = await octomate.thread_manager.list_threads()
+    assert thread.key == ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     await tailer.shutdown()
 
 

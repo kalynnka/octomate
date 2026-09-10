@@ -4,8 +4,9 @@ import asyncio
 import gc
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
-from types import SimpleNamespace
+from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
+from unittest.mock import Mock
 
 import pytest
 from claude_agent_sdk import (
@@ -22,7 +23,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message
-from pydantic import TypeAdapter
+from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent, ToolDenied
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -36,12 +37,14 @@ from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision, TeleportDecision
+from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from tests.support.agents import CLAUDE_MODELS
+from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -85,6 +88,18 @@ class FakeClaudeClient:
     async def __aexit__(self, *exc: object) -> None:
         return None
 
+    async def get_server_info(self) -> JsonObject:
+        return {
+            "models": [
+                {
+                    "value": "a-future-model",
+                    "displayName": "Future model",
+                    "description": "Harness description",
+                }
+            ],
+            "account": {"apiProvider": "firstParty"},
+        }
+
     async def query(self, prompt: str) -> None:
         FakeClaudeClient.last_prompt = prompt
 
@@ -119,16 +134,23 @@ def _tentacle(
     return ClaudeCodeTentacle(
         "claude",
         Octomate(conversations=conversations),
-        config=config or ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=config or ClaudeCodeConfig(),
     )
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    trace_environment = TraceEnvironment(
+        "https://logfire.example/v1/traces", SecretStr("test-token")
+    )
+    trace_config = Mock(return_value=trace_environment)
+    monkeypatch.setattr(claude_base, "octomate_trace_environment", trace_config)
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(conversations, config=ClaudeCodeConfig(instrument=instrument))
 
     events = []
     async with tentacle.run_stream_events(
@@ -143,6 +165,14 @@ async def test_run_stream_events_proxies_events_and_persists(
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
     assert FakeClaudeClient.last_prompt == "fix it"
+    assert trace_config.call_count == int(instrument)
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    if instrument:
+        assert trace_environment.as_env().items() <= options.env.items()
+        assert options.env["CLAUDE_CODE_ENHANCED_TELEMETRY_BETA"] == "1"
+    else:
+        assert "OTEL_TRACES_EXPORTER" not in options.env
 
     # One run persisted; the session id captured from ResultMessage is stored on
     # the conversation for resume.
@@ -179,6 +209,90 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
     assert result.output == "done"
     assert child.external_id == "sess-xyz"  # the hand's own resumable session
     assert child.runs  # the turn recorded into the child conversation
+
+
+@pytest.mark.parametrize("external_id", [None, "resumed-session"])
+@pytest.mark.parametrize("connect_fails", [False, True])
+async def test_sdk_ingest_claim_brackets_client_lifetime(
+    monkeypatch: pytest.MonkeyPatch,
+    external_id: str | None,
+    connect_fails: bool,
+) -> None:
+    conversations = FakeConversationManager()
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="claude")
+    conversation.external_id = external_id
+    tentacle = _tentacle(conversations)
+    lifecycle: list[str] = []
+    workspace_enter = Workspace.__aenter__
+    workspace_exit = ChatWorkspace.__aexit__
+
+    async def open_workspace(workspace: Workspace) -> Workspace:
+        assert tentacle.driven_sessions == {}
+        lifecycle.append("workspace-enter")
+        result = await workspace_enter(workspace)
+        assert tentacle.driven_sessions == {}
+        return result
+
+    async def close_workspace(
+        workspace: ChatWorkspace,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert tentacle.driven_sessions == {}
+        lifecycle.append("workspace-exit")
+        await workspace_exit(workspace, exc_type, exc, traceback)
+
+    async def enter(client: FakeClaudeClient) -> FakeClaudeClient:
+        options = FakeClaudeClient.last_options
+        assert isinstance(options, ClaudeAgentOptions)
+        session_id = options.resume or options.session_id
+        assert session_id is not None
+        assert options.resume == external_id
+        assert (options.session_id is None) == (external_id is not None)
+        assert tentacle.driven_sessions == {session_id: 1}
+        assert options.settings is None
+        assert options.setting_sources is None
+        lifecycle.append("enter")
+        if connect_fails:
+            raise RuntimeError("SDK connect failed")
+        return client
+
+    async def leave(
+        client: FakeClaudeClient,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert tentacle.driven_sessions
+        lifecycle.append("exit")
+
+    monkeypatch.setattr(FakeClaudeClient, "__aenter__", enter)
+    monkeypatch.setattr(FakeClaudeClient, "__aexit__", leave)
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
+    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+
+    if connect_fails:
+        with pytest.raises(RuntimeError, match="SDK connect failed"):
+            await tentacle.run("hello", conversation_address=KEY, thread_id=_THREAD)
+    else:
+        async with tentacle.run_stream_events(
+            "hello", conversation_address=KEY, thread_id=_THREAD
+        ) as stream:
+            async for event in stream:
+                if isinstance(event, AgentRunResultEvent):
+                    assert tentacle.driven_sessions == {}
+                    assert lifecycle[-1] == "workspace-exit"
+                else:
+                    assert tentacle.driven_sessions
+
+    assert lifecycle == (
+        ["workspace-enter", "enter", "workspace-exit"]
+        if connect_fails
+        else ["workspace-enter", "enter", "exit", "workspace-exit"]
+    )
+    assert tentacle.driven_sessions == {}
 
 
 async def test_instructions_land_in_the_system_prompt(
@@ -370,7 +484,7 @@ async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(models={"opus"}),
+        config=ClaudeCodeConfig(),
     )
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model="opus")
@@ -405,18 +519,15 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
     }
 
 
-def test_configured_model_names_are_exposed() -> None:
-    tentacle = _tentacle(
-        FakeConversationManager(),
-        config=ClaudeCodeConfig(models={"opus", "opusplan", "fable", "opus[1m]"}),
-    )
-
-    assert tentacle.models == {
-        "opus": "opus",
-        "opusplan": "opusplan",
-        "fable": "fable",
-        "opus[1m]": "opus[1m]",
-    }
+async def test_models_are_discovered_on_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+    assert tentacle.models == {}
+    async with tentacle:
+        assert tentacle.models == {"anthropic:a-future-model": "a-future-model"}
+        assert tentacle.default_model is None
 
 
 def test_build_structured_result_validates_into_model() -> None:
@@ -543,17 +654,15 @@ async def test_completed_run_releases_its_client(
     assert len(tentacle.live_clients) == 0
 
 
-def test_claims_come_from_config_and_default_to_none() -> None:
-    """Claims are config-owned outright: a config claim is the tentacle's claim,
-    and a bare config claims nothing — an unclaimed model cannot be summoned."""
+def test_missing_metadata_can_be_configured() -> None:
     claim = Claim(ability="acme monorepo work", efforts=("high",))
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS), claims={"haiku": claim}),
+        config=ClaudeCodeConfig(claims={"anthropic:haiku": claim}),
     )
 
-    assert tentacle.claims == {"haiku": claim}
-    assert ClaudeCodeConfig(models=set(CLAUDE_MODELS)).claims == {}
+    assert tentacle.claims == {"anthropic:haiku": claim}
+    assert ClaudeCodeConfig().claims == {}
 
 
 async def test_a_gateway_capability_mounts_the_in_process_server(

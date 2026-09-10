@@ -1,9 +1,10 @@
 from collections.abc import Mapping
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 from pydantic import SecretStr
-from sqlalchemy import Dialect, String
+from sqlalchemy import DateTime, Dialect, String
 from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.types import TypeDecorator
 
@@ -11,7 +12,36 @@ from sqlalchemy.types import TypeDecorator
 class Base(DeclarativeBase): ...
 
 
-MapperArgs: TypeAlias = Mapping[str, Any]
+type MapperArgs = Mapping[str, Any]
+
+
+class UTCDateTime(TypeDecorator[datetime]):
+    """Aware timestamps, normalized to UTC across database dialects.
+
+    SQLite stores no timezone, so its existing naive values represent UTC. Restore
+    that timezone on reads; new naive inputs have no known instant and are refused.
+    """
+
+    impl: DateTime = DateTime(timezone=True)
+    cache_ok: bool = True
+
+    def process_bind_param(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.utcoffset() is None:
+            raise ValueError("Datetime must include a timezone")
+        return value.astimezone(UTC)
+
+    def process_result_value(
+        self, value: datetime | None, dialect: Dialect
+    ) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            return value.replace(tzinfo=UTC)
+        return value.astimezone(UTC)
 
 
 class PathString(TypeDecorator[Path]):

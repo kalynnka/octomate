@@ -15,6 +15,7 @@ from octomate.config.agents import (
     InklingConfig,
     ZcodeConfig,
 )
+from octomate.config.auth import AuthConfig
 from octomate.config.base import (
     CONFIG_FILES,
     DEFAULTS_DIR,
@@ -66,7 +67,6 @@ from octomate.config.providers import (
     ProvidersConfig,
     VertexProviderConfig,
 )
-from octomate.config.users import UserConfig
 from octomate.config.workspaces import WorkspacesConfig
 
 # Grouped by subsystem behind the section comments below, which say more than
@@ -115,7 +115,7 @@ __all__ = [  # noqa: RUF022
     "McpConfigVariant",
     "OAuthMcpConfig",
     # users
-    "UserConfig",
+    "AuthConfig",
     # mirrors
     "GitIdentity",
     "MirrorsConfig",

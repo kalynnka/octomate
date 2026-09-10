@@ -7,23 +7,28 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, cast
 
+import anyio
 import pytest
+from logfire.testing import CaptureLogfire
+from logfire.testing import capfire as capfire
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
 from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
-from pydantic_ai.messages import PartStartEvent
+from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
 
 from octomate import Octomate
-from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config import ChannelConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.workspaces.base import ChatWorkspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -46,9 +51,7 @@ from octomate.tentacles.deepseek.wire import (
 )
 from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject, JsonValue
-from tests.support.agents import DEEPSEEK_MODELS
 from tests.support.channels import FakeChannelTentacle
-from tests.support.config import registered
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -169,7 +172,34 @@ class FakeDeepseekApi:
     def reset(cls, turn_script: list[TurnEntry] | None = None) -> None:
         cls.serving = set()
         cls.results = {
-            "host.describe": OkResult(value={}),
+            "host.describe": OkResult(
+                value={"provider": "deepseek-official", "model": "deepseek-v4-pro"}
+            ),
+            "llm.models": OkResult(
+                value={
+                    "groups": [
+                        {
+                            "id": "deepseek-official",
+                            "name": "DeepSeek",
+                            "models": [
+                                {
+                                    "id": model,
+                                    "name": model,
+                                    "reasoning": {
+                                        "efforts": [
+                                            {"id": "off"},
+                                            {"id": "high"},
+                                            {"id": "max"},
+                                        ]
+                                    },
+                                }
+                                for model in ("deepseek-v4-flash", "deepseek-v4-pro")
+                            ],
+                        }
+                    ],
+                    "failures": [],
+                }
+            ),
             "session.create": OkResult(value={"sessionId": "sess-1"}),
             "session.selectModel": OkResult(value={"selected": {}}),
             "session.prompt": OkResult(value={"accepted": True}),
@@ -255,11 +285,7 @@ class FakeFeelers:
 def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
     """The `im` channel the tentacle presents approvals and questions through,
     its feelers recording what was asked."""
-    channel = FakeChannelTentacle(
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="inkling", model="test")]
-        )
-    )
+    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
     channel.feelers = cast(Feelers, feelers)
     return channel
 
@@ -295,7 +321,7 @@ def _tentacle(
     return DeepseekTentacle(
         "deepseek",
         octomate or Octomate(conversations=conversations),
-        config=config or DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+        config=config or DeepseekConfig(),
     )
 
 
@@ -324,37 +350,63 @@ def interaction_octomate(
     conversations: FakeConversationManager | None = None,
 ) -> Octomate:
     return Octomate(
-        config=registered("the-hook-secret"),
         conversations=conversations or FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         tentacles={"im": a_channel(feelers)},
     )
 
 
+@pytest.mark.parametrize("instrument", [False, True])
 async def test_run_stream_events_creates_session_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
+    instrument: bool,
+    capfire: CaptureLogfire,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events("done"))
     conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
+    tentacle = _tentacle(conversations, config=DeepseekConfig(instrument=instrument))
 
     events = []
-    async with tentacle:
-        async with tentacle.run_stream_events(
-            "fix it",
-            conversation_address=KEY,
-            thread_id=_THREAD,
-            run_name="react",
-            model="deepseek-v4-pro",
-            effort="xhigh",
-        ) as stream:
-            async for event in stream:
-                events.append(event)
+    with use_span(NonRecordingSpan(SpanContext(91, 92, False, TraceFlags(1)))):
+        async with tentacle:
+            async with tentacle.run_stream_events(
+                "fix it",
+                conversation_address=KEY,
+                thread_id=_THREAD,
+                run_name="react",
+                model="deepseek-v4-pro",
+                effort="xhigh",
+            ) as stream:
+                async for event in stream:
+                    events.append(event)
 
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    records = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.attributes and "event_type" in span.attributes
+    ]
+    assert [span.attributes["event_type"] for span in records if span.attributes] == (
+        ["turn/start", "assistant/message", "turn/end"] if instrument else []
+    )
+    [driving_span] = [
+        span
+        for span in capfire.exporter.exported_spans
+        if span.name.startswith("DeepseekTentacle ")
+        and span.attributes
+        and span.attributes.get("logfire.span_type") == "span"
+    ]
+    assert driving_span.context is not None
+    assert driving_span.context.trace_id == 91
+    assert driving_span.parent is not None
+    assert driving_span.parent.span_id == 92
+    for record in records:
+        assert record.context is not None
+        assert record.context.trace_id == 91
+        assert record.parent == driving_span.context
 
     [create_payload] = calls_of("session.create")
     # A thread in no project runs in a workspace forked for the run, not at the
@@ -414,7 +466,7 @@ async def test_agent_preset_and_the_chat_cwd_reach_session_create(
     FakeDeepseekApi.reset(turn_events())
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), agent_preset="octopus"),
+        config=DeepseekConfig(agent_preset="octopus"),
     )
 
     async with tentacle:
@@ -629,6 +681,98 @@ async def test_a_mid_turn_stream_error_persists_cancels_and_raises(
     assert cancel_payload == {"sessionId": "sess-1"}
 
 
+@pytest.mark.parametrize("cancel_fails", [False, True])
+async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_exit(
+    monkeypatch: pytest.MonkeyPatch, cancel_fails: bool
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(
+        [
+            {"type": "turn/start", "seq": 1, "time": 1.0, "data": {"turn": 1}},
+            StreamErrorFrame(
+                type="stream/error",
+                error=RpcError(code="internal", message="socket died"),
+            ),
+        ]
+    )
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    tentacle.octomate.connect(tentacle)
+    original_call = FakeDeepseekApi.call
+    original_claim = tentacle.octomate.workspaces.claim
+    original_discard = tentacle.octomate.workspaces.discard
+    original_record = conversations.record_agent_run
+    observed: list[str] = []
+
+    async def claim(workspace: ChatWorkspace) -> None:
+        assert tentacle.driven_sessions == {}
+        observed.append("workspace.enter")
+        await original_claim(workspace)
+
+    async def discard(workspace: ChatWorkspace) -> None:
+        assert tentacle.driven_sessions == {}
+        observed.append("workspace.exit")
+        await original_discard(workspace)
+
+    async def record(
+        conversation: Conversation,
+        *,
+        run_id: str,
+        messages: Sequence[ModelMessage],
+        name: str | None,
+        cwd: Path,
+        external_id: str,
+    ) -> None:
+        assert tentacle.driven_sessions == {}
+        observed.append("record")
+        await original_record(
+            conversation,
+            run_id,
+            messages,
+            name=name,
+            cwd=cwd,
+            external_id=external_id,
+        )
+
+    async def call(
+        client: FakeDeepseekApi, method: str, payload: JsonValue
+    ) -> RpcResult:
+        if method == "session.create":
+            assert tentacle.driven_sessions == {}
+            observed.append(method)
+        if method in {"session.prompt", "session.cancel"}:
+            assert isinstance(payload, dict)
+            session_id = payload["sessionId"]
+            assert isinstance(session_id, str)
+            assert tentacle.driven_sessions == {session_id: 1}
+            assert not tentacle.should_ingest_session(session_id)
+            observed.append(method)
+            if method == "session.cancel" and cancel_fails:
+                raise RuntimeError("cancel failed")
+        return await original_call(client, method, payload)
+
+    monkeypatch.setattr(FakeDeepseekApi, "call", call)
+    monkeypatch.setattr(tentacle.octomate.workspaces, "claim", claim)
+    monkeypatch.setattr(tentacle.octomate.workspaces, "discard", discard)
+    monkeypatch.setattr(conversations, "record_agent_run", record)
+    async with tentacle:
+        with pytest.raises(AgentRunError, match="socket died"):
+            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+        assert tentacle.subscribers == {}
+        assert tentacle.bridge_contexts == {}
+        assert tentacle.driven_sessions == {}
+        assert tentacle.should_ingest_session("sess-1")
+
+    assert observed == [
+        "workspace.enter",
+        "session.create",
+        "session.prompt",
+        "session.cancel",
+        "record",
+        "workspace.exit",
+    ]
+
+
 async def test_an_error_turn_raises_dshs_own_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -757,7 +901,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), approval_timeout=0.01),
+        config=DeepseekConfig(approval_timeout=0.01),
         octomate=octomate,
     )
     octomate.connect(tentacle)
@@ -974,7 +1118,7 @@ async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
     FakeDeepseekApi.reset()
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(models=set(DEEPSEEK_MODELS), port=4090),
+        config=DeepseekConfig(port=4090),
     )
 
     async with tentacle:
@@ -1001,18 +1145,223 @@ async def test_losing_the_start_race_attaches_to_the_winner(
     assert FakeDeepseekProcess.stopped == 0
 
 
-async def test_aexit_cancels_live_sessions_and_stops_the_child(
+@pytest.mark.parametrize("detach", ["cancel", "prompt", "close", "scope"])
+async def test_detached_run_collects_through_turn_end(
+    monkeypatch: pytest.MonkeyPatch, detach: str
+) -> None:
+    patch_gateway(monkeypatch)
+    script = turn_events("finished")
+    FakeDeepseekApi.reset(script[:2])
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    prompted = asyncio.Event()
+    accept = asyncio.Event()
+    observed = asyncio.Event()
+    close = asyncio.Event()
+    scopes: list[anyio.CancelScope] = []
+    discarded: list[ChatWorkspace] = []
+    original_call = FakeDeepseekApi.call
+    original_discard = tentacle.octomate.workspaces.discard
+
+    async def call(
+        client: FakeDeepseekApi, method: str, payload: JsonValue
+    ) -> RpcResult:
+        result = await original_call(client, method, payload)
+        if method == "session.prompt":
+            prompted.set()
+            if detach == "prompt":
+                await accept.wait()
+        return result
+
+    async def discard(workspace: ChatWorkspace) -> None:
+        discarded.append(workspace)
+        await original_discard(workspace)
+
+    async def consume() -> None:
+        with anyio.CancelScope() as scope:
+            scopes.append(scope)
+            if detach in {"cancel", "prompt"}:
+                await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+                return
+            async with tentacle.run_stream_events(
+                "go", conversation_address=KEY, thread_id=_THREAD
+            ) as stream:
+                async for _ in stream:
+                    observed.set()
+                    if detach == "close":
+                        await close.wait()
+                        break
+
+    monkeypatch.setattr(FakeDeepseekApi, "call", call)
+    monkeypatch.setattr(tentacle.octomate.workspaces, "discard", discard)
+    async with tentacle:
+        task = asyncio.create_task(consume())
+        try:
+            async with asyncio.timeout(2):
+                await prompted.wait()
+                if detach in {"close", "scope"}:
+                    await observed.wait()
+            if detach in {"cancel", "prompt"}:
+                task.cancel()
+            elif detach == "scope":
+                scopes[0].cancel()
+            else:
+                close.set()
+            await asyncio.sleep(0)
+            if detach in {"cancel", "prompt"}:
+                task.cancel()
+            await asyncio.sleep(0)
+
+            assert not task.done()
+            assert tentacle.driven_sessions == {"sess-1": 1}
+            assert not tentacle.should_ingest_session("sess-1")
+            assert "sess-1" in tentacle.subscribers
+            assert "sess-1" in tentacle.bridge_contexts
+            assert len(tentacle.run_tasks) == 1
+            assert tentacle.mux_task is not None
+            assert not tentacle.mux_task.done()
+            assert not calls_of("session.cancel")
+            assert discarded == []
+            assert conversations.runs == []
+        finally:
+            accept.set()
+            # Outlive the observer's buffer, then commit the assistant message.
+            FakeDeepseekApi.push("sess-1", [script[1]] * 150 + script[2:])
+            async with asyncio.timeout(2):
+                if detach in {"cancel", "prompt"}:
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+                else:
+                    await task
+
+        assert tentacle.driven_sessions == {}
+        assert tentacle.subscribers == {}
+        assert tentacle.bridge_contexts == {}
+        assert tentacle.run_tasks == set()
+        assert len(discarded) == 1
+        assert not calls_of("session.cancel")
+        [recorded] = conversations.runs
+        assert any(
+            isinstance(part, TextPart) and part.content == "finished"
+            for message in recorded[2]
+            for part in message.parts
+        )
+
+
+async def test_concurrent_run_waits_before_claiming_the_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
-    FakeDeepseekApi.reset()
-    tentacle = _tentacle(FakeConversationManager())
+    script = turn_events()
+    FakeDeepseekApi.reset(script[:2])
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id="deepseek")
+    claimed: list[ChatWorkspace] = []
+    first_prompted = asyncio.Event()
+    second_waiting = asyncio.Event()
+    claim_workspace = tentacle.octomate.workspaces.claim
+    lock = asyncio.Lock()
+    acquire = lock.acquire
 
+    async def claim(workspace: ChatWorkspace) -> None:
+        claimed.append(workspace)
+        await claim_workspace(workspace)
+
+    async def acquire_lock() -> bool:
+        if lock.locked():
+            second_waiting.set()
+        return await acquire()
+
+    async def consume() -> None:
+        async with tentacle.run_stream_events(
+            "first", conversation_address=KEY, thread_id=_THREAD
+        ) as stream:
+            async for _ in stream:
+                first_prompted.set()
+
+    monkeypatch.setattr(tentacle.octomate.workspaces, "claim", claim)
+    monkeypatch.setattr(lock, "acquire", acquire_lock)
+    tentacle.conversation_locks.by_session[str(conversation.id)] = lock
     async with tentacle:
-        tentacle.subscribers["sess-9"] = asyncio.Queue()
+        first = asyncio.create_task(consume())
+        async with asyncio.timeout(2):
+            await first_prompted.wait()
+        FakeDeepseekApi.turn_script = script
+        second = asyncio.create_task(
+            tentacle.run("second", conversation_address=KEY, thread_id=_THREAD)
+        )
+        try:
+            async with asyncio.timeout(2):
+                await second_waiting.wait()
+            assert len(claimed) == 1
+            assert len(calls_of("session.prompt")) == 1
+            assert not calls_of("session.cancel")
+        finally:
+            FakeDeepseekApi.push("sess-1", script[2:])
+            async with asyncio.timeout(2):
+                await first
+                await second
 
-    [cancel_payload] = calls_of("session.cancel")
-    assert cancel_payload == {"sessionId": "sess-9"}
-    assert FakeDeepseekProcess.stopped == 1
+        assert len(claimed) == 2
+        assert len(conversations.runs) == 2
+
+
+@pytest.mark.parametrize("attached", [False, True])
+@pytest.mark.parametrize("cancel_shutdown", [False, True])
+async def test_aexit_drains_live_sessions_before_closing_the_mux(
+    monkeypatch: pytest.MonkeyPatch,
+    attached: bool,
+    cancel_shutdown: bool,
+) -> None:
+    patch_gateway(monkeypatch)
+    script = turn_events()
+    FakeDeepseekApi.reset(script[:2])
+    if attached:
+        FakeDeepseekApi.serving.add("http://127.0.0.1:3080")
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    observed = asyncio.Event()
+
+    async def consume() -> None:
+        async with tentacle.run_stream_events(
+            "go", conversation_address=KEY, thread_id=_THREAD
+        ) as stream:
+            async for _ in stream:
+                observed.set()
+
+    await tentacle.__aenter__()
+    task = asyncio.create_task(consume())
+    async with asyncio.timeout(2):
+        await observed.wait()
+    shutdown = asyncio.create_task(tentacle.__aexit__())
+    try:
+        await asyncio.sleep(0)
+        if cancel_shutdown:
+            shutdown.cancel()
+            await asyncio.sleep(0)
+        assert not shutdown.done()
+        assert not tentacle.closing
+        assert tentacle.driven_sessions == {"sess-1": 1}
+        assert "sess-1" in tentacle.subscribers
+        assert "sess-1" in tentacle.bridge_contexts
+        assert tentacle.mux_task is not None
+        assert not tentacle.mux_task.done()
+        assert not calls_of("session.cancel")
+        assert FakeDeepseekProcess.stopped == 0
+    finally:
+        FakeDeepseekApi.push("sess-1", script[2:])
+        async with asyncio.timeout(2):
+            await task
+            if cancel_shutdown:
+                with pytest.raises(asyncio.CancelledError):
+                    await shutdown
+            else:
+                await shutdown
+
+    assert len(conversations.runs) == 1
+    assert not calls_of("session.cancel")
+    assert FakeDeepseekProcess.stopped == (0 if attached else 1)
     assert tentacle.mux_task is None
     assert tentacle.process is None
+    assert tentacle.driven_sessions == {}

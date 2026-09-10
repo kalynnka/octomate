@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from octomate import Octomate
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.trunkline import TrunklineTentacle
 
 
@@ -35,14 +35,12 @@ async def test_frontend_uses_the_enabled_channels_static_directory(
                         "static_dir": static_dir.format(root=tmp_path)
                         if static_dir is not None
                         else None,
-                        "agents": [{"agent": "codex", "model": "gpt-5.6-sol"}],
+                        "agents": ["codex"],
                     }
                 ),
             )
         )
-    app = octomate.app()
-    if enabled and static_dir is not None:
-        assert app.url_path_for("console", path="app.js") == "/app.js"
+    app = octomate
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -53,9 +51,10 @@ async def test_frontend_uses_the_enabled_channels_static_directory(
     assert index.status_code == (200 if enabled and static_dir is not None else 404)
     assert asset.status_code == index.status_code
     if enabled and static_dir is not None:
+        assert app.url_path_for("console", path="app.js") == "/app.js"
         assert index.text == "<html>Trunkline</html>"
         assert asset.text == "window.trunkline = true;"
-    assert health.status_code == (200 if enabled else 404)
+    assert health.status_code == (503 if enabled else 404)
     assert mcp.status_code == 401
 
 
@@ -67,9 +66,9 @@ def test_frontend_rejects_a_missing_static_directory(tmp_path: Path) -> None:
             octomate,
             config=TrunklineChannelConfig(
                 static_dir=tmp_path / "missing",
-                agents=[AgentModelConfig(agent="codex", model="gpt-5.6-sol")],
+                agents=["codex"],
             ),
         )
     )
     with pytest.raises(RuntimeError, match=r"Directory .* does not exist"):
-        octomate.app()
+        octomate.build_middleware_stack()

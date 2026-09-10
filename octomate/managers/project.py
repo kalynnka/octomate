@@ -5,11 +5,12 @@ from pathlib import Path
 
 from octomate.config.projects import ProjectsConfig
 from octomate.database import async_session
+from octomate.managers.base import Manager
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread
 
 
-class ProjectManager:
+class ProjectManager(Manager):
     """The project registry: every code location Octomate knows by name.
 
     A project gets here one way: the operator declares it in the ``projects:`` block,

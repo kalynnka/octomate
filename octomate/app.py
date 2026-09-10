@@ -3,13 +3,11 @@ from __future__ import annotations
 import logging
 
 import logfire
-from fastapi import FastAPI
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.database import engine as db_engine
 from octomate.managers.project import ProjectManager
-from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
 from octomate.tentacles.base import TentacleLogFormatter
@@ -36,7 +34,7 @@ def health_probes_are_noise(record: logging.LogRecord) -> bool:
     )
 
 
-def create_app() -> FastAPI:
+def create_app() -> Octomate:
     """Build the Octomate FastAPI app.
 
     All setup lives here, not at import time, so that uvicorn's reload supervisor
@@ -74,7 +72,6 @@ def create_app() -> FastAPI:
 
     octomate = Octomate(
         config=config,
-        users=UserManager(config.users),
         workspaces=WorkspaceManager(
             projects=ProjectManager(config.projects),
             mirrors=MirrorManager(config=config.mirrors),
@@ -173,4 +170,4 @@ def create_app() -> FastAPI:
         if mcp_config.enabled:
             octomate.connect(build_mcp(mcp_id, mcp_config, octomate))
 
-    return octomate.app(title="Octomate")
+    return octomate

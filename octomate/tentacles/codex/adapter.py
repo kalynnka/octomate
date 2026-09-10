@@ -5,7 +5,6 @@ from dataclasses import dataclass, field
 from typing import Literal, TypeVar
 
 from openai_codex.generated.v2_all import (
-    AbsolutePathBuf,
     AgentMessageDeltaNotification,
     AgentMessageThreadItem,
     CommandExecutionOutputDeltaNotification,
@@ -20,7 +19,6 @@ from openai_codex.generated.v2_all import (
     FileChangeThreadItem,
     ItemCompletedNotification,
     ItemStartedNotification,
-    LegacyAppPathString,
     McpToolCallProgressNotification,
     McpToolCallStatus,
     McpToolCallThreadItem,
@@ -155,14 +153,9 @@ def codex_metadata(events: list[JsonValue] | None = None) -> JsonObject:
 
 
 def command_args(item: CommandExecutionThreadItem) -> JsonObject:
-    cwd = (
-        item.cwd.root
-        if isinstance(item.cwd, AbsolutePathBuf | LegacyAppPathString)
-        else str(item.cwd)
-    )
     return {
         "command": item.command,
-        "cwd": cwd,
+        "cwd": item.cwd.root,
         "status": item.status.value,
     }
 

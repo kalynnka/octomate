@@ -1,14 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import uuid
 from abc import ABC, abstractmethod
-from collections.abc import Mapping, Sequence
+from collections import Counter
+from collections.abc import AsyncGenerator, Mapping, Sequence
+from contextlib import aclosing, asynccontextmanager
 from functools import cached_property
 from pathlib import Path
-from types import MappingProxyType
-from typing import TYPE_CHECKING, ClassVar, TypeAlias, TypeVar, overload
+from types import MappingProxyType, TracebackType
+from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
+import anyio
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -32,7 +36,7 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
-from octomate.capabilities.harness.react import ReactEventStream
+from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -50,7 +54,7 @@ if TYPE_CHECKING:
 # generic over RunOutputDataT, mirroring pydantic-ai's own run signatures.
 AgentOutputT = TypeVar("AgentOutputT")
 AgentDepsT = TypeVar("AgentDepsT")
-AgentSpecInput: TypeAlias = JsonObject | AgentSpec
+type AgentSpecInput = JsonObject | AgentSpec
 
 
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
@@ -60,12 +64,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # Subclasses refine this default; overridable at init.
     description: str = "General-purpose agent for handling user requests."
 
-    # Per-model claims this agent advertises, keyed by route model name. Claims
-    # are the agent's to make — its config block owns them; a channel only
-    # chooses which agents to expose (and their entry models). A model with no
-    # claim advertises nothing: it is not offered as a route, so it cannot be
-    # summoned (or commissioned). Subclasses assign it in `__init__`; the default
-    # is read-only, so the empty one cannot be shared into.
+    # Routing metadata supplied by the harness, or config when it is unavailable.
     claims: Mapping[AgentRouteModelName, Claim] = MappingProxyType({})
 
     # Whether this agent's driven turns offer the gateway spells — the agent's side
@@ -73,18 +72,157 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # must be on. Subclasses assign it from their config in `__init__`.
     gateway: bool = True
 
+    # Native hook/stream identity for this runtime, shared by its configured agents.
+    native_id: ClassVar[str | None] = None
+
+    @cached_property
+    def driven_sessions(self) -> Counter[str]:
+        """Live runs holding each external runtime session on this agent."""
+        return Counter()
+
+    @cached_property
+    def native_sessions(self) -> Counter[str]:
+        """Accepted native transcript streams currently attached to this agent."""
+        return Counter()
+
+    @cached_property
+    def run_tasks(self) -> set[asyncio.Task[None]]:
+        """Collectors registered by agent harnesses that opt into `observe_run`.
+
+        Created on first access. Participating harnesses drain these tasks
+        during shutdown; other harnesses do not need this registry.
+        """
+        return set()
+
+    async def observe_run(
+        self, events: AsyncGenerator[ReactStreamEvent[RunOutputDataT], None]
+    ) -> AsyncGenerator[ReactStreamEvent[RunOutputDataT], None]:
+        """Collect a run to completion even when its observer closes or cancels.
+
+        Agent harnesses opt in by wrapping their event generators with this
+        method and draining `run_tasks` during shutdown. Inheriting it alone
+        does not change a harness's lifecycle.
+
+        Joining before leaving keeps the caller's gateway and other enclosing
+        resources available to the agent until its final notifications are recorded.
+        """
+        send, receive = anyio.create_memory_object_stream[
+            ReactStreamEvent[RunOutputDataT]
+        ](100)
+        errors: list[Exception | asyncio.CancelledError] = []
+
+        async def collect() -> None:
+            try:
+                async with aclosing(events):
+                    async for event in events:
+                        try:
+                            await send.send(event)
+                        except anyio.BrokenResourceError:
+                            # Only the observer is gone; keep ingesting the run.
+                            pass
+            except (Exception, asyncio.CancelledError) as error:
+                errors.append(error)
+            finally:
+                send.close()
+
+        task = asyncio.create_task(collect())
+        self.run_tasks.add(task)
+        observed_end = False
+        cancelled = False
+        try:
+            async with receive:
+                async for event in receive:
+                    yield event
+            observed_end = True
+            for error in errors:
+                raise error
+        finally:
+            receive.close()
+            # AnyIO scopes repeatedly cancel at checkpoints; asyncio callers can
+            # also cancel more than once. Neither may cancel the collector.
+            with anyio.CancelScope(shield=True):
+                while not task.done():
+                    try:
+                        await asyncio.shield(task)
+                    except asyncio.CancelledError:
+                        cancelled = True
+            self.run_tasks.discard(task)
+            if not observed_end:
+                for error in errors:
+                    logging.getLogger(type(self).__module__).error(
+                        "Agent %s run failed after observer detached",
+                        self.id,
+                        exc_info=error,
+                    )
+            if cancelled:
+                raise asyncio.CancelledError
+
     @cached_property
     def routes(self) -> list[AgentRoute]:
-        """The routes this agent offers — one per claim it can actually honor.
-        A claim naming a model that is not in `models` is evicted rather than
-        advertised, so a route can never point at a model the agent cannot run.
-        Cached — `claims` and `models` are settled in `__init__` and never
-        change after."""
+        """Every served model, using discovered or configured routing metadata."""
+        return self.build_routes()
+
+    @asynccontextmanager
+    async def driving(
+        self, session_id: str, *, native: bool = False
+    ) -> AsyncGenerator[None]:
+        """Count a driven runtime session or an accepted native stream.
+
+        Driven runs prepare their workspace before claiming a known runtime
+        session id. Claim before activity that Octomate's native endpoints ingest,
+        and hold through the run's cleanup, including interruption or cancellation;
+        release it before recording the run and before leaving the workspace.
+        Session creation may precede the claim only if native ingest ignores it.
+
+        Native streams claim after their handshake is accepted and keep the claim
+        through stream cleanup. Probes without a workspace, such as model
+        discovery, still claim before connecting to a hook-emitting runtime.
+        """
+        sessions = self.native_sessions if native else self.driven_sessions
+        sessions[session_id] += 1
+        try:
+            yield
+        finally:
+            sessions[session_id] -= 1
+            if sessions[session_id] == 0:
+                del sessions[session_id]
+
+    def should_ingest_session(self, session_id: str) -> bool:
+        """Native endpoints are shared by all configured agents for a runtime."""
+        if session_id in self.driven_sessions:
+            return False
+        return self.native_id is None or not any(
+            agent.native_id == self.native_id and session_id in agent.driven_sessions
+            for agent in self.octomate.agents.values()
+        )
+
+    def build_routes(self) -> list[AgentRoute]:
         return [
-            AgentRoute(agent_id=self.id, model=model, claim=claim)
-            for model, claim in self.claims.items()
-            if model in self.models
+            AgentRoute(
+                agent_id=self.id,
+                model=model,
+                claim=self.claims.get(model) or Claim(self.description, efforts=()),
+            )
+            for model in self.models
         ]
+
+    async def __aenter__(self) -> Self:
+        """Enter after the subclass has prepared its models and claims."""
+        self.routes = self.build_routes()
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        self.routes = []
+
+    @property
+    def default_model(self) -> str | None:
+        """Inkling's configured first model; harnesses override with native defaults."""
+        return next(iter(self.models), None)
 
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
@@ -109,6 +247,20 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         return None
 
     models: dict[AgentRouteModelName, Model | str]
+
+    async def discover_models(self) -> None:
+        """Refresh models and claims once the harness connection is ready.
+
+        Harnesses call this during entry and install results with set_model_catalog.
+        Agents with config-supplied catalogs keep their existing models and claims.
+        """
+
+    def set_model_catalog(
+        self, models: dict[str, Model | str], claims: dict[str, Claim]
+    ) -> None:
+        self.models = models
+        self.claims = claims
+        self.routes = self.build_routes()
 
     async def user_capabilities(
         self,

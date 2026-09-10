@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
 from typing import Annotated, NotRequired, TypedDict
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field
+from pydantic import AwareDatetime, ConfigDict, Field
+from pydantic_ai._utils import now_utc
 from uuid_utils.compat import uuid7
 
 from octomate.models import todos as todos_models
@@ -27,8 +27,8 @@ class Todo(BaseTransmuter):
     position: int = 0
     parent_ref: str | None = None
     depends_on: list[str] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: AwareDatetime = Field(default_factory=now_utc)
+    updated_at: AwareDatetime = Field(default_factory=now_utc)
 
 
 class TodoWrite(TypedDict):

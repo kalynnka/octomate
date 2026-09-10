@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
-from collections.abc import Generator
-from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -50,17 +47,6 @@ class CodexHookIngest:
         self.octomate = octomate
         self.tailer = tailer
         self.locks = locks if locks is not None else SessionLocks()
-        self.driven: Counter[str] = Counter()
-
-    @contextmanager
-    def driving(self, session_id: str) -> Generator[None]:
-        self.driven[session_id] += 1
-        try:
-            yield
-        finally:
-            self.driven[session_id] -= 1
-            if self.driven[session_id] <= 0:
-                del self.driven[session_id]
 
     @codex_logfire.instrument(
         "codex.hook {event.hook_event_name} [{event.session_id}]",
@@ -70,9 +56,6 @@ class CodexHookIngest:
         """`sender` is the verified bearer's own profile (the route's
         `hook_sender` dependency) — the person every ledger row this event
         writes is attributed to."""
-        if event.octomate_driven or event.session_id in self.driven:
-            logger.debug("session %s: ignored driven Codex hook", event.session_id)
-            return
         if event.hook_event_name == "SubagentStart":
             await self.on_subagent_start(event)
             return

@@ -22,8 +22,8 @@ agents:
     approval_timeout: 3600
 ```
 
-Add `agent: zcode` and `model: GLM-5.3` to the desired channel's `agents` list in
-`channels.yaml`, following its existing agent entries.
+Add `zcode` to the desired channel's `agents` list in `channels.yaml`, following
+its existing agent entries. Select a configured ZCode model in the web UI.
 
 The default command is:
 

@@ -15,6 +15,7 @@ from typing import Self, overload
 
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
+from octomate.managers.base import Locks, Manager
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces.dependencies import install
 from octomate.managers.workspaces.mirrors import (
@@ -233,7 +234,7 @@ class ChatWorkspace(Workspace):
         await self.workspaces.discard(self)
 
 
-class WorkspaceManager:
+class WorkspaceManager(Manager, Locks[uuid.UUID]):
     """Every project-bound thread's workspace: a fork of the project's mirror at
     ``workspaces_dir/<thread_id>``, checked out on the thread's own branch and
     released when the disk is wanted back.
@@ -289,7 +290,6 @@ class WorkspaceManager:
         self.workspaces_dir = workspaces_dir.resolve()
         self.reflink: str | None = None
         self.probed = False
-        self.locks: dict[uuid.UUID, asyncio.Lock] = {}
         # How many runs are in each thread's chat workspace right now. The tree
         # is the run's, and two overlapping runs of one conversation share it —
         # this is what stops the first to finish taking it from the second.
@@ -371,7 +371,7 @@ class WorkspaceManager:
         with workspace_logfire.span(
             "workspace.claim", thread_id=str(workspace.thread_id)
         ) as span:
-            async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+            async with self.lock(workspace.thread_id):
                 holders = self.chatting.get(workspace.thread_id, 0)
                 if holders == 0 and workspace.path.exists():
                     # What a run killed before it could discard left behind.
@@ -385,7 +385,7 @@ class WorkspaceManager:
         with workspace_logfire.span(
             "workspace.discard", thread_id=str(workspace.thread_id)
         ) as span:
-            async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+            async with self.lock(workspace.thread_id):
                 holders = self.chatting.get(workspace.thread_id, 0) - 1
                 span.set_attribute("holders", max(holders, 0))
                 if holders > 0:
@@ -474,7 +474,7 @@ class WorkspaceManager:
             kind=type(workspace).__name__,
             path=str(path),
         ) as span:
-            async with self.locks.setdefault(workspace.thread_id, asyncio.Lock()):
+            async with self.lock(workspace.thread_id):
                 if path.is_dir():
                     # Where every turn after a thread's first arrives. Saying so is
                     # what leaves the forks findable among them.
@@ -709,7 +709,7 @@ class WorkspaceManager:
             if project is None or not path.is_dir():
                 return
             try:
-                async with self.locks.setdefault(thread.id, asyncio.Lock()):
+                async with self.lock(thread.id):
                     snapshot = await self.snapshot(path)
                     await run_git(
                         "push",
@@ -860,7 +860,7 @@ class WorkspaceManager:
         with workspace_logfire.span(
             "workspace.release", thread_id=str(thread_id)
         ) as span:
-            async with self.locks.setdefault(thread_id, asyncio.Lock()):
+            async with self.lock(thread_id):
                 # False where a thread never had one, or a sweep and a caller both
                 # reached for the same tree — neither is a failure, and both would
                 # otherwise read as one released workspace too many.

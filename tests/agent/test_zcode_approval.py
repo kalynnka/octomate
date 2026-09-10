@@ -13,10 +13,14 @@ from pydantic_ai.exceptions import AgentRunError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.auth import current_user
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredActionBatch, DeferredApproval
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.tentacles.zcode import ZcodeTentacle
 from octomate.tentacles.zcode.base import ZcodeBridgeContext
@@ -27,6 +31,7 @@ from octomate.tentacles.zcode.wire import (
     QuestionSchema,
     json_object_adapter,
 )
+from tests.support.users import a_user
 from tests.support.zcode import (
     INTERACTIVE_SERVER,
     desktop_config,
@@ -68,7 +73,7 @@ async def tentacle(in_memory_engine: AsyncEngine, tmp_path: Path) -> ZcodeTentac
         "trunkline",
         octomate,
         config=TrunklineChannelConfig(
-            agents=[AgentModelConfig(agent="zcode", model="GLM-5.3")],
+            agents=["zcode"],
         ),
     )
     octomate.connect(channel)
@@ -305,9 +310,28 @@ async def test_full_run_web_resolution_resume_grants_and_isolation(
     action = next(iter(batch.approvals))
     assert "secret-test-key" not in action.model_dump_json()
     assert "[redacted]" in action.model_dump_json()
-    transport = httpx.ASGITransport(app=tentacle.octomate.app())
+    user = await a_user("dev", profiles={"trunkline": "dev"})
+    await tentacle.octomate.thread_manager.record_inbound(
+        MessageEvent(
+            tentacle_id=ADDRESS.channel_tentacle_id,
+            chat_id=ADDRESS.chat_id,
+            chat_type=ADDRESS.chat_type,
+            channel_thread_id=ADDRESS.channel_thread_id,
+            user_id=ADDRESS.user_id,
+            sender=UserProfile(channel_user_id=ADDRESS.user_id),
+            segments=[TextSegment(data={"text": "approval"})],
+        )
+    )
+
+    def authenticated_user() -> User:
+        return user
+
+    tentacle.octomate.dependency_overrides[current_user] = authenticated_user
+    transport = httpx.ASGITransport(app=tentacle.octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as web:
         response = await web.post(
             f"/api/trunkline/batches/{batch.id}/resolve",

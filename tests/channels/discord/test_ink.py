@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -404,12 +405,43 @@ async def test_edit_and_typing_use_the_resolved_destination(
         mentioned_user_ids=("42",),
     )
     async with ink.typing(str(channel.id)):
+        await asyncio.sleep(0)
         assert typing.entered
 
     assert message_id == "700"
     assert len(edits) == 1
     assert mentioned_user_ids(edits[0][2]) == [42]
     assert typing.exited
+
+
+async def test_typing_request_does_not_block_agent_start_and_is_cancelled_on_exit(
+    client: discord.Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+    channel = a_text_channel()
+
+    class SlowTyping:
+        async def __aenter__(self) -> None:
+            started.set()
+            try:
+                await asyncio.Future[None]()
+            finally:
+                cancelled.set()
+
+        async def __aexit__(self, *_exc: BaseException | None) -> None:
+            return None
+
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
+    monkeypatch.setattr(discord.TextChannel, "typing", lambda destination: SlowTyping())
+    ink = DiscordInk(client)
+    try:
+        async with asyncio.timeout(1), ink.typing(str(channel.id)):
+            await started.wait()
+            assert not cancelled.is_set()
+        assert cancelled.is_set()
+    finally:
+        await ink.__aexit__()
 
 
 async def test_start_public_thread_posts_safe_hint_and_bounds_the_name(

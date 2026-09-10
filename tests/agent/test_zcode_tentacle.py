@@ -80,13 +80,14 @@ def test_config_routes_and_permission_registration() -> None:
                     "app_id": "A-test",
                     "bot_token": "test",
                     "app_token": "test",
-                    "agents": [{"agent": "zcode", "model": "GLM-5.3"}],
+                    "agents": ["zcode"],
                 }
             },
         }
     )
-    assert config.agents.configured_models()["zcode"] == {"GLM-5.3"}
+    assert [agent.id for agent in config.agents.configured_agents] == ["zcode"]
     assert config.agents.zcode is not None
+    assert config.agents.zcode.models == {"GLM-5.3"}
     assert config.agents.zcode.permission_mode == "build"
     assert config.agents.zcode.approval_timeout == 3600
     assert (
@@ -110,7 +111,7 @@ def test_config_routes_and_permission_registration() -> None:
                         "app_id": "A-test",
                         "bot_token": "test",
                         "app_token": "test",
-                        "agents": [{"agent": "zcode", "model": "GLM-5.3-Flash"}],
+                        "agents": ["missing"],
                     }
                 },
             }
