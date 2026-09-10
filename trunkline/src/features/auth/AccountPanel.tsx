@@ -1,12 +1,7 @@
-/**
- * The Account page's body: who is signed in, and the API keys the account
- * holds. A key is issued with a name, its scopes and an expiry, disclosed
- * exactly once, and revoked from its row; the list keeps revoked keys, as the
- * relay does, so a client that stopped authenticating can be traced to one.
- */
-import { useState, type FormEvent } from 'react'
+/** Account details, password dialog, and the dedicated API keys panel. */
+import { useEffect, useRef, useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
-import { chipLabel, ellipsis, fieldLabel, label, mono, sectionLabel, serif } from '@/components/text'
+import { chipLabel, ellipsis, fieldLabel, label, mono, serif } from '@/components/text'
 import {
   createApiKey,
   revokeApiKey,
@@ -39,23 +34,7 @@ const day = (iso: string) =>
 
 const refreshKeys = () => queryClient.invalidateQueries({ queryKey: ['api-keys'] })
 
-function Section({ first, children }: { first?: boolean; children: string }) {
-  return (
-    <div
-      style={{
-        borderTop: first ? undefined : '1px solid var(--line-color)',
-        margin: '6px 16px 0',
-        padding: '8px 0 4px',
-        ...sectionLabel,
-        color: 'var(--fg-3)',
-      }}
-    >
-      {children}
-    </div>
-  )
-}
-
-function PasswordForm() {
+function PasswordForm({ onCancel }: { onCancel: () => void }) {
   const { changePassword } = useAuth((s) => s.actions)
   const [current, setCurrent] = useState('')
   const [password, setPassword] = useState('')
@@ -64,7 +43,7 @@ function PasswordForm() {
   const [error, setError] = useState<string | null>(null)
   const matches = confirm === password
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !current || !password || !matches) return
     setBusy(true)
@@ -78,12 +57,14 @@ function PasswordForm() {
   }
 
   return (
-    <form onSubmit={submit} style={{ margin: '0 16px 12px', maxWidth: 400 }}>
+    <form onSubmit={submit}>
       <Field name="Current password">
         <input
           className="trk-input"
           type="password"
           name="current_password"
+          autoFocus
+          required
           autoComplete="current-password"
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
@@ -94,6 +75,7 @@ function PasswordForm() {
           className="trk-input"
           type="password"
           name="password"
+          required
           autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -108,20 +90,19 @@ function PasswordForm() {
           className="trk-input"
           type="password"
           name="confirm"
+          required
           autoComplete="new-password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
         />
       </Field>
       {error && <Refusal>{error}</Refusal>}
-      <Button
-        type="submit"
-        variant="accent"
-        disabled={busy || !current || !password || !matches}
-        style={{ marginTop: 14 }}
-      >
-        {busy ? 'Changing…' : 'Change password'}
-      </Button>
+      <div className="trk-dialog-actions">
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+        <Button type="submit" variant="accent" disabled={busy || !current || !password || !matches}>
+          {busy ? 'Changing…' : 'Change password'}
+        </Button>
+      </div>
     </form>
   )
 }
@@ -145,7 +126,7 @@ function NewKeyForm({
       held.includes(scope) ? held.filter((each) => each !== scope) : [...held, scope],
     )
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !ready) return
     setBusy(true)
@@ -428,36 +409,59 @@ function KeyRow({ item }: { item: ApiApiKey }) {
   )
 }
 
+function PasswordDialog({ onClose }: { onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const element = dialog.current!
+    element.showModal()
+    return () => element.close()
+  }, [])
+
+  return (
+    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" onCancel={onClose}>
+      <header className="trk-dialog-header">
+        <h2 id="password-title" style={{ ...label(14), margin: 0 }}>Change password</h2>
+        <Button variant="ghost" onClick={onClose}>Close</Button>
+      </header>
+      <div className="trk-dialog-body"><PasswordForm onCancel={onClose} /></div>
+    </dialog>
+  )
+}
+
 export function AccountPanel() {
   const user = useAuth((s) => s.user)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+
+  return (
+    <div className="trk-control-scroll">
+      <dl className="trk-profile-info">
+        {[
+          ['Name', user?.name],
+          ['Username', user?.username],
+          ['Nickname', user?.nickname],
+          ['User ID', user?.id],
+        ].map(([name, value]) => (
+          <div key={name}>
+            <dt style={{ ...label(10), color: 'var(--fg-3)' }}>{name}</dt>
+            <dd style={{ ...mono(13), color: 'var(--fg-1)' }}>{value || '—'}</dd>
+          </div>
+        ))}
+      </dl>
+      <Button onClick={() => setPasswordOpen(true)} style={{ padding: '5px 10px', fontSize: 9 }}>
+        Change password
+      </Button>
+      {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}
+    </div>
+  )
+}
+
+export function ApiKeysPanel() {
   const { data: keys, error: loadError } = useApiKeys()
   const [issuing, setIssuing] = useState(false)
   const [issued, setIssued] = useState<ApiIssuedKey | null>(null)
 
   return (
-    <div
-      className="lt-entry"
-      style={{
-        borderTop: '1px solid var(--line-color)',
-        borderBottom: '1px solid var(--line-divider)',
-        background: 'var(--surface-sunken)',
-        padding: '2px 0 8px',
-      }}
-    >
-      <Section first>Signed in as</Section>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '2px 16px 6px' }}>
-        <span style={{ ...mono(12, 700), color: 'var(--fg-1)' }}>{user?.name}</span>
-        <span style={{ ...mono(9.5, 700), color: 'var(--color-accent)' }}>@{user?.username}</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ ...mono(8), color: 'var(--fg-3)' }} title="account id">
-          {user?.id}
-        </span>
-      </div>
-
-      <Section>Password</Section>
-      <PasswordForm />
-
-      <Section>API keys</Section>
+    <div className="trk-control-scroll">
       <p style={{ margin: '0 16px 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
         A key lets a client machine speak for this account: <b>hooks</b> for native session
         hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a

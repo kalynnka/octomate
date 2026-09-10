@@ -36,6 +36,10 @@ class McpTentacle(Tentacle):
     upstream: str
     instructions: str
 
+    @property
+    def log_names(self) -> tuple[str, ...]:
+        return (type(self).__module__.removesuffix(".base"),)
+
     @cached_property
     def info(self) -> McpTentacleInfo:
         return McpTentacleInfo(
@@ -59,10 +63,6 @@ class OAuthMcpTentacle(McpTentacle):
 
 class BareMcpTentacle(McpTentacle):
     """An MCP offered with an optional operator bearer token."""
-
-    @property
-    def log_names(self) -> tuple[str, ...]:
-        return (__name__,)
 
     def __init__(
         self,

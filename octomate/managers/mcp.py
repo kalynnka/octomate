@@ -185,12 +185,24 @@ class McpManager(Manager, Locks[uuid.UUID]):
                 raise ValueError("MCP namespace is already installed") from error
         return instance
 
-    async def list(self, user_id: uuid.UUID, *, enabled: bool = False) -> list[Mcp]:
+    async def list[McpT: Mcp](
+        self,
+        user_id: uuid.UUID,
+        *,
+        enabled: bool = False,
+        mcp_type: type[McpT] = Mcp,
+    ) -> list[McpT]:
         expressions = [Mcp["user_id"] == user_id]
         if enabled:
             expressions.append(Mcp["enabled"].is_(True))
         async with async_session() as session:
-            return list(await session.list(Mcp, expressions=expressions, limit=None))
+            return list(
+                await session.list(
+                    mcp_type,
+                    expressions=expressions,
+                    limit=None,
+                )
+            )
 
     async def summary(self, user: User, mcp: Mcp) -> McpServerSummary:
         if mcp.user_id != user.id:

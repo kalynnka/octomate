@@ -46,12 +46,13 @@ from octomate.base import Octomate
 from octomate.config.agents import AgentRouteModelName
 from octomate.dependencies import thread_manager
 from octomate.managers.thread import ThreadManager
+from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread, ThreadMessage
-from octomate.schemas.user import User
+from octomate.schemas.user import ProfileInfo, User
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -199,6 +200,26 @@ def build_trunkline_router(
             ChannelInfo(id=channel_id, kind=type(tentacle).__name__)
             for channel_id, tentacle in octomate.channels.items()
         ]
+
+    @router.get("/agents")
+    async def list_agents() -> list[AgentInfo]:
+        """The registered agents with their catalogs — every model each one can be
+        routed to, what that route claims to be for, and the effort levels it takes.
+
+        `GET /routes` answers the composer's question, which is narrower: the ids a
+        directive may name, with the entry agent's default alone. This answers the
+        Agents page's question, which is what the instance is made of, so it keeps
+        the models that question drops and adds what no route id carries.
+
+        The session counts are the live ones, read off the tentacle as the request
+        passes: what this instance is driving now, and what it is only reading.
+        """
+        return [agent.info for agent in octomate.agents.values()]
+
+    @router.get("/profile")
+    async def profile(user: Annotated[User, Depends(current_user)]) -> ProfileInfo:
+        """The signed-in user, linked channel profiles, and OAuth MCP authorizations."""
+        return await octomate.profile(user)
 
     @router.get(
         "/threads",

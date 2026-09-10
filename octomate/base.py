@@ -48,7 +48,9 @@ from octomate.schemas.awakes import (
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.schemas.user import ProfileInfo, User
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
@@ -226,6 +228,16 @@ class Octomate(FastAPI):
             for id, tentacle in self.tentacles.items()
             if isinstance(tentacle, ChannelTentacle)
         }
+
+    async def profile(self, user: User) -> ProfileInfo:
+        return ProfileInfo(
+            user=user,
+            profiles=list(user.profiles),
+            mcps=[
+                await self.mcp.summary(user, mcp)
+                for mcp in await self.mcp.list(user_id=user.id, mcp_type=OAuthMcp)
+            ],
+        )
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if tentacle.id in self.tentacles:

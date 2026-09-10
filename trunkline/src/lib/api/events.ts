@@ -2,6 +2,8 @@
 // (WireEvent in octomate/capabilities/harness/events.py). Every event carries an
 // `event_kind` discriminator; the pydantic-ai members serialize with their own
 // native field names, so these types follow the Python schema exactly.
+import type { ApiUser } from './auth'
+import type { EffortStep } from './types'
 
 // ---- pydantic-ai response parts -------------------------------------------
 
@@ -357,6 +359,92 @@ export interface ApiRoute {
   id: string // opaque — model names may embed ':', never split this
   agent: string
   model: string | null
+}
+
+/** One model an agent can be routed to, with what that route claims to be for.
+ *  `efforts` empty means the route takes no effort levels — not that it takes
+ *  every one of them. */
+export interface ApiAgentRoute {
+  agent_id: string
+  model: string
+  claim: {
+    ability: string
+    efforts: EffortStep[]
+  }
+}
+
+/** One registered agent, as the Agents page reads it. `/routes` answers the
+ *  composer's narrower question and keeps only the entry agent's default; this
+ *  keeps every model, and adds what no route id carries. */
+export interface ApiAgentInfo {
+  id: string
+  description: string
+  gateway: boolean
+  default_model: string | null
+  routes: ApiAgentRoute[]
+  /** live runs this instance is driving on the agent's runtime */
+  driven_sessions: number
+  /** native transcript streams attached to it — read, not driven */
+  native_sessions: number
+}
+
+export type McpAuthKind = 'none' | 'bearer' | 'oauth'
+
+/** One MCP server this user installed (`GET /api/mcp`). */
+export interface ApiMcp {
+  id: string
+  name: string
+  namespace: string
+  url: string
+  instructions: string
+  /** the configured tentacle supplying it and its auth, or null for a plain endpoint */
+  tentacle_id: string | null
+  enabled: boolean
+  auth_kind: McpAuthKind
+  created_at: string
+  updated_at: string
+}
+
+/** A configured tentacle that can supply an MCP (`GET /api/mcp/tentacles`). */
+export interface ApiMcpTentacle {
+  id: string
+  name: string
+  url: string
+  auth_kind: McpAuthKind
+}
+
+/** One channel identity bound to an account. */
+export interface ApiUserProfile {
+  id: string
+  channel_tentacle_id: string
+  channel_user_id: string
+  name: string
+  nickname: string | null
+  gender: string | null
+  age: number | null
+  title: string | null
+  user_id: string | null
+}
+
+/** McpServerSummary from octomate/schemas/mcp.py. */
+export interface ApiMcpServerSummary {
+  id: string
+  namespace: string
+  name: string
+  enabled: boolean
+  auth_kind: McpAuthKind
+  oauth: {
+    flows: ('device' | 'authorization_code')[]
+    status: 'active' | 'invalid' | null
+  } | null
+}
+
+/** `GET /api/trunkline/profile` — who the console is signed in as, where else
+ *  they are, and what they have connected. */
+export interface ApiProfileInfo {
+  user: ApiUser
+  profiles: ApiUserProfile[]
+  mcps: ApiMcpServerSummary[]
 }
 
 /*

@@ -13,7 +13,7 @@ from octomate.tentacles.deepseek.base import DeepseekTentacle
 from octomate.tentacles.discord.base import DiscordTentacle
 from octomate.tentacles.inkling.base import InklingTentacle
 from octomate.tentacles.lark.base import LarkTentacle
-from octomate.tentacles.mcp import BareMcpTentacle
+from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle
 from octomate.tentacles.napcat.base import NapcatTentacle
 from octomate.tentacles.slack.base import SlackTentacle
 from octomate.tentacles.trunkline.base import TrunklineTentacle
@@ -44,15 +44,20 @@ def test_tentacles_have_stable_brand_styles() -> None:
 
 
 @pytest.mark.parametrize("mcp_first", [True, False])
+@pytest.mark.parametrize("oauth", [True, False])
 async def test_mcp_logs_do_not_claim_channel_logs(
-    caplog: pytest.LogCaptureFixture, mcp_first: bool
+    caplog: pytest.LogCaptureFixture, mcp_first: bool, oauth: bool
 ) -> None:
     octomate = Octomate()
-    mcp = BareMcpTentacle(
-        "linear_streamify",
-        octomate,
-        url="https://mcp.example/mcp",
-        token=SecretStr("test"),
+    mcp = (
+        OAuthMcpTentacle("github", octomate)
+        if oauth
+        else BareMcpTentacle(
+            "linear_streamify",
+            octomate,
+            url="https://mcp.example/mcp",
+            token=SecretStr("test"),
+        )
     )
     channel = TrunklineTentacle(
         "trunkline", octomate, config=TrunklineChannelConfig(agents=["claude"])
@@ -74,3 +79,10 @@ async def test_mcp_logs_do_not_claim_channel_logs(
     )
     assert octomate.log_tag("octomate.tentacles.mcp") == (mcp.id, mcp.log_color)
     assert octomate.log_tag("octomate.tentacles.feelers.output")[0] == "feelers"
+    assert octomate.log_tag("octomate.tentacles.deepseek.process")[0] == "deepseek"
+    colored = TentacleLogFormatter(octomate, colorize=True)
+    record = logging.LogRecord(
+        "octomate.tentacles.trunkline.routes", logging.INFO, "", 0, "ready", (), None
+    )
+    assert channel.log_color is not None
+    assert channel.log_color.render("[trunkline]") in colored.format(record)
