@@ -5,8 +5,9 @@ read back."""
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from contextvars import Context
 
 import pytest
 from fastapi import FastAPI
@@ -16,15 +17,19 @@ from octomate_cli.tentacles.codex import CODEX_HOOK_PATH
 from octomate_cli.tentacles.deepseek import DEEPSEEK_HOOK_PATH
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.testclient import WebSocketDenialResponse
 
 from octomate import Octomate
-from octomate.config import ClaudeCodeConfig, CodexConfig, DeepseekConfig
-from octomate.managers.user import UserManager
+from octomate.config import (
+    ClaudeCodeConfig,
+    CodexConfig,
+    DeepseekConfig,
+    OctomateConfig,
+)
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
-from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, DEEPSEEK_MODELS
-from tests.support.config import registered
+from tests.support.users import a_api_key, a_user, auth_config
 
 SECRET = SecretStr("the-hook-secret")
 EVENT = {"hook_event_name": "SessionEnd", "session_id": "s1"}
@@ -36,33 +41,30 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 
 def client_for(path: str) -> TestClient:
-    config = registered(SECRET.get_secret_value())
-    octomate = Octomate(config=config, users=UserManager(config.users))
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     if path == CLAUDE_HOOK_PATH:
         tentacle = ClaudeCodeTentacle(
             "claude",
             octomate,
-            config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+            config=ClaudeCodeConfig(),
         )
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
             "codex",
             octomate,
-            config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+            config=CodexConfig(permission_mode="deny_all"),
         )
     else:
         tentacle = DeepseekTentacle(
             "deepseek",
             octomate,
-            config=DeepseekConfig(models=set(DEEPSEEK_MODELS)),
+            config=DeepseekConfig(),
         )
 
-    # Entering the client runs the lifespan: the registered user gets their
-    # registry row, the way the real app reconciles before serving — the hook
-    # handlers resolve the verified bearer's own profile against it.
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        await octomate.users.reconcile()
+    async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
+        user = await a_user()
+        await a_api_key(user, SECRET.get_secret_value())
         yield
 
     app = FastAPI(lifespan=lifespan)
@@ -90,7 +92,7 @@ def test_an_unauthenticated_hook_is_refused(path: str, headers: dict[str, str]) 
 @pytest.mark.parametrize(
     "path", [CLAUDE_HOOK_PATH, CODEX_HOOK_PATH, DEEPSEEK_HOOK_PATH]
 )
-def test_the_configured_secret_is_accepted(path: str) -> None:
+def test_the_api_token_is_accepted(path: str) -> None:
     with client_for(path) as client:
         response = client.post(
             path,
@@ -100,13 +102,33 @@ def test_the_configured_secret_is_accepted(path: str) -> None:
     assert response.status_code == 200
 
 
-def test_a_hook_router_refuses_to_mount_for_nobody() -> None:
-    # A deployment where no user carries a secret would serve a router no
-    # human's machine could reach — the boot says so instead.
+def test_a_hook_router_mounts_before_any_user_registers() -> None:
     tentacle = ClaudeCodeTentacle(
         "claude",
-        Octomate(),
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        Octomate(config=OctomateConfig(auth=auth_config())),
+        config=ClaudeCodeConfig(),
     )
-    with pytest.raises(RuntimeError, match="no registered user carries a secret"):
-        tentacle.routers()
+    assert len(tentacle.routers()) == 1
+
+
+@pytest.mark.parametrize("token", ["wrong", SECRET.get_secret_value()])
+async def test_stream_authentication_has_its_own_database_context(token: str) -> None:
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    app.connect(ClaudeCodeTentacle("claude", app, config=ClaudeCodeConfig()))
+    user = await a_user()
+    await a_api_key(user, SECRET.get_secret_value())
+
+    def connect() -> None:
+        with TestClient(app).websocket_connect(
+            f"{CLAUDE_HOOK_PATH}/stream",
+            headers={"Authorization": f"Bearer {token}"},
+        ):
+            pass
+
+    # Uvicorn's request tasks do not inherit the fixture's active materia.
+    if token == SECRET.get_secret_value():
+        Context().run(connect)
+    else:
+        with pytest.raises(WebSocketDenialResponse) as denial:
+            Context().run(connect)
+        assert denial.value.status_code == 401

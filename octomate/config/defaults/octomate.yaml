@@ -10,13 +10,8 @@
 # host: 127.0.0.1   # in a container this must be 0.0.0.0 to be reachable at all
 # port: 8000
 
-# There is no deployment-wide secret: every configured credential names a person.
-# Bearers live in `users.<name>.secret` (see users.yaml) — the Claude/Codex/DeepSeek
-# hook routers and the served MCP endpoints authenticate against those, and a hook
-# router refuses to boot while no user carries one, since serving it unauthenticated
-# would let anything that can reach the port write a session's prompts and answers
-# into thread history. The value comes from the user: they run `octomate configure`
-# on their own machine and hand you what it printed.
+# API tokens belong to persisted user accounts. Native hook routers and streams
+# require hooks scope; served MCP endpoints require mcp scope.
 
 # Where the database lives, read by both the app engine and alembic. The default is
 # relative to the working directory, so each checkout keeps its own history even

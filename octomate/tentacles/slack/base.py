@@ -184,7 +184,7 @@ class SlackTentacle(
             # One connector per workspace, named after this channel: a person's
             # Slack token is good for one workspace, and the app whose client it
             # is belongs to this one. Registering a direct-HTTP transport is also
-            # what makes `Octomate.app` serve the start and callback routes.
+            # what makes Octomate serve the start and callback routes.
             octomate.oauth.register(
                 OAuthConnector(
                     id=id,

@@ -35,7 +35,7 @@ class LinearTentacle(OAuthMcpTentacle):
         super().__init__(id=id, octomate=octomate)
         self.upstream = config.endpoint
         self.prefix = config.prefix or id
-        # Registering a direct-HTTP transport is also what makes `Octomate.app`
+        # Registering a direct-HTTP transport is also what makes Octomate
         # serve the start and callback routes its URIs point at.
         octomate.oauth.register(
             OAuthConnector(

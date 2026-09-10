@@ -1,5 +1,4 @@
-"""The root Typer app behind the `octomate` command: each agent's command group,
-configure, serve, and upgrade.
+"""The root Typer app: client commands at the root, server commands under service.
 
 Every group is mounted whatever the machine holds — server or client — so the surface
 stays discoverable; a command that needs the absent half says so when invoked rather
@@ -13,17 +12,17 @@ from typing import Annotated
 
 import typer
 
+from octomate_cli.cli import upgrade
 from octomate_cli.config import configure
-from octomate_cli.serve import serve, upgrade
+from octomate_cli.service import service_typer
 from octomate_cli.tentacles.claude import claude_typer
 from octomate_cli.tentacles.codex import codex_typer
 from octomate_cli.tentacles.deepseek import deepseek_typer
 
 app = typer.Typer(help="Octomate operator CLI.", no_args_is_help=True)
-app.command("serve")(serve)
 app.command("upgrade")(upgrade)
-# One credential per person, written here and read by every agent's hooks, tail and
-# MCP entry alike.
+app.add_typer(service_typer, name="service")
+# The client API token is read by each agent's hooks, tail and MCP entry.
 app.command("configure")(configure)
 app.add_typer(claude_typer, name="claude")
 app.add_typer(codex_typer, name="codex")

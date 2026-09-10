@@ -356,7 +356,7 @@ export interface ApiChannelInfo {
 export interface ApiRoute {
   id: string // opaque — model names may embed ':', never split this
   agent: string
-  model: string
+  model: string | null
 }
 
 /*

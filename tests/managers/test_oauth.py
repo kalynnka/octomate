@@ -19,8 +19,8 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
-from octomate.config.users import UserConfig
 from octomate.database import async_session
+from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import (
     OAuthConnector,
@@ -52,6 +52,7 @@ from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.support.channels import FakeChannelTentacle, RecordingOAuthFeeler
 from tests.support.managers import fixed_session
+from tests.support.users import a_user
 
 GITHUB_CONNECTOR_ID = "github"
 LINEAR_CONNECTOR_ID = "linear"
@@ -213,14 +214,8 @@ async def linear_manager(
 
 
 async def linked_user_manager() -> tuple[UserManager, UserProfile]:
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {"profiles": {"slack": {"channel_user_id": "U1"}}}
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"slack": "U1"})
+    users = UserManager()
     async with async_session() as session:
         profile = await session.one_or_none(
             UserProfile,
@@ -409,6 +404,76 @@ async def test_a_replayed_callback_is_refused() -> None:
     assert flow.exchanges == [("auth-code", "pkce-verifier")]
 
 
+async def test_concurrent_callbacks_exchange_an_operation_once() -> None:
+    manager, profile, flow = await linear_manager()
+    _, state = await started(manager, profile, flow)
+
+    results = await asyncio.gather(
+        *(
+            manager.complete_callback(
+                LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+            )
+            for _ in range(4)
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, OAuthGrant) for result in results) == 1
+    assert sum(isinstance(result, UnusableOAuthOperation) for result in results) == 3
+    assert flow.exchanges == [("auth-code", "pkce-verifier")]
+
+
+async def test_distinct_authorizations_share_one_connection_lock() -> None:
+    manager, profile, flow = await linear_manager()
+    _, first = await started(manager, profile, flow)
+    _, second = await started(manager, profile, flow)
+
+    await asyncio.gather(
+        manager.complete_callback(LINEAR_CONNECTOR_ID, state=first, code="first"),
+        manager.complete_callback(LINEAR_CONNECTOR_ID, state=second, code="second"),
+    )
+
+    assert len(flow.exchanges) == 2
+    async with async_session() as session:
+        assert await session.count(OAuthConnection) == 1
+
+
+async def test_completion_and_refresh_lock_only_the_matching_connection() -> None:
+    manager, profile, flow = await linear_manager()
+    user = await manager.users.owner(profile)
+    assert user is not None
+    _, state = await started(manager, profile, flow)
+    other_flow = FakeAuthorizationCodeFlow()
+    manager.register(
+        OAuthConnector(
+            id="other",
+            flow=other_flow,
+            callback_transport=direct_http(),
+        )
+    )
+    await manager.start(profile, "other")
+    assert other_flow.state is not None
+
+    async with asyncio.timeout(2), asyncio.TaskGroup() as tasks:
+        async with manager.lock((user.id, LINEAR_CONNECTOR_ID)):
+            completion = tasks.create_task(
+                manager.complete_callback(
+                    LINEAR_CONNECTOR_ID, state=state, code="auth-code"
+                )
+            )
+            refresh = tasks.create_task(manager.refresh(profile, LINEAR_CONNECTOR_ID))
+            await asyncio.sleep(0)
+            await manager.complete_callback(
+                "other", state=other_flow.state.get_secret_value(), code="other-code"
+            )
+            assert not completion.done()
+            assert not refresh.done()
+        await completion
+        await refresh
+
+    assert other_flow.exchanges == [("other-code", "pkce-verifier")]
+
+
 async def test_an_expired_authorization_cannot_be_completed() -> None:
     flow = FakeAuthorizationCodeFlow()
     flow.lifetime = timedelta(seconds=-1)
@@ -466,9 +531,12 @@ async def test_a_declined_authorization_is_closed() -> None:
 async def test_unlinking_the_profile_stops_its_callback() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
-    # The YAML declaration goes away while the user is at the provider's page.
-    manager.users.config = {}
-    await manager.users.reconcile()
+    # Ownership is revoked while the user is at the provider's page.
+    async with async_session() as session:
+        stored = await session.get(UserProfile, profile.id)
+        assert stored is not None
+        stored.user_id = None
+        await session.commit()
 
     with pytest.raises(UnusableOAuthOperation, match="no longer linked"):
         await manager.complete_callback(
@@ -633,19 +701,8 @@ async def test_start_replaces_a_device_authorization_that_has_expired() -> None:
 
 
 async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() -> None:
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "slack": {"channel_user_id": "U1"},
-                        "lark": {"channel_user_id": "OU1"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"slack": "U1", "lark": "OU1"})
+    users = UserManager()
     async with async_session() as session:
         slack = await session.one_or_none(
             UserProfile,
@@ -679,8 +736,11 @@ class Provider(OAuthMcpTentacle):
 
 def provider(manager: OAuthManager, connector_id: str) -> Provider:
     """The tentacle whose tokens live under `connector_id` on `manager`."""
-    host = Octomate(users=manager.users)
+    # This unit fixture binds the configured manager without bootstrapping it again.
+    host = object.__new__(Octomate)
+    host.users = manager.users
     host.oauth = manager
+    host.deferred_actions = DeferredActionManager()
     return Provider(connector_id, host)
 
 
@@ -722,11 +782,12 @@ async def linking(
 ) -> AsyncIterator[tuple[Client, RecordingOAuthFeeler]]:
     """The served link tools for `connector_id`, called by `profile` from a private
     surface whose cards are recorded rather than rendered."""
-    channel = FakeChannelTentacle()
+    tentacle = provider(manager, connector_id)
+    channel = FakeChannelTentacle(octomate=tentacle.octomate)
     feeler = RecordingOAuthFeeler(channel.ink)
     channel.feelers.oauth = feeler
     session = a_session(profile, channel)
-    server = tentacles_mcp(fixed_session(session), [provider(manager, connector_id)])
+    server = tentacles_mcp(fixed_session(session), [tentacle])
     async with Client(server) as client:
         yield client, feeler
 

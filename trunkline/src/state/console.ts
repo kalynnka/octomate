@@ -16,11 +16,11 @@ import type {
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
 import type { BatchResponseBody, WireEvent } from '@/lib/api/events'
-import { shortModel } from '@/lib/api/live'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
+import { useAuth } from '@/state/auth'
 
-export type ControlSection = '' | 'agents' | 'mcp' | 'users' | 'dash' | 'settings'
+export type ControlSection = '' | 'agents' | 'mcp' | 'users' | 'dash' | 'settings' | 'account'
 export type ThemeMode = 'light' | 'dark' | 'auto'
 export type RailKey = 'sb' | 'mgmt' | 'trace' | 'pv'
 
@@ -216,6 +216,8 @@ export interface ConsoleActions {
   cyclePermissionMode(): Promise<void>
   closeNtMenu(): void
   sendNewThread(text: string): void
+  /** drop what the last operator left open — the next one boots into their own */
+  signedOut(): void
 }
 
 interface ConsoleState {
@@ -331,6 +333,10 @@ const clearTurnTimers = () => {
 const nowClock = () =>
   new Date().toLocaleTimeString('en-GB', { hour12: false })
 
+/** Who a card the console writes is from: the signed-in account, by the name
+ *  the relay files its messages under. */
+const operator = () => useAuth.getState().user?.name ?? 'operator'
+
 export const useConsole = create<ConsoleState>()((set, get) => {
   const prefs = loadChannelPrefs()
 
@@ -398,7 +404,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (!s.ntOn || s.ntRouteId !== null) return
         set({
           ntAgent: first.agent,
-          ntModel: shortModel(first.model),
+          ntModel: first.model ?? 'Harness default',
           ntRouteId: first.id,
         })
       })
@@ -477,7 +483,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // model switch busts the KV cache); the pick only rides a thread's first
     // directive, in sendNewThread.
     set({ running: true, composer: '' })
-    push({ kind: 'user', t: nowClock(), who: 'kalynnka', text } as LedgerItem)
+    push({ kind: 'user', t: nowClock(), who: operator(), text } as LedgerItem)
     void runLive(selId, (onEvent) => streamDirective(sendKey, { text }, onEvent))
   }
 
@@ -853,7 +859,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         file: s.activeFile,
         anchor: line.id,
         range,
-        who: 'kalynnka',
+        who: operator(),
         t: `14:0${cmtsOf(s).length + 5}`,
         status: 'queued',
         text: s.draft.text.trim(),
@@ -1008,7 +1014,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       push({
         kind: 'user',
         t: nowClock(),
-        who: 'kalynnka',
+        who: operator(),
         text: body || (hasC ? 'Fold these into the next rev.' : 'Pinned for reference.'),
         chips,
       } as LedgerItem)
@@ -1205,7 +1211,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntTitle: started ? s.ntTitle : title,
         selThreadId: threadId,
       })
-      push({ kind: 'user', t: nowClock(), who: 'kalynnka', text: body } as LedgerItem)
+      push({ kind: 'user', t: nowClock(), who: operator(), text: body } as LedgerItem)
       // The pick is honored only on the first directive; after that the
       // thread's route is fixed.
       const routeId = started ? undefined : (s.ntRouteId ?? undefined)
@@ -1224,6 +1230,25 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ),
       )
 
+    },
+
+    /* ---------------------------------------------------- session -------- */
+    signedOut() {
+      clearTurnTimers()
+      set({
+        selThreadId: '',
+        detail: null,
+        live: [],
+        running: false,
+        notices: [],
+        ntOn: false,
+        ntStarted: false,
+        mgmtOpen: false,
+        mgmtSec: '',
+        pvOpen: false,
+        queue: [],
+        composer: '',
+      })
     },
   }
 

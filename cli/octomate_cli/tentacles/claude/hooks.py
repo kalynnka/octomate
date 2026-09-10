@@ -228,7 +228,7 @@ def install(
     typer.echo(f"  stream:   {stream} (via {LAUNCH_SCRIPT.name})")
     typer.echo(f"  settings: {path}")
     typer.echo(
-        f"  auth:     Bearer ${{{CLISettings.env('secret')}}} from the environment"
+        f"  auth:     Bearer ${{{CLISettings.env('token')}}} from the environment"
     )
     announce_secret()
 

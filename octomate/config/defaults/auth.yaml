@@ -1,0 +1,10 @@
+# Required for invited local accounts and Trunkline sign-in.
+# Generate each salt independently with: openssl rand -base64 32
+# Keep the same salts across server processes and restarts.
+#
+# auth:
+#   access_token_salt: ...
+#   refresh_token_salt: ...
+#   api_key_salt: ...
+#   # Driven runtime MCP keys are also revoked when their client closes.
+#   runtime_api_key_lifetime: P1D

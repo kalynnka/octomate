@@ -13,6 +13,7 @@ from arcanus.base import Identity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from pydantic import (
     AnyHttpUrl,
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -79,7 +80,7 @@ class DeviceAuthorizationResponse(BaseModel):
     verification_uri_complete: HttpsUrl | None = None
     device_code: SecretStr = Field(exclude=True, repr=False)
     user_code: SecretStr = Field(repr=False)
-    expires_at: datetime
+    expires_at: AwareDatetime
     interval_seconds: int = Field(ge=1)
 
 
@@ -99,7 +100,7 @@ class AuthorizationRequest(BaseModel):
         "returned so the manager can seal it into the operation and spend it at the "
         "token exchange. None for a provider that does not offer PKCE.",
     )
-    expires_at: datetime
+    expires_at: AwareDatetime
 
 
 class DeviceAuthorization(BaseModel):
@@ -114,7 +115,7 @@ class DeviceAuthorization(BaseModel):
     verification_uri: HttpsUrl
     verification_uri_complete: HttpsUrl | None = None
     user_code: SecretStr = Field(repr=False)
-    expires_at: datetime
+    expires_at: AwareDatetime
     interval_seconds: int = Field(ge=1)
 
 
@@ -141,7 +142,7 @@ class OAuthGrant(BaseModel):
     scopes: list[str] = Field(default_factory=list)
     subject: str
     account_label: str
-    expires_at: datetime | None = None
+    expires_at: AwareDatetime | None = None
 
 
 class AuthorizationLink(BaseModel):
@@ -154,7 +155,7 @@ class AuthorizationLink(BaseModel):
 
     operation_id: uuid.UUID
     authorization_uri: AnyHttpUrl
-    expires_at: datetime
+    expires_at: AwareDatetime
 
 
 class DeviceOAuthFlow(ABC):
@@ -366,13 +367,13 @@ class OAuthOperation(BaseTransmuter):
     profile_id: uuid.UUID
     connector_id: str
     encrypted_data: bytes = Field(repr=False)
-    expires_at: datetime
+    expires_at: AwareDatetime
     # How long the user's channel waits between polls, which only a device flow
     # does; an authorization-code operation is finished by its callback and has
     # nothing to poll.
     interval_seconds: int | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    consumed_at: datetime | None = None
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    consumed_at: AwareDatetime | None = None
 
 
 @sqlalchemy_materia.bless(oauth_models.OAuthConnection)
@@ -387,6 +388,6 @@ class OAuthConnection(BaseTransmuter):
     subject: str
     account_label: str
     scopes: list[str] = Field(default_factory=list)
-    expires_at: datetime | None = None
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    expires_at: AwareDatetime | None = None
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

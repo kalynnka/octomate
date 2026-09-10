@@ -4,6 +4,7 @@ import type { ControlSection } from '@/state/console'
 import { TriStripeInline } from '@/components/TriStripe'
 import { BarChart } from '@/components/BarChart'
 import { chipLabel, display, ellipsis, label, microMeta, microSection, mono, sectionLabel, statusNote } from '@/components/text'
+import { AccountPanel } from '@/features/auth/AccountPanel'
 import type { ControlData, EffortStep } from '@/lib/api/types'
 
 const pages: Record<Exclude<ControlSection, ''>, { num: string; title: string }> = {
@@ -12,6 +13,7 @@ const pages: Record<Exclude<ControlSection, ''>, { num: string; title: string }>
   users: { num: 'U03', title: 'Users' },
   dash: { num: 'D04', title: 'Dashboard' },
   settings: { num: 'S05', title: 'Settings' },
+  account: { num: 'A06', title: 'Account' },
 }
 
 const effortScale: EffortStep[] = ['minimal', 'low', 'medium', 'high', 'xhigh']
@@ -105,7 +107,8 @@ export function ControlPage() {
             boxShadow: 'var(--shadow-soft)',
           }}
         >
-          {!data && (
+          {mgmtSec === 'account' && <AccountPanel />}
+          {mgmtSec !== 'account' && !data && (
             <div style={{ padding: '26px 16px', textAlign: 'center', ...statusNote, color: 'var(--fg-3)' }}>
               // no read serves this page yet
             </div>

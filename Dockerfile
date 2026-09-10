@@ -4,10 +4,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends openssh-client 
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
-
+COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY cli/ cli/
+COPY protocol/ protocol/
 COPY octomate/ octomate/
-COPY main.py ./
+RUN uv sync --frozen --no-dev
 
-CMD ["uv", "run", "octomate", "serve"]
+CMD ["uv", "run", "--no-sync", "octomate", "service", "serve"]

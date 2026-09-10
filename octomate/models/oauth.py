@@ -6,7 +6,6 @@ from datetime import UTC, datetime
 from arcanus.base import TransmuterProxiedMixin
 from sqlalchemy import (
     JSON,
-    DateTime,
     ForeignKey,
     Integer,
     LargeBinary,
@@ -17,7 +16,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base
+from octomate.models.base import Base, UTCDateTime
 from octomate.types.oauth import OAuthConnectionStatus
 
 
@@ -41,17 +40,19 @@ class OAuthOperation(Base, TransmuterProxiedMixin):
     )
     connector_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     encrypted_data: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    expires_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, index=True
+    )
     # Device flow only: the seconds between polls. An authorization-code operation
     # is finished by its callback and has nothing to poll.
     interval_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
     )
     consumed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=True,
         index=True,
     )
@@ -87,17 +88,17 @@ class OAuthConnection(Base, TransmuterProxiedMixin):
     account_label: Mapped[str] = mapped_column(String, nullable=False)
     scopes: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
     expires_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=True,
         index=True,
     )
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),

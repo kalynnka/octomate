@@ -444,6 +444,40 @@ async def test_lark_answer_card_opens_before_the_thinking_card_folds() -> None:
     assert ink.order == ["open_answer_card", "fold_thinking"]
 
 
+async def test_lark_receives_tokens_while_the_answer_card_is_being_created() -> None:
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    class SlowCreateInk(FakeLarkInk):
+        async def create_stream_card(
+            self, card_data: str, *, element_id: str
+        ) -> LarkStreamCard:
+            started.set()
+            await release.wait()
+            return await super().create_stream_card(card_data, element_id=element_id)
+
+    ink = SlowCreateInk()
+    channel = lark_channel(ink)
+    address = ChannelAddress(
+        channel_tentacle_id="lark", chat_type="dm", chat_id="u1", user_id="u1"
+    )
+
+    async def events() -> AsyncIterator[
+        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+    ]:
+        yield PartStartEvent(index=0, part=TextPart(content="A"))
+        await started.wait()
+        yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="BC"))
+        release.set()
+        yield AgentRunResultEvent(AgentRunResult("ABC"))
+
+    async with asyncio.timeout(1):
+        await drive(channel, address, events())
+
+    assert len(ink.stream_cards) == 1
+    assert [content for _card, content, _seq in ink.stream_updates] == ["ABC"]
+
+
 async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> None:
     ink = FakeLarkInk()
     channel = lark_channel(ink)

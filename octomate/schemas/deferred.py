@@ -6,7 +6,6 @@ from typing import (
     Annotated,
     Literal,
     NotRequired,
-    TypeAlias,
     TypedDict,
     cast,
 )
@@ -21,6 +20,7 @@ from arcanus import (
 from arcanus.base import Identity
 from pydantic import (
     AliasChoices,
+    AwareDatetime,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -33,7 +33,6 @@ from uuid_utils.compat import uuid7
 from octomate.models import deferred as deferred_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.messages import UtcDateTime
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.types.deferred import (
     DeferredActionStatus,
@@ -95,12 +94,12 @@ class DeferredApprovalPayload(TypedDict):
     metadata: JsonObject
 
 
-DeferredActionPayload: TypeAlias = DeferredQuestionPayload | DeferredApprovalPayload
-DeferredActionCollectionInput: TypeAlias = (
+type DeferredActionPayload = DeferredQuestionPayload | DeferredApprovalPayload
+type DeferredActionCollectionInput = (
     DeferredToolRequests | list[DeferredActionPayload | JsonObject]
 )
-DeferredQuestionResult: TypeAlias = str | None
-DeferredApprovalResult: TypeAlias = bool | None
+type DeferredQuestionResult = str | None
+type DeferredApprovalResult = bool | None
 
 
 @sqlalchemy_materia.bless(deferred_models.DeferredAction)
@@ -123,9 +122,9 @@ class DeferredAction(BaseTransmuter):
     result: DeferredQuestionResult | DeferredApprovalResult = None
     platform_message_id: str | None = None
     responder_id: str | None = None
-    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
-    resolved_at: UtcDateTime | None = None
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    resolved_at: AwareDatetime | None = None
 
     batch: Relation[DeferredActionBatch] = Relationship()
 
@@ -156,7 +155,7 @@ class DeferredApproval(DeferredAction):
     args: ApprovalRequest
 
 
-DeferredActionVariant: TypeAlias = Annotated[
+type DeferredActionVariant = Annotated[
     DeferredQuestion | DeferredApproval,
     Field(discriminator="kind"),
 ]
@@ -229,9 +228,9 @@ class DeferredActionBatch(BaseTransmuter):
     target_mode: ResponseTargetMode = "main"
     decision: SummonDecision | None = None
     requests: DeferredToolRequests
-    created_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
-    updated_at: UtcDateTime = Field(default_factory=lambda: datetime.now(UTC))
-    completed_at: UtcDateTime | None = None
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    completed_at: AwareDatetime | None = None
 
     questions: RelationCollection[DeferredQuestion] = Relationships()
     approvals: RelationCollection[DeferredApproval] = Relationships()

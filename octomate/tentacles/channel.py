@@ -16,10 +16,8 @@ from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     ClassVar,
-    Generic,
     Literal,
     Self,
-    TypeAlias,
     TypeVar,
 )
 
@@ -64,7 +62,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ThreadStrategy = Literal["main_only", "flat_thread"]
-ChannelOutput: TypeAlias = str | Sequence[MessageSegment] | DeferredToolRequests | None
+type ChannelOutput = str | Sequence[MessageSegment] | DeferredToolRequests | None
 MessageT = TypeVar("MessageT")
 RawT = TypeVar("RawT")
 
@@ -94,9 +92,8 @@ class DownloadedImage:
     url: str | None = None
 
 
-class Chromo(
+class Chromo[RawT, MessageT](
     ABC,
-    Generic[RawT, MessageT],
 ):
     """Two-way translation between platform-native wire data and core schemas.
 
@@ -120,7 +117,7 @@ class Chromo(
         return self.outbound_markdown("\n\n".join(str(seg) for seg in segments))
 
 
-class Ink(ABC, Generic[MessageT]):
+class Ink[MessageT](ABC):
     """Base class for platform API clients (transport only).
 
     An ink is an async context manager: the owning tentacle enters it as part
@@ -132,7 +129,8 @@ class Ink(ABC, Generic[MessageT]):
     async def __aenter__(self) -> Self:
         return self
 
-    async def __aexit__(self, *exc: object) -> None: ...
+    async def __aexit__(self, *exc: object) -> None:
+        return None
 
     @abstractmethod
     async def inspect(self) -> UserProfile: ...
@@ -248,6 +246,11 @@ class ChannelTentacle(
             ask_questions=questions_feeler,
             oauth=oauth_feeler,
         )
+
+    @property
+    def agent_ids(self) -> list[str]:
+        """Agent tentacles this channel exposes, in entry order."""
+        return self.config.agents
 
     async def probe(self) -> None:
         """Resolve the channel's own identity from the platform. Awaited by the

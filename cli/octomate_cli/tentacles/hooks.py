@@ -1,5 +1,5 @@
 """What every agent's hook installer shares: the check that the credential the hooks
-will carry — the user's own secret, from their `users:` entry — actually resolves,
+will carry — a server-issued API token — actually resolves,
 and the scripts the installed hooks run.
 """
 
@@ -24,11 +24,11 @@ LAUNCH_SCRIPT = Path(__file__).parent.parent / "launch.py"
 def announce_secret() -> None:
     """Warn when hooks were just installed against a credential that resolves to
     nothing: the install reports success, and every turn after it 401s."""
-    if cli_settings().secret is None:
+    if cli_settings().token is None:
         typer.secho(
             f"\nNo credential found — neither ./.octomate/cli.toml nor "
-            f"{user_config_path()} holds one, and ${CLISettings.env('secret')} is "
-            "unset. Run `octomate configure`, or every hook will be refused.",
+            f"{user_config_path()} holds one, and ${CLISettings.env('token')} is "
+            "unset. Run `octomate configure --token <api-token>`, or every hook will be refused.",
             fg=typer.colors.YELLOW,
             err=True,
         )

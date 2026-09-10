@@ -4,20 +4,25 @@ import asyncio
 import colorsys
 import logging
 import zlib
-from collections.abc import Awaitable, Callable, Iterator
+from collections.abc import AsyncGenerator, Iterator
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
-from dataclasses import InitVar, dataclass, field
-from functools import lru_cache
+from dataclasses import dataclass, field
+from functools import cached_property, lru_cache
 from itertools import count
 from typing import TypeVar
 
-from fastapi import APIRouter, FastAPI, Request, Response
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
 from rich.color import Color
 from rich.style import Style
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from octomate.config.base import OctomateConfig
+from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
@@ -28,8 +33,7 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import served_session
-from octomate.mcp.server import octomate_mcp
-from octomate.oauth.routes import oauth_router
+from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
 from octomate.reflex import (
     Awake,
     ReflexDeps,
@@ -49,7 +53,6 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.mcp import McpTentacle
-from octomate.tentacles.trunkline.base import TrunklineTentacle
 
 TentacleT = TypeVar("TentacleT", bound=Tentacle)
 logger = logging.getLogger(__name__)
@@ -108,53 +111,79 @@ def muted_log_style(tag: str) -> Style:
     return Style(color=Color.from_rgb(red * 255, green * 255, blue * 255))
 
 
-@dataclass
-class Octomate:
+@dataclass(eq=False)
+class Octomate(FastAPI):
     """Application host for shared services, tentacles, and routers."""
+
+    title: str = field(default="Octomate", kw_only=True)
+    # The deployment config the host was built from. What a tentacle reads for
+    # serving facts the app object itself does not model — above all the uvicorn
+    # bind port, which only the config knows.
+    config: OctomateConfig = field(default_factory=OctomateConfig)
+    oauth_encryption_key: SecretStr | None = field(default=None, repr=False)
+
+    auth: AuthManager | None = field(init=False)
+    oauth: OAuthManager = field(init=False)
+    users: UserManager = field(default_factory=UserManager)
+
+    # Scoped API tokens, shared by MCP verification and hook guards.
+    bearers: KnownBearers = field(init=False)
 
     thread_manager: ThreadManager = field(init=False)
     conversations: ConversationManager = field(default_factory=ConversationManager)
     deferred_actions: DeferredActionManager = field(
         default_factory=DeferredActionManager
     )
-    users: UserManager = field(default_factory=UserManager)
-    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
     gateway: GatewayManager = field(default_factory=GatewayManager)
-    # The deployment config the host was built from. What a tentacle reads for
-    # serving facts the app object itself does not model — above all the uvicorn
-    # bind port, which only the config knows.
-    config: OctomateConfig | None = None
-    oauth_encryption_key: InitVar[SecretStr | None] = None
-    oauth: OAuthManager = field(init=False)
+    workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+
     # Every connected tentacle by id, in connection order — the one registry. A
     # tentacle composes its roles (a channel that is also an MCP tentacle), so
     # the typed views below are readings of this dict, taken fresh each time: a
     # router builder reads `channels` while `connect` is still mounting.
     tentacles: dict[str, Tentacle] = field(default_factory=dict)
+    # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
+    background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
     # The next console color for a tentacle with no brand of its own.
     log_styles: Iterator[Style] = field(
         default_factory=log_styles, init=False, repr=False
     )
-    routers: list[APIRouter] = field(default_factory=list)
-    # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
-    background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
-    # Every credential this deployment accepts — the registered users' own secrets,
-    # nothing else. One registry shared by the MCP verifier and the hook guards;
-    # with no user registered it rejects every bearer, and whether that should
-    # refuse a boot is the hook routers' own mounting question.
-    bearers: KnownBearers = field(init=False)
 
-    def __post_init__(self, oauth_encryption_key: SecretStr | None) -> None:
-        # Every ledger row references its sender's registry profile, so the
-        # thread manager records through the host's one identity registry.
+    def __post_init__(self) -> None:
+        super().__init__(
+            title=self.title,
+            docs_url="/docs",
+            redoc_url=None,
+            lifespan=self.lifespan,
+        )
         self.thread_manager = ThreadManager(users=self.users)
+        self.auth = (
+            AuthManager(self.config.auth) if self.config.auth is not None else None
+        )
+        self.bearers = KnownBearers(self.auth)
         self.oauth = OAuthManager(
             users=self.users,
-            encryption_key=oauth_encryption_key,
+            encryption_key=self.oauth_encryption_key,
         )
-        self.bearers = KnownBearers(
-            self.config.users if self.config is not None else {}
-        )
+
+        @self.exception_handler(RequestValidationError)
+        async def validation_error(
+            request: Request, error: RequestValidationError
+        ) -> JSONResponse:
+            # FastAPI's default includes raw rejected inputs, including passwords.
+            return JSONResponse(
+                status_code=422,
+                content={
+                    "detail": [
+                        {"loc": item["loc"], "msg": item["msg"], "type": item["type"]}
+                        for item in error.errors()
+                    ]
+                },
+            )
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        with sqlalchemy_materia():
+            await super().__call__(scope, receive, send)
 
     @property
     def projects(self) -> ProjectManager:
@@ -206,7 +235,8 @@ class Octomate:
         self.tentacles[tentacle.id] = tentacle
         # Mount the tentacle's HTTP surface now that it is bound and registered — a
         # router builder like the Vercel one looks itself up in `self.channels`.
-        self.routers.extend(tentacle.routers())
+        for router in tentacle.routers():
+            self.include_router(router)
         return tentacle
 
     def log_tag(self, logger_name: str) -> tuple[str, Style | None]:
@@ -274,139 +304,92 @@ class Octomate:
         self.background.add(task)
         task.add_done_callback(self.background.discard)
 
-    def app(self, *, title: str = "Octomate") -> FastAPI:
-        # The one MCP server, which every runtime's install config knows as
-        # `/octomate/mcp`, resolving the identity a call runs against from the
-        # request itself. Always served, never open: the gateway's spells send to
-        # real channels and hand conversations to other agents, so every call
-        # authenticates against the registered users' own secrets — which locks
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI) -> AsyncGenerator[None]:
+        with sqlalchemy_materia():
+            # The project registry: reconciling here is what builds
+            # the resolution index, so a declared project resolves before
+            # anything is running that could ask.
+            await self.projects.reconcile()
+            # How a workspace is forked is the filesystem's answer, not a
+            # setting: probed here so the log says which mechanism this host
+            # got, once, before anything asks for a workspace.
+            await self.workspaces.detect()
+            # Each tentacle is an async context manager owning its own
+            # long-lived resources (agents: warm MCP sessions; channels:
+            # the inbound receive loop). Channels live on the inner stack so
+            # shutdown closes them first — nothing ingests into agents whose
+            # sessions are already torn down; every other tentacle is on
+            # the outer one.
+            async with (
+                # Starlette runs no lifespan for a mounted app, and the MCP
+                # transport's task group lives in that lifespan; the endpoint
+                # answers only inside it. Outermost, so the server is up
+                # before any tentacle starts and down after the last stops.
+                self.mcp.lifespan(self.mcp),
+                AsyncExitStack() as outer_stack,
+                AsyncExitStack() as channel_stack,
+            ):
 
-        @asynccontextmanager
-        async def lifespan(app: FastAPI):
-            with sqlalchemy_materia():
-                # The identity registry reconciles before any tentacle starts, so
-                # YAML users and their declared profiles exist from the first
-                # ingested message; every other sender remains a visitor.
-                await self.users.reconcile()
-                # Likewise the project registry: reconciling here is what builds
-                # the resolution index, so a declared project resolves before
-                # anything is running that could ask.
-                await self.projects.reconcile()
-                # How a workspace is forked is the filesystem's answer, not a
-                # setting: probed here so the log says which mechanism this host
-                # got, once, before anything asks for a workspace.
-                await self.workspaces.detect()
-                # Each tentacle is an async context manager owning its own
-                # long-lived resources (agents: warm MCP sessions; channels:
-                # the inbound receive loop). Channels live on the inner stack so
-                # shutdown closes them first — nothing ingests into agents whose
-                # sessions are already torn down; every other tentacle is on
-                # the outer one.
-                async with (
-                    # Starlette runs no lifespan for a mounted app, and the MCP
-                    # transport's task group lives in that lifespan; the endpoint
-                    # answers only inside it. Outermost, so the server is up
-                    # before any tentacle starts and down after the last stops.
-                    mcp_app.lifespan(mcp_app),
-                    AsyncExitStack() as outer_stack,
-                    AsyncExitStack() as channel_stack,
-                ):
-
-                    async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
-                        # Isolate + time-bound each start so one slow or hung
-                        # tentacle can't stall the others' startup. A failed start
-                        # is logged and skipped, not fatal — the rest still serve.
-                        try:
-                            await asyncio.wait_for(
-                                stack.enter_async_context(tentacle),
-                                timeout=TENTACLE_START_TIMEOUT,
-                            )
-                        except Exception:
-                            logger.exception(
-                                "Tentacle %s failed to start; serving without it",
-                                tentacle.id,
-                            )
-
-                    async def start_all() -> None:
-                        # Everything at once: channels must not queue behind agent
-                        # warmup, which is an optimization, not a precondition — a
-                        # message landing before its agent finished warming enters
-                        # the cold toolsets inside its own run (reference-counted)
-                        # and pays the listing latency once.
-                        await asyncio.gather(
-                            *(
-                                start(
-                                    channel_stack
-                                    if isinstance(tentacle, ChannelTentacle)
-                                    else outer_stack,
-                                    tentacle,
-                                )
-                                for tentacle in self.tentacles.values()
-                            )
+                async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
+                    # Isolate + time-bound each start so one slow or hung
+                    # tentacle can't stall the others' startup. A failed start
+                    # is logged and skipped, not fatal — the rest still serve.
+                    try:
+                        await asyncio.wait_for(
+                            stack.enter_async_context(tentacle),
+                            timeout=TENTACLE_START_TIMEOUT,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Tentacle %s failed to start; serving without it",
+                            tentacle.id,
                         )
 
-                    # Serve immediately: MCP warms and channel sockets proceed in
-                    # the background so a console connects the moment uvicorn
-                    # binds. `start` already isolates and time-bounds each entry,
-                    # so this task settles on its own and never raises.
-                    starting = asyncio.create_task(start_all())
-                    # Mirrors in the background too: a first clone takes as long
-                    # as the repository is big, and serving must not wait on it.
-                    # `reconcile` isolates per-project failures itself.
-                    mirroring = asyncio.create_task(
-                        self.mirrors.reconcile(self.projects.list())
+                # Model discovery is required before a channel accepts a turn.
+                await asyncio.gather(
+                    *(
+                        start(outer_stack, tentacle)
+                        for tentacle in self.tentacles.values()
+                        if not isinstance(tentacle, ChannelTentacle)
                     )
-                    # Reclaiming disk is maintenance: it runs for as long as
-                    # the host does, and stops when the host stops.
-                    sweeping = asyncio.create_task(self.workspaces.sweep())
-                    try:
-                        yield
-                    finally:
-                        # Join before the enclosing stack exits — on every path.
-                        # An error thrown into the yield would otherwise unwind
-                        # the stack while `start_all` is still pushing entries
-                        # onto it. `start` bounds each entry, so this wait is
-                        # bounded too; on a normal shutdown it is a no-op.
-                        await starting
-                        # Cancelled rather than awaited: a mirror sync is not
-                        # bounded the way `start` is, and creation cleans up
-                        # after a cancellation, so shutdown stays prompt.
-                        mirroring.cancel()
-                        sweeping.cancel()
-                        with suppress(asyncio.CancelledError):
-                            await mirroring
-                            await sweeping
+                )
+                await asyncio.gather(
+                    *(
+                        start(channel_stack, tentacle)
+                        for tentacle in self.tentacles.values()
+                        if isinstance(tentacle, ChannelTentacle)
+                    )
+                )
+                # Mirrors in the background too: a first clone takes as long
+                # as the repository is big, and serving must not wait on it.
+                # `reconcile` isolates per-project failures itself.
+                mirroring = asyncio.create_task(
+                    self.mirrors.reconcile(self.projects.list())
+                )
+                # Reclaiming disk is maintenance: it runs for as long as
+                # the host does, and stops when the host stops.
+                sweeping = asyncio.create_task(self.workspaces.sweep())
+                try:
+                    yield
+                finally:
+                    # Cancelled rather than awaited: a mirror sync is not
+                    # bounded the way `start` is, and creation cleans up
+                    # after a cancellation, so shutdown stays prompt.
+                    mirroring.cancel()
+                    sweeping.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await mirroring
+                        await sweeping
 
-        app = FastAPI(title=title, docs_url="/docs", redoc_url=None, lifespan=lifespan)
-        app.state.octomate = self
-
-        @app.middleware("http")
-        async def activate_materia(
-            request: Request,
-            call_next: Callable[[Request], Awaitable[Response]],
-        ) -> Response:
-            with sqlalchemy_materia():
-                return await call_next(request)
-
-        # The OAuth router is the project's own, not a tentacle's, and it is mounted
-        # only when a registered connector actually points a browser at it — the two
-        # routes are the deployment's public surface, and a deployment with no
-        # authorization-code integration should not be serving them at all.
-        if any(
-            isinstance(connector.callback_transport, DirectHttpOAuthCallbackTransport)
-            for connector in self.oauth.connectors.values()
-        ):
-            app.include_router(oauth_router)
-
-        for router in self.routers:
-            app.include_router(router)
-
+    @cached_property
+    def mcp(self) -> StarletteWithLifespan:
         # A mounted app rather than a router: the MCP transport speaks all three
         # methods on one path, reads and writes the stream itself, and carries
         # its own bearer check — the deployment's known bearers, the same
         # credentials and principals as the hook routers, which locks the
         # endpoint outright until a user is registered.
-        mcp = octomate_mcp(
+        octoate_mcp = octomate_mcp(
             served_session(self),
             self.thread_manager,
             kick=self.kick_soon,
@@ -416,19 +399,38 @@ class Octomate:
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name
         # below, this path is the tail of `OCTOMATE_MCP_PATH`.
-        mcp_app = mcp.http_app(path="/mcp", stateless_http=True)
-        app.mount(f"/{mcp.name}", mcp_app, name=mcp.name)
+        return octoate_mcp.http_app(path="/mcp", stateless_http=True)
+
+    def build_middleware_stack(self) -> ASGIApp:
+        # The router imports the dependency providers, which import Octomate.
+        from octomate.auth import auth_router
+        from octomate.oauth.routes import oauth_router
+        from octomate.tentacles.trunkline.base import TrunklineTentacle
+
+        self.include_router(auth_router)
+        # FastAPI builds this on first serving, after tentacles have registered.
+        # The OAuth router is the project's own, not a tentacle's, and it is mounted
+        # only when a registered connector actually points a browser at it — the two
+        # routes are the deployment's public surface, and a deployment with no
+        # authorization-code integration should not be serving them at all.
+        if any(
+            isinstance(connector.callback_transport, DirectHttpOAuthCallbackTransport)
+            for connector in self.oauth.connectors.values()
+        ):
+            self.include_router(oauth_router)
+
+        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.mcp, name=OCTOMATE_SERVER_NAME)
 
         for channel in self.channels.values():
             if (
                 isinstance(channel, TrunklineTentacle)
                 and channel.config.static_dir is not None
             ):
-                app.mount(
+                self.mount(
                     "/",
                     StaticFiles(directory=channel.config.static_dir, html=True),
                     name=channel.id,
                 )
                 break
 
-        return app
+        return super().build_middleware_stack()

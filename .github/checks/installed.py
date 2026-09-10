@@ -15,7 +15,13 @@ assert "octomate" not in sys.modules
 assert deployment.DatabaseBackup.__module__ == "octomate_protocol.deployment"
 assert stream.STREAM_PROTOCOL >= 1
 executable = Path(sys.executable).parent / "octomate"
-for command in (["--version"], ["--help"], ["serve", "--help"], ["upgrade", "--help"]):
+for command in (
+    ["--version"],
+    ["--help"],
+    ["service", "serve", "--help"],
+    ["service", "init", "--help"],
+    ["upgrade", "--help"],
+):
     subprocess.run([str(executable), *command], check=True, stdout=subprocess.DEVNULL)
 
 if sys.argv[1] == "client":
@@ -50,7 +56,7 @@ else:
                 "OCTOMATE__PORT": str(port),
             }
         )
-        command = [sys.executable, "-I", "-m", "octomate.deployment"]
+        command = [sys.executable, "-I", "-m", "octomate_cli.deployment"]
         backup = subprocess.check_output(
             [*command, "backup"], cwd=directory, env=environment, text=True
         )
@@ -70,7 +76,7 @@ else:
         assert database.is_file()
         with (directory / "server.log").open("w+") as log:
             server = subprocess.Popen(
-                [str(executable), "serve"],
+                [str(executable), "service", "serve"],
                 cwd=directory,
                 env=environment,
                 stdout=log,

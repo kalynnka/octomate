@@ -7,9 +7,10 @@ from __future__ import annotations
 import asyncio
 import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from types import TracebackType
 from typing import ClassVar, cast
 
 import pytest
@@ -22,9 +23,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import MessageSentEvent
-from octomate.config import AgentModelConfig, ChannelConfig, ChannelStreamConfig
+from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
+from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
-from octomate.config.users import UserConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
@@ -74,7 +75,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel import ChannelSurfaces
+from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.feelers.output import TimelineState
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
@@ -91,6 +92,7 @@ from tests.support.managers import (
     a_project,
     a_registry,
 )
+from tests.support.users import a_user
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
@@ -114,7 +116,7 @@ def _channel(*, stream: bool = True) -> FakeChannelTentacle:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=stream),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
 
@@ -268,8 +270,8 @@ def _two_reception_config(*, stream: bool) -> ChannelConfig:
         type="fake",
         stream=ChannelStreamConfig(enabled=stream),
         agents=[
-            AgentModelConfig(agent="other", model="test"),
-            AgentModelConfig(agent="second", model="test"),
+            "other",
+            "second",
         ],
     )
 
@@ -290,12 +292,16 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
         config=ChannelConfig(
             type="fake",
             agents=[
-                AgentModelConfig(agent="claude", model="opus"),
-                AgentModelConfig(agent="other", model="test"),
+                "claude",
+                "other",
             ],
         ),
     )
-    other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
+    other = FakeAgent(
+        id="other",
+        models={"test": "fake-model"},
+        claims={"test": Claim(ability="fake agent")},
+    )
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
@@ -309,43 +315,85 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     routes = deps.available_routes["chan1"]
 
     assert [(route.agent_id, route.model) for route in routes] == [("other", "test")]
-    assert deps.available_routes["chan1"] is routes
+    assert deps.available_routes["chan1"] == routes
 
 
 def test_agent_routes_evict_models_the_agent_does_not_serve() -> None:
     served = Claim(ability="fake agent")
-    agent = FakeAgent(claims={"test": served, "haiku": Claim(ability="phantom")})
+    agent = FakeAgent(
+        models={"test": "fake-model"},
+        claims={"test": served, "haiku": Claim(ability="phantom")},
+    )
 
     assert agent.routes == [AgentRoute(agent_id="inkling", model="test", claim=served)]
 
 
+def test_installing_a_catalog_refreshes_cached_routes_and_efforts() -> None:
+    agent = FakeAgent(models={}, claims={})
+    assert agent.routes == []
+    claim = Claim("First catalog", efforts=("low",))
+    agent.set_model_catalog({"provider:future": "future"}, {"provider:future": claim})
+    routes = agent.routes
+    assert len(routes) == 1
+    assert routes[0].claim is claim
+    assert agent.routes is routes
+
+    updated = Claim("Updated capabilities", efforts=("high",))
+    agent.set_model_catalog({"provider:future": "future"}, {"provider:future": updated})
+    assert agent.routes is not routes
+    assert agent.routes[0].claim is updated
+    assert agent.routes[0].claim.efforts == ("high",)
+
+
+async def test_agent_lifecycle_clears_routes_on_exit_and_prepares_them_on_entry() -> (
+    None
+):
+    claim = Claim("Test agent", efforts=("high",))
+    agent = FakeAgent(models={"test": "fake-model"}, claims={"test": claim})
+    assert agent.routes[0].claim is claim
+
+    with pytest.raises(RuntimeError, match="failed turn"):
+        async with agent:
+            raise RuntimeError("failed turn")
+    assert agent.routes == []
+
+    async with agent as entered:
+        assert entered is agent
+        assert agent.routes[0].claim is claim
+        assert agent.routes is agent.routes
+    assert agent.routes == []
+
+
 def test_available_routes_are_the_exposed_agents_own_routes() -> None:
-    # A channel exposes agents; each agent's active claims are its routes. A
-    # claimed model rides in even when no channel entry names it, an agent with
-    # no claims contributes nothing, and duplicate channel entries for one
-    # agent do not duplicate its routes.
+    # All served models are available, even without claims. Duplicate bindings
+    # do not duplicate an agent's catalog.
     pro_claim = Claim(ability="deep work", efforts=("high",))
     channel = FakeChannelTentacle(
         id="chan1",
         config=ChannelConfig(
             type="fake",
             agents=[
-                AgentModelConfig(agent="other", model="test"),
-                AgentModelConfig(agent="second", model="test"),
-                AgentModelConfig(agent="second", model="deepseek:deepseek-v4-pro"),
-                AgentModelConfig(agent="third", model="test"),
+                "other",
+                "second",
+                "second",
+                "third",
             ],
         ),
     )
-    other = FakeAgent(id="other", claims={"test": Claim(ability="fake agent")})
+    other = FakeAgent(
+        id="other",
+        models={"test": "fake-model"},
+        claims={"test": Claim(ability="fake agent")},
+    )
     second = FakeAgent(
         id="second",
+        models={"test": "fake-model", "deepseek:deepseek-v4-pro": "fake-model"},
         claims={
             "test": Claim(ability="fake agent"),
             "deepseek:deepseek-v4-pro": pro_claim,
         },
     )
-    third = FakeAgent(id="third", claims={})
+    third = FakeAgent(id="third", models={"test": "fake-model"}, claims={})
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
@@ -362,8 +410,10 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
         ("other", "test"),
         ("second", "test"),
         ("second", "deepseek:deepseek-v4-pro"),
+        ("third", "test"),
     ]
     assert routes[2].claim == pro_claim
+    assert routes[3].claim.efforts == ()
 
 
 def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
@@ -373,7 +423,7 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
         id="chan1",
         config=ChannelConfig(
             type="fake",
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         ),
     )
     other = FakeAgent(id="other")
@@ -390,6 +440,35 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     resolved = deps.resolve_agent("chan1", "other", "deepseek:deepseek-v4-pro")
 
     assert (resolved.agent, resolved.model) == ("other", "deepseek:deepseek-v4-pro")
+
+
+@pytest.mark.parametrize(
+    ("models", "selection", "expected"),
+    [
+        (["first:future"], "future", "first:future"),
+        (["first:future", "second:future"], "future", None),
+        (["first:future"], "second:future", None),
+        (["first:future"], "missing", None),
+        (["future"], "", None),
+    ],
+)
+def test_saved_native_model_names_require_an_exact_unambiguous_match(
+    models: list[str],
+    selection: str,
+    expected: str | None,
+) -> None:
+    agent = FakeAgent(id="other", models=dict.fromkeys(models, "fake-model"))
+    deps = _deps(
+        agent=agent,
+        channels={"im": _channel()},
+        conversations=FakeConversationManager(),
+    )
+
+    if expected is None:
+        with pytest.raises(ValueError, match="does not serve model"):
+            deps.resolve_agent("im", "other", selection)
+    else:
+        assert deps.resolve_agent("im", "other", selection).model == expected
 
 
 async def test_route_runs_entry_agent_directly() -> None:
@@ -439,7 +518,7 @@ async def test_reception_mounts_gate_capability() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -469,7 +548,7 @@ async def test_non_stream_reception_presents_only_the_final_output() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -494,7 +573,7 @@ async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -526,7 +605,7 @@ async def test_a_finished_turn_saves_the_threads_workspace() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -562,7 +641,7 @@ async def test_a_turn_that_failed_still_saves_its_workspace(
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -599,7 +678,7 @@ async def test_a_turn_with_no_thread_saves_nothing() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -737,7 +816,7 @@ async def test_react_passes_the_decision_effort_to_the_run() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -769,7 +848,7 @@ async def test_reception_allow_here_false_on_group_main() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = ResponseTarget(
@@ -798,8 +877,8 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
             agents=[
-                AgentModelConfig(agent="other", model="test"),
-                AgentModelConfig(agent="second", model="test"),
+                "other",
+                "second",
             ],
         )
     )
@@ -1000,6 +1079,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     )
     second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
+    deps = _summon_deps(im, entry, second)
     threads = FakeThreadManager()
     # alice's DM already belongs to `second`; the group cannot change that.
     dm_thread = await threads.ensure(
@@ -1011,7 +1091,6 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
         )
     )
     await threads.record_handoff(dm_thread, to_agent_tentacle_id="second")
-    deps = _summon_deps(im, entry, second)
     deps.thread_manager = threads
     target = _source_target(address)
 
@@ -1087,19 +1166,8 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
     channel that DM is on. `im` does not run `second` at all, so a handoff resolved
     against the origin instead would land back on `im`'s own first agent — with the
     brief delivered somewhere nobody chose."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
+    users = UserManager()
     address = _group_key()
     entry = FakeAgent(
         id="other",
@@ -1119,9 +1187,7 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
     im = _channel(stream=False)  # runs `other` only
     far = FakeChannelTentacle(
         id="far",
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["second"]),
     )
     deps = _summon_deps(im, entry, second, far)
     deps.thread_manager = FakeThreadManager(users=users)
@@ -1277,19 +1343,8 @@ async def _crossing_state(
     `second` and nothing else, which is what makes the handoff land on the agent the
     summon named rather than on whatever `im` happens to list first.
     """
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    users = im.octomate.users
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
     address = _group_key()
     far_landing = CrossingLanding(
         address=ChannelAddress(
@@ -1307,9 +1362,7 @@ async def _crossing_state(
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
     far = FakeChannelTentacle(
         id="far",
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["second"]),
     )
     deps = _summon_deps(im, entry, second, far)
     deps.thread_manager = FakeThreadManager(users=users)
@@ -1399,9 +1452,7 @@ async def test_a_crossing_that_opens_no_sub_thread_leaves_the_dms_unclaimed(
     state, deps, _far, _entry, second = await _crossing_state(im)
     deps.channels["far"] = NoSubThreadOpens(
         id="far",
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["second"]),
     )
 
     result = await _run(React(), state=state, deps=deps)
@@ -1422,9 +1473,7 @@ async def test_a_crossing_stays_put_when_the_far_dm_never_opens(
     deps.channels["far"] = FakeChannelTentacle(
         id="far",
         ink=RecordingInk(dm_opens=False),
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="second", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["second"]),
     )
 
     result = await _run(React(), state=state, deps=deps)
@@ -1443,26 +1492,15 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
     crossing opens on the far channel, the handoff row says from=claude-native,
     and the brief is the far agent's prompt. The source is the native
     pseudo-channel nobody serves, which the crossing never needs to look up."""
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        CLAUDE_NATIVE_ID: {"channel_user_id": "native"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={CLAUDE_NATIVE_ID: "native", "far": "ou_alice"})
+    users = UserManager()
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
     far = FakeChannelTentacle(
         id="far",
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=False),
-            agents=[AgentModelConfig(agent="second", model="test")],
+            agents=["second"],
         ),
     )
     deps = ReflexDeps(
@@ -1534,9 +1572,7 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     im = _channel(stream=False)
     far = FakeChannelTentacle(
         id="far",
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="other", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["other"]),
     )
     target = _source_target(address)
 
@@ -1576,9 +1612,7 @@ async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
     far = FakeChannelTentacle(
         id="far",
         ink=RecordingInk(dm_opens=False),
-        config=ChannelConfig(
-            type="fake", agents=[AgentModelConfig(agent="other", model="test")]
-        ),
+        config=ChannelConfig(type="fake", agents=["other"]),
     )
     target = _source_target(address)
 
@@ -1690,7 +1724,7 @@ async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         )
     )
     target = _source_target(address)
@@ -1701,6 +1735,64 @@ async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
             state=ReflexState(source_target=target, target=target, decision=_summon()),
             deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
         )
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_reception_closes_agent_stream_before_releasing_gateway(
+    monkeypatch: pytest.MonkeyPatch, cancel: bool
+) -> None:
+    address = _key()
+    agent = FakeAgent(id="other", reception_output="done")
+    conversations = FakeConversationManager()
+    registry = GatewayManager()
+    im = DroppingChannel(
+        config=ChannelConfig(
+            type="fake", stream=ChannelStreamConfig(enabled=True), agents=["other"]
+        )
+    )
+    closed_with_gateway: list[bool] = []
+    stream_exit = ReactEventStream.__aexit__
+
+    async def fail_render(
+        timeline: DroppingTimelineState,
+        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
+    ) -> None:
+        await anext(stream)
+        if cancel:
+            raise asyncio.CancelledError
+        raise RuntimeError("render failed")
+
+    async def close_stream(
+        stream: ReactEventStream[ChannelOutput],
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        closed_with_gateway.append(bool(registry.sessions))
+        await stream_exit(stream, exc_type, exc, traceback)
+
+    monkeypatch.setattr(DroppingTimelineState, "drive", fail_render)
+    monkeypatch.setattr(ReactEventStream, "__aexit__", close_stream)
+    target = _source_target(address)
+    with pytest.raises(asyncio.CancelledError) if cancel else nullcontext():
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": im},
+                agent=agent,
+                gateway=registry,
+            ),
+        )
+
+    assert closed_with_gateway == [True]
+    assert registry.sessions == {}
 
 
 async def test_route_runs_in_place_inside_flat_thread() -> None:
@@ -1908,6 +2000,7 @@ async def test_a_resumed_deferral_returns_to_the_sub_thread_it_ran_in() -> None:
     sub_thread = await threads.enter(_key())
     suspended = await conversations.ensure(sub_thread.id, agent_tentacle_id="other")
     batch = FakeDeferredBatch(
+        agent_tentacle_id="other",
         source_address=_key(),
         target_address=_key(),
         requests=_requests(),
@@ -1967,6 +2060,7 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
         (await threads.enter(address)).id, agent_tentacle_id="other"
     )
     batch = FakeDeferredBatch(
+        agent_tentacle_id="other",
         source_address=_key(),
         target_address=address,
         requests=_requests(),
@@ -2028,6 +2122,7 @@ async def test_resume_rebinds_the_suspended_run_user() -> None:
         (await threads.enter(address)).id, agent_tentacle_id="other"
     )
     batch = FakeDeferredBatch(
+        agent_tentacle_id="other",
         source_address=_key(),
         target_address=address,
         requests=_requests(),
@@ -2102,6 +2197,7 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
 async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
     address = _key(thread_id="hint-thread")
     batch = FakeDeferredBatch(
+        agent_tentacle_id="other",
         source_address=_key(),
         target_address=address,
         requests=_requests(),
@@ -2222,7 +2318,7 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
         config=ChannelConfig(
             type="fake",
             stream=ChannelStreamConfig(enabled=True),
-            agents=[AgentModelConfig(agent="other", model="test")],
+            agents=["other"],
         ),
     )
     _threads, im = await _run_send(
@@ -2244,6 +2340,7 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
 ) -> None:
     # Cast mid-run and performed after it: the turn's work reaches the mirror,
     # then the tree goes, and the thread is left where a later turn resumes it.
+    im = _channel(stream=False)
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
@@ -2271,7 +2368,6 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
         reception_output="all done",
         allow_reception_run=True,
     )
-    im = _channel(stream=False)
     deps = _deps(
         conversations=FakeConversationManager(),
         channels={"im": im},
@@ -2302,6 +2398,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
 ) -> None:
     # `here` with a project: the move is only into the workspace. The thread is
     # bound and its tree forked before the agent resumes, with the call answered.
+    im = _channel(stream=False)
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
@@ -2327,7 +2424,6 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         reception_output="carried on",
         allow_reception_run=True,
     )
-    im = _channel(stream=False)
     deps = _deps(
         conversations=FakeConversationManager(),
         channels={"im": im},

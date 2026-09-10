@@ -373,11 +373,8 @@ class LarkRunStateCards(TimelineState):
             await self.post(folded)
 
     async def answer_start(self) -> None:
-        # Open the answer card when the text part starts rather than on its first
-        # flush: creating and sending it is ~0.9s of round trips, and leaving it to
-        # the first delta puts all of it between the last token and the first
-        # visible character.
-        await self.ensure_answer_card()
+        # Start creating the card while the drive loop continues receiving text.
+        self.answer_flusher.signal()
 
     async def answer_delta(self, text: str | None) -> None:
         if not text:
@@ -400,6 +397,8 @@ class LarkRunStateCards(TimelineState):
         full_text = self.answer_batcher.full_text()
         if len(full_text) <= self.answer_sent_len:
             return
+        await self.ensure_answer_card()
+        full_text = self.answer_batcher.full_text()
         self.answer_sent_len = len(full_text)
         await self.push_answer(full_text)
 

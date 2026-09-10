@@ -6,11 +6,11 @@ from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Uuid, and_
+from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base, MapperArgs
+from octomate.models.base import Base, MapperArgs, UTCDateTime
 from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
@@ -46,20 +46,20 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
     decision: Mapped[JsonValue] = mapped_column(JSON, nullable=True)
     requests: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
         index=True,
     )
     completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=True,
         index=True,
     )
@@ -131,20 +131,20 @@ class DeferredAction(Base, TransmuterProxiedMixin):
     platform_message_id: Mapped[str | None] = mapped_column(String, nullable=True)
     responder_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         index=True,
     )
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
         index=True,
     )
     resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        UTCDateTime,
         nullable=True,
         index=True,
     )

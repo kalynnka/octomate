@@ -158,7 +158,7 @@ where it is.
 - Every other thread gets the disposable chat workspace below.
 
 **A registered user may bind any registered project.** Octomate does not check
-whether that person can read the repository on GitHub, so being in `users.yaml`
+whether that person can read the repository on GitHub, so having an Octomate account
 grants read access to the code of every registered project through the agent. The
 mirror is fetched with the host's credential, which means Octomate's registry —
 not GitHub's permissions — decides who sees what.
@@ -301,7 +301,7 @@ leave does not delete the floor from under the second.
 
 The directory must still be set explicitly. Leaving it unset means inheriting
 Octomate's own working directory, and a writable run parked there is worse than a
-read-only one: `.octomate/` holds the database, `users.yaml`, `providers.yaml`,
+read-only one: `.octomate/` holds the database, `providers.yaml`,
 and service account keys.
 
 What a run may do once it is there is the runtime's own answer, not Octomate's:

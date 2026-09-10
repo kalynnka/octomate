@@ -4,12 +4,11 @@ import logging
 import os
 import re
 import shutil
-from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Literal
 
 from anthropic.types import Message as AnthropicMessage
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 
 from octomate.types.json import JsonObject
 
@@ -32,7 +31,7 @@ class TranscriptSessionLine(TranscriptSchema):
     session_id: str = Field(alias="sessionId")
     version: str
     git_branch: str = Field(alias="gitBranch")
-    timestamp: datetime
+    timestamp: AwareDatetime
     uuid: str
     entrypoint: str
 
@@ -94,13 +93,13 @@ class TranscriptAttachmentLine(TranscriptSessionLine):
 
 class TranscriptFileBackup(TranscriptSchema):
     backup_file_name: str | None = Field(alias="backupFileName")
-    backup_time: datetime = Field(alias="backupTime")
+    backup_time: AwareDatetime = Field(alias="backupTime")
     version: int
 
 
 class TranscriptFileHistorySnapshot(TranscriptSchema):
     message_id: str = Field(alias="messageId")
-    timestamp: datetime
+    timestamp: AwareDatetime
     tracked_file_backups: dict[str, TranscriptFileBackup] = Field(
         alias="trackedFileBackups"
     )
@@ -117,7 +116,7 @@ class TranscriptQueueOperationLine(TranscriptSchema):
     type: Literal["queue-operation"]
     operation: str
     session_id: str = Field(alias="sessionId")
-    timestamp: datetime
+    timestamp: AwareDatetime
     content: str | None = None
 
 
@@ -152,7 +151,7 @@ class TranscriptPullRequestLine(TranscriptSchema):
     pr_number: int = Field(alias="prNumber")
     pr_url: str = Field(alias="prUrl")
     pr_repository: str = Field(alias="prRepository")
-    timestamp: datetime
+    timestamp: AwareDatetime
 
 
 TranscriptLine = Annotated[

@@ -17,33 +17,16 @@ from __future__ import annotations
 
 import logging
 import uuid
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from octomate.dependencies import oauth_manager
 from octomate.managers.oauth import OAuthManager, UnusableOAuthOperation
 from octomate.schemas.oauth import OAUTH_CALLBACK_PATH, OAUTH_START_PATH
 
-if TYPE_CHECKING:
-    from octomate.base import Octomate
-
 logger = logging.getLogger(__name__)
-
-
-def oauth_manager(request: Request) -> OAuthManager:
-    """The project's one OAuth manager, off the Octomate instance serving this app.
-
-    Resolved per request rather than closed over, so the router is a plain module
-    object and nothing has to be threaded to it. `Octomate.app` puts itself on
-    `app.state`, which is the only dynamic step and the only place this narrows.
-    """
-    octomate: Octomate = request.app.state.octomate
-    return octomate.oauth
-
-
-# The manager every route in this module reads, named once so a test can override it.
-ManagedOAuth = Annotated[OAuthManager, Depends(oauth_manager)]
 
 
 def page(title: str, detail: str, *, status_code: int = 200) -> HTMLResponse:
@@ -77,7 +60,7 @@ oauth_router = APIRouter(tags=["oauth"])
 async def start(
     connector_id: str,
     operation_id: uuid.UUID,
-    manager: ManagedOAuth,
+    manager: Annotated[OAuthManager, Depends(oauth_manager)],
 ) -> Response:
     try:
         staged = await manager.staged_authorization(connector_id, operation_id)
@@ -97,7 +80,7 @@ async def start(
 @oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False)
 async def callback(
     connector_id: str,
-    manager: ManagedOAuth,
+    manager: Annotated[OAuthManager, Depends(oauth_manager)],
     state: Annotated[str, Query()] = "",
     code: Annotated[str, Query()] = "",
     error: Annotated[str, Query()] = "",

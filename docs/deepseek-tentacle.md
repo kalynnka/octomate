@@ -48,12 +48,9 @@ limitations the first version accepts, and why.
      The ledger row joins every `source.kind == "user"` message of the turn —
      steered prompts included — and leaves the harness's own injections
      (`agent-instructions`, `plugin` context) to the replay metadata.
-   - Suppression of octomate's own driven sessions is a live claim around each
-     driven turn: their hooks are dropped and their tails refused at the
-     stream handshake. A driven session later prompted *natively* (dsh's web
-     UI on the same session, or after an octomate restart) ingests as a native
-     thread and re-records its turns there — the same exposure the Claude and
-     Codex ingests accept.
+   - All hook and stream traffic is ingested as external sessions, including
+     sessions started by Octomate. Their native threads remain separate from
+     the SDK conversations, as with Claude and Codex.
    - The hooks bridge mounts via `$DSH_HOME/cordis.patch.yml`, which every dsh
      process sharing that home loads — but the bridge package ships outside
      dsh's bundled dependency closure, so the first install must link it
@@ -141,9 +138,9 @@ Not covered by CI — the unit tests fake the gateway. To smoke-test live:
    `127.0.0.1:3080`), or let octomate start one: put `dsh` on `PATH`, or set
    `agents.deepseek.executable` to a built dsh (for a monorepo checkout:
    `node <checkout>/apps/cli/lib/bin.js`, via a wrapper script).
-2. In the config home's `agents.yaml`, add an `agents.deepseek:` block with a claim
-   for `deepseek-v4-pro`, and list `- agent: deepseek / model: deepseek-v4-pro` under
-   a channel's `agents:` in `channels.yaml`.
+2. In the config home's `agents.yaml`, add `agents: {deepseek: {}}`, and list
+   `deepseek` under a channel's `agents:` in `channels.yaml`. The harness supplies
+   the model/provider catalog and its default; no model list is needed.
 3. Boot octomate and check the tentacle log for the `attached to the dsh
    serving http://127.0.0.1:3080/` line — or, when nothing was running, the
    `started dsh at http://127.0.0.1:3080/` warning with its shared-`DSH_HOME`

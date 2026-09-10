@@ -17,15 +17,17 @@ from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
+from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
+from octomate.database import async_session
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
-from octomate.schemas.user import UserProfile
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
@@ -40,11 +42,23 @@ from octomate.tentacles.trunkline.base import (
     TrunklineDirective,
 )
 from octomate.types.permissions import InklingPermissionMode
-from tests.support.agents import build_non_stream_agent, build_scripted_agent
+from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
+CONSOLE_USER_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
+
+
+def console_user() -> User:
+    return User(id=CONSOLE_USER_ID, username="operator", name="Operator")
+
+
+@pytest.fixture(autouse=True)
+async def registered_console_user(in_memory_engine: AsyncEngine) -> None:
+    async with async_session() as session:
+        session.add(console_user())
+        await session.commit()
 
 
 async def _register(
@@ -53,6 +67,7 @@ async def _register(
     *,
     permission_mode: InklingPermissionMode = "default",
 ) -> TrunklineTentacle:
+    octomate.dependency_overrides[current_user] = console_user
     assert agent.model is not None
     octomate.connect(
         InklingTentacle(
@@ -68,7 +83,7 @@ async def _register(
             "trunkline",
             octomate,
             config=TrunklineChannelConfig(
-                agents=[AgentModelConfig(agent="inkling", model=RECEPTION_MODEL)],
+                agents=["inkling"],
             ),
         )
     )
@@ -94,7 +109,11 @@ async def _post(
 ) -> str:
     response = await channel.handle_directive(
         TrunklineDirective(
-            thread_id=thread_id, text=prompt, model=model, project=project
+            user=console_user(),
+            thread_id=thread_id,
+            text=prompt,
+            model=model,
+            project=project,
         )
     )
     return await _drain(response)
@@ -128,8 +147,8 @@ def _console_address(thread_id: str = "thread-1") -> ChannelAddress:
     return ChannelAddress(
         channel_tentacle_id="trunkline",
         chat_type="thread" if thread_id else "dm",
-        chat_id="dev",
-        user_id="dev",
+        chat_id=str(CONSOLE_USER_ID),
+        user_id=str(CONSOLE_USER_ID),
         channel_thread_id=thread_id,
     )
 
@@ -143,16 +162,14 @@ def test_trunkline_router_requires_registered_channel() -> None:
     channel = TrunklineTentacle(
         "trunkline",
         octomate,
-        config=TrunklineChannelConfig(
-            agents=[AgentModelConfig(agent="inkling", model="test")]
-        ),
+        config=TrunklineChannelConfig(agents=["inkling"]),
     )
     assert isinstance(channel, ChannelTentacle)
     # connect mounts the channel's router (TrunklineTentacle.routers) — no
     # manual include.
     octomate.connect(channel)
 
-    app = octomate.app()
+    app = octomate
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/api/trunkline/routes" in paths
     assert "/api/trunkline/permission-modes" in paths
@@ -245,7 +262,7 @@ async def _register_routes(
                 agent_id, octomate, agent=agent, models={RECEPTION_MODEL: agent.model}
             )
         )
-        receptions.append(AgentModelConfig(agent=agent_id, model=RECEPTION_MODEL))
+        receptions.append(agent_id)
     channel = octomate.connect(
         TrunklineTentacle(
             "trunkline", octomate, config=TrunklineChannelConfig(agents=receptions)
@@ -307,26 +324,86 @@ async def test_route_change_after_first_directive_is_refused(
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
-async def test_routes_offer_every_agent_the_instance_runs(
+async def test_routes_offer_and_run_all_registered_agents(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    # Nobody walks into the console, so the operator picking an agent sees all of
-    # them — not just the entry routing this channel declares. The declared one
-    # still comes first, which is what the picker defaults to.
     octomate = Octomate()
+    inkling, _ = build_scripted_agent(["from inkling"])
+    claude, _ = build_scripted_agent(["from claude"])
     channel = await _register_routes(
         octomate,
-        {"inkling": build_non_stream_agent(), "claude": build_non_stream_agent()},
+        {"inkling": inkling, "claude": claude},
     )
-    channel.config.agents = [AgentModelConfig(agent="claude", model=RECEPTION_MODEL)]
+    channel.config.agents = ["claude"]
 
     offered = [
         (agent_config.agent, agent_config.model)
         for agent_config in channel.routable_agents()
     ]
 
-    assert offered[0] == ("claude", RECEPTION_MODEL)
-    assert set(offered) == {("claude", RECEPTION_MODEL), ("inkling", RECEPTION_MODEL)}
+    assert offered == [("claude", RECEPTION_MODEL), ("inkling", RECEPTION_MODEL)]
+    assert [
+        (route.agent_id, route.model)
+        for route in octomate.gateway.available_routes(
+            octomate.channels, octomate.agents
+        )[channel.id]
+    ] == offered
+
+    payload = await _post(
+        channel, "hello", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+    )
+
+    assert _events(payload)[-1]["event_kind"] == "run_result"
+    assert "from inkling" in _streamed_text(payload)
+    thread = await octomate.thread_manager.ensure(_console_address())
+    assert thread.active_agent_tentacle_id == "inkling"
+
+
+@pytest.mark.parametrize("other_agents", [[], ["codex", "deepseek"]])
+async def test_model_choices_keep_only_the_configured_entry_default(
+    in_memory_engine: AsyncEngine,
+    other_agents: list[str],
+) -> None:
+    class NativeDefaultAgent(FakeAgent):
+        @property
+        def default_model(self) -> None:
+            return None
+
+    octomate = Octomate()
+    for agent_id in other_agents:
+        octomate.connect(
+            NativeDefaultAgent(
+                id=agent_id,
+                octomate=octomate,
+                models={f"{agent_id}:future-model": "future-model"},
+            )
+        )
+    agent = NativeDefaultAgent(
+        id="claude",
+        octomate=octomate,
+        models={"anthropic:future-model": "future-model"},
+    )
+    octomate.connect(agent)
+    channel = TrunklineTentacle(
+        "trunkline", octomate, config=TrunklineChannelConfig(agents=["claude"])
+    )
+    octomate.connect(channel)
+    await channel.probe()
+
+    assert [(route.agent, route.model) for route in channel.routable_agents()] == [
+        ("claude", None),
+        ("claude", "anthropic:future-model"),
+        *((agent_id, f"{agent_id}:future-model") for agent_id in other_agents),
+    ]
+    selected_route = f"claude{ROUTE_SEP}"
+    reply = await _post(channel, "one", model=selected_route)
+    await _post(channel, "two", model=selected_route)
+
+    assert _events(reply)[-1]["output"] == "handled"
+    assert [turn.model for turn in agent.streams] == [None, None]
+    thread = await octomate.thread_manager.ensure(_console_address())
+    assert thread.active_model is None
+    assert len(thread.handoffs) == 1
 
 
 async def test_a_first_directive_files_the_thread_under_a_project(
@@ -397,9 +474,11 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         offered = (await client.get("/api/trunkline/projects")).json()
         await client.post(
@@ -429,9 +508,11 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         offered = (await client.get("/api/trunkline/permission-modes")).json()
 
@@ -452,9 +533,11 @@ async def test_the_configured_default_is_what_the_endpoint_reports(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent, permission_mode="dontAsk")
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         offered = (await client.get("/api/trunkline/permission-modes")).json()
 
@@ -472,9 +555,11 @@ async def test_a_posture_rides_the_first_directive_then_switches_on_the_row(
     await _register(octomate, agent)
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         await client.post(
             "/api/trunkline/threads/trunkline-abc123/messages",
@@ -513,9 +598,11 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
     await _register(octomate, agent)
     route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         await client.post(
             "/api/trunkline/threads/trunkline-abc123/messages",
@@ -551,7 +638,10 @@ async def test_a_posture_with_no_agent_to_read_it_is_refused(
     with pytest.raises(ValueError, match="routed to none"):
         await channel.handle_directive(
             TrunklineDirective(
-                thread_id="thread-1", text="hello", permission_mode="dontAsk"
+                user=console_user(),
+                thread_id="thread-1",
+                text="hello",
+                permission_mode="dontAsk",
             )
         )
 
@@ -573,9 +663,11 @@ async def test_the_projects_endpoint_offers_only_enabled_ones(
     agent, _ = build_scripted_agent(["done"])
     await _register(octomate, agent)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         offered = (await client.get("/api/trunkline/projects")).json()
 
@@ -590,20 +682,25 @@ async def test_threads_and_detail_endpoints(
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
     await _post(channel, "triage the failing checks", thread_id="thread-9")
-    # The console reads every channel's threads, not only its own.
-    await octomate.thread_manager.ensure(
-        ChannelAddress(
-            channel_tentacle_id="slack",
+    # Bound profiles make this user's other channels visible too.
+    await octomate.thread_manager.record_inbound(
+        MessageEvent(
+            tentacle_id="slack",
+            message_id="slack-1",
             chat_type="thread",
             chat_id="C123",
             user_id="U1",
             channel_thread_id="171234.5678",
+            sender=UserProfile(channel_user_id="U1", user_id=CONSOLE_USER_ID),
+            segments=[TextSegment(data={"text": "A linked channel message"})],
         )
     )
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         listing = await client.get("/api/trunkline/threads")
         assert listing.status_code == 200
@@ -631,7 +728,10 @@ async def test_threads_and_detail_endpoints(
             "all done!",
         ]
         assert [entry["direction"] for entry in ledger] == ["inbound", "outbound"]
-        assert [entry["sender"]["name"] for entry in ledger] == ["Console", "Octomate"]
+        assert [entry["sender"]["name"] for entry in ledger] == [
+            "Operator",
+            "Trunkline",
+        ]
         # The model ledger is the agent's own history, never a reader's.
         assert all("model_messages" not in entry for entry in ledger)
 
@@ -718,9 +818,11 @@ async def test_console_reads_never_load_the_model_ledger(
         if statement.lstrip().upper().startswith("SELECT"):
             selects.append(statement)
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         base = f"/api/trunkline/threads/{thread.id}"
         for url in (
@@ -743,7 +845,9 @@ async def test_console_reads_never_load_the_model_ledger(
         # The listing names threads and opens none of them.
         selects.clear()
         await client.get("/api/trunkline/threads")
-        assert not any("thread_messages" in select for select in selects)
+        assert not any(
+            select.lstrip().startswith("SELECT thread_messages.") for select in selects
+        )
         assert not any("FROM conversations" in select for select in selects)
 
 
@@ -754,13 +858,12 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     console lists it, reads its ledger, and sees where the work happened — the
     project the thread is filed under and the directory each run ran in."""
     octomate = Octomate()
+    octomate.dependency_overrides[current_user] = console_user
     octomate.connect(
         TrunklineTentacle(
             "trunkline",
             octomate,
-            config=TrunklineChannelConfig(
-                agents=[AgentModelConfig(agent="inkling", model="test")]
-            ),
+            config=TrunklineChannelConfig(agents=["inkling"]),
         )
     )
     project = a_project(Path("/srv/inky"))
@@ -775,7 +878,9 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
             chat_id="session-1",
             chat_type="thread",
             user_id="native",
-            sender=UserProfile(channel_user_id="native", name="native"),
+            sender=UserProfile(
+                channel_user_id="native", name="native", user_id=CONSOLE_USER_ID
+            ),
             segments=[TextSegment(data={"text": "read the migration"})],
         )
     )
@@ -797,9 +902,11 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         external_session_id="session-1",
     )
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         [listed] = (await client.get("/api/trunkline/threads")).json()
         assert listed["channel_tentacle_id"] == CLAUDE_NATIVE_ID
@@ -827,9 +934,11 @@ async def test_a_thread_no_project_claims_reads_back_without_one(
     channel = await _register(octomate, agent)
     await _post(channel, "what changed?", thread_id="thread-8")
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         [listed] = (await client.get("/api/trunkline/threads")).json()
         assert listed["project_id"] is None
@@ -874,9 +983,11 @@ async def test_batch_resolve_resolves_and_streams(
     )
     approval_id = next(iter(batch.approvals)).id
 
-    transport = httpx.ASGITransport(app=octomate.app())
+    transport = httpx.ASGITransport(app=octomate)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://testserver"
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
     ) as client:
         # A reload finds the waiting feeler on the thread it blocks.
         waiting = await client.get(f"/api/trunkline/threads/{thread.id}/batches")

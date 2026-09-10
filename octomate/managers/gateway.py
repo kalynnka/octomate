@@ -18,6 +18,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
+from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.awakes import GatewayHandoffSignal
 from octomate.schemas.conversation import ChannelAddress
@@ -277,8 +278,8 @@ class OctomateSession:
                 continue
             if not [
                 served
-                for served in channel.config.agents
-                if self.agents is None or served.agent in self.agents
+                for served in channel.agent_ids
+                if self.agents is None or served in self.agents
             ]:
                 continue
             linked.append(
@@ -750,7 +751,7 @@ class OctomateSession:
         )
 
 
-class GatewayManager:
+class GatewayManager(Manager):
     """The live Octomate sessions, one per driven turn, keyed by conversation id.
 
     In-process on purpose: a session is only meaningful while its turn is in
@@ -797,9 +798,7 @@ class GatewayManager:
         agents: dict[str, AgentTentacle],
     ) -> dict[str, list[AgentRoute]]:
         """What each channel can route to: every connected agent it exposes, each
-        answering with its own routes (from its claims). The channel's (agent,
-        model) entries only pick its entry/default models — they do not bound the
-        routes.
+        answering with its own discovered or configured model routes.
 
         The one computation behind both `ReflexDeps.available_routes` and the
         served gateway's ephemeral native session, so a driven turn and a native
@@ -808,9 +807,9 @@ class GatewayManager:
             channel_id: [
                 route
                 for agent_id in dict.fromkeys(
-                    connection.agent
-                    for connection in channel.config.agents
-                    if connection.agent in agents
+                    connection
+                    for connection in channel.agent_ids
+                    if connection in agents
                 )
                 for route in agents[agent_id].routes
             ]

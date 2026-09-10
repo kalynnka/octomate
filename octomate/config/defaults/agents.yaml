@@ -5,16 +5,13 @@
 # something this project can guess, and a defaulted model would be a route that boots
 # fine and 401s on first use.
 #
-# Declaring an agent means declaring at least one model for it — the config refuses
-# an empty list. `models[0]` is what a conversation carrying no model of its own runs
-# on, so put the everyday one first and summon the expensive one by name.
+# Claude, Codex and DeepSeek Harness supply their own model catalogs and providers;
+# default selections stay with the harness. Inkling needs a models list; its first model is
+# the default. Every model of an agent bound to a channel is available there.
 #
-# Claims live beside the models they describe, for every agent. A model with no claim
-# is not summonable, so list a claim for every model you expose. A claim's `efforts`
-# is pydantic-ai's thinking scale — minimal, low, medium, high, xhigh — and it must
-# offer only what the provider actually takes, since nothing downgrades a grade the
-# provider lacks: DeepSeek has no `minimal`, so a claim offering it advertises a
-# summon that answers 400. Omitting `efforts` means the full scale.
+# Claims describe routes and their supported thinking efforts. For harnesses,
+# configure a claim only for metadata the harness omits, keyed by provider:model.
+# Reported descriptions and effort capabilities take precedence over claims.
 #
 # A home that declares `agents:` replaces this whole block.
 
@@ -52,22 +49,11 @@
   #   request_limit: 256   # maximum model requests in one Inkling run
 
   # Anthropic Claude Code agent. Runs the Claude Agent SDK locally, and serves the
-  # hook router native sessions report into — which needs a registered user's
-  # secret (users.yaml).
+  # hook router native sessions report into, authenticated with the user's
+  # API token (hooks scope).
   #
   # claude:
   #   enabled: true
-  #   models: [opus, sonnet, haiku]   # opus => Opus 4.8
-  #   claims:
-  #     opus:
-  #       ability: Coding agent for deep, multi-step engineering across a
-  #         repository.
-  #     sonnet:
-  #       ability: Coding agent for everyday software tasks and mid-sized
-  #         changes.
-  #     haiku:
-  #       ability: Fast coding agent for small, well-scoped fixes and
-  #         repository chores.
   #
   #   # The SDK's own scale, handed over verbatim:
   #   # default | acceptEdits | plan | bypassPermissions | dontAsk | auto
@@ -87,20 +73,6 @@
   #   runtime:
   #     # codex_bin: /opt/bin/codex
   #     config_overrides: []
-  #   models: [gpt-5.5, gpt-5.5-pro, gpt-5.3-codex, gpt-5.1-codex-mini]
-  #   claims:
-  #     gpt-5.5:
-  #       ability: Codex agent for general software engineering across a
-  #         repository.
-  #     gpt-5.5-pro:
-  #       ability: Deep-reasoning Codex agent for large, difficult engineering
-  #         work across a repository.
-  #     gpt-5.3-codex:
-  #       ability: Codex agent tuned for hands-on coding tasks and mid-sized
-  #         changes.
-  #     gpt-5.1-codex-mini:
-  #       ability: Fast Codex agent for small, well-scoped code edits and
-  #         quick fixes.
   #
   #   # Who answers when the agent asks to step past the sandbox:
   #   # user_review | auto_review | deny_all
@@ -128,17 +100,6 @@
   #   executable: dsh            # on PATH, or an absolute path to a built dsh
   #   extra_args: []             # appended after `web --host ... --port ... --no-open`
   #   dsh_home: ~/.dsh           # DSH_HOME for a started child
-  #   provider: deepseek-official
-  #   models: [deepseek-v4-pro, deepseek-v4-flash]
-  #   claims:
-  #     deepseek-v4-pro:
-  #       ability: DeepSeek coding agent for multi-step engineering across a
-  #         repository.
-  #       efforts: [low, medium, high, xhigh]
-  #     deepseek-v4-flash:
-  #       ability: Fast DeepSeek coding agent for small, well-scoped fixes and
-  #         repository chores.
-  #       efforts: [low, medium]
   #
   #   # dsh's shipped presets, each bundling sandbox mode and approval policy:
   #   # workspace-write | danger-full-access

@@ -276,7 +276,7 @@ async def reconciled(**declared: Project.Create) -> ProjectManager:
 
 
 async def test_a_declaration_built_before_the_materia_still_persists() -> None:
-    # Production validates its config in `main.py`, before `Octomate.app()` enters
+    # Production validates its config before Octomate's lifespan enters
     # `sqlalchemy_materia`, so a declared `Project` has no row behind it to add to a
     # session. UNBOUND is built the same way — at import, before the engine fixture —
     # which the in-test declarations above cannot reproduce.
@@ -455,7 +455,7 @@ async def test_a_declared_name_a_registered_project_already_holds_is_refused(
 ) -> None:
     # Ahead of the unique constraint, which would not say which two directories
     # wanted the name.
-    await a_registry(a_project(directory(tmp_path / "vita" / "api")))
+    await a_registry(a_project(directory(tmp_path / "example" / "api")))
 
     api = directory(tmp_path / "api")
     with pytest.raises(ValueError, match="both named 'api'"):

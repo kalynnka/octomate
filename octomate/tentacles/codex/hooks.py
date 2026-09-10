@@ -6,7 +6,6 @@ from pydantic import BaseModel, ConfigDict
 
 # The route path, registered events, and hook timeout are the client-side contract,
 # and live with the installer that writes them: `octomate_cli.tentacles.codex`.
-DRIVEN_ENV = "OCTOMATE_CODEX_DRIVEN"
 
 
 class CodexHookInput(BaseModel):
@@ -23,4 +22,3 @@ class CodexHookInput(BaseModel):
     agent_type: str | None = None
     agent_transcript_path: Path | None = None
     source: str | None = None
-    octomate_driven: bool = False

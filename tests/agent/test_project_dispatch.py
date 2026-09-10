@@ -15,6 +15,7 @@ thread's ref in the mirror, so the fork is a cache rather than the only copy.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import shutil
@@ -39,7 +40,7 @@ from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
-from tests.support.agents import CLAUDE_MODELS, CODEX_MODELS, RecordingClaudeClient
+from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_project, a_registry
 
 KEY = ChannelAddress(
@@ -71,7 +72,7 @@ def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
     return ClaudeCodeTentacle(
         "claude",
         octomate,
-        config=ClaudeCodeConfig(models=set(CLAUDE_MODELS)),
+        config=ClaudeCodeConfig(),
     )
 
 
@@ -93,7 +94,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(models=set(CODEX_MODELS), permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="deny_all"),
     )
     async with tentacle:
         async with tentacle.run_stream_events(
@@ -167,7 +168,7 @@ async def test_the_workspace_a_chat_run_had_is_gone_when_it_finishes() -> None:
     options = await claude_run(octomate, thread)
 
     assert options.cwd is not None
-    assert not Path(options.cwd).exists()
+    assert not await asyncio.to_thread(Path(options.cwd).exists)
 
 
 async def test_the_workspace_a_codex_chat_run_had_is_gone_when_it_finishes() -> None:
@@ -179,7 +180,7 @@ async def test_the_workspace_a_codex_chat_run_had_is_gone_when_it_finishes() -> 
     cwd = await codex_run(octomate, thread)
 
     assert cwd is not None
-    assert not Path(cwd).exists()
+    assert not await asyncio.to_thread(Path(cwd).exists)
 
 
 async def test_no_two_threads_in_no_project_share_a_directory() -> None:
@@ -418,7 +419,7 @@ async def test_a_thread_pruned_between_turns_picks_up_where_it_left_off(
     await octomate.workspaces.save(thread)
 
     assert await octomate.workspaces.prune(idle=0.0) == [thread.id]
-    assert not Path(first.cwd).exists()
+    assert not await asyncio.to_thread(Path(first.cwd).exists)
 
     second = await claude_run(octomate, thread)
 

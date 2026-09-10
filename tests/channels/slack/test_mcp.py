@@ -28,16 +28,18 @@ from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
-from octomate.config import AgentModelConfig, SlackChannelConfig, SlackStreamConfig
-from octomate.config.base import OctomateConfig
+from octomate.config import OctomateConfig, SlackChannelConfig, SlackStreamConfig
 from octomate.config.channels import SlackOAuthClientConfig
-from octomate.config.users import UserConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
-from octomate.managers.user import UserManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
-from octomate.mcp.server import octomate_instructions, octomate_mcp
+from octomate.mcp.server import (
+    CALL_MCP_TOOL,
+    LIST_MCP_TOOLS,
+    octomate_instructions,
+    octomate_mcp,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.tentacles.slack import SlackChromo, SlackTentacle
@@ -48,13 +50,21 @@ from tests.channels.slack.fakes import FakeSlackInk, compose_slack_feelers
 from tests.channels.slack.test_oauth import slack_transport
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
+from tests.support.mcp import discover
+from tests.support.users import a_api_key, a_user, auth_config
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 BEARER = {"Authorization": "Bearer steve-token"}
 SLACK = {"provider": "slack"}
 # What every caller is listed on a deployment with a Slack workspace: Octomate's
 # own families and the linking pair; Slack's tools only once they have linked.
-LISTED_TO_ALL = [*OCTOMATE_TOOLS, CONNECT_TOOL, CONFIRM_TOOL]
+LISTED_TO_ALL = [
+    *OCTOMATE_TOOLS,
+    LIST_MCP_TOOLS,
+    CALL_MCP_TOOL,
+    CONNECT_TOOL,
+    CONFIRM_TOOL,
+]
 
 
 @pytest.fixture(autouse=True)
@@ -73,24 +83,13 @@ class ServedSlackTentacle(SlackTentacle):
         return None
 
 
-def a_deployment() -> Octomate:
+async def a_deployment() -> Octomate:
     """A deployment whose driven turns are kicked by the registered `steve`, who
     is `U1` on the `slack` workspace."""
+    user = await a_user("steve", profiles={"slack": "U1"})
+    await a_api_key(user, "steve-token")
     return Octomate(
-        config=OctomateConfig.model_validate(
-            {"users": {"steve": {"secret": "steve-token"}}}
-        ),
-        users=UserManager(
-            {
-                "steve": UserConfig.model_validate(
-                    {
-                        "secret": "steve-token",
-                        "profiles": {"slack": {"channel_user_id": "U1"}},
-                    }
-                )
-            }
-        ),
-        oauth_encryption_key=ENCRYPTION_KEY,
+        config=OctomateConfig(auth=auth_config()), oauth_encryption_key=ENCRYPTION_KEY
     )
 
 
@@ -109,7 +108,7 @@ def a_workspace(
         bot_token=SecretStr("xoxb-test"),
         app_token=SecretStr("xapp-test"),
         stream=SlackStreamConfig(flush_interval=0),
-        agents=[AgentModelConfig(agent="codex", model="test")],
+        agents=["codex"],
         mcp=True,
         oauth=SlackOAuthClientConfig(client_id="1.2", client_secret=SecretStr("shh")),
     )
@@ -145,7 +144,7 @@ async def a_slack_turn(
     session = OctomateSession(
         channel_routes={channel.id: []},
         current_agent_id="codex",
-        channels={channel.id: channel, "im": FakeChannelTentacle()},
+        channels={channel.id: channel, "im": FakeChannelTentacle(octomate=octomate)},
         conversation_id=uuid.uuid4(),
         conversation_address=address,
         users=octomate.users,
@@ -262,8 +261,8 @@ async def in_memory(
         yield client
 
 
-def test_every_slack_workspace_is_a_provider_and_slack_is_proxied_once() -> None:
-    octomate = a_deployment()
+async def test_every_slack_workspace_is_a_provider_and_slack_is_proxied_once() -> None:
+    octomate = await a_deployment()
     a_workspace(octomate, FakeSlackInk())
     a_workspace(octomate, FakeSlackInk(), id="slack-b")
 
@@ -274,11 +273,12 @@ def test_every_slack_workspace_is_a_provider_and_slack_is_proxied_once() -> None
     assert f"`{CONNECT_TOOL}` with the provider's id (`slack`, `slack-b`)" in (
         instructions
     )
-    assert instructions.count("## Slack") == 1
+    assert "## Slack" not in instructions
+    assert "`slack` (Slack), `slack-b` (Slack)" in instructions
 
 
 async def test_a_caller_with_no_turn_is_listed_no_slack_tool() -> None:
-    octomate = a_deployment()
+    octomate = await a_deployment()
     a_workspace(octomate, FakeSlackInk())
     async with served(octomate) as (octomate, app):
         async with over(octomate, app, BEARER) as client:
@@ -290,7 +290,7 @@ async def test_a_caller_with_no_turn_is_listed_no_slack_tool() -> None:
 async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
     # The person is the same everywhere, so a turn on another channel reaches
     # their Slack too — once they have linked it, with the token Octomate holds.
-    octomate = a_deployment()
+    octomate = await a_deployment()
     ink = FakeSlackInk()
     channel = a_workspace(octomate, ink)
     upstream, seen = a_slack_upstream()
@@ -306,7 +306,14 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
         away = await a_slack_turn(octomate, channel, elsewhere)
         async with over(octomate, app, naming(away)) as client:
             with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `slack`"):
-                await client.call_tool("slack_read_user_profile", {})
+                await client.call_tool(
+                    CALL_MCP_TOOL,
+                    {
+                        "namespace": "slack",
+                        "name": "slack_read_user_profile",
+                        "arguments": {},
+                    },
+                )
 
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
@@ -317,15 +324,24 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
             in_memory(channel, away, httpx.ASGITransport(app=upstream_app)) as client,
         ):
             tools = await client.list_tools()
-            result = await client.call_tool("slack_read_user_profile", {})
+            catalog = await discover(client, "slack")
+            result = await client.call_tool(
+                CALL_MCP_TOOL,
+                {
+                    "namespace": "slack",
+                    "name": "slack_read_user_profile",
+                    "arguments": {},
+                },
+            )
 
-    assert "slack_read_user_profile" in [tool.name for tool in tools]
+    assert [tool.name for tool in tools] == LISTED_TO_ALL
+    assert [tool.name for tool in catalog.tools] == ["slack_read_user_profile"]
     assert result.data == "steve.li"
     assert seen == ["Bearer xoxp-user"]
 
 
 async def test_a_link_needs_a_channel_to_land_on() -> None:
-    octomate = a_deployment()
+    octomate = await a_deployment()
     channel = a_workspace(octomate, FakeSlackInk())
     async with served(octomate) as (octomate, app):
         nowhere = await a_slack_turn(octomate, channel, None)
@@ -335,14 +351,21 @@ async def test_a_link_needs_a_channel_to_land_on() -> None:
 
 
 async def test_an_unconnected_caller_is_listed_nothing_and_told_to_connect() -> None:
-    octomate = a_deployment()
+    octomate = await a_deployment()
     channel = a_workspace(octomate, FakeSlackInk())
     async with served(octomate) as (octomate, app):
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
             tools = await client.list_tools()
             with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `slack`"):
-                await client.call_tool("slack_read_user_profile", {})
+                await client.call_tool(
+                    CALL_MCP_TOOL,
+                    {
+                        "namespace": "slack",
+                        "name": "slack_read_user_profile",
+                        "arguments": {},
+                    },
+                )
             status = await client.call_tool(CONFIRM_TOOL, SLACK)
 
     assert [tool.name for tool in tools] == LISTED_TO_ALL
@@ -353,7 +376,7 @@ async def test_an_unconnected_caller_is_listed_nothing_and_told_to_connect() -> 
 
 
 async def test_the_link_goes_to_their_direct_messages_and_nowhere_else() -> None:
-    octomate = a_deployment()
+    octomate = await a_deployment()
     ink = FakeSlackInk()
     channel = a_workspace(octomate, ink)
     async with served(octomate) as (octomate, app):
@@ -374,7 +397,7 @@ async def test_the_link_goes_to_their_direct_messages_and_nowhere_else() -> None
 async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves() -> (
     None
 ):
-    octomate = a_deployment()
+    octomate = await a_deployment()
     ink = FakeSlackInk()
     channel = a_workspace(octomate, ink)
     upstream, seen = a_slack_upstream()
@@ -395,21 +418,26 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
             ) as client,
         ):
             tools = await client.list_tools()
-            result = await client.call_tool("slack_read_user_profile", {})
+            catalog = await discover(client, "slack")
+            result = await client.call_tool(
+                CALL_MCP_TOOL,
+                {
+                    "namespace": "slack",
+                    "name": "slack_read_user_profile",
+                    "arguments": {},
+                },
+            )
 
-    # The list is Slack's, fetched for this person and listed after Octomate's
-    # own tools, and the call reached Slack as them, with the token Octomate
-    # holds — which the driven runtime never saw.
-    assert [tool.name for tool in tools] == [
-        *LISTED_TO_ALL,
-        "slack_read_user_profile",
-    ]
+    # Discovery returns Slack's catalog for this person; the initial list stays
+    # fixed, and the call carries the token Octomate holds for them.
+    assert [tool.name for tool in tools] == LISTED_TO_ALL
+    assert [tool.name for tool in catalog.tools] == ["slack_read_user_profile"]
     assert result.data == "steve.li"
     assert seen == ["Bearer xoxp-user"]
 
 
 async def test_a_token_slack_has_revoked_retires_the_connection() -> None:
-    octomate = a_deployment()
+    octomate = await a_deployment()
     ink = FakeSlackInk()
     channel = a_workspace(octomate, ink)
     async with served(octomate) as (octomate, app):
@@ -420,7 +448,14 @@ async def test_a_token_slack_has_revoked_retires_the_connection() -> None:
         refusing = httpx.MockTransport(lambda request: httpx.Response(401))
         async with in_memory(channel, session, refusing) as client:
             with pytest.raises(ToolError):
-                await client.call_tool("slack_read_user_profile", {})
+                await client.call_tool(
+                    CALL_MCP_TOOL,
+                    {
+                        "namespace": "slack",
+                        "name": "slack_read_user_profile",
+                        "arguments": {},
+                    },
+                )
 
         async with over(octomate, app, naming(session)) as client:
             status = await client.call_tool(CONFIRM_TOOL, SLACK)

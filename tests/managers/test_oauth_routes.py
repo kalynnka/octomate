@@ -12,8 +12,9 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate.dependencies import oauth_manager
 from octomate.managers.oauth import OAuthManager
-from octomate.oauth.routes import oauth_manager, oauth_router
+from octomate.oauth.routes import oauth_router
 from octomate.schemas.user import UserProfile
 from tests.managers.test_oauth import (
     LINEAR_CONNECTOR_ID,
@@ -31,8 +32,6 @@ async def database(in_memory_engine: AsyncEngine) -> None:
 def browser(manager: OAuthManager) -> httpx.AsyncClient:
     app = FastAPI()
     app.include_router(oauth_router)
-    # The routes resolve their manager off the serving Octomate instance; a test
-    # substitutes one rather than standing a whole application up around it.
     app.dependency_overrides[oauth_manager] = lambda: manager
     return httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app),
@@ -62,7 +61,7 @@ async def test_the_start_link_redirects_to_the_staged_provider_request() -> None
 
 
 async def test_an_unknown_start_link_says_only_that_it_is_finished() -> None:
-    manager, _profile, _flow, client = await linear_browser()
+    _manager, _profile, _flow, client = await linear_browser()
 
     async with client:
         response = await client.get(
@@ -130,7 +129,7 @@ async def test_a_declined_authorization_closes_its_operation() -> None:
 
 
 async def test_a_callback_without_an_authorization_is_refused() -> None:
-    manager, _profile, _flow, client = await linear_browser()
+    _manager, _profile, _flow, client = await linear_browser()
 
     async with client:
         response = await client.get(f"/oauth/{LINEAR_CONNECTOR_ID}/callback")

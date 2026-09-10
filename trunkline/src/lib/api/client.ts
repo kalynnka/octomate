@@ -3,7 +3,11 @@
  * and /oauth to the FastAPI instance at 127.0.0.1:8000 (see vite.config.ts) so
  * requests stay same-origin — the backend ships no CORS middleware. In
  * production the console is mounted on that same app, so the paths hold as-is.
+ *
+ * Every request goes through `apiFetch`: the reads are private to the signed-in
+ * account, and the writes must carry the same-origin header (see lib/api/auth).
  */
+import { apiFetch } from './auth'
 import type {
   ApiChannelInfo,
   ApiConversation,
@@ -26,7 +30,7 @@ export interface HealthState {
 
 export async function fetchHealth(): Promise<HealthState> {
   try {
-    const res = await fetch('/api/trunkline/health')
+    const res = await apiFetch('/api/trunkline/health')
     // The dev proxy answers 5xx itself when the gateway is down.
     if (res.status >= 500) return { ok: false, reachable: false }
     if (!res.ok) return { ok: false, reachable: true }
@@ -38,7 +42,7 @@ export async function fetchHealth(): Promise<HealthState> {
 }
 
 async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path)
+  const res = await apiFetch(path)
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
   return (await res.json()) as T
 }
@@ -71,11 +75,7 @@ export async function patchPermissionMode(
   mode: string | null,
 ): Promise<ApiConversation> {
   const path = `/api/trunkline/conversations/${encodeURIComponent(conversationId)}/permission-mode`
-  const res = await fetch(path, {
-    method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ permission_mode: mode }),
-  })
+  const res = await apiFetch(path, { method: 'PATCH', json: { permission_mode: mode } })
   if (!res.ok) throw new Error(`PATCH ${path} → ${res.status}`)
   return (await res.json()) as ApiConversation
 }
@@ -91,7 +91,7 @@ export function fetchThreads(): Promise<ApiThread[]> {
  */
 async function threadRead<T>(id: string, suffix: string): Promise<T | null> {
   const path = `/api/trunkline/threads/${encodeURIComponent(id)}${suffix}`
-  const res = await fetch(path)
+  const res = await apiFetch(path)
   if (res.status === 404) return null
   if (!res.ok) throw new Error(`GET ${path} → ${res.status}`)
   return (await res.json()) as T
@@ -125,11 +125,7 @@ async function streamSse(
   body: unknown,
   onEvent: (event: WireEvent) => void,
 ): Promise<void> {
-  const res = await fetch(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  })
+  const res = await apiFetch(path, { method: 'POST', json: body })
   if (!res.ok || res.body == null) {
     throw new Error(`POST ${path} → ${res.status}`)
   }

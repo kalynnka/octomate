@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, TypeAdapter
+from pydantic import AwareDatetime, BaseModel, ConfigDict, TypeAdapter
 
 from octomate.types.json import JsonObject
 
@@ -19,7 +18,7 @@ CODEX_HOME_DIRS: tuple[Path, ...] = (
 class RolloutLine(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    timestamp: datetime
+    timestamp: AwareDatetime
     type: Literal[
         "session_meta",
         "turn_context",

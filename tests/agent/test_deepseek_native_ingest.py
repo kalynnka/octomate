@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from octomate_protocol.stream import SESSION_FILE
-from pydantic_ai.messages import ModelRequest, ModelResponse
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -18,7 +18,7 @@ from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer, TailState
 from octomate.types.json import JsonObject, JsonValue
-from tests.support.managers import a_loaded_thread
+from tests.support.managers import a_loaded_thread, a_thread
 
 SENDER = UserProfile(channel_user_id="lu", name="lu")
 
@@ -321,23 +321,40 @@ async def test_an_unmodeled_preset_is_observed_but_not_stored() -> None:
     assert conversation.permission_mode is None
 
 
-async def test_driven_session_hooks_are_ignored() -> None:
+async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() -> None:
     octomate = Octomate()
-    ingest, _ = wired(octomate)
+    ingest, tailer = wired(octomate)
+    sdk_conversation = await octomate.conversations.ensure(
+        await a_thread(), agent_tentacle_id="deepseek"
+    )
+    await octomate.conversations.record_agent_run(
+        sdk_conversation,
+        run_id="sdk-run",
+        messages=[ModelRequest(parts=[UserPromptPart(content="SDK prompt")])],
+        external_id=SESSION_ID,
+    )
 
-    with ingest.driving(SESSION_ID):
-        await ingest.handle(
-            DeepseekHookInput(hook_event_name="Stop", session_id=SESSION_ID)
+    await ingest.handle(
+        DeepseekHookInput(
+            hook_event_name="UserPromptSubmit",
+            session_id=SESSION_ID,
+            prompt="ingest this",
         )
-        await ingest.handle(
-            DeepseekHookInput(
-                hook_event_name="UserPromptSubmit",
-                session_id=SESSION_ID,
-                prompt="driven",
-            )
-        )
-    assert ingest.tasks == set()
-    assert await octomate.thread_manager.list_threads() == []
+    )
+    await stream_events(tailer, turn_events(1, 0, "ingest this", "done"))
+
+    external = await native_conversation(octomate)
+    assert external.id != sdk_conversation.id
+    assert all(isinstance(run, ExternalAgentRun) for run in external.runs)
+    assert [message.message_text for message in external.messages] == [
+        "ingest this",
+        "done",
+    ]
+    sdk = await octomate.conversations.get(sdk_conversation.id)
+    assert sdk is not None
+    assert sdk.external_id == SESSION_ID
+    assert [run.id for run in sdk.runs] == ["sdk-run"]
+    assert [message.message_text for message in sdk.messages] == ["SDK prompt"]
 
 
 async def test_a_prompt_hook_creates_the_session_skeleton() -> None:

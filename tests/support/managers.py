@@ -172,6 +172,7 @@ class FakeConversationManager(ConversationManager):
         agent_tentacle_id: str | None = None,
         subagent_id: str = "",
         parent_conversation_id: uuid.UUID | None = None,
+        with_history: bool = True,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
         store_key = (thread_id, agent_tentacle_id, subagent_id)
@@ -186,7 +187,9 @@ class FakeConversationManager(ConversationManager):
             self.store[store_key] = conversation
         return cast(Conversation, conversation)
 
-    async def get(self, conversation_id: uuid.UUID) -> Conversation:
+    async def get(
+        self, conversation_id: uuid.UUID, *, with_history: bool = True
+    ) -> Conversation:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
                 return cast(Conversation, conversation)

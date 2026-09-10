@@ -27,7 +27,6 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config.mirrors import MirrorsConfig
-from octomate.config.users import UserConfig
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
@@ -43,6 +42,7 @@ from tests.support.managers import (
     a_registry,
     fixed_session,
 )
+from tests.support.users import a_user
 
 CHAT = ThreadKey("im", "thread", "c", "t1")
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -62,14 +62,8 @@ class Harness:
 
 
 async def a_registered_profile() -> tuple[UserManager, UserProfile]:
-    users = UserManager(
-        {
-            "someone": UserConfig.model_validate(
-                {"profiles": {"im": {"channel_user_id": "U1"}}}
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("someone", profiles={"im": "U1"})
+    users = UserManager()
     async with async_session() as session:
         profile = await session.one_or_none(
             UserProfile, expressions=[UserProfile["channel_user_id"] == "U1"]

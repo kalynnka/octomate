@@ -55,11 +55,11 @@ def octomate_url(url: str | None) -> str:
 def octomate_secret() -> str:
     """The credential an install embeds in the entry's Authorization header —
     refused when nothing resolves, since the entry would 401 on every call."""
-    secret = cli_settings().secret
-    if secret is None:
+    token = cli_settings().token
+    if token is None:
         raise typer.BadParameter(
-            f"no credential resolves — {CLISettings.env('secret')} is unset and no "
-            "cli.toml holds one; run `octomate configure` first. The entry embeds the "
+            f"no credential resolves — {CLISettings.env('token')} is unset and no "
+            "cli.toml holds one; run `octomate configure --token <api-token>` first. The entry embeds the "
             "literal credential, so installing without one would only 401."
         )
-    return secret
+    return token

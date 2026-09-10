@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import CodexConfig
-from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.codex import CodexTentacle
@@ -17,25 +17,20 @@ from octomate.tentacles.codex.base import CodexBridgeContext
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.tentacles.trunkline.base import TrunklineStreamItem, current_sink
 from octomate.types.json import JsonObject
-from tests.support.config import registered
 
 
 @pytest.mark.parametrize("answer", ["Accept", "Decline", "Cancel", None])
 async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
     in_memory_engine: AsyncEngine, answer: str | None
 ) -> None:
-    octomate = Octomate(config=registered("test-secret"))
-    tentacle = CodexTentacle(
-        "codex", octomate, config=CodexConfig(models={"gpt-5.5"}, approval_timeout=5)
-    )
+    octomate = Octomate()
+    tentacle = CodexTentacle("codex", octomate, config=CodexConfig(approval_timeout=5))
     octomate.connect(tentacle)
     octomate.connect(
         TrunklineTentacle(
             "trunkline",
             octomate,
-            config=TrunklineChannelConfig(
-                agents=[AgentModelConfig(agent="codex", model="gpt-5.5")]
-            ),
+            config=TrunklineChannelConfig(agents=["codex"]),
         )
     )
     address = ChannelAddress(

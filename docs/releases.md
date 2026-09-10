@@ -125,7 +125,7 @@ current. Otherwise it backs up, checks out the release commit, synchronizes the
 release's lockfile, migrates, restarts and verifies the service.
 
 The current upgrade command supports only an installed launchd/plist service and
-a source checkout. A plain PyPI installation can run `octomate serve`, but it is
+a source checkout. A plain PyPI installation can run `octomate service serve`, but it is
 not a managed deployment for `octomate upgrade`. See the [deployment guide](server-deployment.md)
 for bootstrap, configuration, migrations and recovery.
 

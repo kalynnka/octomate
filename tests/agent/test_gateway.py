@@ -10,9 +10,8 @@ from pydantic_ai.settings import ThinkingEffort
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.config import AgentModelConfig, ChannelConfig
+from octomate.config import ChannelConfig
 from octomate.config.agents import AgentRouteModelName
-from octomate.config.users import UserConfig
 from octomate.managers.gateway import GatewayManager, OctomateSession, PrivateBlocker
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
@@ -39,6 +38,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
+from tests.support.users import a_user
 
 FAKE_CONTEXT = cast(RunContext[None], None)
 
@@ -142,14 +142,12 @@ def test_summon_decision_requires_model_field() -> None:
         )
 
 
-@pytest.mark.parametrize("model", [None, ""])
-def test_summon_decision_requires_concrete_model(model: str | None) -> None:
+def test_summon_decision_rejects_empty_model() -> None:
     with pytest.raises(ValidationError, match="model"):
         SummonDecision(
             action="summon",
             agent_id="claude",
-            # Same: `None` and `""` are the rejected values this parametrises over.
-            model=model,  # pyright: ignore[reportArgumentType]
+            model="",
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -508,19 +506,8 @@ async def _crossable(
     is its own config, so the routes drive both what it advertises and who the gate
     will let a spell name there.
     """
-    users = UserManager(
-        {
-            "luhui": UserConfig.model_validate(
-                {
-                    "profiles": {
-                        "im": {"channel_user_id": "alice"},
-                        "far": {"channel_user_id": "ou_alice"},
-                    }
-                }
-            )
-        }
-    )
-    await users.reconcile()
+    await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
+    users = UserManager()
     capability = _capability(shape)
     session = capability.session
     session.users = users
@@ -538,10 +525,7 @@ async def _crossable(
             id="far",
             config=ChannelConfig(
                 type="fake",
-                agents=[
-                    AgentModelConfig(agent=route.agent_id, model=route.model)
-                    for route in far_routes
-                ],
+                agents=[route.agent_id for route in far_routes],
             ),
         ),
     }
@@ -589,9 +573,7 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
     capability = await _crossable(
         far_channel=_NoSubThreadChannel(
             id="far",
-            config=ChannelConfig(
-                type="fake", agents=[AgentModelConfig(agent="claude", model="opus")]
-            ),
+            config=ChannelConfig(type="fake", agents=["claude"]),
         )
     )
     assert capability.toolset is not None
@@ -655,18 +637,21 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
         )
 
 
+@pytest.mark.parametrize(
+    ("shape", "destinations"),
+    [("shared_main", ["thread"]), ("private_main", ["thread", "far"])],
+)
 async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
     in_memory_engine: None,
+    shape: Shape,
+    destinations: list[str],
 ) -> None:
     """Everything said here travels with a teleport. Out of a group that would
     republish what other people said into somewhere private on another platform,
     under this person's name alone — so the crossing is not offered at all, while
     the group's own sub-thread still is."""
-    shared = await _crossable("shared_main", far_routes=(INKLING_ROUTE,))
-    assert await shared.session.teleport_handles() == ["thread"]
-
-    private = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
-    assert await private.session.teleport_handles() == ["thread", "far"]
+    capability = await _crossable(shape, far_routes=(INKLING_ROUTE,))
+    assert await capability.session.teleport_handles() == destinations
 
 
 async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
@@ -748,6 +733,8 @@ def _destination_kinds(capability: GatewayCapability, tool_name: str) -> list[st
     kinds: list[str] = []
     for name, definition in defs.items():
         if not name.endswith("Target") or not isinstance(definition, dict):
+            continue
+        if definition.get("type") != "object":
             continue
         properties = definition["properties"]
         assert isinstance(properties, dict)

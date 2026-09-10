@@ -10,11 +10,20 @@ wording verbatim, which is how Claude retries from it natively.
 from __future__ import annotations
 
 from claude_agent_sdk import SdkMcpTool
-from pydantic import JsonValue
+from fastmcp.exceptions import ToolError
+from pydantic import JsonValue, SecretStr
 
+from octomate import Octomate
+from octomate.config import BareMcpConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import TELEPORT_RECORDED
-from octomate.mcp.server import octomate_instructions, octomate_mcp
+from octomate.mcp.server import (
+    CALL_MCP_TOOL,
+    LIST_MCP_TOOLS,
+    McpToolCatalog,
+    octomate_instructions,
+    octomate_mcp,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     AgentRoute,
@@ -23,6 +32,9 @@ from octomate.schemas.triage import (
     ThreadLanding,
 )
 from octomate.tentacles.claude.mcp import octomate_mcp_server, sdk_tool
+from octomate.tentacles.mcp import BareMcpTentacle
+from tests.agent.test_mcp import an_upstream, upstream_of
+from tests.channels.slack.test_mcp import into
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
 
@@ -160,3 +172,45 @@ async def test_teleport_tells_the_runtime_to_wrap_up() -> None:
 
     assert the_text(result) == TELEPORT_RECORDED
     assert session.decision is not None
+
+
+async def test_sdk_discovers_and_calls_provider_tools_through_fixed_helpers() -> None:
+    tentacle = BareMcpTentacle(
+        "provider",
+        Octomate(),
+        config=BareMcpConfig(url="https://mcp.example/mcp", token=SecretStr("key")),
+    )
+    upstream, calls = an_upstream("answer")
+
+    @upstream.tool
+    def refuse() -> str:
+        """A tool that refuses the request."""
+        raise ToolError("Provider refused the request")
+
+    async with upstream_of(upstream) as transport:
+        server = octomate_mcp(
+            fixed_session(a_turn()),
+            FakeThreadManager(),
+            tentacles=[tentacle],
+            httpx_client_factory=into(transport),
+        )
+        tools = {tool.name: sdk_tool(tool) for tool in await server.list_tools()}
+        assert "provider_answer" not in tools
+        assert calls == []
+        discovered = await tools[LIST_MCP_TOOLS].handler({"namespace": "provider"})
+        catalog = McpToolCatalog.model_validate_json(the_text(discovered))
+        assert {tool.name for tool in catalog.tools} == {
+            "provider_answer",
+            "provider_refuse",
+        }
+        answered = await tools[CALL_MCP_TOOL].handler(
+            {"namespace": "provider", "name": "provider_answer", "arguments": {}}
+        )
+        refused = await tools[CALL_MCP_TOOL].handler(
+            {"namespace": "provider", "name": "provider_refuse", "arguments": {}}
+        )
+
+    assert the_text(answered) == "answered"
+    assert calls == ["Bearer key"]
+    assert refused["is_error"] is True
+    assert "Provider refused the request" in the_text(refused)

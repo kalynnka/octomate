@@ -1,6 +1,6 @@
 """The one server Octomate serves and every runtime mounts: the gateway's spells,
-the history tools, the account-linking tools, and every MCP tentacle's own
-tools, each family from its own module, composed here under one name.
+the history tools, the account-linking tools, and helpers to discover and call
+each MCP tentacle's tools on demand, composed here under one name.
 
 One server rather than one per family because the served endpoint, Claude's
 in-process mount and each runtime's install config all know one URL,
@@ -21,10 +21,17 @@ nothing else.
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable, Sequence
+from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.dependencies import Depends
+from fastmcp.exceptions import ToolError
+from fastmcp.server.context import Context
+from fastmcp.server.providers import Provider
+from fastmcp.tools import ToolResult
 from mcp.shared._httpx_utils import McpHttpClientFactory
+from mcp.types import Tool
+from pydantic import BaseModel, Field, JsonValue
 
 from octomate.capabilities.gateway import gateway_instructions
 from octomate.capabilities.history import history_instructions
@@ -46,6 +53,13 @@ OCTOMATE_MCP_PATH = f"/{OCTOMATE_SERVER_NAME}/mcp"
 GATEWAY_NAMESPACE = "gateway"
 HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
+LIST_MCP_TOOLS = "mcp_list_tools"
+CALL_MCP_TOOL = "mcp_call_tool"
+
+
+class McpToolCatalog(BaseModel):
+    instructions: str = Field(description="The selected provider's tool instructions.")
+    tools: list[Tool] = Field(description="The provider's namespaced MCP tool schemas.")
 
 
 def gateway_tool(name: str) -> str:
@@ -59,11 +73,17 @@ def history_tool(name: str) -> str:
 
 
 def tentacle_instructions(tentacles: Sequence[McpTentacle]) -> str:
-    """The linking contract, for the tentacles that link, and after it each
-    tentacle's own contract — worded once, however many share it."""
+    """Discovery and linking instructions, without fetching upstream catalogs."""
     linkable = [t for t in tentacles if isinstance(t, OAuthMcpTentacle)]
     parts = [oauth_instructions(linkable)] if linkable else []
-    parts.extend(dict.fromkeys(t.instructions for t in tentacles if t.instructions))
+    if tentacles:
+        namespaces = ", ".join(f"`{t.id}` ({t.label})" for t in tentacles)
+        parts.append(
+            f"Provider tools are loaded on demand. Available namespaces: {namespaces}. "
+            f"Call `{LIST_MCP_TOOLS}` with a namespace to read its instructions and "
+            f"tool schemas, then `{CALL_MCP_TOOL}` with that namespace, the exact "
+            "listed tool name, and its arguments."
+        )
     return "\n".join(parts)
 
 
@@ -95,12 +115,60 @@ def tentacles_mcp(
         oauth = FastMCP(OAUTH_NAMESPACE)
         mount_oauth(oauth, Depends(resolve_session), linkable)
         mcp.mount(oauth, namespace=OAUTH_NAMESPACE)
-    for tentacle in tentacles:
-        mcp.add_provider(
+    if not tentacles:
+        return mcp
+    namespaces = {
+        tentacle.id: (
+            tentacle,
             tentacle.provider(
                 resolve_session, httpx_client_factory=httpx_client_factory
-            )
+            ),
         )
+        for tentacle in tentacles
+    }
+    names = ", ".join(
+        f"`{id}` ({tentacle.label})" for id, (tentacle, _) in namespaces.items()
+    )
+
+    def named(namespace: str) -> tuple[McpTentacle, Provider]:
+        found = namespaces.get(namespace)
+        if found is None:
+            raise ToolError(f"Unknown MCP namespace {namespace!r}; available: {names}.")
+        return found
+
+    @mcp.tool(
+        name=LIST_MCP_TOOLS,
+        description=f"Load one provider's tool schemas and instructions. Namespaces: {names}.",
+    )
+    async def list_tools(namespace: str) -> McpToolCatalog:
+        tentacle, provider = named(namespace)
+        return McpToolCatalog(
+            instructions=tentacle.instructions,
+            tools=[tool.to_mcp_tool() for tool in await provider.list_tools()],
+        )
+
+    @mcp.tool(
+        name=CALL_MCP_TOOL,
+        description=(
+            f"Call a tool discovered with `{LIST_MCP_TOOLS}` as the current caller. "
+            f"Namespaces: {names}."
+        ),
+    )
+    async def call_tool(
+        namespace: str,
+        name: Annotated[
+            str, Field(description="The exact tool name returned by discovery.")
+        ],
+        arguments: dict[str, JsonValue],
+    ) -> ToolResult:
+        _, provider = named(namespace)
+        tool = await provider.get_tool(name)
+        if tool is None:
+            raise ToolError(f"No tool {name!r} in MCP namespace {namespace!r}.")
+        # Claude invokes SDK tool handlers directly, outside a FastMCP request.
+        async with Context(mcp):
+            return await tool.run(arguments)
+
     return mcp
 
 
@@ -134,8 +202,7 @@ def octomate_mcp(
     history = FastMCP(HISTORY_NAMESPACE)
     mount_history(history, session, thread_manager)
     mcp.mount(history, namespace=HISTORY_NAMESPACE)
-    # No namespace: each tentacle's tools already carry the prefix it gives them,
-    # and the link tools their own.
+    # Discovery, call, and linking helpers already carry their served names.
     mcp.mount(
         tentacles_mcp(
             resolve_session,

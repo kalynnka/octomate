@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import secrets
 import uuid
 from collections.abc import Iterable
@@ -12,6 +11,7 @@ from pydantic import SecretStr
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
+from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
@@ -82,7 +82,7 @@ class OAuthConnector:
             raise ValueError("authorization-code OAuth requires a callback transport")
 
 
-class OAuthManager:
+class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
     """Registered OAuth connectors bound to the current channel user."""
 
     def __init__(
@@ -97,11 +97,6 @@ class OAuthManager:
             OAuthCipher(encryption_key) if encryption_key is not None else None
         )
         self.connectors: dict[str, OAuthConnector] = {}
-        self.completion_lock = asyncio.Lock()
-        # One lock for every refresh rather than one per connection: refreshing is
-        # rare and quick, and the contention a shared lock costs is nothing next to
-        # the bookkeeping a keyed one would need to stay bounded.
-        self.refresh_lock = asyncio.Lock()
         for connector in connectors:
             self.register(connector)
 
@@ -261,8 +256,6 @@ class OAuthManager:
                 "written by an authorization-code flow"
             )
         expires_at = operation.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
         payload = DeviceOperationPayload.model_validate_json(
             cipher.decrypt(
                 operation.encrypted_data,
@@ -316,7 +309,13 @@ class OAuthManager:
         if user is None:
             raise ValueError("OAuth connections require a registered user")
 
-        async with self.completion_lock, async_session() as session:
+        async with async_session() as session:
+            operation = await session.get(OAuthOperation, operation_id)
+            if operation is None:
+                raise ValueError("unknown OAuth operation")
+            key = (user.id, operation.connector_id)
+
+        async with self.lock(key), async_session() as session:
             operation = await session.get(OAuthOperation, operation_id)
             if (
                 operation is None
@@ -327,8 +326,6 @@ class OAuthManager:
             if operation.consumed_at is not None:
                 raise ValueError("OAuth operation has already been consumed")
             expires_at = operation.expires_at
-            if expires_at.tzinfo is None:
-                expires_at = expires_at.replace(tzinfo=UTC)
             if expires_at <= datetime.now(UTC):
                 operation.consumed_at = datetime.now(UTC)
                 await session.commit()
@@ -455,7 +452,11 @@ class OAuthManager:
         that asked; and the profile still has to resolve to the same registered user,
         because a YAML declaration removed mid-flow must not finish as a connection.
         """
-        async with self.completion_lock, async_session() as session:
+        async with async_session() as session:
+            operation, _ = await self.operation_for_state(session, connector_id, state)
+            key = (operation.user_id, operation.connector_id)
+
+        async with self.lock(key), async_session() as session:
             operation, payload = await self.operation_for_state(
                 session, connector_id, state
             )
@@ -516,7 +517,11 @@ class OAuthManager:
         A denial is an answer, so the operation is spent rather than left to expire —
         otherwise the link the user declined stays live for its full lifetime.
         """
-        async with self.completion_lock, async_session() as session:
+        async with async_session() as session:
+            operation, _ = await self.operation_for_state(session, connector_id, state)
+            key = (operation.user_id, operation.connector_id)
+
+        async with self.lock(key), async_session() as session:
             operation, _ = await self.operation_for_state(session, connector_id, state)
             operation.consumed_at = datetime.now(UTC)
             await session.commit()
@@ -555,8 +560,6 @@ class OAuthManager:
         if operation.consumed_at is not None:
             raise UnusableOAuthOperation("OAuth operation has already been consumed")
         expires_at = operation.expires_at
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
         if expires_at <= datetime.now(UTC):
             raise UnusableOAuthOperation("OAuth operation has expired")
         return operation
@@ -695,7 +698,7 @@ class OAuthManager:
         cipher = self.cipher
         if cipher is None:
             return None
-        async with self.refresh_lock, async_session() as session:
+        async with self.lock((user.id, connector_id)), async_session() as session:
             connection = await session.one_or_none(
                 OAuthConnection,
                 expressions=[
@@ -741,6 +744,4 @@ class OAuthManager:
     @staticmethod
     def expiring(expires_at: datetime) -> bool:
         """Whether a credential has too little life left to start a run on."""
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
         return expires_at <= datetime.now(UTC) + TOKEN_REFRESH_LEEWAY

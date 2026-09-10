@@ -1,4 +1,5 @@
 import { Fragment } from 'react'
+import { useAuth } from '@/state/auth'
 import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
@@ -86,8 +87,9 @@ function toolSub(detail: ToolDetail): string {
 }
 
 /** Map one ledger/live item to a timeline event; null = not indexed. The uid is
- *  the item's own, and the caller stamps it. */
-function eventOf(item: LedgerItem, agent?: string): Omit<TlEvent, 'uid'> | null {
+ *  the item's own, and the caller stamps it. `operator` is who the thread's
+ *  feelers wait on — the signed-in account, the thread being theirs alone. */
+function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEvent, 'uid'> | null {
   const tgt = `pm-${item.uid}`
   switch (item.kind) {
     case 'user':
@@ -135,10 +137,10 @@ function eventOf(item: LedgerItem, agent?: string): Omit<TlEvent, 'uid'> | null 
         resolved: item.state !== 'waiting',
         sub:
           item.state === 'waiting'
-            ? `${item.tool} · waiting on kalynnka`
+            ? `${item.tool} · waiting on ${operator}`
             : item.state === 'approved'
-              ? `approved by kalynnka — ${item.tool} dispatched`
-              : `dismissed by kalynnka — ${item.tool} dropped`,
+              ? `approved by ${operator} — ${item.tool} dispatched`
+              : `dismissed by ${operator} — ${item.tool} dropped`,
         t: item.resolvedT ?? '',
         tgt,
       }
@@ -194,6 +196,7 @@ export function TimelinePanel() {
   const traceW = useConsole((s) => s.widths.trace)
   const railDrag = useConsole((s) => s.railDrag)
   const { toggleTimelineFold, openFile } = useConsole((s) => s.actions)
+  const operator = useAuth((s) => s.user?.username ?? 'operator')
   const dragTrace = useRailDrag('trace', 'trk-trace-panel', 200, 480, true)
 
   const show = (traceOn ?? true) && !mgmtSec && !pvOpen
@@ -242,7 +245,7 @@ export function TimelinePanel() {
       // which session it opened in.
       const opening = sessions[si + 1]?.anchor === item.uid
       if (opening) si++
-      const e = isOpen ? null : eventOf(item, sessions[si]?.route.split(' ')[0])
+      const e = isOpen ? null : eventOf(item, operator, sessions[si]?.route.split(' ')[0])
       if (e) indexed++
       if (index < page) return
       if (opening && isOpen && item.tone === 'summon') {
@@ -262,7 +265,7 @@ export function TimelinePanel() {
   if (buckets.length) {
     const agent = sessions[sessions.length - 1]?.route.split(' ')[0]
     for (const item of live) {
-      const e = eventOf(item, agent)
+      const e = eventOf(item, operator, agent)
       if (e) {
         buckets[buckets.length - 1].push({ ...e, uid: item.uid })
         indexed++

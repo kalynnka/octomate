@@ -6,10 +6,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Uuid
+from sqlalchemy import ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from octomate.models.base import Base, MapperArgs, PathString
+from octomate.models.base import Base, MapperArgs, PathString, UTCDateTime
 
 if TYPE_CHECKING:
     from octomate.models.conversation import Conversation
@@ -88,7 +88,7 @@ class AgentRun(Base, TransmuterProxiedMixin):
         ),
     )
     started_at: Mapped[datetime | None] = mapped_column(
-        DateTime, nullable=True, index=True
+        UTCDateTime, nullable=True, index=True
     )
 
     conversation: Mapped[Conversation] = relationship(
