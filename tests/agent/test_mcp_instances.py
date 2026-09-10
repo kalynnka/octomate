@@ -1,6 +1,7 @@
 import pytest
 from fastmcp.exceptions import ToolError
 from mcp.types import TextContent
+from pydantic import SecretStr, TypeAdapter
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.models.test import TestModel
@@ -10,10 +11,21 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.mcp import TentaclesToolset
 from octomate.config import OctomateConfig
+from octomate.managers.mcp import McpClientKey
 from octomate.mcp.gateway import CLIENT_HEADER
-from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCPS, tentacles_mcp
+from octomate.mcp.server import (
+    CALL_MCP_TOOL,
+    DISABLE_MCP,
+    ENABLE_MCP,
+    INSTALL_MCP,
+    LIST_MCPS,
+    UNINSTALL_MCP,
+    tentacles_mcp,
+)
+from octomate.schemas.mcp import McpServerSummary
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude.mcp import octomate_mcp_server
+from octomate.tentacles.mcp import BareMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream, upstream_of
 from tests.agent.test_mcp_serving import over, served
@@ -31,6 +43,14 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
     await a_api_key(bob, "bob-token")
     host = Octomate(
         config=OctomateConfig(auth=auth_config()), oauth_encryption_key=ENCRYPTION_KEY
+    )
+    host.connect(
+        BareMcpTentacle(
+            "research",
+            host,
+            url="https://mcp.example/mcp",
+            token=SecretStr("alice-provider-secret"),
+        )
     )
     upstream, calls = an_upstream("answer")
     async with upstream_of(upstream) as transport:
@@ -55,9 +75,17 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                 ) as bob_client,
             ):
                 assert (await alice_client.call_tool(LIST_MCPS, {})).data == []
-                instance = await host.mcp.install(
-                    alice.id, install_request("alice-provider-secret")
+                installed = await alice_client.call_tool(
+                    INSTALL_MCP,
+                    {
+                        "name": "Private research",
+                        "namespace": "research",
+                        "url": "https://mcp.example/mcp",
+                        "tentacle_id": "research",
+                    },
                 )
+                instance = McpServerSummary.model_validate(installed.structured_content)
+                assert "alice-provider-secret" not in str(installed)
                 assert "Private research" in str(
                     (await alice_client.call_tool(LIST_MCPS, {})).data
                 )
@@ -72,10 +100,33 @@ async def test_served_endpoint_uses_authenticated_owner_and_sees_new_installs(
                 result = await alice_client.call_tool(CALL_MCP_TOOL, args)
                 assert isinstance(result.content[0], TextContent)
                 assert result.content[0].text == "answered"
-                await host.mcp.disable(user_id=alice.id, mcp_id=instance.id)
+                key = McpClientKey(user_id=alice.id, mcp_id=instance.id)
+                cached = host.mcp.clients[key]
+                for tool in (ENABLE_MCP, DISABLE_MCP, UNINSTALL_MCP):
+                    with pytest.raises(ToolError, match="unavailable"):
+                        await bob_client.call_tool(tool, {"mcp_id": str(instance.id)})
+                assert host.mcp.clients[key] is cached
+                await alice_client.call_tool(DISABLE_MCP, {"mcp_id": str(instance.id)})
+                assert key not in host.mcp.clients
+                assert not cached.is_connected()
+                listed = await alice_client.call_tool(LIST_MCPS, {})
+                assert listed.structured_content is not None
+                [disabled] = TypeAdapter(list[McpServerSummary]).validate_python(
+                    listed.structured_content["result"]
+                )
+                assert disabled.enabled is False
                 with pytest.raises(ToolError, match="unavailable"):
                     await alice_client.call_tool(CALL_MCP_TOOL, args)
-    assert calls == ["Bearer alice-provider-secret"]
+                await alice_client.call_tool(ENABLE_MCP, {"mcp_id": str(instance.id)})
+                await alice_client.call_tool(CALL_MCP_TOOL, args)
+                cached = host.mcp.clients[key]
+                await alice_client.call_tool(
+                    UNINSTALL_MCP, {"mcp_id": str(instance.id)}
+                )
+                assert key not in host.mcp.clients
+                assert not cached.is_connected()
+                assert (await alice_client.call_tool(LIST_MCPS, {})).data == []
+    assert calls == ["Bearer alice-provider-secret"] * 2
 
 
 async def test_inkling_and_claude_mount_personal_discovery_without_tentacles(

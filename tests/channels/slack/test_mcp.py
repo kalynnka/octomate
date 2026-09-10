@@ -36,8 +36,13 @@ from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
+    DISABLE_MCP,
+    ENABLE_MCP,
+    INSTALL_MCP,
+    LIST_MCP_TENTACLES,
     LIST_MCP_TOOLS,
     LIST_MCPS,
+    UNINSTALL_MCP,
     octomate_instructions,
     octomate_mcp,
 )
@@ -59,7 +64,12 @@ SLACK = {"provider": "personal/slack"}
 # own families and the linking pair; Slack's tools only once they have linked.
 LISTED_TO_ALL = [
     *OCTOMATE_TOOLS,
+    LIST_MCP_TENTACLES,
     LIST_MCPS,
+    INSTALL_MCP,
+    ENABLE_MCP,
+    DISABLE_MCP,
+    UNINSTALL_MCP,
     LIST_MCP_TOOLS,
     CALL_MCP_TOOL,
     CONNECT_TOOL,

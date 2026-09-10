@@ -20,7 +20,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.models import mcp as mcp_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
 
 
 class NoAuth(BaseModel):
@@ -102,6 +102,21 @@ class Mcp(BaseTransmuter):
     created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    @property
+    def summary(self) -> McpServerSummary:
+        match self:
+            case NoAuthMcp() | BearerMcp() | OAuthMcp():
+                auth_kind = self.auth_kind
+            case _:
+                raise TypeError("MCP info requires a concrete authentication type")
+        return McpServerSummary(
+            id=self.id,
+            namespace=self.namespace,
+            name=self.name,
+            enabled=self.enabled,
+            auth_kind=auth_kind,
+        )
+
 
 @sqlalchemy_materia.bless(mcp_models.NoAuthMcp)
 class NoAuthMcp(Mcp):
@@ -124,6 +139,22 @@ class McpTentacleInfo(BaseModel):
     name: str
     url: str
     auth_kind: Literal["none", "bearer", "oauth"]
+
+
+class McpOAuthSummary(BaseModel):
+    status: OAuthConnectionStatus | None = Field(
+        description="Stored authorization status; null means no saved connection."
+    )
+    flows: list[OAuthFlowKind]
+
+
+class McpServerSummary(BaseModel):
+    id: uuid.UUID
+    namespace: str
+    name: str
+    enabled: bool
+    auth_kind: Literal["none", "bearer", "oauth"]
+    oauth: McpOAuthSummary | None = None
 
 
 class McpToolCatalog(BaseModel):

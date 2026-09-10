@@ -33,9 +33,14 @@ from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPE
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
+    DISABLE_MCP,
+    ENABLE_MCP,
+    INSTALL_MCP,
+    LIST_MCP_TENTACLES,
     LIST_MCP_TOOLS,
     LIST_MCPS,
     OCTOMATE_MCP_PATH,
+    UNINSTALL_MCP,
     gateway_tool,
     history_tool,
     octomate_instructions,
@@ -211,7 +216,12 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
 
     assert [tool.name for tool in tools] == [
         *OCTOMATE_TOOLS,
+        LIST_MCP_TENTACLES,
         LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -271,7 +281,12 @@ async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
 
     assert [tool.name for tool in tools] == [
         *OCTOMATE_TOOLS,
+        LIST_MCP_TENTACLES,
         LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,

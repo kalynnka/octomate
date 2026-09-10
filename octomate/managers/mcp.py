@@ -31,6 +31,8 @@ from octomate.schemas.mcp import (
     McpBrowserAuthorizationPending,
     McpDeviceAuthorizationPending,
     McpInstallRequest,
+    McpOAuthSummary,
+    McpServerSummary,
     McpTentacleInfo,
     McpToolCatalog,
     NoAuth,
@@ -189,6 +191,27 @@ class McpManager(Manager, Locks[uuid.UUID]):
             expressions.append(Mcp["enabled"].is_(True))
         async with async_session() as session:
             return list(await session.list(Mcp, expressions=expressions, limit=None))
+
+    async def summary(self, user: User, mcp: Mcp) -> McpServerSummary:
+        if mcp.user_id != user.id:
+            raise McpUnavailable
+        summary = mcp.summary
+        if isinstance(mcp, OAuthMcp):
+            status = None
+            flows: list[OAuthFlowKind] = []
+            if self.oauth is not None:
+                status = await self.oauth.connection_status(
+                    user, mcp.tentacle_id or "mcp", mcp_id=mcp.id
+                )
+                if mcp.tentacle_id is None:
+                    if self.oauth.callback_base_uri is not None:
+                        flows = ["authorization_code"]
+                else:
+                    connector = self.oauth.connectors.get(mcp.tentacle_id)
+                    if connector is not None:
+                        flows = [flow.kind for flow in connector.flows]
+            summary.oauth = McpOAuthSummary(status=status, flows=flows)
+        return summary
 
     async def enable(self, user_id: uuid.UUID, mcp_id: uuid.UUID) -> Mcp:
         async with self.lock(mcp_id):

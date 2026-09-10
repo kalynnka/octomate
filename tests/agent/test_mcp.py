@@ -44,7 +44,17 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
-from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCP_TOOLS, LIST_MCPS, tentacles_mcp
+from octomate.mcp.server import (
+    CALL_MCP_TOOL,
+    DISABLE_MCP,
+    ENABLE_MCP,
+    INSTALL_MCP,
+    LIST_MCP_TENTACLES,
+    LIST_MCP_TOOLS,
+    LIST_MCPS,
+    UNINSTALL_MCP,
+    tentacles_mcp,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
@@ -212,7 +222,12 @@ async def test_an_installed_bare_tentacle_uses_its_operator_credential() -> None
         )
 
     assert {tool.name for tool in tools} == {
+        LIST_MCP_TENTACLES,
         LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -246,7 +261,12 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
     # Linking enables discovery without changing the initial tool list.
     assert [tool.name for tool in unlinked] == [tool.name for tool in linked]
     assert [tool.name for tool in linked] == [
+        LIST_MCP_TENTACLES,
         LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -271,7 +291,12 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
             )
 
     assert [tool.name for tool in tools] == [
+        LIST_MCP_TENTACLES,
         LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -305,7 +330,12 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     assert set(tools) == {
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LIST_MCP_TENTACLES,
         LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
     }
