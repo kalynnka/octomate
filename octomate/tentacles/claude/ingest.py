@@ -1,9 +1,6 @@
 from __future__ import annotations
 
 import logging
-from collections import Counter
-from collections.abc import Generator
-from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -70,41 +67,11 @@ class ClaudeHookIngest:
         # tailer so its run/ledger commits serialize against these writes too; the
         # registry reclaims a session's lock on its own once no one holds it.
         self.locks = locks if locks is not None else SessionLocks()
-        # Sessions the tentacle is driving right now, counted by how many runs hold
-        # each (`driving`) — a follow-up run supersedes a live one and the two overlap
-        # while the first unwinds, so the claim outlives whichever ends first.
-        self.driven: Counter[str] = Counter()
-
-    @contextmanager
-    def driving(self, session_id: str) -> Generator[None]:
-        """Claim a session as one Octomate drives itself, for the length of the run.
-
-        Its hooks fire like any other session's — an operator's settings are theirs to
-        keep, and this pipe does not reach around them — but the tentacle records the
-        run as it drives it, so ingesting the hooks would write that conversation a
-        second time.
-
-        The claim brackets the run rather than tracking its events: taken before the CLI
-        exists, so no hook can arrive unclaimed, and dropped only once the client's
-        teardown has waited out the process, by which point every hook the session can
-        fire — `SessionEnd` last, on its way out — already has.
-        """
-        self.driven[session_id] += 1
-        try:
-            yield
-        finally:
-            self.driven[session_id] -= 1
-            if self.driven[session_id] <= 0:
-                del self.driven[session_id]
 
     async def handle(self, event: ClaudeHookInput, sender: UserProfile) -> None:
         """`sender` is the verified bearer's own profile (the route's
         `hook_sender` dependency) — the person every ledger row this event
         writes is attributed to."""
-        if event.session_id in self.driven:
-            # A subagent's events carry the *parent's* session id, so a driven
-            # session's subagents are suppressed by the same claim.
-            return
         match event.hook_event_name:
             case "SubagentStart":
                 await self.on_subagent_start(event)

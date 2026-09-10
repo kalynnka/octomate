@@ -3,14 +3,12 @@
 A component, not a category: a tentacle composes it in beside being a channel
 or an agent, or is nothing but it — a vendor's server, or a person's Linear or
 GitHub, under `mcp:` — and the host adds every provider it finds this way to
-the server at `/octomate/mcp`, all at once. The provider's
-own server is never handed to a runtime directly: the credential a call spends
-stays in Octomate, so the proxy here has no tools of its own — a request
-resolves the turn it belongs to, takes from `auth` the credential that turn may
-spend, and lists or calls the provider with it. A runtime is listed what the
-provider lists that caller, worded as the provider words it — as constant as
-the provider keeps it, which is what the prompt cache needs — and a caller with
-no credential is listed nothing.
+the server at `/octomate/mcp` through namespace discovery and call helpers.
+The provider's own server is never handed to a runtime directly: credentials
+stay in Octomate. Only an explicit discovery or call resolves the turn, takes
+from `auth` the credential it may spend, and reaches that provider. Discovery
+returns the provider's own schemas, cached per credential; missing credentials
+refuse the request with the account-linking instructions.
 
 Two credentials, two subclasses. `OAuthMcpTentacle` acts as the person who
 drove the turn, with the token they linked under this tentacle's id — from any
@@ -21,12 +19,14 @@ every caller: the deployment's identity, not the person's.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
+from functools import cached_property
 from typing import TYPE_CHECKING
 
-import httpx
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
@@ -35,6 +35,8 @@ from fastmcp.server.providers.proxy import ProxyTool
 from fastmcp.server.transforms import Namespace
 from fastmcp.utilities.versions import VersionSpec
 from mcp.shared._httpx_utils import McpHttpClientFactory
+from mcp.types import Tool
+from pydantic import SecretStr
 
 from octomate.config.mcp import (
     BareMcpConfig,
@@ -52,25 +54,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Upstreams can change their schemas without rotating a caller's credential.
+TOOL_CATALOG_TTL = 3600.0
+
 
 class PerCallerProxy(Provider):
-    """The upstream's tools as the caller has them. A listing asks the upstream
-    with the caller's own credential, since what it lists — and how it words it —
-    is theirs; a call is forwarded by name with no schema of Octomate's, since the
-    upstream validates it itself. A caller with no credential is listed nothing,
-    and what a call of theirs gets is the reason, raised by `upstream`."""
+    """The upstream's tools as the caller has them. Listings reuse the tentacle's
+    catalog for the caller's current credential; a call is forwarded by name with
+    no schema of Octomate's, since the upstream validates it itself.
+    A caller with no credential is refused by `auth` during discovery or a call."""
 
-    def __init__(self, upstream: Callable[[], Awaitable[Client]]) -> None:
+    def __init__(
+        self,
+        upstream: Callable[[], Awaitable[Client]],
+        list_tools: Callable[[], Awaitable[list[Tool]]],
+    ) -> None:
         super().__init__()
         self.upstream = upstream
+        self.list_upstream_tools = list_tools
 
     async def _list_tools(self) -> list[ProxyTool]:
-        try:
-            client = await self.upstream()
-        except ToolError:
-            return []
-        async with client:
-            listed = await client.list_tools()
+        listed = await self.list_upstream_tools()
         return [ProxyTool.from_mcp_tool(self.upstream, tool) for tool in listed]
 
     async def _get_tool(
@@ -96,15 +100,53 @@ class McpTentacle(Tentacle, ABC):
     # provider that prefixes its own tools, as Slack does.
     prefix: str | None
 
+    @cached_property
+    def tool_catalogs(self) -> dict[SecretStr, tuple[float, list[Tool]]]:
+        """Raw schemas only: proxy handlers keep the current turn's identity."""
+        return {}
+
+    @cached_property
+    def tool_catalog_lock(self) -> asyncio.Lock:
+        return asyncio.Lock()
+
     @property
     def serving(self) -> bool:
         """Whether this tentacle's tools are served at all; a channel may say no."""
         return True
 
     @abstractmethod
-    async def auth(self, session: OctomateSession) -> httpx.Auth:
+    async def auth(self, session: OctomateSession) -> McpConnectionAuth:
         """The credential a call from `session` speaks to the upstream with — or a
         `ToolError` saying why the session has none."""
+
+    async def list_tools(
+        self,
+        auth: McpConnectionAuth,
+        httpx_client_factory: McpHttpClientFactory | None,
+    ) -> list[Tool]:
+        """Reuse a credential's catalog across runtime mounts and MCP requests."""
+        cached = self.tool_catalogs.get(auth.access_token)
+        if cached is not None and cached[0] > time.monotonic():
+            return cached[1]
+        async with self.tool_catalog_lock:
+            now = time.monotonic()
+            for token, (expires_at, _) in tuple(self.tool_catalogs.items()):
+                if expires_at <= now:
+                    del self.tool_catalogs[token]
+            cached = self.tool_catalogs.get(auth.access_token)
+            if cached is not None:
+                return cached[1]
+            async with Client(
+                StreamableHttpTransport(
+                    self.upstream, auth=auth, httpx_client_factory=httpx_client_factory
+                )
+            ) as client:
+                listed = await client.list_tools()
+            self.tool_catalogs[auth.access_token] = (
+                time.monotonic() + TOOL_CATALOG_TTL,
+                listed,
+            )
+            return listed
 
     def provider(
         self,
@@ -121,7 +163,7 @@ class McpTentacle(Tentacle, ABC):
 
         async def upstream() -> Client:
             """The provider's server, spoken to as the caller: the client a
-            request opens for its one listing or call, once resolved to a turn."""
+            request opens for its call, once resolved to a turn."""
             auth = await self.auth(await resolve_session())
             return Client(
                 StreamableHttpTransport(
@@ -129,7 +171,11 @@ class McpTentacle(Tentacle, ABC):
                 )
             )
 
-        proxy = PerCallerProxy(upstream)
+        async def list_tools() -> list[Tool]:
+            auth = await self.auth(await resolve_session())
+            return await self.list_tools(auth, httpx_client_factory)
+
+        proxy = PerCallerProxy(upstream, list_tools)
         if self.prefix is None:
             return proxy
         return proxy.wrap_transform(Namespace(self.prefix))
@@ -140,7 +186,7 @@ class OAuthMcpTentacle(McpTentacle):
     they linked under this tentacle's id — the connector the concrete tentacle
     registers there. The server's `oauth` family is how the link happens."""
 
-    async def auth(self, session: OctomateSession) -> httpx.Auth:
+    async def auth(self, session: OctomateSession) -> McpConnectionAuth:
         profile = session.user_profile
         if profile is None:
             raise ToolError(
@@ -167,6 +213,10 @@ class BareMcpTentacle(McpTentacle):
     the config names another, and it has no instructions of its own: the tools'
     descriptions are all a runtime reads."""
 
+    @property
+    def log_names(self) -> tuple[str, ...]:
+        return (__name__,)
+
     def __init__(self, id: str, octomate: Octomate, *, config: BareMcpConfig) -> None:
         super().__init__(id=id, octomate=octomate)
         self.label = id
@@ -175,7 +225,7 @@ class BareMcpTentacle(McpTentacle):
         self.prefix = config.prefix or id
         self.token = config.token
 
-    async def auth(self, session: OctomateSession) -> httpx.Auth:
+    async def auth(self, session: OctomateSession) -> McpConnectionAuth:
         return McpConnectionAuth(self.token, self.unauthorized)
 
     async def unauthorized(self) -> None:

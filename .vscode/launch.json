@@ -7,22 +7,13 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:create_app",
+        "octomate.app:create_app",
         "--factory",
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
-      "justMyCode": false,
-      // Open the console only once the API actually serves — vite is up in a
-      // second, the API takes several; opening on vite's ready lands on a dead
-      // gateway. uriFormat demands exactly one %s, so capture the scheme and
-      // point the rest at vite.
-      "serverReadyAction": {
-        "action": "openExternally",
-        "pattern": "Uvicorn running on (https?)://",
-        "uriFormat": "%s://localhost:5173"
-      }
+      "justMyCode": false
     },
     {
       "name": "Octomate (reload)",
@@ -30,7 +21,7 @@
       "request": "launch",
       "module": "uvicorn",
       "args": [
-        "main:create_app",
+        "octomate.app:create_app",
         "--factory",
         "--reload",
         "--reload-dir",

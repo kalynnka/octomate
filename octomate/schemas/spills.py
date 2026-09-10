@@ -6,7 +6,7 @@ from typing import Annotated
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field
+from pydantic import AwareDatetime, ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.models import spills as spills_models
@@ -20,4 +20,4 @@ class ToolOutputSpill(BaseTransmuter):
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     handle: str
     payload: bytes
-    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

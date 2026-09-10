@@ -55,15 +55,15 @@ ProviderId = Annotated[
 OAUTH_INSTRUCTION_TEMPLATE = """\
 ## Linking accounts
 
-A provider's tools — {labels} — are listed here only to a person who has linked
-their account with it once, and act as that person. When they are not listed, or
-a call is refused for that, call `{connect}` with the provider's id ({ids}),
+A provider's tools — {labels} — act as the person who linked their account.
+When discovery or a call is refused for a missing connection,
+call `{connect}` with the provider's id ({ids}),
 then tell the person the link — and the code, where a provider asks them to type
 one — is in their direct messages; you are not given either and cannot repeat or
 rebuild them. Opening the link and approving is the whole of it. `{confirm}` says
 whether it went through — call it once the person says they have approved, since
 a provider that gave them a code reports only when asked — and the tools are
-listed from their next turn on.
+available through namespace discovery once the connection is confirmed.
 """
 
 

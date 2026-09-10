@@ -13,7 +13,7 @@ The upstream source of truth, for anyone re-syncing this file:
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, TypeAlias
+from typing import Annotated, Literal
 
 from pydantic import (
     AliasGenerator,
@@ -66,7 +66,7 @@ class ErrResult(BaseModel):
 
 # Not discriminated: `ok` is a bool literal, which pydantic's smart union already
 # matches exactly, and the pair has no other overlap.
-RpcResult: TypeAlias = OkResult | ErrResult
+type RpcResult = OkResult | ErrResult
 
 
 class ClientRequest(BaseModel):
@@ -230,7 +230,7 @@ class UnknownFrame(BaseModel):
     session_id: str | None = None
 
 
-KnownMuxFrame: TypeAlias = Annotated[
+type KnownMuxFrame = Annotated[
     SessionEventFrame
     | SessionSubscribedFrame
     | ApprovalRequestedFrame
@@ -240,7 +240,7 @@ KnownMuxFrame: TypeAlias = Annotated[
     | StreamErrorFrame,
     Field(discriminator="type"),
 ]
-MuxFrame: TypeAlias = KnownMuxFrame | UnknownFrame
+type MuxFrame = KnownMuxFrame | UnknownFrame
 
 known_mux_frame_adapter: TypeAdapter[KnownMuxFrame] = TypeAdapter(KnownMuxFrame)
 unknown_frame_adapter: TypeAdapter[UnknownFrame] = TypeAdapter(UnknownFrame)
@@ -299,7 +299,7 @@ class UsageChunk(BaseModel):
     usage: DeepseekUsage
 
 
-StreamDelta: TypeAlias = (
+type StreamDelta = (
     TextDeltaChunk | ReasoningDeltaChunk | ToolCallDeltaChunk | UsageChunk
 )
 
@@ -348,6 +348,42 @@ class ModelRoute(BaseModel):
 
     provider: str
     model: str
+
+
+class HostDescription(BaseModel):
+    provider: str | None = None
+
+
+class ModelEffort(BaseModel):
+    id: str
+
+
+class ModelReasoning(BaseModel):
+    efforts: list[ModelEffort]
+
+
+class CatalogModel(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    reasoning: ModelReasoning | None = None
+
+
+class ModelProviderGroup(BaseModel):
+    id: str
+    name: str
+    models: list[CatalogModel]
+
+
+class ModelCatalogFailure(BaseModel):
+    id: str
+    name: str
+    message: str
+
+
+class ModelCatalog(BaseModel):
+    groups: list[ModelProviderGroup]
+    failures: list[ModelCatalogFailure]
 
 
 class MessageBody(BaseModel):

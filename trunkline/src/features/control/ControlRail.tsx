@@ -12,6 +12,7 @@ const defs: { id: ControlSection; label: string; hint: string }[] = [
   { id: 'users', label: 'Users', hint: 'identities · grants' },
   { id: 'dash', label: 'Dashboard', hint: 'ledger · verbs' },
   { id: 'settings', label: 'Settings', hint: 'providers · hooks' },
+  { id: 'account', label: 'Account', hint: 'api keys · session' },
 ]
 
 /** Management rail — the Control sections index beside the sidebar. */

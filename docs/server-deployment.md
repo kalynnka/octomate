@@ -1,5 +1,10 @@
 # FastAPI server deployment
 
+Historical deployment notes, retained as an implementation reference. The plist
+command interface described below has been removed. Current implementation work is
+tracked in the [macOS deployment design](macos-deployment-design.md); this is not a
+public installation guide.
+
 This guide covers installing Octomate's FastAPI server, managing it through the CLI,
 and optionally exposing its API with a separate Tailcat setup.
 The baseline below serves the API on loopback; the optional LAN console setup in
@@ -196,9 +201,8 @@ bootstrap step. It must set an absolute `WorkingDirectory`, `UserName`,
 `ProgramArguments` to `["<checkout>/.venv/bin/octomate", "serve"]`, `KeepAlive: true`,
 and explicit `PATH`, `OCTOMATE_HOME` and absolute `OCTOMATE_DB_URL` environment values.
 Use the service user's account to run the CLI. It invokes sudo only for launchd
-changes. The managed service requires SQLite, an explicit IPv4 bind address, and
-a registered bearer. Trunkline may be enabled or disabled; verification uses the
-configured address and checks the console's configured state. Operation results
+changes. The managed service requires SQLite and an explicit IPv4 bind address.
+Trunkline may be enabled or disabled; verification uses the configured address and checks the console's configured state. Operation results
 are written to `logs/server.log`.
 
 These commands manage only Octomate, its dependencies, migrations and service.
@@ -213,10 +217,12 @@ remote forward. Server verification targets the configured bind address directly
    migrating under it.
 2. With the backend stopped, apply pending migrations using the backup and migration
    procedure in section 6. An already current database needs no migration.
-3. Enable and load the backend job. Verify local MCP initialization and tool
-   discovery with a registered bearer, and the configured Trunkline route state. Inspect the
-   service logs separately for agent/channel startup; the protocol check does not
-   establish readiness of every background component.
+3. Enable and load the backend job. Verification checks that an unauthenticated MCP
+   request returns 401 and that Trunkline routes match the configured state: 404
+   when disabled, 401 with auth configured, or 503 without auth configuration.
+   It can run before the first account registers. Inspect the service logs
+   separately for agent/channel startup; this route check does not verify tool
+   execution or readiness of every background component.
 
 ### Upgrade
 
@@ -399,21 +405,21 @@ putting it in Git, CI output or public DNS. Record device ownership with its pub
 Configure the CLI after the forward is running:
 
 ```sh
-octomate configure --url http://127.0.0.1:18080
+octomate configure --url http://127.0.0.1:18080 --token '<api-token>'
 ```
 
-This preserves an existing resolved credential; if none exists it generates one.
-Register the user's secret in production through the existing `users.yaml` setup,
-then run that harness's `hooks install` and `mcp install` commands. Check project
-config, environment overrides and previously pinned URLs. MCP installations embed
-their URL and credential. Compatible server releases leave existing clients usable;
-update a client only when needed for new behavior or a wire protocol change.
+Sign in through Trunkline and issue an API token with `hooks` and `mcp` scopes
+through the authenticated account API. For UI sign-in over an HTTP-only loopback
+forward, set `auth.cookie_secure: false`; retain secure cookies with HTTPS. Run the runtime's `hooks install` and `mcp install` commands
+once the token is saved. Check project config, environment overrides and pinned
+URLs. MCP installations embed their URL and API token and need reinstalling when
+either changes.
 
 Tailcat device keys determine which computer can connect; Octomate bearers determine
 which user a request represents. Retain both checks. Revoke a device by removing its
 key and restarting the listener; verify established connections terminate too.
-Rotate a user's bearer separately when removing the user, then restart Octomate to
-reload its registry.
+Revoke the user's API keys separately when removing the user; the change
+applies to subsequent requests without restarting Octomate.
 
 VPN or proxy software can affect outbound tunnel traffic. Test direct and relayed
 paths, sleep/wake and reconnects with the intended network configuration.

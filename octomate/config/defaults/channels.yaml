@@ -1,11 +1,12 @@
 # Channel tentacles, keyed by instance id with `type` selecting the platform — so a
 # deployment can run two Lark apps, or two consoles, by naming them apart. The key is
-# the channel tentacle id everywhere downstream: what a `users[]` profile names, and
+# the channel tentacle id everywhere downstream: what a stored profile names, and
 # what a thread records as its origin. Renaming a key therefore re-homes its threads,
 # so pick one and keep it.
 #
-# Every channel must list at least one `agents:` route; nothing picks a model on an
-# operator's behalf, so a channel with no route would have nothing to answer with.
+# Every channel binds at least one agent ID. The first agent answers by default,
+# using its harness default (or Inkling's first configured model). All models of
+# every bound agent are available from the channel.
 #
 # Nothing is declared here, the web console included. Keep real secrets in the
 # environment (OCTOMATE__CHANNELS__<KEY>__<FIELD>) rather than in a config home; the
@@ -16,15 +17,12 @@
 #     type: trunkline
 #     static_dir: /absolute/path/to/trunkline/dist  # omit for console API only
 #     agents:
-#       - agent: inkling
-#         model: anthropic:claude-sonnet-5
+#       - inkling
 #   slack:
 #     type: slack
 #     agents:
-#       - agent: inkling
-#         model: anthropic:claude-sonnet-5
-#       - agent: codex
-#         model: gpt-5.5
+#       - inkling
+#       - codex
 #     app_id: A...
 #     bot_token: xoxb-...
 #     app_token: xapp-...
@@ -35,8 +33,7 @@
 #   discord:
 #     type: discord
 #     agents:
-#       - agent: inkling
-#         model: anthropic:claude-sonnet-5
+#       - inkling
 #     # Set OCTOMATE__CHANNELS__DISCORD__BOT_TOKEN in .env.
 #     stream:
 #       enabled: true
@@ -46,10 +43,8 @@
 #   lark_main:
 #     type: lark
 #     agents:
-#       - agent: inkling
-#         model: anthropic:claude-sonnet-5
-#       - agent: claude
-#         model: opus
+#       - inkling
+#       - claude
 #     app_id: cli_...
 #     app_secret: ...
 #     stream:
@@ -58,16 +53,14 @@
 #   lark_ops:
 #     type: lark
 #     agents:
-#       - agent: claude
-#         model: opus
+#       - claude
 #     app_id: cli_...
 #     app_secret: ...
 #
 #   napcat:
 #     type: napcat
 #     agents:
-#       - agent: inkling
-#         model: anthropic:claude-sonnet-5
+#       - inkling
 #     stream:
 #       enabled: false
 #     ws_url: ws://127.0.0.1:3001

@@ -6,12 +6,13 @@ readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-# Deliberately light — a client machine installs octomate-cli alone, and nothing here
-# may import the octomate server package.
+# Deliberately light: ordinary client commands do not import the server package.
+# Internal deployment maintenance runs in the installed service environment.
 dependencies = [
     "octomate-protocol>=0.0.1,<0.1",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.14.1",
+    "questionary>=2.1,<3",
     "rich>=13",
     "tomlkit>=0.13.2",
     "typer>=0.25.1",

@@ -8,9 +8,11 @@ from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 from uuid import uuid4
 
+import anyio
 import httpx
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -53,10 +55,9 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import DeepseekConfig
+from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -81,6 +82,8 @@ from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
     ErrResult,
+    HostDescription,
+    ModelCatalog,
     OkResult,
     QuestionRequestedFrame,
     RpcError,
@@ -133,12 +136,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     events dsh's `dsh-hooks-claude-code` bridge POSTs in, and the stream
     endpoint takes each session's history entries from the client-side tail
     (`octomate deepseek tail`, reading *its* machine's dsh gateway) for the
-    tailer to assemble into turns. Sessions this tentacle drives itself are
-    claimed (`DeepseekHookIngest.driving`) so their hooks are dropped and
-    their tails refused rather than recorded twice.
+    tailer to assemble into turns. Sessions this tentacle is driving are excluded
+    from native ingest because their runs are already recorded here.
     """
 
     config: DeepseekConfig = field(init=False)
+    default_provider: str | None = field(init=False)
+    effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     client: DeepseekApiClient = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
@@ -157,6 +161,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     in_process: ClassVar[bool] = True
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(DeepseekPermissionMode)
+    native_id: ClassVar[str] = DEEPSEEK_NATIVE_ID
 
     @property
     def default_permission_mode(self) -> str | None:
@@ -192,14 +197,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.bridge_contexts = {}
         self.interaction_tasks = set()
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
-        self.models = {model: model for model in config.models}
+        self.models = {}
+        self.default_provider = None
+        self.effort_maps = {}
         # Serializes turns per conversation: dsh queues a second prompt into a
         # live turn as steering, which would interleave two runs' frames.
         self.conversation_locks = SessionLocks()
@@ -229,15 +231,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         The guard covers the websocket too: FastAPI runs router dependencies
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
-        verifier = hook_guard(self.octomate.bearers, self.id)
-        resolve_sender = hook_sender(self.octomate.users, DEEPSEEK_NATIVE_ID, verifier)
+        verifier = hook_guard(self.octomate.bearers)
+        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
         router = APIRouter(tags=["deepseek"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")
         async def receive_hook(event: DeepseekHookInput) -> JSONResponse:
             # No principal needed: dsh's hook dialect writes no ledger rows —
             # every durable row is the stream's, attributed at its handshake.
-            await self.session_ingest.handle(event)
+            if self.should_ingest_session(event.session_id):
+                await self.session_ingest.handle(event)
             return JSONResponse({})
 
         @router.websocket("/hooks/deepseek/stream")
@@ -253,12 +256,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and
-        refuse what cannot stream — a stale protocol loudly, and a session this
-        tentacle is driving itself, whose events ingested here would write the
-        conversation a second time (`DeepseekHookIngest.driving`). `sender` is
-        the verified bearer's own profile, resolved at the handshake — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -277,11 +279,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        if hello.session_id in self.session_ingest.driven:
+        if not self.should_ingest_session(hello.session_id):
             await websocket.close(code=1008, reason="octomate drives this session")
             return
-        # Its own materia context: a stream outlives any request.
-        with sqlalchemy_materia():
+        async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
 
     async def stream_attached(
@@ -410,6 +411,60 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
         return process
 
+    @property
+    def default_model(self) -> None:
+        # dsh owns both the live default and a resumed session's selection.
+        return None
+
+    async def discover_models(self) -> None:
+        host = HostDescription.model_validate(
+            self.unwrap(await self.client.call("host.describe", {}), "host.describe")
+        )
+        catalog = ModelCatalog.model_validate(
+            self.unwrap(await self.client.call("llm.models", {}), "llm.models")
+        )
+        for failure in catalog.failures:
+            logger.warning(
+                "dsh provider %s model discovery failed: %s",
+                failure.id,
+                failure.message,
+            )
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        effort_maps: dict[str, dict[ThinkingEffort, str]] = {}
+        for provider in catalog.groups:
+            for model in provider.models:
+                key = f"{provider.id}:{model.id}"
+                configured = self.config.claims.get(key)
+                mapping: dict[ThinkingEffort, str] = {}
+                if model.reasoning is not None:
+                    supported = {effort.id for effort in model.reasoning.efforts}
+                    for effort in ThinkingEfforts:
+                        native = (
+                            effort
+                            if effort in supported
+                            else self.config.efforts.get(effort)
+                        )
+                        if native is not None and native in supported:
+                            mapping[effort] = native
+                elif configured is not None:
+                    mapping = {
+                        effort: self.config.efforts.get(effort, effort)
+                        for effort in configured.efforts
+                    }
+                models[key] = key
+                effort_maps[key] = mapping
+                claims[key] = Claim(
+                    model.description
+                    or (configured.ability if configured else model.name),
+                    tuple(mapping),
+                )
+        if not models:
+            raise ValueError("DeepSeek Harness advertised no available models")
+        self.set_model_catalog(models, claims)
+        self.effort_maps = effort_maps
+        self.default_provider = host.provider
+
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
         await self.client.__aenter__()
@@ -420,6 +475,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         # than retrying.
         try:
             self.process = await self.attach_or_start()
+            await self.discover_models()
             socket = await self.client.open_mux()
         except BaseException:
             await self.client.__aexit__()
@@ -429,36 +485,49 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             raise
         self.mux_socket = socket
         self.mux_task = asyncio.create_task(self.pump_mux(self.client, socket))
-        return self
+        return await super().__aenter__()
 
-    async def __aexit__(self, *exc: object) -> None:
-        self.closing = True
-        self.session_ingest.shutdown()
-        await self.session_tailer.shutdown()
-        for session_id in list(self.subscribers):
-            with contextlib.suppress(Exception):
-                await self.client.call("session.cancel", {"sessionId": session_id})
-        if self.mux_task is not None:
-            self.mux_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self.mux_task
-            self.mux_task = None
-        if self.mux_socket is not None:
-            with contextlib.suppress(Exception):
-                await self.mux_socket.close()
-            self.mux_socket = None
-        for task in list(self.interaction_tasks):
-            task.cancel()
-        self.interaction_tasks.clear()
-        for future in list(self.pending.values()):
-            if not future.done():
-                future.cancel()
-        self.pending.clear()
-        self.bridge_contexts.clear()
-        await self.client.__aexit__(*exc)
-        if self.process is not None:
-            await self.process.stop()
-            self.process = None
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await super().__aexit__(exc_type, exc_value, traceback)
+        cancelled = False
+        with anyio.CancelScope(shield=True):
+            draining = asyncio.gather(*self.run_tasks)
+            while not draining.done():
+                try:
+                    await asyncio.shield(draining)
+                except asyncio.CancelledError:
+                    cancelled = True
+            self.closing = True
+            self.session_ingest.shutdown()
+            await self.session_tailer.shutdown()
+            if self.mux_task is not None:
+                self.mux_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await self.mux_task
+                self.mux_task = None
+            if self.mux_socket is not None:
+                with contextlib.suppress(Exception):
+                    await self.mux_socket.close()
+                self.mux_socket = None
+            for task in list(self.interaction_tasks):
+                task.cancel()
+            self.interaction_tasks.clear()
+            for future in list(self.pending.values()):
+                if not future.done():
+                    future.cancel()
+            self.pending.clear()
+            self.bridge_contexts.clear()
+            await self.client.__aexit__(exc_type, exc_value, traceback)
+            if self.process is not None:
+                await self.process.stop()
+                self.process = None
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def pump_mux(
         self, client: DeepseekApiClient, socket: ClientConnection
@@ -712,6 +781,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        deepseek_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         client = self.client
@@ -728,7 +798,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -741,16 +813,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         accumulator = DeepseekRunAccumulator()
         accumulator.begin(user_prompt)
-
-        if isinstance(model, Model):
-            deepseek_model = model.model_name
-        elif isinstance(model, str):
-            deepseek_model = model
-        else:
-            deepseek_model = None
 
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
@@ -790,8 +856,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             # it as a cwd, and a chat thread's is only thrown away once the turn
             # using it is finished with it.
             async with (
-                workspace,
                 self.conversation_locks.hold(str(conversation.id)),
+                workspace,
             ):
                 session_id = conversation.external_id
                 if not session_id:
@@ -805,65 +871,73 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         )
                     )
                     session_id = created.session_id
-                if deepseek_model is not None:
-                    select_payload: JsonObject = {
-                        "sessionId": session_id,
-                        "provider": self.config.provider,
-                        "model": deepseek_model,
-                    }
-                    reasoning_effort = (
-                        self.config.efforts.get(effort) if effort is not None else None
-                    )
-                    if reasoning_effort is not None:
-                        select_payload["reasoningEffort"] = reasoning_effort
-                    self.unwrap(
-                        await client.call("session.selectModel", select_payload),
-                        "session.selectModel",
-                    )
-                # No permission RPC exists: the preset switches through the
-                # remotes-plane command, which opens no turn.
-                executed = self.unwrap(
-                    await client.remote(
+                async with self.driving(session_id):
+                    if deepseek_model is not None:
+                        provider_id, separator, model_id = deepseek_model.partition(":")
+                        provider = provider_id if separator else self.default_provider
+                        if not separator:
+                            model_id = deepseek_model
+                        if provider is None:
+                            raise ValueError(
+                                "A DeepSeek model selection must include its provider"
+                            )
+                        select_payload: JsonObject = {
+                            "sessionId": session_id,
+                            "provider": provider,
+                            "model": model_id,
+                        }
+                        reasoning_effort = (
+                            self.effort_maps[f"{provider}:{model_id}"][effort]
+                            if effort is not None
+                            else None
+                        )
+                        if reasoning_effort is not None:
+                            select_payload["reasoningEffort"] = reasoning_effort
+                        self.unwrap(
+                            await client.call("session.selectModel", select_payload),
+                            "session.selectModel",
+                        )
+                    # No permission RPC exists: the preset switches through the
+                    # remotes-plane command, which opens no turn.
+                    executed = self.unwrap(
+                        await client.remote(
+                            "commands/execute",
+                            {
+                                "agentId": session_id,
+                                "line": f"/permission {permission_mode}",
+                            },
+                        ),
                         "commands/execute",
-                        {
-                            "agentId": session_id,
-                            "line": f"/permission {permission_mode}",
-                        },
-                    ),
-                    "commands/execute",
-                )
-                if executed is None:
-                    raise AgentRunError(
-                        "dsh has no /permission command, so the run's posture "
-                        f"({permission_mode}) cannot be set"
                     )
-                execution = CommandExecutionValue.model_validate(executed)
-                if execution.result is not None and execution.result.kind == "error":
-                    raise AgentRunError(
-                        f"dsh refused /permission {permission_mode}: "
-                        f"{execution.result.text or 'unknown preset'}"
-                    )
+                    if executed is None:
+                        raise AgentRunError(
+                            "dsh has no /permission command, so the run's posture "
+                            f"({permission_mode}) cannot be set"
+                        )
+                    execution = CommandExecutionValue.model_validate(executed)
+                    if (
+                        execution.result is not None
+                        and execution.result.kind == "error"
+                    ):
+                        raise AgentRunError(
+                            f"dsh refused /permission {permission_mode}: "
+                            f"{execution.result.text or 'unknown preset'}"
+                        )
 
-                # Subscribe before prompting, so the turn's first frames cannot
-                # slip between the prompt and the queue.
-                queue: asyncio.Queue[SessionEventFrame | StreamErrorFrame] = (
-                    asyncio.Queue()
-                )
-                self.subscribers[session_id] = queue
-                self.bridge_contexts[session_id] = DeepseekBridgeContext(
-                    conversation=conversation,
-                    conversation_address=conversation_address,
-                    run_name=run_name,
-                    session_allowed=set(conversation.allowed_tools),
-                    interactive=interactive,
-                )
-                prompted = False
-                # Claimed before the prompt goes out: the turn's hooks —
-                # `UserPromptSubmit` at pre-step, `Stop` inside turn-stopping,
-                # both ahead of the `turn/end` that ends this scope — must
-                # arrive claimed, or the native ingest would write this driven
-                # conversation a second time.
-                with self.session_ingest.driving(session_id):
+                    # Subscribe before prompting, so the turn's first frames cannot
+                    # slip between the prompt and the queue.
+                    queue: asyncio.Queue[SessionEventFrame | StreamErrorFrame] = (
+                        asyncio.Queue()
+                    )
+                    self.subscribers[session_id] = queue
+                    self.bridge_contexts[session_id] = DeepseekBridgeContext(
+                        conversation=conversation,
+                        conversation_address=conversation_address,
+                        run_name=run_name,
+                        session_allowed=set(conversation.allowed_tools),
+                        interactive=interactive,
+                    )
+                    prompted = False
                     try:
                         prompt_value = SessionPromptValue.model_validate(
                             self.unwrap(
@@ -900,6 +974,24 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                                         f"{frame.error.message}"
                                     )
                                     break
+                                if (
+                                    self.config.instrument
+                                    and frame.event.type != "assistant/chunk"
+                                    and (
+                                        accumulator.turn_started
+                                        or frame.event.type == "turn/start"
+                                    )
+                                ):
+                                    # dsh's native OTel backend exports logs, with no
+                                    # span exporter or inbound parent context. Keep
+                                    # events under this kick, not the shared mux task;
+                                    # see docs/agent-telemetry.md for checked releases.
+                                    deepseek_logfire.info(
+                                        "deepseek.event {event_type}",
+                                        event_type=frame.event.type,
+                                        session_id=session_id,
+                                        event=frame.event.model_dump(mode="json"),
+                                    )
                                 for event in accumulator.consume(frame):
                                     yield event
                     finally:
@@ -1055,20 +1147,22 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[str | RunOutputDataT]:
         result: AgentRunResult[str] | None = None
-        async for event in self._iter_events(
-            user_prompt,
-            conversation_address=conversation_address,
-            thread_id=thread_id,
-            source_thread_address=source_thread_address,
-            source_thread_message_ids=source_thread_message_ids,
-            run_name=run_name,
-            output_type=output_type,
-            model=model,
-            effort=effort,
-            conversation_id=conversation_id,
-            interactive=interactive,
-            instructions=instructions,
-            capabilities=capabilities,
+        async for event in self.observe_run(
+            self._iter_events(
+                user_prompt,
+                conversation_address=conversation_address,
+                thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=source_thread_message_ids,
+                run_name=run_name,
+                output_type=output_type,
+                model=model,
+                effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
+                instructions=instructions,
+                capabilities=capabilities,
+            )
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -1168,19 +1262,21 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
         return ReactEventStream(
-            self._iter_events(
-                user_prompt,
-                conversation_address=conversation_address,
-                thread_id=thread_id,
-                source_thread_address=source_thread_address,
-                source_thread_message_ids=source_thread_message_ids,
-                run_name=run_name,
-                output_type=output_type,
-                model=model,
-                effort=effort,
-                conversation_id=conversation_id,
-                interactive=interactive,
-                instructions=instructions,
-                capabilities=capabilities,
+            self.observe_run(
+                self._iter_events(
+                    user_prompt,
+                    conversation_address=conversation_address,
+                    thread_id=thread_id,
+                    source_thread_address=source_thread_address,
+                    source_thread_message_ids=source_thread_message_ids,
+                    run_name=run_name,
+                    output_type=output_type,
+                    model=model,
+                    effort=effort,
+                    conversation_id=conversation_id,
+                    interactive=interactive,
+                    instructions=instructions,
+                    capabilities=capabilities,
+                )
             )
         )

@@ -35,7 +35,7 @@ answers were tried.
 config lookup would be an entity without a need.~~
 
 **Superseded 2026-08-04:** the registry is a DB-backed `ProjectManager` seeded from
-YAML, mirroring `UserManager`. Decided in the comments.
+YAML. Decided in the comments.
 ```
 
 Strike only what stopped being true. A paragraph that is half wrong gets the wrong half

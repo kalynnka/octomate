@@ -39,8 +39,8 @@ thread — not a human chat log. The user-facing chat ledger is the `Thread` /
 
 | Schema        | Type                | Direction             | Summary                                                        |
 | ------------- | ------------------- | --------------------- | -------------------------------------------------------------- |
-| `User`        | Persisted transmuter | internal              | YAML-declared human with a stable username                     |
-| `UserProfile` | Persisted transmuter | IM → Tentacle → Agent | Channel profile; optionally owned by a registered YAML user    |
+| `User`        | Persisted transmuter | internal              | Registered human with a stable username                     |
+| `UserProfile` | Persisted transmuter | IM → Tentacle → Agent | Channel profile; optionally owned by a registered user    |
 
 ### project.py
 

@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from octomate.config.mirrors import MirrorsConfig
+from octomate.managers.base import Locks, Manager
 from octomate.managers.workspaces.dependencies import install
 from octomate.schemas.project import Project, RemoteUpstream
 
@@ -51,7 +52,7 @@ async def run_git(
     return stdout.decode(errors="replace")
 
 
-class MirrorManager:
+class MirrorManager(Manager, Locks[str]):
     """Every project's mirror: a pristine git checkout at ``mirrors_dir/<project>``,
     made from the project's upstream and kept current by syncing from it.
 
@@ -72,7 +73,6 @@ class MirrorManager:
     ) -> None:
         self.config = config if config is not None else MirrorsConfig()
         self.mirrors_dir = mirrors_dir
-        self.locks: dict[str, asyncio.Lock] = {}
         self.synced: dict[str, float] = {}
 
     def path(self, project: Project | None = None) -> Path:
@@ -115,7 +115,7 @@ class MirrorManager:
         # for the sync that made it.
         missing = not self.path(project).is_dir()
         path = await self.create(project)
-        async with self.locks.setdefault(project.name, asyncio.Lock()):
+        async with self.lock(project.name):
             if missing:
                 self.synced[project.name] = time.monotonic()
                 await install(path)
@@ -155,7 +155,7 @@ class MirrorManager:
         is cancelled removes what it left before the error travels on.
         """
         path = self.path(project)
-        async with self.locks.setdefault(self.name(project), asyncio.Lock()):
+        async with self.lock(self.name(project)):
             if path.is_dir():
                 return path
             self.mirrors_dir.mkdir(parents=True, exist_ok=True)

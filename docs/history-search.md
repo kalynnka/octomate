@@ -78,7 +78,7 @@ uv run pytest -q \
   tests/agent/test_history.py \
   tests/agent/test_thread_manager.py \
   tests/agent/test_gateway_tools.py \
-  tests/test_deployment.py
+  tests/cli/test_deployment.py
 uv run pytest -q
 ```
 
@@ -93,8 +93,8 @@ Back up the configured SQLite database and stop the backend before applying a pe
 migration. For a disposable development database, migrate and start the two services:
 
 ```bash
-uv run alembic upgrade head
-uv run octomate serve --reload
+uv run alembic -c octomate/migrations/alembic.ini upgrade head
+uv run octomate service serve --reload
 ```
 
 In another terminal:

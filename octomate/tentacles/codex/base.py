@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 import uuid
@@ -9,8 +10,10 @@ from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
+from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
+from types import TracebackType
 from typing import (
     TYPE_CHECKING,
     ClassVar,
@@ -21,6 +24,7 @@ from typing import (
     overload,
 )
 
+import anyio
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
@@ -36,11 +40,14 @@ from octomate_protocol.stream import (
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
 from openai_codex._sandbox import _sandbox_mode
 from openai_codex.api import ApprovalMode, Sandbox
+from openai_codex.async_client import AsyncCodexClient
 from openai_codex.client import CodexClient
 from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApproval,
     AskForApprovalValue,
+    ConfigReadResponse,
+    ModelListResponse,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
@@ -77,11 +84,12 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import CodexConfig
+from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
+from octomate.managers.auth import AuthManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
+from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -95,19 +103,21 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
-from octomate.telemetry import agent_input_message_attributes, codex_logfire
+from octomate.telemetry import (
+    agent_input_message_attributes,
+    codex_logfire,
+    octomate_trace_environment,
+)
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.codex.adapter import (
     CODEX_PROVIDER_NAME,
     CodexRunAccumulator,
     json_object_adapter,
 )
-from octomate.tentacles.codex.hooks import (
-    DRIVEN_ENV,
-    CodexHookInput,
-)
+from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
+from octomate.tentacles.codex.telemetry import TracedCodexClient
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -177,8 +187,7 @@ NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
 # How a driven turn's Codex process is told to reach Octomate's MCP server: the
 # launch config names these variables, and `new_client` fills them per conversation,
 # so the identity the header asserts is the launch config's and never the model's.
-# The token is the kicking user's own secret — the turn speaks as the human it
-# represents, and a kicker carrying none gets no wiring at all.
+# A temporary MCP API token represents the kicking user for this client.
 MCP_TOKEN_ENV = "OCTOMATE_MCP_TOKEN"
 MCP_CONVERSATION_ENV = "OCTOMATE_MCP_CONVERSATION"
 
@@ -186,16 +195,14 @@ MCP_CONVERSATION_ENV = "OCTOMATE_MCP_CONVERSATION"
 @dataclass
 class PooledCodexClient:
     client: AsyncCodex
+    resources: contextlib.AsyncExitStack
     # The live SDK thread handle for this Octomate thread; created on first turn and
     # reused so later turns continue the same Codex thread on the warm process.
     thread: AsyncThread | None = None
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
-    # The kicker's bearer this client's MCP wiring was launched with — None for
-    # no wiring. A turn wanting otherwise evicts and rebuilds, since launch config
-    # is fixed at process start.
-    mcp_bearer: SecretStr | None = None
+    api_key: IssuedApiKey | None = field(default=None, repr=False)
 
 
 class CodexClientPool:
@@ -213,22 +220,32 @@ class CodexClientPool:
         self,
         *,
         build: Callable[[uuid.UUID, SecretStr | None], AsyncCodex],
+        auth: AuthManager | None,
         max_clients: int | None,
         idle_ttl: float | None,
     ) -> None:
         self.build = build
+        self.auth: AuthManager | None = auth
         self.max_clients = max_clients
         self.idle_ttl = idle_ttl
         self.clients: OrderedDict[uuid.UUID, PooledCodexClient] = OrderedDict()
         self.lock = asyncio.Lock()
 
     async def acquire(
-        self, conversation_id: uuid.UUID, *, mcp_bearer: SecretStr | None = None
+        self, conversation_id: uuid.UUID, *, user_id: uuid.UUID | None = None
     ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
             pooled = self.clients.get(conversation_id)
-            if pooled is not None and pooled.mcp_bearer != mcp_bearer:
+            if pooled is not None and (
+                (pooled.api_key.key.user_id if pooled.api_key is not None else None)
+                != user_id
+                or (
+                    pooled.api_key is not None
+                    and pooled.api_key.key.expires_at is not None
+                    and pooled.api_key.key.expires_at <= datetime.now(UTC)
+                )
+            ):
                 # Launch config is fixed at process start, so a turn whose MCP
                 # wiring disagrees gets a fresh process; the Codex thread itself
                 # survives, resumed from the conversation's external id.
@@ -238,13 +255,32 @@ class CodexClientPool:
                         "client whose MCP wiring disagrees with this turn's"
                     )
                 del self.clients[conversation_id]
-                await self.close(pooled)
+                await pooled.resources.aclose()
                 pooled = None
             if pooled is None:
-                client = self.build(conversation_id, mcp_bearer)
-                await client.__aenter__()
-                pooled = PooledCodexClient(client=client, mcp_bearer=mcp_bearer)
-                self.clients[conversation_id] = pooled
+                async with contextlib.AsyncExitStack() as resources:
+                    api_key = None
+                    if user_id is not None and self.auth is not None:
+                        api_key = await self.auth.create_api_key(
+                            user_id,
+                            name=f"Codex {conversation_id}",
+                            scopes=["mcp"],
+                            expires_at=datetime.now(UTC)
+                            + self.auth.config.runtime_api_key_lifetime,
+                        )
+                        resources.push_async_callback(
+                            self.auth.revoke_api_key, user_id, api_key.key.id
+                        )
+                    client = self.build(
+                        conversation_id, api_key.token if api_key is not None else None
+                    )
+                    resources.push_async_exit(client)
+                    pooled = PooledCodexClient(
+                        client=client,
+                        resources=resources.pop_all(),
+                        api_key=api_key,
+                    )
+                    self.clients[conversation_id] = pooled
             self.clients.move_to_end(conversation_id)
             pooled.in_use += 1
             pooled.last_used = time.monotonic()
@@ -266,7 +302,7 @@ class CodexClientPool:
             pooled = self.clients[conversation_id]
             if pooled.in_use == 0 and pooled.last_used < cutoff:
                 del self.clients[conversation_id]
-                await self.close(pooled)
+                await pooled.resources.aclose()
 
     async def evict_over_cap(self) -> None:
         if self.max_clients is None:
@@ -279,21 +315,14 @@ class CodexClientPool:
             pooled = self.clients[conversation_id]
             if pooled.in_use == 0:
                 del self.clients[conversation_id]
-                await self.close(pooled)
+                await pooled.resources.aclose()
 
     async def aclose(self) -> None:
         async with self.lock:
             pooled_clients = list(self.clients.values())
             self.clients.clear()
         for pooled in pooled_clients:
-            await self.close(pooled)
-
-    @staticmethod
-    async def close(pooled: PooledCodexClient) -> None:
-        # Pair the `__aenter__` done in `acquire` with the SDK's own `__aexit__`
-        # teardown, so client init and shutdown stay explicit and matched.
-        with contextlib.suppress(Exception):
-            await pooled.client.__aexit__(None, None, None)
+            await pooled.resources.aclose()
 
 
 @dataclass
@@ -344,10 +373,12 @@ class CodexTentacle(AgentTentacle[str, None]):
     """
 
     config: CodexConfig = field(init=False)
+    provider: str = field(init=False)
     pool: CodexClientPool | None = field(default=None, init=False, repr=False)
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
     )
+    conversation_locks: SessionLocks = field(default_factory=SessionLocks, init=False)
     bridge_contexts: dict[uuid.UUID, CodexBridgeContext] = field(
         default_factory=dict, init=False
     )
@@ -355,6 +386,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     # Codex approvals/questions are answered in-process through SDK callbacks while
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
+    native_id: ClassVar[str] = CODEX_NATIVE_ID
 
     permission_modes: ClassVar[tuple[str, ...]] = get_args(CodexPermissionMode)
 
@@ -383,16 +415,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.description = description or self.description
         self.pool = None
         self.live_turns = {}
+        self.conversation_locks = SessionLocks()
         self.bridge_contexts = {}
         self.pending = {}
-        # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
-        # runtime's own narrower literal, and `Mapping`'s key is invariant — only the
-        # comprehension widens them to `AgentRouteModelName` without a cast.
-        self.claims = {  # noqa: C416
-            model: claim for model, claim in config.claims.items()
-        }
+        self.claims = dict(config.claims)
         self.gateway = config.gateway
-        self.models = {model: model for model in config.models}
+        self.models = {}
+        self.provider = "openai"
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
             self.octomate.conversations,
@@ -418,8 +447,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         the same 401 before any socket opens. Each route takes `hook_sender` — the
         verified bearer resolved to their own profile, on the guard's single
         per-request check — as the ledger's principal."""
-        verifier = hook_guard(self.octomate.bearers, self.id)
-        resolve_sender = hook_sender(self.octomate.users, CODEX_NATIVE_ID, verifier)
+        verifier = hook_guard(self.octomate.bearers)
+        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
         router = APIRouter(tags=["codex"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/codex", summary="Codex native-session hook pipe")
@@ -430,7 +459,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             # fine with `str`), so the rule bends rather than the checked type.
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
-            await self.session_ingest.handle(event, sender)
+            if self.should_ingest_session(event.session_id):
+                await self.session_ingest.handle(event, sender)
             return JSONResponse({})
 
         @router.websocket("/hooks/codex/stream")
@@ -443,13 +473,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         return router
 
     async def stream_session(self, websocket: WebSocket, sender: UserProfile) -> None:
-        """One remote tail's connection, up to its attach: take the hello and refuse
-        what cannot stream — a stale protocol loudly (the session still degrades to
-        hooks-only ingest), and a session this tentacle is driving itself, whose
-        rollout ingested here would write the conversation a second time
-        (`CodexHookIngest.driving`). Authentication already happened at the
-        handshake, and `sender` is the verified bearer's own profile — whose
-        ledger this stream writes."""
+        """Validate the remote tail's protocol and attach it as an external session.
+
+        `sender` is the verified bearer's profile, resolved at the handshake,
+        whose ledger this stream writes.
+        """
         await websocket.accept()
         try:
             hello = client_message_adapter.validate_json(await websocket.receive_text())
@@ -468,11 +496,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        if hello.session_id in self.session_ingest.driven:
+        if not self.should_ingest_session(hello.session_id):
             await websocket.close(code=1008, reason="octomate drives this session")
             return
-        # Its own materia context: a stream outlives any request, like a follow loop.
-        with sqlalchemy_materia():
+        async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
 
     async def stream_attached(
@@ -502,7 +529,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             holder = self.octomate.projects.resolve(Path(hello.cwd))
             project = self.octomate.projects.get(holder) if holder is not None else None
         await self.octomate.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "thread", hello.session_id),
+            ThreadKey(self.native_id, "thread", hello.session_id),
             project=project,
         )
         state, offsets = await self.session_tailer.attach_remote(
@@ -577,17 +604,83 @@ class CodexTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await websocket.close()
 
+    @property
+    def default_model(self) -> None:
+        # Omission lets Codex resolve settings and an existing thread's selection.
+        return None
+
+    async def discover_models(self) -> None:
+        runtime = replace(
+            self.config.runtime,
+            config_overrides=(
+                *self.config.runtime.config_overrides,
+                f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=false",
+            ),
+        )
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        async with AsyncCodexClient(config=runtime) as client:
+            await client.initialize()
+            settings = await client.request(
+                "config/read",
+                {"includeLayers": False},
+                response_model=ConfigReadResponse,
+            )
+            provider = settings.config.model_provider or "openai"
+            cursor: str | None = None
+            while True:
+                page = await client.request(
+                    "model/list",
+                    {"includeHidden": False, "cursor": cursor},
+                    response_model=ModelListResponse,
+                )
+                for model in page.data:
+                    if model.hidden:
+                        continue
+                    key = f"{provider}:{model.model}"
+                    configured = self.config.claims.get(key)
+                    supported = {
+                        option.reasoning_effort.value
+                        for option in model.supported_reasoning_efforts
+                    }
+                    models[key] = model.model
+                    claims[key] = Claim(
+                        model.description
+                        or (configured.ability if configured else model.display_name),
+                        tuple(
+                            effort for effort in ThinkingEfforts if effort in supported
+                        ),
+                    )
+                cursor = page.next_cursor
+                if cursor is None:
+                    break
+        if not models:
+            raise ValueError("Codex advertised no available models")
+        self.set_model_catalog(models, claims)
+        self.provider = provider
+
     async def __aenter__(self) -> CodexTentacle:
+        await self.discover_models()
+
         # Only the pool is tentacle-wide shared state; each conversation's Codex
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
         def new_client(
             conversation_id: uuid.UUID, mcp_bearer: SecretStr | None
         ) -> AsyncCodex:
-            env = {**(self.config.runtime.env or {}), DRIVEN_ENV: "1"}
+            env = dict(self.config.runtime.env or {})
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
             overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
+            if self.config.instrument:
+                trace_environment = octomate_trace_environment()
+                if trace_environment is not None:
+                    env.update(trace_environment.as_env())
+                    overrides += (
+                        "otel.trace_exporter.otlp-http.endpoint="
+                        + json.dumps(trace_environment.endpoint),
+                        'otel.trace_exporter.otlp-http.protocol="binary"',
+                    )
             if mcp_bearer is not None:
                 env[MCP_TOKEN_ENV] = mcp_bearer.get_secret_value()
                 env[MCP_CONVERSATION_ENV] = str(conversation_id)
@@ -605,7 +698,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             def handler(method: str, params: JsonObject | None) -> JsonObject:
                 return self.handle_sdk_request(conversation_id, method, params)
 
-            client._client._sync = CodexClient(
+            client_type = TracedCodexClient if self.config.instrument else CodexClient
+            client._client._sync = client_type(
                 config=runtime,
                 approval_handler=handler,
             )
@@ -613,10 +707,11 @@ class CodexTentacle(AgentTentacle[str, None]):
 
         self.pool = CodexClientPool(
             build=new_client,
+            auth=self.octomate.auth,
             max_clients=self.config.max_clients,
             idle_ttl=self.config.client_idle_ttl,
         )
-        return self
+        return await super().__aenter__()
 
     def thread_config(self, mcp_bearer: SecretStr | None) -> JsonObject:
         # Thread config is the app-server's in-place overlay for a driven run. It
@@ -632,12 +727,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 }
             }
         deployment = self.octomate.config
-        if deployment is None:
-            raise RuntimeError(
-                "this turn's Octomate session is registered, but the host cannot "
-                "name the served MCP endpoint to wire it to: Octomate.config must "
-                "be set"
-            )
         url = URL(
             scheme="http",
             host="127.0.0.1"
@@ -658,20 +747,32 @@ class CodexTentacle(AgentTentacle[str, None]):
             }
         }
 
-    async def __aexit__(self, *exc: object) -> None:
-        await self.session_tailer.shutdown()
-        for turn in list(self.live_turns.values()):
-            with contextlib.suppress(Exception):
-                await turn.interrupt()
-        self.live_turns.clear()
-        self.bridge_contexts.clear()
-        for future in list(self.pending.values()):
-            if not future.done():
-                future.cancel()
-        self.pending.clear()
-        if self.pool is not None:
-            await self.pool.aclose()
-            self.pool = None
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        await super().__aexit__(exc_type, exc_value, traceback)
+        cancelled = False
+        with anyio.CancelScope(shield=True):
+            draining = asyncio.gather(*self.run_tasks)
+            while not draining.done():
+                try:
+                    await asyncio.shield(draining)
+                except asyncio.CancelledError:
+                    cancelled = True
+            await self.session_tailer.shutdown()
+            self.bridge_contexts.clear()
+            for future in list(self.pending.values()):
+                if not future.done():
+                    future.cancel()
+            self.pending.clear()
+            if self.pool is not None:
+                await self.pool.aclose()
+                self.pool = None
+        if cancelled:
+            raise asyncio.CancelledError
 
     async def _await_human(
         self,
@@ -1073,6 +1174,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        sdk_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if self.pool is None:
@@ -1086,7 +1188,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.agent_tentacle_id != self.id
                 or conversation.thread_id != thread_id
@@ -1099,6 +1203,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             conversation = await self.octomate.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
+                with_history=False,
             )
         if deferred_tool_results is not None:
             # A resumed run. The app-server takes no tool result back, so the graph's
@@ -1117,13 +1222,6 @@ class CodexTentacle(AgentTentacle[str, None]):
         else:
             output_adapter = None
             output_schema: JsonObject | None = None
-
-        if isinstance(model, Model):
-            sdk_model = model.model_name
-        elif isinstance(model, str):
-            sdk_model = model
-        else:
-            sdk_model = None
 
         if isinstance(user_prompt, str):
             prompt_text = user_prompt
@@ -1206,23 +1304,28 @@ class CodexTentacle(AgentTentacle[str, None]):
             # Entered here so the tree exists before a turn is dispatched into it,
             # and a chat thread's is thrown away when the run leaves — after the
             # client is back in the pool, which is why the pool sits inside it.
-            async with workspace:
-                # Registered by the react node for exactly the turns whose connection
-                # has the gateway; an accomplice's or a stray conversation is not
-                # there. The wiring carries the kicker's own credential, so a turn
-                # whose kicker is unregistered or carries no secret launches clean,
-                # with the spells withheld.
+            async with (
+                self.conversation_locks.hold(str(conversation.id)),
+                workspace,
+            ):
                 session = self.octomate.gateway.get(conversation.id)
-                mcp_bearer = (
-                    await self.octomate.users.secret_of(session.user_profile)
+                user_id = (
+                    session.user_profile.user_id
                     if session is not None
+                    and session.user_profile is not None
+                    and self.octomate.auth is not None
                     else None
                 )
-                thread_config = self.thread_config(mcp_bearer)
-                pooled = await self.pool.acquire(conversation.id, mcp_bearer=mcp_bearer)
+                pooled = await self.pool.acquire(conversation.id, user_id=user_id)
+                thread_config = self.thread_config(
+                    pooled.api_key.token if pooled.api_key is not None else None
+                )
                 try:
                     codex_thread = pooled.thread
                     if codex_thread is None:
+                        # SDK startup can wait on network I/O. Enter after acquiring
+                        # the lease so it cannot hold up other conversations' clients.
+                        await pooled.client.__aenter__()
                         if conversation.external_id:
                             codex_thread = await self.resume_codex_thread(
                                 pooled.client,
@@ -1233,7 +1336,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 cwd=run_cwd,
                                 developer_instructions=developer_instructions,
                                 model=sdk_model,
-                                model_provider=self.config.model_provider,
+                                model_provider=self.provider
+                                if sdk_model is not None
+                                else None,
                                 personality=personality,
                                 sandbox=sandbox,
                             )
@@ -1247,21 +1352,23 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 developer_instructions=developer_instructions,
                                 ephemeral=self.config.ephemeral,
                                 model=sdk_model,
-                                model_provider=self.config.model_provider,
+                                model_provider=self.provider
+                                if sdk_model is not None
+                                else None,
                                 personality=personality,
                                 sandbox=sandbox,
                             )
                         pooled.thread = codex_thread
                     codex_thread_id = codex_thread.id
-                    self.bridge_contexts[conversation.id] = CodexBridgeContext(
-                        loop=asyncio.get_running_loop(),
-                        conversation=conversation,
-                        conversation_address=conversation_address,
-                        run_name=run_name,
-                        session_allowed=set(conversation.allowed_tools),
-                    )
-                    try:
-                        with self.session_ingest.driving(codex_thread.id):
+                    async with self.driving(codex_thread_id):
+                        self.bridge_contexts[conversation.id] = CodexBridgeContext(
+                            loop=asyncio.get_running_loop(),
+                            conversation=conversation,
+                            conversation_address=conversation_address,
+                            run_name=run_name,
+                            session_allowed=set(conversation.allowed_tools),
+                        )
+                        try:
                             # No `sandbox=` here. The thread already carries the
                             # mode, and a turn's is sent as a whole policy built
                             # from the SDK's defaults — which would stamp
@@ -1277,11 +1384,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                                 personality=personality,
                                 summary=summary,
                             )
-                            previous = self.live_turns.get(conversation.id)
                             self.live_turns[conversation.id] = turn
-                            if previous is not None and previous is not turn:
-                                with contextlib.suppress(Exception):
-                                    await previous.interrupt()
                             interrupted = False
                             try:
                                 async for notification in turn.stream():
@@ -1303,8 +1406,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                             finally:
                                 if self.live_turns.get(conversation.id) is turn:
                                     self.live_turns.pop(conversation.id, None)
-                    finally:
-                        self.bridge_contexts.pop(conversation.id, None)
+                        finally:
+                            self.bridge_contexts.pop(conversation.id, None)
                 finally:
                     await self.pool.release(conversation.id)
 
@@ -1478,22 +1581,24 @@ class CodexTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> AgentRunResult[str | RunOutputDataT]:
         result: AgentRunResult[str] | None = None
-        async for event in self._iter_events(
-            user_prompt,
-            conversation_address=conversation_address,
-            thread_id=thread_id,
-            source_thread_address=source_thread_address,
-            source_thread_message_ids=source_thread_message_ids,
-            run_name=run_name,
-            output_type=output_type,
-            model=model,
-            effort=effort,
-            conversation_id=conversation_id,
-            interactive=interactive,
-            instructions=instructions,
-            capabilities=capabilities,
-            deferred_tool_results=deferred_tool_results,
-            deferred_suspender=deferred_suspender,
+        async for event in self.observe_run(
+            self._iter_events(
+                user_prompt,
+                conversation_address=conversation_address,
+                thread_id=thread_id,
+                source_thread_address=source_thread_address,
+                source_thread_message_ids=source_thread_message_ids,
+                run_name=run_name,
+                output_type=output_type,
+                model=model,
+                effort=effort,
+                conversation_id=conversation_id,
+                interactive=interactive,
+                instructions=instructions,
+                capabilities=capabilities,
+                deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
+            )
         ):
             if isinstance(event, AgentRunResultEvent):
                 result = event.result
@@ -1595,21 +1700,23 @@ class CodexTentacle(AgentTentacle[str, None]):
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
         return ReactEventStream(
-            self._iter_events(
-                user_prompt,
-                conversation_address=conversation_address,
-                thread_id=thread_id,
-                source_thread_address=source_thread_address,
-                source_thread_message_ids=source_thread_message_ids,
-                run_name=run_name,
-                output_type=output_type,
-                model=model,
-                effort=effort,
-                conversation_id=conversation_id,
-                interactive=interactive,
-                instructions=instructions,
-                capabilities=capabilities,
-                deferred_tool_results=deferred_tool_results,
-                deferred_suspender=deferred_suspender,
+            self.observe_run(
+                self._iter_events(
+                    user_prompt,
+                    conversation_address=conversation_address,
+                    thread_id=thread_id,
+                    source_thread_address=source_thread_address,
+                    source_thread_message_ids=source_thread_message_ids,
+                    run_name=run_name,
+                    output_type=output_type,
+                    model=model,
+                    effort=effort,
+                    conversation_id=conversation_id,
+                    interactive=interactive,
+                    instructions=instructions,
+                    capabilities=capabilities,
+                    deferred_tool_results=deferred_tool_results,
+                    deferred_suspender=deferred_suspender,
+                )
             )
         )

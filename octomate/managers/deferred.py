@@ -8,6 +8,7 @@ from arcanus.materia.sqlalchemy import noload
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.database import async_session
+from octomate.managers.base import Manager
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -22,7 +23,7 @@ from octomate.telemetry import deferred_logfire
 from octomate.types.deferred import DeferredBatchStatus
 
 
-class DeferredActionManager:
+class DeferredActionManager(Manager):
     async def create_batch(
         self,
         *,

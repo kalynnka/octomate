@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncIterator, Iterable, Sequence
+from collections.abc import AsyncGenerator, Iterable, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass
 
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
@@ -95,15 +96,14 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
         state.decision = decision
         agent = ctx.deps.agent(resolved.agent)
-        run_model = agent.models.get(model)
-        if run_model is None:
-            raise ValueError(f"agent {agent.id!r} has no configured model {model!r}")
+        run_model = agent.models[model] if model is not None else None
         thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:
             target_conversation = await ctx.deps.conversation_manager.ensure(
                 state.thread.id,
                 agent_tentacle_id=agent.id,
+                with_history=False,
             )
             # A handoff pins who owns the chat, so it is read and written there: a
             # chat room's sub-thread is new every kick and would forget the owner.
@@ -195,7 +195,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             assistant_replies_bound = False
             if target_channel.config.stream.enabled:
 
-                async def stream_events() -> AsyncIterator[
+                async def stream_events() -> AsyncGenerator[
                     StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                 ]:
                     async with agent.run_stream_events(
@@ -262,7 +262,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         with target_channel.feelers.driving(
                             target_address, timeline_state
                         ):
-                            await timeline_state.drive(stream_events())
+                            async with aclosing(stream_events()) as events:
+                                await timeline_state.drive(events)
                 except AgentRunError:
                     # A model/provider failure (e.g. invalid Bedrock credentials)
                     # surfaces here from the run stream itself, not the render. It

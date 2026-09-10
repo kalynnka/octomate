@@ -3,14 +3,13 @@ from __future__ import annotations
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships, Transmuter
 from arcanus.base import Identity
 from arcanus.dataclass import dataclass as arcanus_dataclass
 from pydantic import (
-    AfterValidator,
+    AwareDatetime,
     ConfigDict,
     Field,
     model_validator,
@@ -51,18 +50,6 @@ dataclass_config = ConfigDict(
     validate_by_name=True,
     validate_by_alias=True,
 )
-
-
-def native_utc(value: datetime | None) -> datetime | None:
-    if value is not None and value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value
-
-
-# Every timestamp in the tree is written as UTC, and SQLite hands it back with the
-# tzinfo stripped. Reads that leave the process — the console's JSON — would then be
-# parsed as local time, so the annotation restores what the column already means.
-UtcDateTime = Annotated[datetime, AfterValidator(native_utc)]
 
 
 def _user_prompt_text(content: str | Sequence[UserContent]) -> str:
@@ -107,7 +94,7 @@ class ModelMessage(BaseTransmuter, ABC):
 @arcanus_dataclass(config=dataclass_config)
 class ModelRequest(Transmuter, PydanticModelRequest):
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    timestamp: Annotated[datetime, AfterValidator(native_utc)] | None = None
+    timestamp: AwareDatetime | None = None
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
@@ -136,9 +123,7 @@ class ModelRequest(Transmuter, PydanticModelRequest):
 @arcanus_dataclass(config=dataclass_config)
 class ModelResponse(Transmuter, PydanticModelResponse):
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    timestamp: Annotated[datetime, AfterValidator(native_utc)] = Field(
-        default_factory=now_utc
-    )
+    timestamp: AwareDatetime = Field(default_factory=now_utc)
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None

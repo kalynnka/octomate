@@ -1,4 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
+import { fetchApiKeys } from './auth'
 import { api } from './index'
 
 export const useChannels = () =>
@@ -31,3 +32,6 @@ export const usePermissionModes = () =>
     queryFn: api.permissionModes,
     staleTime: 60_000,
   })
+
+/** The signed-in account's API keys, revoked ones included. */
+export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: fetchApiKeys })
