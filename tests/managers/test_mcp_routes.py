@@ -12,7 +12,7 @@ from octomate.schemas.user import User
 from tests.agent.test_mcp import ENCRYPTION_KEY
 from tests.support.users import auth_config
 
-URL = "/api/mcp/instances"
+URL = "/api/mcp"
 REQUEST = {
     "name": "My search",
     "namespace": "search",

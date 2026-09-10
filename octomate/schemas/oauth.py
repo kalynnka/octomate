@@ -68,6 +68,7 @@ class OAuthFlowContext:
     user: User
     profile: UserProfile | None
     mcp_id: uuid.UUID | None = None
+    interval_seconds: int | None = None  # Current device polling interval.
 
 
 class McpOAuthState(BaseModel):

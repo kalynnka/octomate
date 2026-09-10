@@ -1,21 +1,12 @@
-"""Linking a person's accounts as MCP: the one place a runtime asks for an
-authorization link, whichever provider's tools it was after.
+"""Authorize the current user's installed MCP by its personal namespace.
 
-A provider that acts as the person takes their own token and nothing else, so
-its tools are listed only to a person who has linked their account; this family
-is how the link happens. A provider is a tentacle, and `connect` names it by its
-id — the connector its tokens live under — takes the person the turn is for from
-the session, and sends the authorization as a card to the person's direct
-messages on the channel the turn is on, never through the return value the model
-reads: a link, or for a device flow a link and a code. `confirm` reports whether
-it went through — and for a device flow, finishes it, since the provider only
-tells once asked.
+Authorization links and device codes go to the user's direct messages.
+The model receives status only; device flows finish through `confirm`.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -27,7 +18,6 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
-from octomate.managers.oauth import NoPendingAuthorization
 from octomate.schemas.mcp import (
     McpAuthorizationStatus,
     McpBrowserAuthorizationPending,
@@ -36,74 +26,23 @@ from octomate.schemas.mcp import (
 )
 from octomate.schemas.oauth import (
     AuthorizationLink,
-    DeviceOAuthFlow,
-    OAuthPending,
 )
 from octomate.schemas.user import User, UserProfile
-
-if TYPE_CHECKING:
-    # The tentacle component imports this module for the served tool names it
-    # tells a refused caller; only the type is needed back.
-    from octomate.tentacles.mcp import OAuthMcpTentacle
 
 # The family's namespace on the server, and its two tools' served names under it.
 OAUTH_NAMESPACE = "oauth"
 CONNECT_TOOL = f"{OAUTH_NAMESPACE}_connect"
 CONFIRM_TOOL = f"{OAUTH_NAMESPACE}_confirm"
 
-# Which provider a call is about. The deployment's own ids are in the tool
-# descriptions, which are composed at mount time; the schema stays constant.
-ProviderId = Annotated[
-    str, Field(description="The provider's id, as the instructions list them.")
-]
-
-# The linking contract every provider shares, templated only where a tool or a
-# provider is named.
-OAUTH_INSTRUCTION_TEMPLATE = """\
-## Linking accounts
-
-A provider's tools — {labels} — act as the person who linked their account.
-When discovery or a call is refused for a missing connection,
-call `{connect}` with the provider's id ({ids}),
-then tell the person the link — and the code, where a provider asks them to type
-one — is in their direct messages; you are not given either and cannot repeat or
-rebuild them. Opening the link and approving is the whole of it. `{confirm}` says
-whether it went through — call it once the person says they have approved, since
-a provider that gave them a code reports only when asked — and the tools are
-available through namespace discovery once the connection is confirmed.
-"""
-
-
-def oauth_instructions(tentacles: Sequence[OAuthMcpTentacle]) -> str:
-    """The linking instruction for `tentacles`, the ones the server links."""
-    return OAUTH_INSTRUCTION_TEMPLATE.format(
-        labels=", ".join(dict.fromkeys(tentacle.label for tentacle in tentacles)),
-        ids=", ".join(f"`{tentacle.id}`" for tentacle in tentacles),
-        connect=CONNECT_TOOL,
-        confirm=CONFIRM_TOOL,
-    )
+ProviderId = Annotated[str, Field(description="The user's installed MCP namespace.")]
 
 
 def mount_oauth(
     mcp: FastMCP,
     octomate_session: OctomateSession,
-    tentacles: Sequence[OAuthMcpTentacle],
     manager: McpManager,
 ) -> None:
-    """Register the link tools on `mcp` for `tentacles`, the ones the server
-    links, every call resolved through `octomate_session` to the turn it belongs
-    to."""
-    mapping = {tentacle.id: tentacle for tentacle in tentacles}
-    ids = ", ".join(f"`{id}`" for id in mapping)
-
-    def named(provider: str) -> OAuthMcpTentacle:
-        tentacle = mapping.get(provider)
-        if tentacle is None:
-            raise ToolError(
-                f"No provider with id {provider!r} is linked here; the providers "
-                f"are {ids}."
-            )
-        return tentacle
+    """Authorize installed MCPs for the person identified by the current session."""
 
     async def identity(session: OctomateSession) -> tuple[User, UserProfile]:
         if session.user_profile is None:
@@ -125,8 +64,8 @@ def mount_oauth(
     @mcp.tool(
         name="connect",
         description=(
-            f"Send this user a link that authorizes their own account with a "
-            f"provider — one of {ids}, or a personal MCP namespace. The link, and a code where the provider asks "
+            "Send this user a link that authorizes their own account with a "
+            "provider identified by its installed MCP namespace. The link, and a code where the provider asks "
             "for one, go to their direct messages, never to the conversation, and "
             "are not returned here."
         ),
@@ -146,21 +85,12 @@ def mount_oauth(
                 "The link goes to the person's direct messages on the channel "
                 "this turn is on, and this call has no turn on a channel."
             )
-        if provider.startswith("personal/"):
-            instance = await personal(provider, user)
-            try:
-                authorization = await manager.connect(
-                    user, instance.id, profile=profile
-                )
-            except McpUnavailable as error:
-                raise ToolError(str(error)) from error
-            label = instance.name
-        else:
-            tentacle = named(provider)
-            authorization = await tentacle.octomate.oauth.start(
-                user, tentacle.id, profile=profile
-            )
-            label = tentacle.label
+        instance = await personal(provider, user)
+        try:
+            authorization = await manager.connect(user, instance.id, profile=profile)
+        except McpUnavailable as error:
+            raise ToolError(str(error)) from error
+        label = instance.name
         # The authorization goes to the channel as an event of its own, for the
         # channel to present — never through this return value, which the model
         # reads and could repeat into a reply.
@@ -187,70 +117,20 @@ def mount_oauth(
 
     @mcp.tool(
         name="confirm",
-        description=(
-            f"Report whether this user's connection with a provider — one of "
-            f"{ids}, or a personal MCP namespace — has finished, finishing it where the provider waits to be "
-            "asked."
-        ),
+        description="Check authorization for a user's installed MCP namespace, polling when required.",
     )
     async def confirm(
         provider: ProviderId, session: OctomateSession = octomate_session
     ) -> str:
         user, profile = await identity(session)
-        if provider.startswith("personal/"):
-            instance = await personal(provider, user)
-            status = await manager.confirm(user, instance.id, profile=profile)
-            match status:
-                case McpAuthorizationStatus(status="active"):
-                    return f"{provider} is connected and available through namespace discovery."
-                case McpDeviceAuthorizationPending(retry_after_seconds=delay):
-                    return f"{provider} is waiting for approval; confirm again in {delay} seconds."
-                case McpBrowserAuthorizationPending():
-                    return f"{provider} is waiting for approval in the browser. Confirm after approval."
-                case _:
-                    return f"{provider} needs authorization. Call `{CONNECT_TOOL}` with `{provider}`."
-        tentacle = named(provider)
-        oauth = tentacle.octomate.oauth
-        device = isinstance(oauth.connector(tentacle.id).flow, DeviceOAuthFlow)
-        if device:
-            # A device flow finishes only when asked: the provider is polled for
-            # the code the person typed, and a wait is the person's to end.
-            try:
-                result = await oauth.complete_latest(user, tentacle.id, profile=profile)
-            except NoPendingAuthorization:
-                pass  # nothing waiting: the standing connection below is the answer
-            else:
-                if isinstance(result, OAuthPending):
-                    return (
-                        f"{tentacle.label} is still waiting for authorization. They "
-                        "have to finish it from the link in their direct messages, "
-                        f"then try again in {result.retry_after_seconds} seconds."
-                    )
-                return (
-                    f"{tentacle.label} connected as @{result.account_label}: its "
-                    "tools now act as this user here."
-                )
-        status = await oauth.connection_status(user, tentacle.id)
-        if status == "active":
-            return (
-                f"{tentacle.label} is connected: its tools now act as this user here."
-            )
-        if status == "invalid":
-            return (
-                f"{tentacle.label} was connected and is not any more — the "
-                "authorization was revoked or expired. Offer to send a fresh "
-                f"link with `{CONNECT_TOOL}`."
-            )
-        if device:
-            # Confirming before connecting: an ordering the model can fix itself,
-            # so say which tool opens one rather than ending the turn.
-            raise ToolError(
-                f"Nothing to confirm — this user has no {tentacle.label} "
-                f"authorization waiting. Call `{CONNECT_TOOL}` with `{tentacle.id}` "
-                "to start one, then confirm once they have entered the code."
-            )
-        return (
-            f"{tentacle.label} is not connected yet. The link finishes the "
-            "connection by itself once they approve it; there is nothing to do "
-            "here but wait and check again."
-        )
+        instance = await personal(provider, user)
+        status = await manager.confirm(user, instance.id, profile=profile)
+        match status:
+            case McpAuthorizationStatus(status="active"):
+                return f"{provider} is connected and available through namespace discovery."
+            case McpDeviceAuthorizationPending(retry_after_seconds=delay):
+                return f"{provider} is waiting for approval; confirm again in {delay} seconds."
+            case McpBrowserAuthorizationPending():
+                return f"{provider} is waiting for approval in the browser. Confirm after approval."
+            case _:
+                return f"{provider} needs authorization. Call `{CONNECT_TOOL}` with `{provider}`."

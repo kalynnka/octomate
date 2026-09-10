@@ -1,9 +1,7 @@
-# MCP tentacles: a provider's MCP server, proxied on Octomate's own server as the
-# caller. The key names the tentacle — the prefix its tools carry and, for a
-# linked account, the connector its tokens live under — so one vendor can be
-# mounted once per account. `type` picks the tentacle that builds it.
+# MCP tentacles offer connection settings that users explicitly install.
+# The configured key identifies the tentacle and its OAuth application.
 #
-# Enabling a `github` block requires `oauth.encryption_key`; boot
+# Enabling an `oauth` block requires `oauth.encryption_key`; boot
 # refuses without it.
 
 # mcp:
@@ -11,11 +9,4 @@
 #     type: bare
 #     url: https://mcp.notion.com/mcp
 #     token: ntn_xxx              # or OCTOMATE__MCP__NOTION__TOKEN
-#     prefix: nt                  # tool-name prefix (default: the key above)
 #     enabled: true               # default: true
-#   github:                       # device flow: the user types a code, no callback
-#     type: github
-#     client_id: Iv1.xxxxx        # required — OAuth App with Device Flow enabled
-#     scopes: [repo, read:org]    # fixed at authorization; widening = reconnect
-#     read_only: false            # true => the /readonly endpoint variant
-#     prefix: gh                  # tool-name prefix (default: the key above)

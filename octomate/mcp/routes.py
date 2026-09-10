@@ -14,6 +14,7 @@ from octomate.schemas.mcp import (
     Mcp,
     McpAuthorizationResult,
     McpInstallRequest,
+    McpTentacleInfo,
     McpVariant,
 )
 from octomate.schemas.oauth import DeviceAuthorization, OAuthStartResult
@@ -22,10 +23,18 @@ from octomate.schemas.user import User
 logger = logging.getLogger(__name__)
 
 mcp_router = APIRouter(
-    prefix="/api/mcp/instances",
+    prefix="/api/mcp",
     tags=["mcp"],
     dependencies=[Depends(browser_request)],
 )
+
+
+@mcp_router.get("/tentacles", response_model=list[McpTentacleInfo])
+async def available_tentacles(
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[McpManager, Depends(mcp_manager)],
+) -> list[McpTentacleInfo]:
+    return manager.available()
 
 
 @mcp_router.get("", response_model=list[McpVariant])
@@ -44,6 +53,8 @@ async def install(
 ) -> Mcp:
     try:
         return await manager.install(user.id, body)
+    except McpUnavailable as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 

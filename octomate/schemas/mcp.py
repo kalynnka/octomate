@@ -6,6 +6,7 @@ from typing import Annotated, Literal, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
+from mcp.types import Tool
 from pydantic import (
     AwareDatetime,
     BaseModel,
@@ -34,11 +35,6 @@ class BearerAuth(BaseModel):
 class OAuth(BaseModel):
     model_config = ConfigDict(extra="forbid")
     kind: Literal["oauth"] = "oauth"
-    tentacle_id: str | None = Field(
-        default=None,
-        min_length=1,
-        description="Tentacle supplying app configuration; omit for automatic registration.",
-    )
 
 
 class McpAuthorizationStatus(BaseModel):
@@ -66,12 +62,19 @@ class McpInstallRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     namespace: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     url: Annotated[HttpsUrl, UrlConstraints(max_length=2083)]
-    auth: Annotated[NoAuth | BearerAuth | OAuth, Field(discriminator="kind")] = Field(
-        default_factory=NoAuth
+    auth: Annotated[NoAuth | BearerAuth | OAuth, Field(discriminator="kind")] | None = (
+        None
+    )
+    tentacle_id: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Configured tentacle supplying the MCP and its authentication.",
     )
 
     @model_validator(mode="after")
     def public_endpoint(self) -> Self:
+        if self.tentacle_id is not None and self.auth is not None:
+            raise ValueError("A tentacle supplies its own authentication")
         if (
             self.url.username
             or self.url.password
@@ -93,6 +96,8 @@ class Mcp(BaseTransmuter):
     name: str
     namespace: str = Field(frozen=True)
     url: str = Field(frozen=True)
+    instructions: str = ""
+    tentacle_id: str | None = None
     enabled: bool = True
     created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -106,13 +111,24 @@ class NoAuthMcp(Mcp):
 @sqlalchemy_materia.bless(mcp_models.BearerMcp)
 class BearerMcp(Mcp):
     auth_kind: Literal["bearer"] = "bearer"
-    encrypted_token: bytes = Field(exclude=True, repr=False)
+    encrypted_token: bytes = Field(min_length=1, exclude=True, repr=False)
 
 
 @sqlalchemy_materia.bless(mcp_models.OAuthMcp)
 class OAuthMcp(Mcp):
     auth_kind: Literal["oauth"] = "oauth"
-    tentacle_id: str | None = None
+
+
+class McpTentacleInfo(BaseModel):
+    id: str
+    name: str
+    url: str
+    auth_kind: Literal["none", "bearer", "oauth"]
+
+
+class McpToolCatalog(BaseModel):
+    instructions: str = Field(description="The selected provider's tool instructions.")
+    tools: list[Tool] = Field(description="The selected provider's MCP tool schemas.")
 
 
 type McpVariant = NoAuthMcp | BearerMcp | OAuthMcp

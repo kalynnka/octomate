@@ -750,7 +750,6 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities.append(
                 tentacles_capability(
                     octomate_session,
-                    list(self.octomate.mcps.values()),
                     manager=self.octomate.mcp,
                 )
             )

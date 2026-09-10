@@ -6,7 +6,6 @@ from rich.style import Style
 
 from octomate import Octomate
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.config.mcp import BareMcpConfig
 from octomate.tentacles.base import TentacleLogFormatter
 from octomate.tentacles.claude.base import ClaudeCodeTentacle
 from octomate.tentacles.codex.base import CodexTentacle
@@ -52,7 +51,8 @@ async def test_mcp_logs_do_not_claim_channel_logs(
     mcp = BareMcpTentacle(
         "linear_streamify",
         octomate,
-        config=BareMcpConfig(url="https://mcp.example/mcp", token=SecretStr("test")),
+        url="https://mcp.example/mcp",
+        token=SecretStr("test"),
     )
     channel = TrunklineTentacle(
         "trunkline", octomate, config=TrunklineChannelConfig(agents=["claude"])

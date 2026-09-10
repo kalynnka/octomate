@@ -227,23 +227,14 @@ class Octomate(FastAPI):
             if isinstance(tentacle, ChannelTentacle)
         }
 
-    @property
-    def mcps(self) -> dict[str, McpTentacle]:
-        """The tentacles that proxy a provider's MCP server, by id — every one the
-        served server offers, each listing and calling as the person a turn is
-        for, whichever channel the turn is on."""
-        return {
-            id: tentacle
-            for id, tentacle in self.tentacles.items()
-            if isinstance(tentacle, McpTentacle) and tentacle.serving
-        }
-
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if tentacle.id in self.tentacles:
             raise ValueError(f"tentacle {tentacle.id!r} already connected")
         tentacle.octomate = self
         tentacle.log_color = tentacle.brand_color or next(self.log_styles)
         self.tentacles[tentacle.id] = tentacle
+        if isinstance(tentacle, McpTentacle):
+            self.mcp.tentacles[tentacle.id] = tentacle
         # Mount the tentacle's HTTP surface now that it is bound and registered — a
         # router builder like the Vercel one looks itself up in `self.channels`.
         for router in tentacle.routers():
@@ -406,7 +397,6 @@ class Octomate(FastAPI):
             self.thread_manager,
             kick=self.kick_soon,
             bearers=self.bearers,
-            tentacles=list(self.mcps.values()),
             manager=self.mcp,
         )
         # Stateless: identity is per call, from the request, so there is nothing

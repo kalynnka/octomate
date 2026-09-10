@@ -30,6 +30,7 @@ from octomate.schemas.oauth import (
     OAuthTokenPayload,
 )
 from octomate.schemas.user import User, UserProfile
+from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
 from tests.managers.test_mcp import connected
@@ -177,13 +178,20 @@ def host(in_memory_engine: AsyncEngine, upstream: OAuthServer) -> Octomate:
 async def install(
     host: Octomate, user: User, namespace: str, tentacle_id: str | None = None
 ) -> OAuthMcp:
+    if tentacle_id is not None:
+        tentacle = OAuthMcpTentacle(id=tentacle_id, octomate=host)
+        tentacle.label = tentacle_id
+        tentacle.upstream = URL
+        tentacle.instructions = ""
+        host.mcp.tentacles[tentacle.id] = tentacle
     instance = await host.mcp.install(
         user.id,
         McpInstallRequest(
             name=namespace,
             namespace=namespace,
             url=AnyHttpUrl(URL),
-            auth=OAuth(tentacle_id=tentacle_id),
+            auth=OAuth() if tentacle_id is None else None,
+            tentacle_id=tentacle_id,
         ),
     )
     assert isinstance(instance, OAuthMcp)
@@ -574,7 +582,7 @@ async def test_management_api_authorizes_only_the_logged_in_users_mcp(
             json={"username": "alice", "password": "password-for-test"},
         )
         assert logged_in.status_code == 204
-        base = "/api/mcp/instances"
+        base = "/api/mcp"
         installed = await client.post(
             base,
             json={

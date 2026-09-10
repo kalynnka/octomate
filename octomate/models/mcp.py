@@ -34,8 +34,21 @@ class Mcp(Base, TransmuterProxiedMixin):
         comment="Immutable discovery name within the owner's personal MCPs.",
     )
     url: Mapped[str] = mapped_column(String, nullable=False)
+    instructions: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default="",
+        server_default="",
+        comment="Tool instructions copied when the MCP is installed.",
+    )
     enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     auth_kind: Mapped[str] = mapped_column(String, nullable=False)
+    tentacle_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Tentacle supplying pre-registered app configuration; null for automatic OAuth client registration.",
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         UTCDateTime, nullable=False, default=lambda: datetime.now(UTC)
     )
@@ -65,9 +78,3 @@ class BearerMcp(Mcp):
 
 class OAuthMcp(Mcp):
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "oauth"}
-
-    tentacle_id: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True,
-        comment="Tentacle supplying pre-registered app configuration; null for automatic OAuth client registration.",
-    )

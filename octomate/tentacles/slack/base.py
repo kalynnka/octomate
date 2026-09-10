@@ -5,7 +5,7 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 from rich.style import Style
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
@@ -99,14 +99,9 @@ class SlackTentacle(
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True
     )
-    # Slack serves its tools itself and takes nothing but a user token — every
-    # call acts as the human who authorized it, never as the bot — which is
-    # exactly what `OAuthMcpTentacle` proxies. Slack names its own tools
-    # `slack_…`, so nothing is prefixed.
     label = "Slack"
     upstream = "https://mcp.slack.com/mcp"
     instructions = SLACK_MCP_INSTRUCTIONS
-    prefix = None
     feelers: Feelers
     ink: SlackInk
     chromo: SlackChromo
@@ -188,6 +183,7 @@ class SlackTentacle(
             octomate.oauth.register(
                 OAuthConnector(
                     id=id,
+                    mcp_url=AnyHttpUrl(self.upstream),
                     flow=SlackAuthorizationCodeOAuthFlow(
                         client_id=config.oauth.client_id,
                         client_secret=config.oauth.client_secret,

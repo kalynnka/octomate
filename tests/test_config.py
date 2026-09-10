@@ -22,11 +22,11 @@ from octomate.config import (
     DeepseekConfig,
     DiscordChannelConfig,
     DiscordStreamConfig,
-    GitHubMcpConfig,
     InklingConfig,
     LarkChannelConfig,
     ModelConfig,
     NapcatChannelConfig,
+    OAuthMcpConfig,
     OctomateConfig,
     SlackChannelConfig,
 )
@@ -37,6 +37,7 @@ from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.triage import Claim
 from tests.support.config import ISOLATED_HOME
+from tests.support.mcp import configured_mcp
 
 IN_MEMORY_DB_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -634,42 +635,20 @@ def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
     assert error["msg"] == "'deepseek' does not match a configured agent tentacle"
 
 
-def test_a_scope_github_does_not_define_is_refused() -> None:
-    # GitHub ignores a scope it does not recognise and returns a token quietly
-    # missing that access, so a typo has to fail here instead.
-    config = OctomateConfig.model_validate(
-        {
-            "mcp": {
-                "github": {
-                    "type": "github",
-                    "client_id": "Iv1.test",
-                    "scopes": ["repo", "workflow"],
-                }
-            },
-            "oauth": {"encryption_key": "x" * 43 + "="},
-        }
-    )
-    github = config.mcp["github"]
-    assert isinstance(github, GitHubMcpConfig)
-    assert github.scopes == ["repo", "workflow"]
-
-    # Validated, not constructed: a scope arrives as untyped YAML.
-    with pytest.raises(ValidationError, match="Input should be"):
-        GitHubMcpConfig.model_validate(
-            {"client_id": "Iv1.test", "scopes": ["workfl0w"]}
-        )
+def test_oauth_mcp_accepts_provider_defined_scopes() -> None:
+    config = configured_mcp().model_dump(mode="json")
+    config["scopes"] = ["custom:read", "custom:write"]
+    assert OAuthMcpConfig.model_validate(config).scopes == [
+        "custom:read",
+        "custom:write",
+    ]
 
 
 def test_config_parses_each_mcp_tentacle_type() -> None:
     config = OctomateConfig.model_validate(
         {
             "mcp": {
-                "github": {
-                    "type": "github",
-                    "client_id": "Iv1.test",
-                    "scopes": ["repo", "read:org"],
-                    "read_only": True,
-                },
+                "github": configured_mcp(client_id="Iv1.test"),
                 "linear": {
                     "type": "bare",
                     "url": "https://mcp.linear.app/mcp",
@@ -681,17 +660,14 @@ def test_config_parses_each_mcp_tentacle_type() -> None:
     )
 
     github = config.mcp["github"]
-    assert isinstance(github, GitHubMcpConfig)
+    assert isinstance(github, OAuthMcpConfig)
     assert github.enabled is True
-    assert github.read_only is True
     assert github.client_id == "Iv1.test"
-    assert github.scopes == ["repo", "read:org"]
-    # A partial block still keeps the GitHub endpoint default.
-    assert github.url == "https://api.githubcopilot.com/mcp/"
+    assert github.scopes == ["tools:read"]
+    assert str(github.url) == "https://mcp.example/mcp"
 
     linear = config.mcp["linear"]
     assert isinstance(linear, BareMcpConfig)
-    assert linear.prefix is None
     assert linear.enabled is True
     assert linear.url == "https://mcp.linear.app/mcp"
 
@@ -713,7 +689,7 @@ def test_a_linked_account_needs_the_encryption_key() -> None:
         ValidationError, match=r"oauth\.encryption_key is required when mcp\.github"
     ):
         OctomateConfig.model_validate(
-            {"mcp": {"github": {"type": "github", "client_id": "Iv1.test"}}}
+            {"mcp": {"github": configured_mcp(client_id="Iv1.test")}}
         )
 
 
@@ -729,13 +705,19 @@ def test_mcp_server_token_comes_from_the_environment(
 
     linear = config.mcp["linear"]
     assert isinstance(linear, BareMcpConfig)
+    assert linear.token is not None
     assert linear.token.get_secret_value() == "lin_from_env"
 
 
-def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_oauth_mcp_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # `type` too: it is the discriminator, so without it the block resolves to no
     # tentacle at all — the local octomate.yaml used to supply it by accident.
-    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__TYPE", "github")
+    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__TYPE", "oauth")
+    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__URL", "https://mcp.example/mcp")
+    monkeypatch.setenv(
+        "OCTOMATE__MCP__GITHUB__FLOW",
+        '{"type": "device", "device_authorization_endpoint": "https://auth.example/device", "token_endpoint": "https://auth.example/token"}',
+    )
     monkeypatch.setenv("OCTOMATE__MCP__GITHUB__CLIENT_ID", "Iv1.env")
     monkeypatch.setenv(
         "OCTOMATE__OAUTH__ENCRYPTION_KEY",
@@ -745,7 +727,7 @@ def test_github_oauth_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None
     config = OctomateConfig()
 
     github = config.mcp["github"]
-    assert isinstance(github, GitHubMcpConfig)
+    assert isinstance(github, OAuthMcpConfig)
     assert github.client_id == "Iv1.env"
     assert config.oauth.encryption_key is not None
 
@@ -966,11 +948,8 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
     config = OctomateConfig.model_validate(
         {
             "mcp": {
-                "github_work": {"type": "github", "client_id": "Iv1.a"},
-                "github_home": {
-                    "type": "github",
-                    "client_id": "Iv1.b",
-                },
+                "github_work": configured_mcp(client_id="Iv1.a"),
+                "github_home": configured_mcp(client_id="Iv1.b"),
             },
             "oauth": {"encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="},
         }
@@ -978,8 +957,8 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
 
     work = config.mcp["github_work"]
     home = config.mcp["github_home"]
-    assert isinstance(work, GitHubMcpConfig)
-    assert isinstance(home, GitHubMcpConfig)
+    assert isinstance(work, OAuthMcpConfig)
+    assert isinstance(home, OAuthMcpConfig)
     assert (work.client_id, home.client_id) == ("Iv1.a", "Iv1.b")
 
 
@@ -1086,3 +1065,47 @@ def test_runtime_model_names_are_open_and_can_delegate_the_default() -> None:
         == "openai:a-future-model"
     )
     assert AgentModelConfig(agent="claude", model=None).model is None
+
+
+@pytest.mark.parametrize("method", ["client_secret_basic", "client_secret_post"])
+def test_configured_oauth_requires_its_client_secret(method: str) -> None:
+    payload = configured_mcp().model_dump(mode="json")
+    payload["token_endpoint_auth_method"] = method
+    with pytest.raises(ValidationError, match="requires client_secret"):
+        OAuthMcpConfig.model_validate(payload)
+    payload["client_secret"] = "application-secret"
+    config = OAuthMcpConfig.model_validate(payload)
+    assert "application-secret" not in config.model_dump_json()
+
+
+def test_configured_oauth_refuses_an_unused_client_secret() -> None:
+    payload = configured_mcp().model_dump(mode="json")
+    payload["client_secret"] = "application-secret"
+    with pytest.raises(ValidationError, match="client_secret requires"):
+        OAuthMcpConfig.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    "url", ["http://auth.example/token", "ftp://auth.example/token"]
+)
+def test_configured_oauth_requires_https_endpoints(url: str) -> None:
+    payload = configured_mcp().model_dump(mode="json")
+    payload["flow"]["token_endpoint"] = url
+    with pytest.raises(ValidationError, match="https"):
+        OAuthMcpConfig.model_validate(payload)
+
+
+def test_authorization_code_mcp_requires_callback_configuration() -> None:
+    payload = configured_mcp().model_dump(mode="json")
+    payload["flow"] = {
+        "type": "authorization_code",
+        "authorization_endpoint": "https://auth.example/authorize",
+        "token_endpoint": "https://auth.example/token",
+    }
+    with pytest.raises(ValidationError, match=r"oauth\.callback_base_uri is required"):
+        OctomateConfig.model_validate(
+            {
+                "mcp": {"work": payload},
+                "oauth": {"encryption_key": "x" * 43 + "="},
+            }
+        )

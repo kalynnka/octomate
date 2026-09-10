@@ -101,6 +101,7 @@ async def test_instances_are_owner_bound_and_credentials_encrypted(
     restarted = McpManager(manager.users, manager.cipher)
     stored = (await restarted.list(alice.id))[0]
     assert isinstance(stored, BearerMcp)
+    assert stored.encrypted_token is not None
     assert b"alice-secret" not in stored.encrypted_token
     assert "encrypted_token" not in stored.model_dump()
     assert "alice-secret" not in repr(stored)
@@ -234,7 +235,7 @@ async def test_client_is_reused_across_turns_and_closed_at_shutdown(
             scope = a_turn(UserProfile(user_id=user.id, channel_tentacle_id=channel))
             async with manager.acquire(scope, instance.namespace) as reused:
                 assert reused is first
-            server = tentacles_mcp(fixed_session(scope), [], manager=manager)
+            server = tentacles_mcp(fixed_session(scope), manager=manager)
             for _ in range(2):
                 catalog = await discover(server, instance.namespace)
                 assert [tool.name for tool in catalog.tools] == ["answer"]
@@ -264,7 +265,7 @@ async def test_private_discovery_and_cached_calls_recheck_access(
         a_turn(UserProfile(user_id=user.id)) for user in (alice, bob)
     ]
     alice_server, bob_server, visitor_server = [
-        tentacles_mcp(fixed_session(scope), [], manager=manager)
+        tentacles_mcp(fixed_session(scope), manager=manager)
         for scope in (alice_scope, bob_scope, a_turn())
     ]
     # Servers are built before the instance, just as the shared HTTP mount is.
@@ -314,7 +315,7 @@ async def test_concurrent_users_never_share_credentials(manager: McpManager) -> 
     upstream, calls = an_upstream("answer")
     servers = [
         tentacles_mcp(
-            fixed_session(a_turn(UserProfile(user_id=user.id))), [], manager=manager
+            fixed_session(a_turn(UserProfile(user_id=user.id))), manager=manager
         )
         for user in (alice, bob)
     ]
@@ -385,7 +386,7 @@ async def test_catalog_changes_are_visible_on_retained_connection(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     server = tentacles_mcp(
-        fixed_session(a_turn(UserProfile(user_id=user.id))), [], manager=manager
+        fixed_session(a_turn(UserProfile(user_id=user.id))), manager=manager
     )
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:

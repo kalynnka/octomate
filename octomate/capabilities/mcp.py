@@ -14,7 +14,6 @@ person never touches the prompt prefix.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 from fastmcp import FastMCP
@@ -31,7 +30,6 @@ from pydantic_core import SchemaValidator, core_schema
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.mcp.server import tentacles_mcp
-from octomate.tentacles.mcp import McpTentacle
 
 # The upstream validates a call's arguments itself, as the served proxy lets it;
 # nothing is checked twice.
@@ -98,7 +96,6 @@ class TentaclesToolset(AbstractToolset[None]):
 
 def tentacles_capability(
     session: OctomateSession,
-    tentacles: Sequence[McpTentacle],
     *,
     manager: McpManager,
 ) -> Toolset[None]:
@@ -108,12 +105,12 @@ def tentacles_capability(
     async def fixed() -> OctomateSession:
         return session
 
-    server = tentacles_mcp(fixed, tentacles, manager=manager)
+    server = tentacles_mcp(fixed, manager=manager)
     return Toolset(
         TentaclesToolset(server),
         id=server.name,
         description=(
-            "The user's installed MCP tools and configured providers, "
+            "The user's installed MCP tools, "
             "acting as the person you are answering, and "
             "the linking of their accounts."
         ),

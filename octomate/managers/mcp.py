@@ -6,7 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, datetime
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
@@ -31,6 +31,8 @@ from octomate.schemas.mcp import (
     McpBrowserAuthorizationPending,
     McpDeviceAuthorizationPending,
     McpInstallRequest,
+    McpTentacleInfo,
+    McpToolCatalog,
     NoAuth,
     NoAuthMcp,
     OAuth,
@@ -44,6 +46,9 @@ from octomate.schemas.oauth import (
     OAuthStartResult,
 )
 from octomate.schemas.user import User, UserProfile
+
+if TYPE_CHECKING:
+    from octomate.tentacles.mcp import McpTentacle
 
 logger = logging.getLogger(__name__)
 
@@ -74,15 +79,37 @@ class McpManager(Manager, Locks[uuid.UUID]):
             idle_timeout if idle_timeout is not None else McpPoolConfig().idle_timeout
         )
         self.httpx_client_factory: McpHttpClientFactory = httpx_client_factory
+        self.tentacles: dict[str, McpTentacle] = {}
         self.oauth = oauth
         self.clients: dict[McpClientKey, Client] = {}
         self.sweaps: dict[McpClientKey, asyncio.Task[None]] = {}
+
+    def available(self) -> list[McpTentacleInfo]:
+        return [
+            tentacle.info for tentacle in self.tentacles.values() if tentacle.serving
+        ]
 
     async def install(self, user_id: uuid.UUID, request: McpInstallRequest) -> Mcp:
         mcp_id = uuid7()
         namespace = f"personal/{request.namespace}"
         instance: Mcp
-        match request.auth:
+        tentacle_id = request.tentacle_id
+        auth = request.auth or NoAuth()
+        instructions = ""
+        if tentacle_id is not None:
+            tentacle = self.tentacles.get(tentacle_id)
+            if tentacle is None or not tentacle.serving:
+                raise McpUnavailable
+            if tentacle.upstream != str(request.url):
+                raise ValueError("MCP URL must match the tentacle")
+            instructions = tentacle.instructions
+            if tentacle.auth_kind == "bearer":
+                if tentacle.token is None:
+                    raise ValueError("Bearer MCPs require a token")
+                auth = BearerAuth(token=tentacle.token)
+            elif tentacle.auth_kind == "oauth":
+                auth = OAuth()
+        match auth:
             case BearerAuth():
                 if self.cipher is None:
                     raise ValueError(
@@ -94,8 +121,10 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     name=request.name,
                     namespace=namespace,
                     url=str(request.url),
+                    instructions=instructions,
+                    tentacle_id=tentacle_id,
                     encrypted_token=self.cipher.encrypt(
-                        request.auth.token.get_secret_value(),
+                        auth.token.get_secret_value(),
                         context=f"mcp:{user_id}:{mcp_id}",
                     ),
                 )
@@ -104,8 +133,8 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     raise ValueError(
                         "Configure oauth.encryption_key before installing OAuth MCPs"
                     )
-                if request.auth.tentacle_id is not None:
-                    connector = self.oauth.connector(request.auth.tentacle_id)
+                if tentacle_id is not None:
+                    connector = self.oauth.connector(tentacle_id)
                     if connector.mcp_url is None or str(connector.mcp_url) != str(
                         request.url
                     ):
@@ -122,7 +151,8 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     name=request.name,
                     namespace=namespace,
                     url=str(request.url),
-                    tentacle_id=request.auth.tentacle_id,
+                    instructions=instructions,
+                    tentacle_id=tentacle_id,
                 )
             case NoAuth():
                 instance = NoAuthMcp(
@@ -131,6 +161,8 @@ class McpManager(Manager, Locks[uuid.UUID]):
                     name=request.name,
                     namespace=namespace,
                     url=str(request.url),
+                    instructions=instructions,
+                    tentacle_id=tentacle_id,
                 )
         async with async_session() as session:
             session.add(instance)
@@ -315,6 +347,29 @@ class McpManager(Manager, Locks[uuid.UUID]):
             if pending is not None:
                 return McpBrowserAuthorizationPending()
         return McpAuthorizationStatus(status=status)
+
+    async def catalog(self, scope: OctomateSession, namespace: str) -> McpToolCatalog:
+        async with self.acquire(scope, namespace) as client:
+            assert scope.user_profile is not None
+            user = await self.users.owner(scope.user_profile)
+            if user is None:
+                raise McpUnavailable
+            async with async_session() as session:
+                instance = await session.one_or_none(
+                    Mcp,
+                    expressions=[
+                        Mcp["user_id"] == user.id,
+                        Mcp["namespace"] == namespace,
+                    ],
+                )
+            if instance is None:
+                raise McpUnavailable
+            instructions = "\n".join(
+                part for part in (instance.instructions, client.instructions) if part
+            )
+            return McpToolCatalog(
+                instructions=instructions, tools=await client.list_tools()
+            )
 
     @asynccontextmanager
     async def acquire(

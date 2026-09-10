@@ -171,7 +171,6 @@ class ToolsTentacle(FakeChannelTentacle, OAuthMcpTentacle):
     label = "Tools"
     upstream = "https://tools.example/mcp"
     instructions = "## Tools\n\nA fake provider's own contract.\n"
-    prefix = None
 
 
 def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once() -> (
@@ -181,24 +180,18 @@ def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once
     octomate.connect(ToolsTentacle(id="a", octomate=octomate))
     octomate.connect(ToolsTentacle(id="b", octomate=octomate))
 
-    tentacles = list(octomate.mcps.values())
-    instructions = octomate_instructions(tentacles)
+    instructions = octomate_instructions()
 
-    assert list(octomate.mcps) == ["a", "b"]
-    assert f"`{CONNECT_TOOL}` with the provider's id (`a`, `b`)" in instructions
+    assert [entry.id for entry in octomate.mcp.available()] == ["a", "b"]
+    assert "oauth_connect" in instructions
     assert "A fake provider's own contract." not in instructions
-    assert "`a` (Tools), `b` (Tools)" in instructions
-    assert instructions.count("## Linking accounts") == 1
+    assert "`a` (Tools)" not in instructions
 
 
-def test_the_instructions_carry_the_linking_contract_only_with_a_provider() -> None:
-    bare = octomate_instructions([])
-    with_tools = octomate_instructions([ToolsTentacle(id="a")])
-
-    assert "## Linking accounts" not in bare
-    assert "## Linking accounts" in with_tools
-    assert "Tools — act as the person" in with_tools
-    assert "A fake provider's own contract." not in with_tools
+def test_instructions_describe_only_user_scoped_discovery() -> None:
+    instructions = octomate_instructions()
+    assert "current user's installed MCPs" in instructions
+    assert "oauth_connect" in instructions
 
 
 async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> None:
@@ -213,7 +206,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
         ) as client:
             tools = await client.list_tools()
-            with pytest.raises(ToolError, match="No provider with id 'nope'"):
+            with pytest.raises(ToolError, match="unavailable"):
                 await client.call_tool(CONNECT_TOOL, {"provider": "nope"})
 
     assert [tool.name for tool in tools] == [

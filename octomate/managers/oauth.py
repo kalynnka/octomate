@@ -25,7 +25,12 @@ from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
 from octomate.mcp.transport import mcp_http_client
-from octomate.oauth.mcp import HTTPS_URL, McpOAuthFlow, OAuthRefreshRejected
+from octomate.oauth.mcp import (
+    HTTPS_URL,
+    McpDeviceOAuthFlow,
+    McpOAuthFlow,
+    OAuthRefreshRejected,
+)
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
@@ -436,6 +441,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                 user=user,
                 profile=profile,
                 mcp_id=operation.mcp_id,
+                interval_seconds=operation.interval_seconds,
             )
             payload = DeviceOperationPayload.model_validate_json(
                 cipher.decrypt(
@@ -445,6 +451,8 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             )
             result = await flow.complete(context, payload.device_code)
             if isinstance(result, OAuthPending):
+                operation.interval_seconds = result.retry_after_seconds
+                await session.commit()
                 return result
 
             # Reauthorization replaces this grant, including when it is invalid.
@@ -880,7 +888,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                 connector_id, user_id=user.id, mcp_id=mcp_id, state=payload.mcp_oauth
             )
             flow = connector.flow
-            if not isinstance(flow, AuthorizationCodeOAuthFlow):
+            if not isinstance(flow, (AuthorizationCodeOAuthFlow, McpDeviceOAuthFlow)):
                 raise ValueError(f"{connector_id!r} has no refreshable OAuth flow")
             try:
                 grant = await flow.refresh(payload.refresh_token)
@@ -889,9 +897,9 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                     raise ValueError(
                         "OAuth refresh returned invalid credentials"
                     ) from None
-                if isinstance(flow, McpOAuthFlow) and not isinstance(
-                    error, OAuthRefreshRejected
-                ):
+                if isinstance(
+                    flow, (McpOAuthFlow, McpDeviceOAuthFlow)
+                ) and not isinstance(error, OAuthRefreshRejected):
                     raise
                 connection.status = "invalid"
                 connection.updated_at = datetime.now(UTC)

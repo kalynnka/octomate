@@ -46,6 +46,7 @@ from octomate.config.agents import AgentsConfig
 from octomate.config.auth import AuthConfig
 from octomate.config.channels import ChannelConfigVariant, SlackChannelConfig
 from octomate.config.mcp import McpConfigVariant, OAuthMcpConfig
+from octomate.config.mcp.base import AuthorizationCodeFlowConfig
 from octomate.config.mcp.pool import McpPoolConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.config.oauth import OAuthConfig
@@ -205,6 +206,15 @@ class OctomateConfig(BaseSettings):
         if enabled and self.oauth.encryption_key is None:
             raise ValueError(
                 f"oauth.encryption_key is required when {', '.join(enabled)} is enabled"
+            )
+        if self.oauth.callback_base_uri is None and any(
+            isinstance(server, OAuthMcpConfig)
+            and server.enabled
+            and isinstance(server.flow, AuthorizationCodeFlowConfig)
+            for server in self.mcp.values()
+        ):
+            raise ValueError(
+                "oauth.callback_base_uri is required for authorization-code MCPs"
             )
         return self
 

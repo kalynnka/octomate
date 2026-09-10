@@ -4,9 +4,11 @@ linked account behind it."""
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
+
+from octomate.types.oauth import HttpsUrl
 
 
 class McpConfig(BaseModel):
@@ -15,14 +17,6 @@ class McpConfig(BaseModel):
 
     type: str
     enabled: bool = True
-    url: str
-    prefix: str | None = Field(
-        default=None,
-        description="Prefix every tool of this server is exposed under. Defaults to "
-        "the key the server is configured against. Worth setting when one vendor is "
-        "mounted twice, since two accounts on the same MCP server would otherwise "
-        "offer the model two sets of identically named tools.",
-    )
 
 
 class BareMcpConfig(McpConfig):
@@ -30,29 +24,57 @@ class BareMcpConfig(McpConfig):
     caller: the deployment's identity, not the person's."""
 
     type: Literal["bare"] = "bare"
-    token: SecretStr
+    url: str
+    token: SecretStr | None = None
+
+
+class DeviceFlowConfig(BaseModel):
+    type: Literal["device"] = "device"
+    device_authorization_endpoint: HttpsUrl
+    token_endpoint: HttpsUrl
+
+
+class AuthorizationCodeFlowConfig(BaseModel):
+    type: Literal["authorization_code"] = "authorization_code"
+    authorization_endpoint: HttpsUrl
+    token_endpoint: HttpsUrl
 
 
 class OAuthMcpConfig(McpConfig):
-    """A provider whose tools act as the person who drove the turn, with the account
-    they linked under this key through the provider's own OAuth flow.
+    """A configured OAuth application whose grants belong to individual users."""
 
-    What varies below this is the flow: which credentials the provider takes, which
-    scopes it names, and whether a browser has to come back anywhere. Enabling one
-    requires ``oauth.encryption_key``, since the tokens are stored.
-    """
-
-    client_id: str = Field(
-        description="The OAuth application's client id. Required even while `enabled` "
-        "is false: a block without one describes nothing."
+    type: Literal["oauth"] = "oauth"
+    url: HttpsUrl
+    client_id: str = Field(min_length=1)
+    client_secret: SecretStr | None = None
+    token_endpoint_auth_method: Literal[
+        "none", "client_secret_basic", "client_secret_post"
+    ] = "none"
+    scopes: list[str] = Field(
+        default_factory=list,
+        description="Access requested when connecting. Widening it requires reauthorization.",
     )
-    read_only: bool = Field(
-        default=False,
-        description="Mount the server's read-only endpoint variant, so a connection "
-        "that could write is not asked to.",
+    scope_separator: Literal[" ", ","] = Field(
+        default=" ",
+        description="Delimiter used in the provider's token response scopes.",
     )
+    invalid_credentials_errors: list[str] = Field(
+        default_factory=lambda: ["invalid_grant", "invalid_client"],
+        description="OAuth error codes that require reconnecting instead of retrying a refresh.",
+    )
+    flow: Annotated[
+        DeviceFlowConfig | AuthorizationCodeFlowConfig, Field(discriminator="type")
+    ]
 
-    @property
-    def endpoint(self) -> str:
-        """The URL a connection speaks to: the read-only variant when asked for."""
-        return self.url.rstrip("/") + "/readonly" if self.read_only else self.url
+    @model_validator(mode="after")
+    def validate_client_authentication(self) -> Self:
+        if self.token_endpoint_auth_method == "none":
+            if self.client_secret is not None:
+                raise ValueError(
+                    "client_secret requires a token endpoint authentication method"
+                )
+        elif self.client_secret is None or not self.client_secret.get_secret_value():
+            raise ValueError(
+                "the token endpoint authentication method requires client_secret"
+            )
+        return self
