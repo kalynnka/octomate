@@ -12,6 +12,7 @@ from octomate.config.agents.codex import CodexConfig
 from octomate.config.agents.common import AgentConfig
 from octomate.config.agents.deepseek import DeepseekConfig
 from octomate.config.agents.inkling import InklingConfig
+from octomate.config.agents.zcode import ZcodeConfig
 
 
 class AgentsConfig(BaseModel):
@@ -21,6 +22,7 @@ class AgentsConfig(BaseModel):
     claude: ClaudeCodeConfig | None = None
     codex: CodexConfig | None = None
     deepseek: DeepseekConfig | None = None
+    zcode: ZcodeConfig | None = None
 
     @model_validator(mode="after")
     def validate_unique_ids(self) -> Self:

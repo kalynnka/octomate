@@ -29,6 +29,7 @@ from octomate.config import (
     NapcatChannelConfig,
     OctomateConfig,
     SlackChannelConfig,
+    ZcodeConfig,
 )
 from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
 from octomate.config.channels import SLACK_MCP_SCOPES
@@ -155,9 +156,10 @@ def test_configured_agents_preserves_model_iteration_and_serialization() -> None
         claude=ClaudeCodeConfig(enabled=False),
         codex=CodexConfig(),
         deepseek=DeepseekConfig(),
+        zcode=ZcodeConfig(models={"GLM-5.3"}),
     )
     fields = dict(agents)
-    assert set(fields) == {"inkling", "claude", "codex", "deepseek"}
+    assert set(fields) == {"inkling", "claude", "codex", "deepseek", "zcode"}
     assert fields["claude"] is agents.claude
     config = OctomateConfig(agents=agents)
     serialized = config.model_dump(mode="json")
@@ -171,6 +173,7 @@ def test_configured_agents_preserves_model_iteration_and_serialization() -> None
         "inkling",
         "codex",
         "deepseek",
+        "zcode",
     ]
 
 

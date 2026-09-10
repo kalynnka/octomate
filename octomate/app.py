@@ -17,6 +17,7 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import build_inkling
 from octomate.tentacles.mcp import build_mcp
+from octomate.tentacles.zcode import ZcodeTentacle
 
 config = OctomateConfig()
 
@@ -155,6 +156,9 @@ def create_app() -> Octomate:
                 config=deepseek_config,
             )
         )
+
+    if (zcode_config := config.agents.zcode) is not None and zcode_config.enabled:
+        octomate.connect(ZcodeTentacle("zcode", octomate, config=zcode_config))
 
     for channel_id, channel_config in config.channels.items():
         if channel_config.enabled:
