@@ -16,7 +16,11 @@ from octomate.config.mcp.base import AuthorizationCodeFlowConfig, DeviceFlowConf
 from octomate.managers.oauth import OAuthConnector
 from octomate.oauth.mcp import McpDeviceOAuthFlow, McpOAuthFlow, OAuthTokenExchange
 from octomate.schemas.mcp import McpTentacleInfo
-from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.schemas.oauth import (
+    AuthorizationCodeOAuthFlow,
+    DeviceOAuthFlow,
+    DirectHttpOAuthCallbackTransport,
+)
 from octomate.tentacles.base import Tentacle
 
 if TYPE_CHECKING:
@@ -82,40 +86,43 @@ def build_mcp(id: str, config: McpConfigVariant, octomate: Octomate) -> McpTenta
         case BareMcpConfig():
             return BareMcpTentacle(id, octomate, url=config.url, token=config.token)
         case OAuthMcpConfig():
-            tokens = OAuthTokenExchange(
-                token_endpoint=config.flow.token_endpoint,
-                client_id=config.client_id,
-                client_secret=config.client_secret,
-                token_endpoint_auth_method=config.token_endpoint_auth_method,
-                scopes=config.scopes,
-                scope_separator=config.scope_separator,
-                invalid_credentials_errors=config.invalid_credentials_errors,
-                httpx_client_factory=octomate.oauth.httpx_client_factory,
-            )
-            match config.flow:
-                case DeviceFlowConfig():
-                    flow = McpDeviceOAuthFlow(
-                        device_authorization_endpoint=config.flow.device_authorization_endpoint,
-                        tokens=tokens,
-                    )
-                    callback = None
-                case AuthorizationCodeFlowConfig():
-                    if octomate.oauth.callback_base_uri is None:
-                        raise ValueError(
-                            "Configure oauth.callback_base_uri for authorization-code MCPs"
+            flows: list[DeviceOAuthFlow | AuthorizationCodeOAuthFlow] = []
+            callback = None
+            for flow_config in config.flows:
+                tokens = OAuthTokenExchange(
+                    token_endpoint=flow_config.token_endpoint,
+                    client_id=config.client_id,
+                    client_secret=config.client_secret,
+                    token_endpoint_auth_method=flow_config.token_endpoint_auth_method,
+                    scopes=config.scopes,
+                    scope_separator=config.scope_separator,
+                    invalid_credentials_errors=config.invalid_credentials_errors,
+                    httpx_client_factory=octomate.oauth.httpx_client_factory,
+                )
+                match flow_config:
+                    case DeviceFlowConfig():
+                        flow = McpDeviceOAuthFlow(
+                            device_authorization_endpoint=flow_config.device_authorization_endpoint,
+                            tokens=tokens,
                         )
-                    flow = McpOAuthFlow(
-                        url=config.url,
-                        authorization_endpoint=config.flow.authorization_endpoint,
-                        tokens=tokens,
-                        httpx_client_factory=octomate.oauth.httpx_client_factory,
-                    )
-                    callback = DirectHttpOAuthCallbackTransport(
-                        octomate.oauth.callback_base_uri
-                    )
+                    case AuthorizationCodeFlowConfig():
+                        if octomate.oauth.callback_base_uri is None:
+                            raise ValueError(
+                                "Configure oauth.callback_base_uri for authorization-code MCPs"
+                            )
+                        flow = McpOAuthFlow(
+                            url=config.url,
+                            authorization_endpoint=flow_config.authorization_endpoint,
+                            tokens=tokens,
+                            httpx_client_factory=octomate.oauth.httpx_client_factory,
+                        )
+                        callback = DirectHttpOAuthCallbackTransport(
+                            octomate.oauth.callback_base_uri
+                        )
+                flows.append(flow)
             octomate.oauth.register(
                 OAuthConnector(
-                    id=id, mcp_url=config.url, flow=flow, callback_transport=callback
+                    id=id, mcp_url=config.url, flows=flows, callback_transport=callback
                 )
             )
             tentacle = OAuthMcpTentacle(id=id, octomate=octomate)

@@ -12,6 +12,7 @@ from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
 from octomate.managers.oauth import OAuthConnector
+from octomate.oauth.mcp import McpOAuthFlow
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
@@ -45,7 +46,7 @@ from octomate.tentacles.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
-from octomate.tentacles.slack.oauth import SlackAuthorizationCodeOAuthFlow
+from octomate.tentacles.slack.oauth import SlackTokenExchange
 from octomate.tentacles.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
@@ -184,11 +185,32 @@ class SlackTentacle(
                 OAuthConnector(
                     id=id,
                     mcp_url=AnyHttpUrl(self.upstream),
-                    flow=SlackAuthorizationCodeOAuthFlow(
-                        client_id=config.oauth.client_id,
-                        client_secret=config.oauth.client_secret,
-                        scopes=config.oauth.scopes,
-                    ),
+                    flows=[
+                        McpOAuthFlow(
+                            url=AnyHttpUrl(self.upstream),
+                            authorization_endpoint=AnyHttpUrl(
+                                "https://slack.com/oauth/v2_user/authorize"
+                            ),
+                            httpx_client_factory=octomate.oauth.httpx_client_factory,
+                            tokens=SlackTokenExchange(
+                                token_endpoint=AnyHttpUrl(
+                                    "https://slack.com/api/oauth.v2.user.access"
+                                ),
+                                client_id=config.oauth.client_id,
+                                client_secret=config.oauth.client_secret,
+                                token_endpoint_auth_method="client_secret_post",
+                                scopes=list(config.oauth.scopes),
+                                invalid_credentials_errors=[
+                                    "invalid_grant",
+                                    "invalid_client",
+                                    "invalid_refresh_token",
+                                    "invalid_client_id",
+                                    "bad_client_secret",
+                                ],
+                                httpx_client_factory=octomate.oauth.httpx_client_factory,
+                            ),
+                        )
+                    ],
                     callback_transport=DirectHttpOAuthCallbackTransport(
                         config.oauth.callback_base_uri
                     ),

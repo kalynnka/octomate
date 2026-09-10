@@ -26,7 +26,7 @@ from uuid_utils.compat import uuid7
 from octomate.models import oauth as oauth_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.user import User, UserProfile
-from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
 
 
 class OAuthCipher:
@@ -323,6 +323,9 @@ OAuthStartResult = DeviceAuthorization | AuthorizationLink
 class OAuthTokenPayload(BaseModel):
     """The plaintext token envelope immediately before encryption or after decryption."""
 
+    flow: OAuthFlowKind = Field(
+        description="The issuing flow whose client authentication is used for refresh."
+    )
     access_token: SecretStr = Field(repr=False)
     refresh_token: SecretStr | None = Field(default=None, repr=False)
     token_type: str = "bearer"

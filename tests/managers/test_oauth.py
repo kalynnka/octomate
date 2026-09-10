@@ -212,7 +212,7 @@ async def linear_manager(
         connectors=[
             OAuthConnector(
                 id=LINEAR_CONNECTOR_ID,
-                flow=flow,
+                flows=[flow],
                 callback_transport=direct_http(),
             )
         ],
@@ -245,12 +245,12 @@ def test_connector_requires_the_transport_appropriate_to_its_flow() -> None:
     with pytest.raises(ValueError, match="does not use"):
         OAuthConnector(
             id="github",
-            flow=FakeDeviceFlow(),
+            flows=[FakeDeviceFlow()],
             callback_transport=direct_http(),
         )
 
     with pytest.raises(ValueError, match="requires a callback"):
-        OAuthConnector(id="linear", flow=FakeAuthorizationCodeFlow())
+        OAuthConnector(id="linear", flows=[FakeAuthorizationCodeFlow()])
 
 
 @pytest.mark.parametrize(
@@ -264,16 +264,16 @@ def test_connector_requires_the_transport_appropriate_to_its_flow() -> None:
 def test_connector_validates_its_id_and_endpoint(connector_id: str, url: str) -> None:
     with pytest.raises(ValidationError):
         OAuthConnector.model_validate(
-            {"id": connector_id, "flow": FakeDeviceFlow(), "mcp_url": url}
+            {"id": connector_id, "flows": [FakeDeviceFlow()], "mcp_url": url}
         )
 
 
 def test_manager_rejects_duplicate_connector_ids() -> None:
     manager = OAuthManager(users=UserManager(), encryption_key=ENCRYPTION_KEY)
-    manager.register(OAuthConnector(id="github", flow=FakeDeviceFlow()))
+    manager.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
 
     with pytest.raises(ValueError, match="already registered"):
-        manager.register(OAuthConnector(id="github", flow=FakeDeviceFlow()))
+        manager.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
 
 
 @pytest.mark.parametrize("seconds", [0, 60])
@@ -295,7 +295,7 @@ async def test_device_flow_uses_the_registered_channel_owner() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
 
     owner = await manager.users.owner(profile)
@@ -323,7 +323,7 @@ async def test_visitor_cannot_start_oauth() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
 
     async with linking(manager, visitor, "github") as (client, feeler, _installed):
@@ -392,7 +392,7 @@ async def test_authorization_code_connector_can_select_a_relay() -> None:
         connectors=[
             OAuthConnector(
                 id=LINEAR_CONNECTOR_ID,
-                flow=FakeAuthorizationCodeFlow(),
+                flows=[FakeAuthorizationCodeFlow()],
                 callback_transport=FakeRelayTransport(),
             )
         ],
@@ -504,7 +504,7 @@ async def test_completion_and_refresh_lock_only_the_matching_connection() -> Non
     manager.register(
         OAuthConnector(
             id="other",
-            flow=other_flow,
+            flows=[other_flow],
             callback_transport=direct_http(),
         )
     )
@@ -676,7 +676,7 @@ async def test_device_completion_persists_an_owner_bound_encrypted_token() -> No
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
     owner = await manager.users.owner(profile)
     assert owner is not None
@@ -703,7 +703,7 @@ async def test_pending_device_completion_keeps_the_operation_available() -> None
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
     owner = await manager.users.owner(profile)
     assert owner is not None
@@ -722,7 +722,7 @@ async def test_complete_latest_orders_uuid7_operation_ids() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
     # The first authorization has to be past its deadline, or starting again would
     # resume it instead of leaving two operations to order.
@@ -747,7 +747,7 @@ async def test_start_resumes_a_device_authorization_that_is_still_live() -> None
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
 
     owner = await manager.users.owner(profile)
@@ -768,7 +768,7 @@ async def test_start_replaces_a_device_authorization_that_has_expired() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
 
     owner = await manager.users.owner(profile)
@@ -798,7 +798,7 @@ async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() 
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=FakeDeviceFlow())],
+        connectors=[OAuthConnector(id="github", flows=[FakeDeviceFlow()])],
     )
     owner = await users.owner(slack)
     assert owner is not None
@@ -822,7 +822,7 @@ async def test_authorization_rejects_a_profile_belonging_to_another_user() -> No
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id="github", flow=flow)],
+        connectors=[OAuthConnector(id="github", flows=[flow])],
     )
     with pytest.raises(ValueError, match="does not belong"):
         await manager.start(other, "github", profile=profile)
@@ -923,7 +923,7 @@ async def test_github_connect_emits_only_the_link_and_code() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())],
+        connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[FakeDeviceFlow()])],
     )
 
     async with linking(manager, profile, GITHUB_CONNECTOR_ID) as (
@@ -953,7 +953,7 @@ async def test_github_confirm_asks_the_model_to_connect_first() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())],
+        connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[FakeDeviceFlow()])],
     )
 
     async with linking(manager, profile, GITHUB_CONNECTOR_ID) as (
@@ -970,7 +970,7 @@ async def test_github_confirm_activates_the_connection() -> None:
     manager = OAuthManager(
         users=users,
         encryption_key=ENCRYPTION_KEY,
-        connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=FakeDeviceFlow())],
+        connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[FakeDeviceFlow()])],
     )
     owner = await manager.users.owner(profile)
     assert owner is not None
@@ -996,7 +996,7 @@ async def _connected(
     users, profile = await linked_user_manager()
     manager = OAuthManager(users=users, encryption_key=ENCRYPTION_KEY)
     manager.register(
-        OAuthConnector(id=GITHUB_CONNECTOR_ID, flow=flow or FakeDeviceFlow())
+        OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[flow or FakeDeviceFlow()])
     )
     owner = await manager.users.owner(profile)
     assert owner is not None
@@ -1199,3 +1199,13 @@ async def test_a_visitor_has_no_credential_to_speak_with() -> None:
     with pytest.raises(McpUnavailable):
         async with tentacle.octomate.mcp.acquire(a_session(visitor), "personal/linear"):
             pytest.fail("A visitor acquired an MCP")
+
+
+def test_connector_rejects_empty_duplicate_and_unsupported_flows() -> None:
+    with pytest.raises(ValidationError):
+        OAuthConnector(id="work", flows=[])
+    with pytest.raises(ValidationError, match="must be unique"):
+        OAuthConnector(id="work", flows=[FakeDeviceFlow(), FakeDeviceFlow()])
+    connector = OAuthConnector(id="work", flows=[FakeDeviceFlow()])
+    with pytest.raises(ValueError, match="does not support"):
+        connector.select_flow("authorization_code")

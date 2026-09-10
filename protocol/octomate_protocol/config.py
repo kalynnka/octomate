@@ -12,12 +12,10 @@ OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
 # file cannot be shadowed by it.
 CONFIG_FILES: tuple[str, ...] = (
     "octomate.yaml",
-    "agents.yaml",
-    "channels.yaml",
+    "tentacles.yaml",
     "auth.yaml",
     "projects.yaml",
     "providers.yaml",
-    "mcp.yaml",
     "observability.yaml",
     "oauth.yaml",
 )

@@ -7,7 +7,6 @@ from __future__ import annotations
 from octomate.config.agents import (
     AgentConfig,
     AgentRouteModelName,
-    AgentsConfig,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
@@ -65,15 +64,16 @@ from octomate.config.providers import (
     ProvidersConfig,
     VertexProviderConfig,
 )
+from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 
 # Grouped by subsystem behind the section comments below, which say more than
 # alphabetical order would; sorting this would strand each comment on the wrong name.
 __all__ = [  # noqa: RUF022
     "OctomateConfig",
+    "TentacleConfigVariant",
     # agents
     "AgentConfig",
-    "AgentsConfig",
     "AgentRouteModelName",
     "ClaudeCodeConfig",
     "ClaudeSSHConfig",

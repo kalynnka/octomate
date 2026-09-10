@@ -32,7 +32,6 @@ from octomate.base import Octomate
 from octomate.config import OctomateConfig, SlackChannelConfig, SlackStreamConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.managers.oauth import OAuthConnector
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import (
@@ -43,10 +42,8 @@ from octomate.mcp.server import (
     octomate_mcp,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
-from octomate.tentacles.slack import SlackChromo, SlackTentacle
+from octomate.tentacles.slack import SlackTentacle
 from octomate.tentacles.slack.ink import SlackInk
-from octomate.tentacles.slack.oauth import SlackAuthorizationCodeOAuthFlow
 from tests.agent.test_mcp_serving import OCTOMATE_TOOLS, over, served
 from tests.channels.slack.fakes import FakeSlackInk, compose_slack_feelers
 from tests.channels.slack.test_oauth import slack_transport
@@ -102,10 +99,6 @@ def a_workspace(
     """A Slack workspace offering its tools, connected the way bootstrap connects
     one: its connector registered on the deployment's OAuth manager, its flow
     speaking to a stand-in for Slack that grants `xoxp-user` to `steve.li`."""
-    channel = object.__new__(ServedSlackTentacle)
-    channel.id = id
-    channel.ink = cast(SlackInk, ink)
-    channel.chromo = SlackChromo()
     config = SlackChannelConfig(
         app_id="A-test",
         bot_token=SecretStr("xoxb-test"),
@@ -115,27 +108,18 @@ def a_workspace(
         mcp=True,
         oauth=SlackOAuthClientConfig(client_id="1.2", client_secret=SecretStr("shh")),
     )
-    channel.config = config
-    channel.app_token = config.app_token
-    compose_slack_feelers(channel)
-    octomate.connect(channel)
-    assert config.oauth is not None
-    octomate.oauth.register(
-        OAuthConnector(
-            id=id,
-            flow=SlackAuthorizationCodeOAuthFlow(
-                client_id=config.oauth.client_id,
-                client_secret=config.oauth.client_secret,
-                scopes=config.oauth.scopes,
-                transport=slack_transport(
-                    {"ok": True, "access_token": "xoxp-user", "token_type": "user"}
-                ),
-            ),
-            callback_transport=DirectHttpOAuthCallbackTransport(
-                config.oauth.callback_base_uri
-            ),
+    transport = slack_transport(
+        {"ok": True, "access_token": "xoxp-user", "token_type": "user"}
+    )
+    octomate.oauth.httpx_client_factory = lambda headers=None, timeout=None, auth=None: (
+        httpx2.AsyncClient(
+            transport=transport, headers=headers, timeout=timeout, auth=auth
         )
     )
+    channel = ServedSlackTentacle(id=id, octomate=octomate, config=config)
+    channel.ink = cast(SlackInk, ink)
+    compose_slack_feelers(channel)
+    octomate.connect(channel)
     return channel
 
 

@@ -34,7 +34,11 @@ from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.oauth import HttpsUrl
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
 from tests.managers.test_mcp import connected
-from tests.managers.test_oauth import FakeDeviceFlow
+from tests.managers.test_oauth import (
+    FakeAuthorizationCodeFlow,
+    FakeDeviceFlow,
+    direct_http,
+)
 from tests.support.users import a_user, auth_config
 
 URL = "https://mcp.example/mcp"
@@ -463,7 +467,7 @@ async def test_one_tentacle_app_can_authorize_two_installed_mcps(
     user = await a_user()
     flow = FakeDeviceFlow()
     host.oauth.register(
-        OAuthConnector.model_validate({"id": "github", "flow": flow, "mcp_url": URL})
+        OAuthConnector.model_validate({"id": "github", "flows": [flow], "mcp_url": URL})
     )
     first = await install(host, user, "github_work", "github")
     second = await install(host, user, "github_personal", "github")
@@ -625,7 +629,12 @@ async def test_management_api_authorizes_only_the_logged_in_users_mcp(
         flow = FakeDeviceFlow()
         host.oauth.register(
             OAuthConnector.model_validate(
-                {"id": "github", "flow": flow, "mcp_url": URL}
+                {
+                    "id": "github",
+                    "flows": [flow, FakeAuthorizationCodeFlow()],
+                    "mcp_url": URL,
+                    "callback_transport": direct_http(),
+                }
             )
         )
         device = await install(host, user, "github", "github")
@@ -639,6 +648,14 @@ async def test_management_api_authorizes_only_the_logged_in_users_mcp(
         assert started.json()["user_code"] == "ABCD-EFGH"
         assert "device-secret" not in started.text
         assert "github-token" not in started.text
+        browser = await client.post(
+            f"{base}/{device.id}/connect", params={"flow": "authorization_code"}
+        )
+        assert browser.status_code == 200
+        assert AuthorizationLink.model_validate_json(browser.content).authorization_uri
+        assert (
+            await client.post(f"{base}/{device.id}/connect", params={"flow": "unknown"})
+        ).status_code == 422
         flow.completion = OAuthPending(retry_after_seconds=7)
         waiting = await client.post(f"{base}/{device.id}/confirm")
         assert waiting.json() == {
@@ -666,7 +683,7 @@ async def test_lifecycle_waits_for_the_matching_oauth_lock(
     if tentacle_id is not None:
         host.oauth.register(
             OAuthConnector.model_validate(
-                {"id": tentacle_id, "flow": FakeDeviceFlow(), "mcp_url": URL}
+                {"id": tentacle_id, "flows": [FakeDeviceFlow()], "mcp_url": URL}
             )
         )
     instance = await install(host, user, "provider", tentacle_id)

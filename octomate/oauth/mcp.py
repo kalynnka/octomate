@@ -153,7 +153,7 @@ class OAuthTokenExchange:
                 client.build_request("POST", str(url), data=data, headers=headers),
             )
 
-    def grant(self, response: httpx2.Response) -> OAuthGrant:
+    async def grant(self, response: httpx2.Response) -> OAuthGrant:
         if response.status_code not in (200, 400, 401):
             response.raise_for_status()
         # Some OAuth servers return protocol errors with HTTP 200.
@@ -197,7 +197,7 @@ class OAuthTokenExchange:
                 "refresh_token": refresh_token.get_secret_value(),
             },
         )
-        grant = self.grant(response)
+        grant = await self.grant(response)
         if grant.refresh_token is None:
             grant.refresh_token = refresh_token
         return grant
@@ -423,7 +423,7 @@ class McpOAuthFlow(AuthorizationCodeOAuthFlow):
                 "redirect_uri": str(callback_uri),
             },
         )
-        return self.tokens.grant(response)
+        return await self.tokens.grant(response)
 
     async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
         if self.tokens is None:
@@ -476,7 +476,7 @@ class McpDeviceOAuthFlow(DeviceOAuthFlow):
                     return OAuthPending(retry_after_seconds=interval)
                 case "slow_down":
                     return OAuthPending(retry_after_seconds=interval + 5)
-        return self.tokens.grant(response)
+        return await self.tokens.grant(response)
 
     async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
         return await self.tokens.refresh(refresh_token)

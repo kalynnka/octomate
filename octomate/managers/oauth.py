@@ -52,7 +52,7 @@ from octomate.schemas.oauth import (
     OAuthTokenPayload,
 )
 from octomate.schemas.user import User, UserProfile
-from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
 
 
 class NoPendingAuthorization(ValueError):
@@ -85,19 +85,31 @@ class OAuthConnector(BaseModel):
     model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     id: str = Field(min_length=1)
-    flow: DeviceOAuthFlow | AuthorizationCodeOAuthFlow
+    flows: list[DeviceOAuthFlow | AuthorizationCodeOAuthFlow] = Field(min_length=1)
     callback_transport: OAuthCallbackTransport | None = None
     mcp_url: HttpsUrl | None = None
 
     @model_validator(mode="after")
     def callback_matches_flow(self) -> Self:
-        if isinstance(self.flow, DeviceOAuthFlow):
+        if len({flow.kind for flow in self.flows}) != len(self.flows):
+            raise ValueError("OAuth flow types must be unique")
+        if all(isinstance(flow, DeviceOAuthFlow) for flow in self.flows):
             if self.callback_transport is not None:
                 raise ValueError("device OAuth does not use a callback transport")
             return self
         if self.callback_transport is None:
             raise ValueError("authorization-code OAuth requires a callback transport")
         return self
+
+    def select_flow(
+        self, kind: OAuthFlowKind | None = None
+    ) -> DeviceOAuthFlow | AuthorizationCodeOAuthFlow:
+        if kind is None:
+            return self.flows[0]
+        for flow in self.flows:
+            if flow.kind == kind:
+                return flow
+        raise ValueError(f"OAuth connector {self.id!r} does not support {kind!r}")
 
 
 class OAuthLockKey(NamedTuple):
@@ -178,12 +190,14 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             )
         return OAuthConnector(
             id="mcp",
-            flow=McpOAuthFlow(
-                url=url,
-                httpx_client_factory=self.httpx_client_factory,
-                client_metadata_url=self.client_metadata_url,
-                state=state,
-            ),
+            flows=[
+                McpOAuthFlow(
+                    url=url,
+                    httpx_client_factory=self.httpx_client_factory,
+                    client_metadata_url=self.client_metadata_url,
+                    state=state,
+                )
+            ],
             callback_transport=DirectHttpOAuthCallbackTransport(self.callback_base_uri),
         )
 
@@ -194,6 +208,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         *,
         mcp_id: uuid.UUID | None = None,
         profile: UserProfile | None = None,
+        flow: OAuthFlowKind | None = None,
     ) -> OAuthStartResult:
         if profile is not None and profile.user_id != user.id:
             raise ValueError("OAuth profile does not belong to this user")
@@ -201,6 +216,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         connector = await self.resolve_connector(
             connector_id, user_id=user.id, mcp_id=mcp_id
         )
+        selected = connector.select_flow(flow)
         context = OAuthFlowContext(
             operation_id=uuid7(),
             connector_id=connector.id,
@@ -208,7 +224,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             user=user,
             profile=profile,
         )
-        if isinstance(connector.flow, DeviceOAuthFlow):
+        if isinstance(selected, DeviceOAuthFlow):
             cipher = self.cipher
             if cipher is None:
                 raise ValueError("OAuth persistence requires an encryption key")
@@ -220,7 +236,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             )
             if resumed is not None:
                 return resumed
-            authorization = await connector.flow.start(context)
+            authorization = await selected.start(context)
             payload = DeviceOperationPayload(
                 device_code=authorization.device_code,
                 user_code=authorization.user_code,
@@ -252,9 +268,8 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                 interval_seconds=authorization.interval_seconds,
             )
 
-        flow = connector.flow
-        if not isinstance(flow, AuthorizationCodeOAuthFlow):
-            raise TypeError(f"unsupported OAuth flow {type(flow).__name__}")
+        if not isinstance(selected, AuthorizationCodeOAuthFlow):
+            raise TypeError(f"unsupported OAuth flow {type(selected).__name__}")
         transport = connector.callback_transport
         if transport is None:
             raise ValueError("authorization-code OAuth requires a callback transport")
@@ -270,7 +285,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         # where anyone the link reaches can read it.
         state = SecretStr(f"{context.operation_id}.{secrets.token_urlsafe(32)}")
         try:
-            authorization = await flow.start(context, callback_uri, state)
+            authorization = await selected.start(context, callback_uri, state)
         except ValidationError:
             raise ValueError("OAuth authorization returned invalid metadata") from None
         payload = AuthorizationCodeOperationPayload(
@@ -334,6 +349,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                     OAuthOperation["connector_id"] == connector_id,
                     OAuthOperation["mcp_id"] == mcp_id,
                     OAuthOperation["consumed_at"].is_(None),
+                    OAuthOperation["interval_seconds"].is_not(None),
                     OAuthOperation["expires_at"] > datetime.now(UTC),
                 ],
             )
@@ -383,6 +399,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                     OAuthOperation["connector_id"] == connector_id,
                     OAuthOperation["mcp_id"] == mcp_id,
                     OAuthOperation["consumed_at"].is_(None),
+                    OAuthOperation["interval_seconds"].is_not(None),
                 ],
             )
         if not operations:
@@ -432,8 +449,11 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             connector = await self.resolve_connector(
                 operation.connector_id, user_id=user.id, mcp_id=operation.mcp_id
             )
-            flow = connector.flow
-            if not isinstance(flow, DeviceOAuthFlow):
+            flow = connector.select_flow("device")
+            if (
+                not isinstance(flow, DeviceOAuthFlow)
+                or operation.interval_seconds is None
+            ):
                 raise ValueError("OAuth operation is not a device authorization")
             context = OAuthFlowContext(
                 operation_id=operation.id,
@@ -470,6 +490,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                     user_id=user.id,
                     connector_id=connector.id,
                     existing=existing,
+                    flow=flow.kind,
                     mcp_id=operation.mcp_id,
                 )
             )
@@ -484,6 +505,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user_id: uuid.UUID,
         connector_id: str,
         existing: OAuthConnection | None,
+        flow: OAuthFlowKind,
         mcp_id: uuid.UUID | None = None,
     ) -> OAuthConnection:
         """This user's connection to a connector, carrying a grant, encrypted.
@@ -512,6 +534,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         connection.status = "active"
         connection.encrypted_tokens = cipher.encrypt(
             OAuthTokenPayload(
+                flow=flow,
                 access_token=grant.access_token,
                 refresh_token=grant.refresh_token,
                 token_type=grant.token_type,
@@ -594,7 +617,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             )
             if payload.mcp_oauth is not None:
                 validate_authorization_response_iss(issuer, payload.mcp_oauth.metadata)
-            flow = connector.flow
+            flow = connector.select_flow("authorization_code")
             if not isinstance(flow, AuthorizationCodeOAuthFlow):
                 raise UnusableOAuthOperation(
                     "OAuth operation is not an authorization-code authorization"
@@ -629,6 +652,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                     user_id=user.id,
                     connector_id=connector.id,
                     existing=existing,
+                    flow=flow.kind,
                     mcp_id=operation.mcp_id,
                 )
             )
@@ -887,7 +911,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             connector = await self.resolve_connector(
                 connector_id, user_id=user.id, mcp_id=mcp_id, state=payload.mcp_oauth
             )
-            flow = connector.flow
+            flow = connector.select_flow(payload.flow)
             if not isinstance(flow, (AuthorizationCodeOAuthFlow, McpDeviceOAuthFlow)):
                 raise ValueError(f"{connector_id!r} has no refreshable OAuth flow")
             try:
@@ -912,6 +936,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                 user_id=user.id,
                 connector_id=connector_id,
                 existing=connection,
+                flow=flow.kind,
                 mcp_id=mcp_id,
             )
             await session.commit()

@@ -503,7 +503,7 @@ def test_channel_templates_do_not_read_credentials(
         "DISCORD__BOT_TOKEN": "test-discord-secret",
     }
     for key, value in credentials.items():
-        monkeypatch.setenv(f"OCTOMATE__CHANNELS__{key}", value)
+        monkeypatch.setenv(f"OCTOMATE__TENTACLES__{key}", value)
     root = tmp_path / "service"
     result = runner.invoke(
         service_typer,
@@ -583,7 +583,7 @@ def test_unsupported_channel_refused_before_preparation(
 def test_yes_prepares_channel_template_without_credentials(
     tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("OCTOMATE__CHANNELS__DISCORD__BOT_TOKEN", raising=False)
+    monkeypatch.delenv("OCTOMATE__TENTACLES__DISCORD__BOT_TOKEN", raising=False)
     root = tmp_path / "service"
     result = runner.invoke(
         service_typer,
@@ -633,6 +633,8 @@ def test_wizard_collects_mcp_before_review_and_only_prepares_after_confirmation(
     )
     assert result.exit_code == (0 if confirm else 1), result.output
     assert "GitHub (github_work, read-only)" in result.output
+    assert "device and browser authorization" in result.output
+    assert "OCTOMATE__TENTACLES__GITHUB_WORK__CLIENT_SECRET" in result.output
     assert "workflow" in result.output
     assert "authorize their own accounts later" in result.output
     if not confirm:

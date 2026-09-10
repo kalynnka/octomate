@@ -23,10 +23,12 @@ def configured_mcp(*, client_id: str = "test-app") -> OAuthMcpConfig:
         url=AnyUrl("https://mcp.example/mcp"),
         client_id=client_id,
         scopes=["tools:read"],
-        flow=DeviceFlowConfig(
-            device_authorization_endpoint=AnyUrl("https://auth.example/device"),
-            token_endpoint=AnyUrl("https://auth.example/token"),
-        ),
+        flows=[
+            DeviceFlowConfig(
+                device_authorization_endpoint=AnyUrl("https://auth.example/device"),
+                token_endpoint=AnyUrl("https://auth.example/token"),
+            )
+        ],
     )
 
 
@@ -39,7 +41,7 @@ async def install_tentacle(tentacle: McpTentacle, profile: UserProfile) -> Mcp:
     if connector is not None:
         host.oauth.connectors[tentacle.id] = OAuthConnector(
             id=connector.id,
-            flow=connector.flow,
+            flows=connector.flows,
             callback_transport=connector.callback_transport,
             mcp_url=AnyUrl(tentacle.upstream),
         )

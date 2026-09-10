@@ -32,12 +32,18 @@ class DeviceFlowConfig(BaseModel):
     type: Literal["device"] = "device"
     device_authorization_endpoint: HttpsUrl
     token_endpoint: HttpsUrl
+    token_endpoint_auth_method: Literal[
+        "none", "client_secret_basic", "client_secret_post"
+    ] = "none"
 
 
 class AuthorizationCodeFlowConfig(BaseModel):
     type: Literal["authorization_code"] = "authorization_code"
     authorization_endpoint: HttpsUrl
     token_endpoint: HttpsUrl
+    token_endpoint_auth_method: Literal[
+        "none", "client_secret_basic", "client_secret_post"
+    ] = "none"
 
 
 class OAuthMcpConfig(McpConfig):
@@ -47,9 +53,6 @@ class OAuthMcpConfig(McpConfig):
     url: HttpsUrl
     client_id: str = Field(min_length=1)
     client_secret: SecretStr | None = None
-    token_endpoint_auth_method: Literal[
-        "none", "client_secret_basic", "client_secret_post"
-    ] = "none"
     scopes: list[str] = Field(
         default_factory=list,
         description="Access requested when connecting. Widening it requires reauthorization.",
@@ -62,13 +65,20 @@ class OAuthMcpConfig(McpConfig):
         default_factory=lambda: ["invalid_grant", "invalid_client"],
         description="OAuth error codes that require reconnecting instead of retrying a refresh.",
     )
-    flow: Annotated[
-        DeviceFlowConfig | AuthorizationCodeFlowConfig, Field(discriminator="type")
-    ]
+    flows: list[
+        Annotated[
+            DeviceFlowConfig | AuthorizationCodeFlowConfig, Field(discriminator="type")
+        ]
+    ] = Field(
+        min_length=1,
+        description="Available authorization flows; the first is the default.",
+    )
 
     @model_validator(mode="after")
     def validate_client_authentication(self) -> Self:
-        if self.token_endpoint_auth_method == "none":
+        if len({flow.type for flow in self.flows}) != len(self.flows):
+            raise ValueError("OAuth flow types must be unique")
+        if all(flow.token_endpoint_auth_method == "none" for flow in self.flows):
             if self.client_secret is not None:
                 raise ValueError(
                     "client_secret requires a token endpoint authentication method"

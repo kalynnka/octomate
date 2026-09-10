@@ -25,11 +25,10 @@ import yaml
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import SecretStr, TypeAdapter
+from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
 from sqlalchemy.engine import make_url
 
 from octomate.config import (
-    AgentsConfig,
     AuthConfig,
     LogfireConfig,
     LoggingConfig,
@@ -37,6 +36,7 @@ from octomate.config import (
     OAuthConfig,
     OctomateConfig,
     ProvidersConfig,
+    TentacleConfigVariant,
     WorkspacesConfig,
 )
 from octomate.config.channels import (
@@ -47,7 +47,6 @@ from octomate.config.channels import (
     TrunklineChannelConfig,
 )
 from octomate.config.database import database_settings
-from octomate.config.mcp import McpConfigVariant
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate_cli.mcp import McpPreset
 
@@ -77,22 +76,22 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
     ]
     if "claude" in agents:
         instructions.append(
-            "- [ ] Review `config/agents.yaml`: `agents.claude`, including `permission_mode`. "
+            "- [ ] Review `config/tentacles.yaml`: `tentacles.claude`, including `permission_mode`. "
             "Use the desktop account's native Claude login and Keychain credentials. "
             "Keep its existing settings, plugins and Claude.ai connectors; do not replace "
             "that login with a setup token. Verify these through Octomate after activation.\n"
         )
     if "codex" in agents:
         instructions.append(
-            "- [ ] Review `config/agents.yaml`: `agents.codex.runtime`, "
-            "`agents.codex.permission_mode` and `agents.codex.sandbox`. Confirm the desktop "
+            "- [ ] Review `config/tentacles.yaml`: `tentacles.codex.runtime`, "
+            "`tentacles.codex.permission_mode` and `tentacles.codex.sandbox`. Confirm the desktop "
             "account's native Codex login and settings, then verify an actual request "
             "through Octomate after activation.\n"
         )
     if "deepseek" in agents:
         instructions.append(
-            "- [ ] DSH (experimental): review `config/agents.yaml`: "
-            "`agents.deepseek.executable`, `host`, `port`, `dsh_home` and "
+            "- [ ] DSH (experimental): review `config/tentacles.yaml`: "
+            "`tentacles.deepseek.executable`, `host`, `port`, `dsh_home` and "
             "`permission_mode`. Configure the harness's provider credentials yourself. "
             "Octomate attaches to an existing local harness or starts `dsh web` using "
             "these settings. Verify an actual request through Octomate after activation.\n"
@@ -101,33 +100,31 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
     for channel in channels:
         if channel == "trunkline":
             instructions.append(
-                "- [ ] Trunkline API is enabled in `config/channels.yaml`. The frontend "
-                "build is separate: set `channels.trunkline.static_dir` to its existing "
+                "- [ ] Trunkline API is enabled in `config/tentacles.yaml`. The frontend "
+                "build is separate: set `tentacles.trunkline.static_dir` to its existing "
                 "build directory to serve it. Create an account after database setup "
                 "and verify console sign-in.\n"
             )
         else:
             fields = ", ".join(
-                f"`channels.{channel}.{field}`"
+                f"`tentacles.{channel}.{field}`"
                 for field in CHANNEL_PLACEHOLDERS[channel]
             )
             instructions.append(
-                f"- [ ] In `config/channels.yaml`, replace the FILL_IN values at {fields}. "
-                f"Then set `channels.{channel}.enabled: true` and verify a real channel "
+                f"- [ ] In `config/tentacles.yaml`, replace the FILL_IN values at {fields}. "
+                f"Then set `tentacles.{channel}.enabled: true` and verify a real channel "
                 "conversation after activation.\n"
             )
         instructions.append(
-            f"- [ ] Review `config/channels.yaml`: `channels.{channel}.agents` "
+            f"- [ ] Review `config/tentacles.yaml`: `tentacles.{channel}.agents` "
             "lists every selected agent; adjust the routing if needed.\n"
         )
     if not channels:
-        instructions.append(
-            "No channels selected; `config/channels.yaml` contains an empty mapping.\n"
-        )
+        instructions.append("No channel tentacles selected.\n")
     if any(channel != "trunkline" for channel in channels):
         instructions.append(
             "If storing channel credentials in `.env` instead, use uppercase names "
-            "`OCTOMATE__CHANNELS__<CHANNEL>__<FIELD>` and remove the corresponding YAML "
+            "`OCTOMATE__TENTACLES__<CHANNEL>__<FIELD>` and remove the corresponding YAML "
             "fields: YAML overrides `.env`, including FILL_IN placeholders.\n"
         )
     instructions.extend(
@@ -163,7 +160,9 @@ def prepare(
         raise ValueError(
             "Choose at least one supported agent: claude, codex, deepseek (DSH; experimental)."
         )
-    configured_agents = AgentsConfig.model_validate({name: {} for name in agents})
+    configured_tentacles = TypeAdapter(
+        dict[str, TentacleConfigVariant]
+    ).validate_python({name: {"type": name} for name in agents})
     root = Path.cwd()
     home = root / "config"
     if os.environ.get("OCTOMATE_HOME") != str(home):
@@ -191,8 +190,12 @@ def prepare(
         mcps = []
     if len({mcp.name for mcp in mcps}) != len(mcps):
         raise ValueError("MCP tentacle names must be unique.")
-    configured_mcps = TypeAdapter(dict[str, McpConfigVariant]).validate_python(
-        {mcp.name: mcp.configuration() for mcp in mcps}
+    client_secret_placeholder = "FILL_IN_OAUTH_CLIENT_SECRET"
+    configured_mcps = TypeAdapter(dict[str, TentacleConfigVariant]).validate_python(
+        {
+            mcp.name: mcp.configuration() | {"client_secret": client_secret_placeholder}
+            for mcp in mcps
+        }
     )
     encryption_key = secrets.token_urlsafe(32) if configured_mcps else None
     routes = list(dict.fromkeys(agents))
@@ -226,23 +229,28 @@ def prepare(
             )
         else:
             configured_channels[channel] = TrunklineChannelConfig(agents=routes)
+    if set(configured_tentacles) & set(configured_channels) or set(configured_mcps) & (
+        set(configured_tentacles) | set(configured_channels)
+    ):
+        raise ValueError("Tentacle names must be unique across all selections.")
+    configured_tentacles.update(configured_channels)
+    configured_tentacles.update(configured_mcps)
     config = OctomateConfig(
         host=IPv4Address("127.0.0.1"),
         port=port,
-        agents=configured_agents,
+        tentacles=configured_tentacles,
         auth=AuthConfig(
             access_token_salt=SecretStr(salts["access_token_salt"]),
             refresh_token_salt=SecretStr(salts["refresh_token_salt"]),
             api_key_salt=SecretStr(salts["api_key_salt"]),
         ),
-        channels=configured_channels,
         projects={},
         providers=ProvidersConfig(),
-        mcp=configured_mcps,
         logging=LoggingConfig(),
         logfire=LogfireConfig(),
         oauth=OAuthConfig(
-            encryption_key=SecretStr(encryption_key) if encryption_key else None
+            encryption_key=SecretStr(encryption_key) if encryption_key else None,
+            callback_base_uri=AnyHttpUrl(f"http://localhost:{port}") if mcps else None,
         ),
         mirrors=MirrorsConfig(),
         workspaces=WorkspacesConfig(),
@@ -251,20 +259,18 @@ def prepare(
         mode="json",
         exclude={
             "auth": set(salts),
-            "agents": set(AgentsConfig.model_fields) - set(agents),
             "oauth": {"encryption_key"},
+            "tentacles": {mcp.name: {"client_secret"} for mcp in mcps},
         },
     )
     for channel in channels:
-        payload["channels"][channel].update(CHANNEL_PLACEHOLDERS[channel])
+        payload["tentacles"][channel].update(CHANNEL_PLACEHOLDERS[channel])
     sections = {
         "octomate": ("host", "port", "mirrors", "workspaces"),
-        "agents": ("agents",),
-        "channels": ("channels",),
+        "tentacles": ("tentacles",),
         "auth": ("auth",),
         "projects": ("projects",),
         "providers": ("providers",),
-        "mcp": ("mcp",),
         "observability": ("logging", "logfire"),
         "oauth": ("oauth",),
     }
@@ -292,6 +298,10 @@ def prepare(
                 if encryption_key
                 else ""
             )
+            + "".join(
+                f"OCTOMATE__TENTACLES__{mcp.name.upper()}__CLIENT_SECRET={client_secret_placeholder}\n"
+                for mcp in mcps
+            )
         )
         dotenv.chmod(0o600)
         checklist = staging / "CONFIGURATION.md"
@@ -312,6 +322,11 @@ def prepare(
     print(
         "Prepared configuration templates; complete CONFIGURATION.md before activation. No database was created."
     )
+    for mcp in mcps:
+        print(
+            f"{mcp.name}: set OCTOMATE__TENTACLES__{mcp.name.upper()}__CLIENT_SECRET in .env "
+            f"and register http://localhost:{port}/oauth/{mcp.name}/callback in the OAuth App."
+        )
 
 
 def database_path() -> Path:
@@ -433,7 +448,7 @@ async def verify(config: OctomateConfig) -> None:
     url = f"http://{config.host}:{config.port}"
     console_enabled = any(
         channel.enabled and channel.type == "trunkline"
-        for channel in config.channels.values()
+        for channel in config.tentacles.values()
     )
     console_status = (
         (401 if config.auth is not None else 503) if console_enabled else 404

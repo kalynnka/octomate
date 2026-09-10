@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import ClassVar, Literal
+from typing import Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
 from pydantic import ConfigDict, Field
@@ -45,7 +45,7 @@ class CodexConfig(AgentConfig):
 
     model_config = ConfigDict(extra="ignore")
 
-    id: ClassVar[str] = "codex"
+    type: Literal["codex"] = "codex"
 
     enabled: bool = Field(
         default=True,

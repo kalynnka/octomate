@@ -39,7 +39,7 @@ class McpPreset(BaseModel):
         )
         return TypeAdapter(dict[str, dict[str, dict[str, JsonValue]]]).validate_python(
             yaml.safe_load(rendered)
-        )["mcp"][self.name]
+        )["tentacles"][self.name]
 
 
 @mcp_typer.command()
@@ -54,7 +54,9 @@ def preset(
     name: Annotated[str | None, typer.Option(help="Tentacle ID.")] = None,
     output: Annotated[
         Path | None,
-        typer.Option(help="Destination YAML; defaults to mcp.yaml in the config home."),
+        typer.Option(
+            help="Destination YAML; defaults to tentacles.yaml in the config home."
+        ),
     ] = None,
     read_only: Annotated[
         bool,
@@ -76,18 +78,25 @@ def preset(
         client_id=client_id,
         read_only=read_only,
     )
-    path = output.expanduser() if output is not None else config_home() / "mcp.yaml"
+    path = (
+        output.expanduser() if output is not None else config_home() / "tentacles.yaml"
+    )
     adapter = TypeAdapter(dict[str, JsonValue])
     existing = yaml.safe_load(path.read_text()) if path.exists() else None
     config = adapter.validate_python(existing if existing is not None else {})
-    mcps = adapter.validate_python(config.get("mcp", {}))
+    mcps = adapter.validate_python(config.get("tentacles", {}))
     tentacle_id = selection.name
     if tentacle_id in mcps:
         raise typer.BadParameter(
             f"MCP tentacle {tentacle_id!r} already exists in {path}."
         )
     mcps[tentacle_id] = selection.configuration()
-    config["mcp"] = mcps
+    config["tentacles"] = mcps
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(config, sort_keys=False))
     typer.echo(f"Saved MCP tentacle {tentacle_id!r} to {path.resolve()}")
+    typer.echo(
+        f"Set OCTOMATE__TENTACLES__{tentacle_id.upper()}__CLIENT_SECRET in your .env "
+        "and configure oauth.callback_base_uri. Register "
+        f"<callback_base_uri>/oauth/{tentacle_id}/callback in the GitHub OAuth App."
+    )

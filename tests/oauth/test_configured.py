@@ -14,8 +14,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import OAuthMcpConfig, OctomateConfig
-from octomate.config.mcp.base import AuthorizationCodeFlowConfig
+from octomate.config.mcp.base import AuthorizationCodeFlowConfig, DeviceFlowConfig
 from octomate.config.oauth import OAuthConfig
+from octomate.database import async_session
 from octomate.managers.oauth import OAuthConnector, OAuthManager
 from octomate.managers.user import UserManager
 from octomate.oauth.mcp import (
@@ -28,9 +29,11 @@ from octomate.schemas.mcp import McpInstallRequest, OAuthMcp
 from octomate.schemas.oauth import (
     AuthorizationLink,
     DeviceAuthorization,
+    OAuthConnection,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
+    OAuthTokenPayload,
 )
 from octomate.schemas.user import User
 from octomate.tentacles.mcp import build_mcp
@@ -273,7 +276,9 @@ async def test_device_polling_and_refresh_through_manager(
         users=UserManager(),
         encryption_key=SecretStr(urlsafe_b64encode(bytes(range(32))).decode()),
         connectors=[
-            OAuthConnector(id="work", flow=device_flow(httpx2.MockTransport(respond)))
+            OAuthConnector(
+                id="work", flows=[device_flow(httpx2.MockTransport(respond))]
+            )
         ],
     )
     owner = await a_user("alice")
@@ -347,17 +352,19 @@ async def test_configured_callback_keeps_overlapping_users_separate(
                 url=AnyUrl("https://mcp.example/mcp"),
                 client_id="app",
                 client_secret=SecretStr("app-secret"),
-                token_endpoint_auth_method="client_secret_post",
                 scopes=["read"],
-                flow=AuthorizationCodeFlowConfig(
-                    authorization_endpoint=AnyUrl("https://auth.example/authorize"),
-                    token_endpoint=AnyUrl("https://auth.example/token"),
-                ),
+                flows=[
+                    AuthorizationCodeFlowConfig(
+                        token_endpoint_auth_method="client_secret_post",
+                        authorization_endpoint=AnyUrl("https://auth.example/authorize"),
+                        token_endpoint=AnyUrl("https://auth.example/token"),
+                    )
+                ],
             ),
             host,
         )
     )
-    assert type(host.oauth.connector("work").flow) is McpOAuthFlow
+    assert type(host.oauth.connector("work").select_flow()) is McpOAuthFlow
     alice, bob = await a_user("alice"), await a_user("bob")
     assert [entry.id for entry in host.mcp.available()] == ["work"]
     assert await host.mcp.list(alice.id) == []
@@ -402,3 +409,134 @@ async def test_configured_callback_keeps_overlapping_users_separate(
         bob, "work", mcp_id=second_mcp.id
     ) == SecretStr("bob-refresh-renewed")
     assert len(requests) == 4
+
+
+async def test_one_mcp_supports_both_flows_and_refreshes_with_the_issuing_flow(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    requests: list[dict[str, list[str]]] = []
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        form = parse_qs(request.content.decode())
+        requests.append(form)
+        assert form["client_id"] == ["app"]
+        if request.url.path == "/device":
+            assert "client_secret" not in form
+            return httpx2.Response(
+                200,
+                json={
+                    "device_code": "device-secret",
+                    "user_code": "ABCD-EFGH",
+                    "verification_uri": "https://auth.example/verify",
+                    "expires_in": 900,
+                    "interval": 5,
+                },
+            )
+        assert request.url.path == "/token"
+        if "refresh_token" in form:
+            kind = form["refresh_token"][0].removesuffix("-refresh")
+            expires_in = 3600
+        else:
+            kind = "browser" if "code" in form else "device"
+            expires_in = 1
+        if kind == "browser":
+            assert form["client_secret"] == ["app-secret"]
+            if "code" in form:
+                assert form["code_verifier"]
+                assert form["redirect_uri"] == [
+                    "https://octomate.example/oauth/work/callback"
+                ]
+        else:
+            assert "client_secret" not in form
+        return httpx2.Response(
+            200,
+            json={
+                "access_token": kind
+                + ("-renewed" if expires_in == 3600 else "-access"),
+                "refresh_token": kind + "-refresh",
+                "expires_in": expires_in,
+            },
+        )
+
+    host = Octomate(
+        config=OctomateConfig(
+            oauth=OAuthConfig(callback_base_uri=AnyHttpUrl("https://octomate.example"))
+        ),
+        oauth_encryption_key=SecretStr(urlsafe_b64encode(bytes(range(32))).decode()),
+    )
+    host.oauth.httpx_client_factory = lambda headers=None, timeout=None, auth=None: (
+        httpx2.AsyncClient(
+            transport=httpx2.MockTransport(respond),
+            headers=headers,
+            timeout=timeout,
+            auth=auth,
+        )
+    )
+    host.connect(
+        build_mcp(
+            "work",
+            OAuthMcpConfig(
+                url=AnyUrl("https://mcp.example/mcp"),
+                client_id="app",
+                client_secret=SecretStr("app-secret"),
+                flows=[
+                    DeviceFlowConfig(
+                        device_authorization_endpoint=AnyUrl(
+                            "https://auth.example/device"
+                        ),
+                        token_endpoint=AnyUrl("https://auth.example/token"),
+                    ),
+                    AuthorizationCodeFlowConfig(
+                        authorization_endpoint=AnyUrl("https://auth.example/authorize"),
+                        token_endpoint=AnyUrl("https://auth.example/token"),
+                        token_endpoint_auth_method="client_secret_post",
+                    ),
+                ],
+            ),
+            host,
+        )
+    )
+    user = await a_user("alice")
+    installed = await host.mcp.install(
+        user.id,
+        McpInstallRequest(
+            name="Work",
+            namespace="work",
+            url=AnyUrl("https://mcp.example/mcp"),
+            tentacle_id="work",
+        ),
+    )
+    device = await host.mcp.connect(user, installed.id)
+    browser = await host.mcp.connect(user, installed.id, flow="authorization_code")
+    assert isinstance(device, DeviceAuthorization)
+    assert isinstance(browser, AuthorizationLink)
+    assert await host.mcp.connect(user, installed.id, flow="device") == device
+    assert len(requests) == 1
+    # A newer browser operation must not replace the pending device poll.
+    await host.mcp.confirm(user, installed.id)
+    assert await host.oauth.access_token(
+        user, "work", mcp_id=installed.id
+    ) == SecretStr("device-renewed")
+    async with async_session() as session:
+        first = await session.one(OAuthConnection)
+    payload = await host.oauth.staged_authorization("work", browser.operation_id)
+    await host.oauth.complete_callback(
+        "work", state=payload.state.get_secret_value(), code="browser-code"
+    )
+    assert await host.oauth.access_token(
+        user, "work", mcp_id=installed.id
+    ) == SecretStr("browser-renewed")
+    async with async_session() as session:
+        connection = await session.one(OAuthConnection)
+    assert connection.id == first.id
+    assert connection.mcp_id == installed.id
+    assert connection.user_id == user.id
+    assert host.oauth.cipher is not None
+    tokens = OAuthTokenPayload.model_validate_json(
+        host.oauth.cipher.decrypt(
+            connection.encrypted_tokens,
+            context=f"connection:{connection.id}",
+        )
+    )
+    assert tokens.flow == "authorization_code"
+    assert len(requests) == 5

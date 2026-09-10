@@ -19,6 +19,7 @@ from octomate.schemas.mcp import (
 )
 from octomate.schemas.oauth import DeviceAuthorization, OAuthStartResult
 from octomate.schemas.user import User
+from octomate.types.oauth import OAuthFlowKind
 
 logger = logging.getLogger(__name__)
 
@@ -64,9 +65,10 @@ async def connect(
     mcp_id: uuid.UUID,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
+    flow: OAuthFlowKind | None = None,
 ) -> OAuthStartResult | JSONResponse:
     try:
-        authorization = await manager.connect(user, mcp_id)
+        authorization = await manager.connect(user, mcp_id, flow=flow)
     except McpUnavailable as error:
         raise HTTPException(status_code=404, detail=str(error)) from error
     except (ValueError, httpx2.HTTPError, OAuthFlowError) as error:

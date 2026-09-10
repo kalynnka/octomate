@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import importlib
 import os
 from base64 import urlsafe_b64encode
 from datetime import timedelta
 from pathlib import Path
-from typing import ClassVar, get_args
+from typing import get_args
+from unittest.mock import patch
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
@@ -13,7 +15,6 @@ from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config import (
     AgentModelConfig,
-    AgentsConfig,
     BareMcpConfig,
     ChannelConfig,
     ClaudeCodeConfig,
@@ -56,7 +57,7 @@ def test_the_suite_never_reads_the_developers_config() -> None:
     ]
 
     live = OctomateConfig()
-    assert live.channels == {}
+    assert live.tentacles == {}
 
 
 def test_an_explicit_home_wins_over_discovery(
@@ -71,7 +72,7 @@ def test_an_explicit_home_wins_over_discovery(
     monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
     assert config_home() == tmp_path
     assert list(tmp_path.iterdir()) == []
-    assert OctomateConfig().channels == {}
+    assert OctomateConfig().tentacles == {}
 
 
 def test_a_home_is_discovered_only_when_it_holds_config(
@@ -128,97 +129,75 @@ def test_the_packaged_defaults_are_a_valid_deployment() -> None:
     config = OctomateConfig()
     # Nothing is turned on: no agent, no channel, no provider. Which LLM an
     # operator holds keys for is not guessable, so the defaults decline to guess.
-    assert config.agents.configured_agents == []
-    assert config.channels == {}
+    assert config.tentacles == {}
     assert config.providers.deepseek is None
     assert config.auth is None
 
 
-def test_configured_agents_returns_enabled_config_objects() -> None:
-    claude = ClaudeCodeConfig(enabled=False)
-    codex = CodexConfig()
-    agents = AgentsConfig(claude=claude, codex=codex)
-
-    configured_agents = agents.configured_agents
-    [enabled] = configured_agents
-    assert enabled is codex
-    assert enabled.id == "codex"
-
-    claude.enabled = True
-    codex.enabled = False
-    assert agents.configured_agents is configured_agents
-    assert agents.configured_agents == [codex]
-
-
-def test_configured_agents_preserves_model_iteration_and_serialization() -> None:
-    agents = AgentsConfig(
-        inkling=InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
-        claude=ClaudeCodeConfig(enabled=False),
-        codex=CodexConfig(),
-        deepseek=DeepseekConfig(),
+def test_tentacles_preserve_types_ids_and_serialization() -> None:
+    config = OctomateConfig(
+        tentacles={
+            "coding": CodexConfig(),
+            "review": ClaudeCodeConfig(enabled=False),
+            "assistant": InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
+        }
     )
-    fields = dict(agents)
-    assert set(fields) == {"inkling", "claude", "codex", "deepseek"}
-    assert fields["claude"] is agents.claude
-    config = OctomateConfig(agents=agents)
     serialized = config.model_dump(mode="json")
-    assert set(serialized["agents"]) == set(fields)
-    assert serialized["agents"]["claude"]["enabled"] is False
-    assert all("id" not in agent for agent in serialized["agents"].values())
-
+    assert list(serialized["tentacles"]) == ["coding", "review", "assistant"]
+    assert serialized["tentacles"]["review"]["type"] == "claude"
+    assert serialized["tentacles"]["review"]["enabled"] is False
+    assert not {"agents", "channels", "mcp"} & serialized.keys()
     restored = OctomateConfig.model_validate_json(config.model_dump_json())
-    assert restored.agents == config.agents
-    assert [agent.id for agent in restored.agents.configured_agents] == [
-        "inkling",
-        "codex",
-        "deepseek",
-    ]
+    assert restored.tentacles == config.tentacles
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_agents_reject_duplicate_ids_across_harnesses(
-    monkeypatch: pytest.MonkeyPatch, enabled: bool
-) -> None:
-    monkeypatch.setattr(CodexConfig, "id", "claude")
-    with pytest.raises(ValidationError, match="duplicate agent id 'claude'"):
+def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool) -> None:
+    with pytest.raises(ValidationError, match="duplicate agent runtime 'codex'"):
         OctomateConfig.model_validate(
-            {"agents": {"claude": {}, "codex": {"enabled": enabled}}}
+            {
+                "tentacles": {
+                    "coding": {"type": "codex"},
+                    "review": {"type": "codex", "enabled": enabled},
+                }
+            }
         )
 
 
-@pytest.mark.parametrize("second_id", ["claude", "another-subscription"])
-@pytest.mark.parametrize("enabled", [True, False])
-def test_additional_agent_configs_share_the_id_validation(
-    second_id: str, enabled: bool
-) -> None:
-    class SubscriptionConfig(ClaudeCodeConfig):
-        id: ClassVar[str] = second_id
+def test_channels_route_to_named_agent_tentacles() -> None:
+    config = OctomateConfig.model_validate(
+        {
+            "tentacles": {
+                "coding": {"type": "codex"},
+                "review": {"type": "claude", "enabled": False},
+                "web": {"type": "trunkline", "agents": ["coding"]},
+            }
+        }
+    )
+    assert isinstance(config.tentacles["coding"], CodexConfig)
+    web = config.tentacles["web"]
+    assert isinstance(web, ChannelConfig)
+    assert web.agents == ["coding"]
 
-    class SubscriptionAgentsConfig(AgentsConfig):
-        subscription: ClaudeCodeConfig | None = None
 
-    subscription = SubscriptionConfig(enabled=enabled)
-    if second_id == "claude":
-        with pytest.raises(ValidationError, match="duplicate agent id 'claude'"):
-            SubscriptionAgentsConfig(
-                claude=ClaudeCodeConfig(), subscription=subscription
-            )
-    else:
-        agents = SubscriptionAgentsConfig(
-            claude=ClaudeCodeConfig(), subscription=subscription
-        )
-        assert [agent.id for agent in agents.configured_agents] == (
-            ["claude", second_id] if enabled else ["claude"]
+@pytest.mark.parametrize("target", ["missing", "web", "review"])
+def test_channels_reject_missing_non_agent_or_disabled_routes(target: str) -> None:
+    with pytest.raises(ValidationError, match="does not match a configured agent"):
+        OctomateConfig.model_validate(
+            {
+                "tentacles": {
+                    "review": {"type": "claude", "enabled": False},
+                    "web": {"type": "trunkline", "agents": [target]},
+                }
+            }
         )
 
 
 def test_channel_config_parses_supported_channels() -> None:
     config = OctomateConfig.model_validate(
         {
-            "agents": {
-                "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-            },
-            "channels": {
+            "tentacles": {
+                "inkling": {"type": "inkling", "models": [{"name": "openai:gpt-4o"}]},
                 "slack": {
                     "type": "slack",
                     "agents": ["inkling"],
@@ -243,22 +222,22 @@ def test_channel_config_parses_supported_channels() -> None:
                     "agents": ["inkling"],
                     "bot_token": "discord-test",
                 },
-            },
+            }
         }
     )
 
-    assert isinstance(config.channels["slack"], SlackChannelConfig)
-    assert isinstance(config.channels["lark"], LarkChannelConfig)
-    assert isinstance(config.channels["napcat"], NapcatChannelConfig)
-    assert isinstance(config.channels["discord"], DiscordChannelConfig)
-    assert isinstance(config.channels["discord"].stream, DiscordStreamConfig)
-    assert config.channels["slack"].stream.flush_interval == 0.2
-    assert config.channels["slack"].stream.min_chars == 20
-    assert config.channels["lark"].stream.flush_interval == 0.2
-    assert config.channels["lark"].stream.min_chars == 20
-    assert config.channels["napcat"].stream.enabled is False
-    assert config.channels["discord"].stream.enabled is False
-    assert config.channels["discord"].stream.flush_interval == 0.2
+    assert isinstance(config.tentacles["slack"], SlackChannelConfig)
+    assert isinstance(config.tentacles["lark"], LarkChannelConfig)
+    assert isinstance(config.tentacles["napcat"], NapcatChannelConfig)
+    assert isinstance(config.tentacles["discord"], DiscordChannelConfig)
+    assert isinstance(config.tentacles["discord"].stream, DiscordStreamConfig)
+    assert config.tentacles["slack"].stream.flush_interval == 0.2
+    assert config.tentacles["slack"].stream.min_chars == 20
+    assert config.tentacles["lark"].stream.flush_interval == 0.2
+    assert config.tentacles["lark"].stream.min_chars == 20
+    assert config.tentacles["napcat"].stream.enabled is False
+    assert config.tentacles["discord"].stream.enabled is False
+    assert config.tentacles["discord"].stream.flush_interval == 0.2
 
 
 def test_inkling_request_limit_defaults_to_256() -> None:
@@ -280,12 +259,14 @@ def test_inkling_request_limit_must_be_positive() -> None:
 def test_channel_config_binds_agents_without_models() -> None:
     config = OctomateConfig.model_validate(
         {
-            "agents": {
-                "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                "claude": {},
-                "codex": {},
-            },
-            "channels": {
+            "tentacles": {
+                "inkling": {"type": "inkling", "models": [{"name": "openai:gpt-4o"}]},
+                "claude": {
+                    "type": "claude",
+                },
+                "codex": {
+                    "type": "codex",
+                },
                 "slack": {
                     "type": "slack",
                     "app_id": "A-test",
@@ -297,12 +278,12 @@ def test_channel_config_binds_agents_without_models() -> None:
                         "codex",
                     ],
                 },
-            },
+            }
         }
     )
 
-    assert config.channels["slack"] is not None
-    assert config.channels["slack"].agents == [
+    assert isinstance(config.tentacles["slack"], SlackChannelConfig)
+    assert config.tentacles["slack"].agents == [
         "inkling",
         "claude",
         "codex",
@@ -439,24 +420,25 @@ def test_channel_agent_routes_must_reference_configured_agent() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                },
-                "channels": {
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "xoxb-test",
                         "app_token": "xapp-test",
                         "agents": ["ghost"],
-                    }
-                },
+                    },
+                }
             }
         )
 
     [error] = exc_info.value.errors()
     assert error["type"] == "channel_agent_route"
-    assert error["loc"] == ("channels", "slack", "agents", 0)
+    assert error["loc"] == ("tentacles", "slack", "agents", 0)
     assert error["msg"] == "'ghost' does not match a configured agent tentacle"
 
 
@@ -464,11 +446,14 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "claude": {},
-                },
-                "channels": {
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
+                    "claude": {
+                        "type": "claude",
+                    },
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
@@ -489,20 +474,20 @@ def test_channel_agent_route_validation_reports_all_errors() -> None:
                             "nobody",
                         ],
                     },
-                },
+                }
             },
         )
 
     errors = {tuple(error["loc"]): error["msg"] for error in exc_info.value.errors()}
     assert errors == {
         (
-            "channels",
+            "tentacles",
             "slack",
             "agents",
             0,
         ): "'ghost' does not match a configured agent tentacle",
         (
-            "channels",
+            "tentacles",
             "lark",
             "agents",
             0,
@@ -514,7 +499,7 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "channels": {
+                "tentacles": {
                     "slack": {
                         "type": "slack",
                         "enabled": False,
@@ -528,7 +513,7 @@ def test_disabled_channel_agent_routes_are_validated() -> None:
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0)
+    assert error["loc"] == ("tentacles", "slack", "agents", 0)
     assert error["msg"] == "'ghost' does not match a configured agent tentacle"
 
 
@@ -536,11 +521,11 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
-                    "claude": None,
-                },
-                "channels": {
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
@@ -548,12 +533,12 @@ def test_channel_claude_route_requires_claude_agent_config() -> None:
                         "app_token": "xapp-test",
                         "agents": ["claude"],
                     },
-                },
+                }
             }
         )
 
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0)
+    assert error["loc"] == ("tentacles", "slack", "agents", 0)
     assert error["msg"] == "'claude' does not match a configured agent tentacle"
 
 
@@ -561,13 +546,15 @@ def test_channel_claude_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
                     "claude": {
+                        "type": "claude",
                         "enabled": False,
                     },
-                },
-                "channels": {
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
@@ -575,11 +562,11 @@ def test_channel_claude_route_requires_enabled_agent_config() -> None:
                         "app_token": "xapp-test",
                         "agents": ["claude"],
                     },
-                },
+                }
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0)
+    assert error["loc"] == ("tentacles", "slack", "agents", 0)
     assert error["msg"] == "'claude' does not match a configured agent tentacle"
 
 
@@ -587,13 +574,15 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
                     "codex": {
+                        "type": "codex",
                         "enabled": False,
                     },
-                },
-                "channels": {
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
@@ -601,11 +590,11 @@ def test_channel_codex_route_requires_enabled_agent_config() -> None:
                         "app_token": "xapp-test",
                         "agents": ["codex"],
                     },
-                },
+                }
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0)
+    assert error["loc"] == ("tentacles", "slack", "agents", 0)
     assert error["msg"] == "'codex' does not match a configured agent tentacle"
 
 
@@ -613,13 +602,15 @@ def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(
             {
-                "agents": {
-                    "inkling": {"models": [{"name": "openai:gpt-4o"}]},
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
                     "deepseek": {
+                        "type": "deepseek",
                         "enabled": False,
                     },
-                },
-                "channels": {
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
@@ -627,11 +618,11 @@ def test_channel_deepseek_route_requires_enabled_agent_config() -> None:
                         "app_token": "xapp-test",
                         "agents": ["deepseek"],
                     },
-                },
+                }
             },
         )
     [error] = exc_info.value.errors()
-    assert error["loc"] == ("channels", "slack", "agents", 0)
+    assert error["loc"] == ("tentacles", "slack", "agents", 0)
     assert error["msg"] == "'deepseek' does not match a configured agent tentacle"
 
 
@@ -647,7 +638,7 @@ def test_oauth_mcp_accepts_provider_defined_scopes() -> None:
 def test_config_parses_each_mcp_tentacle_type() -> None:
     config = OctomateConfig.model_validate(
         {
-            "mcp": {
+            "tentacles": {
                 "github": configured_mcp(client_id="Iv1.test"),
                 "linear": {
                     "type": "bare",
@@ -659,14 +650,14 @@ def test_config_parses_each_mcp_tentacle_type() -> None:
         }
     )
 
-    github = config.mcp["github"]
+    github = config.tentacles["github"]
     assert isinstance(github, OAuthMcpConfig)
     assert github.enabled is True
     assert github.client_id == "Iv1.test"
     assert github.scopes == ["tools:read"]
     assert str(github.url) == "https://mcp.example/mcp"
 
-    linear = config.mcp["linear"]
+    linear = config.tentacles["linear"]
     assert isinstance(linear, BareMcpConfig)
     assert linear.enabled is True
     assert linear.url == "https://mcp.linear.app/mcp"
@@ -676,7 +667,7 @@ def test_a_linked_account_needs_the_encryption_key() -> None:
     # The tokens it stores are what the key protects; a bare server stores none.
     OctomateConfig.model_validate(
         {
-            "mcp": {
+            "tentacles": {
                 "notion": {
                     "type": "bare",
                     "url": "https://mcp.notion.com/mcp",
@@ -686,10 +677,11 @@ def test_a_linked_account_needs_the_encryption_key() -> None:
         }
     )
     with pytest.raises(
-        ValidationError, match=r"oauth\.encryption_key is required when mcp\.github"
+        ValidationError,
+        match=r"oauth\.encryption_key is required when tentacles\.github",
     ):
         OctomateConfig.model_validate(
-            {"mcp": {"github": configured_mcp(client_id="Iv1.test")}}
+            {"tentacles": {"github": configured_mcp(client_id="Iv1.test")}}
         )
 
 
@@ -697,13 +689,13 @@ def test_mcp_server_token_comes_from_the_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Structure in YAML, secret in the environment: the key names the env var.
-    monkeypatch.setenv("OCTOMATE__MCP__LINEAR__TOKEN", "lin_from_env")
+    monkeypatch.setenv("OCTOMATE__TENTACLES__LINEAR__TOKEN", "lin_from_env")
 
     config = OctomateConfig.model_validate(
-        {"mcp": {"linear": {"type": "bare", "url": "https://mcp.linear.app/mcp"}}}
+        {"tentacles": {"linear": {"type": "bare", "url": "https://mcp.linear.app/mcp"}}}
     )
 
-    linear = config.mcp["linear"]
+    linear = config.tentacles["linear"]
     assert isinstance(linear, BareMcpConfig)
     assert linear.token is not None
     assert linear.token.get_secret_value() == "lin_from_env"
@@ -712,13 +704,13 @@ def test_mcp_server_token_comes_from_the_environment(
 def test_oauth_mcp_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
     # `type` too: it is the discriminator, so without it the block resolves to no
     # tentacle at all — the local octomate.yaml used to supply it by accident.
-    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__TYPE", "oauth")
-    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__URL", "https://mcp.example/mcp")
+    monkeypatch.setenv("OCTOMATE__TENTACLES__GITHUB__TYPE", "oauth")
+    monkeypatch.setenv("OCTOMATE__TENTACLES__GITHUB__URL", "https://mcp.example/mcp")
     monkeypatch.setenv(
-        "OCTOMATE__MCP__GITHUB__FLOW",
-        '{"type": "device", "device_authorization_endpoint": "https://auth.example/device", "token_endpoint": "https://auth.example/token"}',
+        "OCTOMATE__TENTACLES__GITHUB__FLOWS",
+        '[{"type": "device", "device_authorization_endpoint": "https://auth.example/device", "token_endpoint": "https://auth.example/token"}]',
     )
-    monkeypatch.setenv("OCTOMATE__MCP__GITHUB__CLIENT_ID", "Iv1.env")
+    monkeypatch.setenv("OCTOMATE__TENTACLES__GITHUB__CLIENT_ID", "Iv1.env")
     monkeypatch.setenv(
         "OCTOMATE__OAUTH__ENCRYPTION_KEY",
         "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
@@ -726,7 +718,7 @@ def test_oauth_mcp_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
     config = OctomateConfig()
 
-    github = config.mcp["github"]
+    github = config.tentacles["github"]
     assert isinstance(github, OAuthMcpConfig)
     assert github.client_id == "Iv1.env"
     assert config.oauth.encryption_key is not None
@@ -735,13 +727,13 @@ def test_oauth_mcp_settings_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_channel_stream_config_uses_partial_defaults_from_yaml(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    (tmp_path / "agents.yaml").write_text(
-        "agents:\n  inkling:\n    models:\n      - name: openai:gpt-4o\n",
-        encoding="utf-8",
-    )
-    (tmp_path / "channels.yaml").write_text(
+    (tmp_path / "tentacles.yaml").write_text(
         """
-channels:
+tentacles:
+  inkling:
+    type: inkling
+    models:
+      - name: openai:gpt-4o
   slack:
     type: slack
     agents: [inkling]
@@ -771,19 +763,19 @@ channels:
 
     config = OctomateConfig()
 
-    assert config.channels["slack"] is not None
-    assert config.channels["slack"].stream.enabled is False
-    assert config.channels["slack"].stream.flush_interval == 0.2
-    assert config.channels["slack"].stream.min_chars == 20
+    assert isinstance(config.tentacles["slack"], SlackChannelConfig)
+    assert config.tentacles["slack"].stream.enabled is False
+    assert config.tentacles["slack"].stream.flush_interval == 0.2
+    assert config.tentacles["slack"].stream.min_chars == 20
 
-    assert config.channels["lark"] is not None
-    assert config.channels["lark"].stream.enabled is False
-    assert config.channels["lark"].stream.flush_interval == 0.2
-    assert config.channels["lark"].stream.min_chars == 20
+    assert isinstance(config.tentacles["lark"], LarkChannelConfig)
+    assert config.tentacles["lark"].stream.enabled is False
+    assert config.tentacles["lark"].stream.flush_interval == 0.2
+    assert config.tentacles["lark"].stream.min_chars == 20
 
-    assert config.channels["napcat"] is not None
-    assert config.channels["napcat"].stream.enabled is False
-    assert config.channels["napcat"].stream.flush_interval == 0.3
+    assert isinstance(config.tentacles["napcat"], NapcatChannelConfig)
+    assert config.tentacles["napcat"].stream.enabled is False
+    assert config.tentacles["napcat"].stream.flush_interval == 0.3
 
 
 def test_logfire_instrumentation_defaults_off() -> None:
@@ -878,7 +870,7 @@ def test_mcp_pool_timeout_loads_from_yaml_and_environment(
 ) -> None:
     monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
     assert OctomateConfig().mcp_pool.idle_timeout == 3600
-    (tmp_path / "mcp.yaml").write_text("mcp_pool:\n  idle_timeout: 1200\n")
+    (tmp_path / "tentacles.yaml").write_text("mcp_pool:\n  idle_timeout: 1200\n")
     assert OctomateConfig().mcp_pool.idle_timeout == 1200
     monkeypatch.setenv("OCTOMATE__MCP_POOL__IDLE_TIMEOUT", "600")
     assert OctomateConfig().mcp_pool.idle_timeout == 600
@@ -947,7 +939,7 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
     # anything the config has to invent.
     config = OctomateConfig.model_validate(
         {
-            "mcp": {
+            "tentacles": {
                 "github_work": configured_mcp(client_id="Iv1.a"),
                 "github_home": configured_mcp(client_id="Iv1.b"),
             },
@@ -955,8 +947,8 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
         }
     )
 
-    work = config.mcp["github_work"]
-    home = config.mcp["github_home"]
+    work = config.tentacles["github_work"]
+    home = config.tentacles["github_home"]
     assert isinstance(work, OAuthMcpConfig)
     assert isinstance(home, OAuthMcpConfig)
     assert (work.client_id, home.client_id) == ("Iv1.a", "Iv1.b")
@@ -965,7 +957,9 @@ def test_one_vendor_can_be_mounted_once_per_account() -> None:
 def test_an_mcp_block_without_a_type_is_refused() -> None:
     # Nothing else in the block says which tentacle builds it.
     with pytest.raises(ValidationError, match="tag"):
-        OctomateConfig.model_validate({"mcp": {"linear_home": {"client_id": "lin_b"}}})
+        OctomateConfig.model_validate(
+            {"tentacles": {"linear_home": {"client_id": "lin_b"}}}
+        )
 
 
 def slack_channel_block(**overrides: object) -> dict[str, object]:
@@ -983,25 +977,30 @@ def test_a_slack_channel_offering_its_tools_needs_the_apps_oauth_client() -> Non
     with pytest.raises(ValidationError, match="needs an `oauth` block"):
         OctomateConfig.model_validate(
             {
-                "agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}},
-                "channels": {"slack": slack_channel_block(mcp=True)},
+                "tentacles": {
+                    "inkling": {
+                        "type": "inkling",
+                        "models": [{"name": "openai:gpt-4o"}],
+                    },
+                    "slack": slack_channel_block(mcp=True),
+                }
             }
         )
 
 
 def test_a_slack_oauth_client_stores_tokens_and_so_needs_the_key() -> None:
     deployment = {
-        "agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}},
-        "channels": {
+        "tentacles": {
+            "inkling": {"type": "inkling", "models": [{"name": "openai:gpt-4o"}]},
             "slack": slack_channel_block(
                 mcp=True, oauth={"client_id": "1.2", "client_secret": "shh"}
-            )
-        },
+            ),
+        }
     }
 
     with pytest.raises(
         ValidationError,
-        match=r"oauth\.encryption_key is required when channels\.slack\.oauth",
+        match=r"oauth\.encryption_key is required when tentacles\.slack\.oauth",
     ):
         OctomateConfig.model_validate(deployment)
 
@@ -1011,7 +1010,7 @@ def test_a_slack_oauth_client_stores_tokens_and_so_needs_the_key() -> None:
             "oauth": {"encryption_key": urlsafe_b64encode(bytes(range(32))).decode()},
         }
     )
-    slack = config.channels["slack"]
+    slack = config.tentacles["slack"]
     assert isinstance(slack, SlackChannelConfig)
     assert slack.oauth is not None
     # What the forwarded tools need and nothing that posts as the person.
@@ -1070,7 +1069,7 @@ def test_runtime_model_names_are_open_and_can_delegate_the_default() -> None:
 @pytest.mark.parametrize("method", ["client_secret_basic", "client_secret_post"])
 def test_configured_oauth_requires_its_client_secret(method: str) -> None:
     payload = configured_mcp().model_dump(mode="json")
-    payload["token_endpoint_auth_method"] = method
+    payload["flows"][0]["token_endpoint_auth_method"] = method
     with pytest.raises(ValidationError, match="requires client_secret"):
         OAuthMcpConfig.model_validate(payload)
     payload["client_secret"] = "application-secret"
@@ -1090,22 +1089,60 @@ def test_configured_oauth_refuses_an_unused_client_secret() -> None:
 )
 def test_configured_oauth_requires_https_endpoints(url: str) -> None:
     payload = configured_mcp().model_dump(mode="json")
-    payload["flow"]["token_endpoint"] = url
+    payload["flows"][0]["token_endpoint"] = url
     with pytest.raises(ValidationError, match="https"):
         OAuthMcpConfig.model_validate(payload)
 
 
 def test_authorization_code_mcp_requires_callback_configuration() -> None:
     payload = configured_mcp().model_dump(mode="json")
-    payload["flow"] = {
-        "type": "authorization_code",
-        "authorization_endpoint": "https://auth.example/authorize",
-        "token_endpoint": "https://auth.example/token",
-    }
+    payload["flows"] = [
+        {
+            "type": "authorization_code",
+            "authorization_endpoint": "https://auth.example/authorize",
+            "token_endpoint": "https://auth.example/token",
+        }
+    ]
     with pytest.raises(ValidationError, match=r"oauth\.callback_base_uri is required"):
         OctomateConfig.model_validate(
             {
-                "mcp": {"work": payload},
+                "tentacles": {"work": payload},
                 "oauth": {"encryption_key": "x" * 43 + "="},
             }
         )
+
+
+def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    application = importlib.import_module("octomate.app")
+    config = OctomateConfig.model_validate(
+        {
+            "tentacles": {
+                "web": {"type": "trunkline", "agents": ["coding"]},
+                "coding": {"type": "codex"},
+                "tools": {"type": "bare", "url": "https://mcp.example/mcp"},
+                "disabled": {
+                    "type": "bare",
+                    "url": "https://disabled.example/mcp",
+                    "enabled": False,
+                },
+            }
+        }
+    )
+    monkeypatch.setattr(application, "config", config)
+    with patch("logfire.configure"), patch("logging.basicConfig"):
+        host = application.create_app()
+    assert list(host.tentacles) == ["web", "coding", "tools"]
+    assert list(host.agents) == ["coding"]
+    assert list(host.channels) == ["web"]
+    assert list(host.mcp.tentacles) == ["tools"]
+    assert host.channels["web"].agent_ids == ["coding"]
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_configured_oauth_rejects_empty_or_duplicate_flows(duplicate: bool) -> None:
+    payload = configured_mcp().model_dump(mode="json")
+    payload["flows"] = payload["flows"] * 2 if duplicate else []
+    with pytest.raises(ValidationError):
+        OAuthMcpConfig.model_validate(payload)

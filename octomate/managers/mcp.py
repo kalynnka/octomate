@@ -46,6 +46,7 @@ from octomate.schemas.oauth import (
     OAuthStartResult,
 )
 from octomate.schemas.user import User, UserProfile
+from octomate.types.oauth import OAuthFlowKind
 
 if TYPE_CHECKING:
     from octomate.tentacles.mcp import McpTentacle
@@ -291,6 +292,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
         mcp_id: uuid.UUID,
         *,
         profile: UserProfile | None = None,
+        flow: OAuthFlowKind | None = None,
     ) -> OAuthStartResult:
         if self.oauth is None:
             raise McpUnavailable
@@ -303,7 +305,11 @@ class McpManager(Manager, Locks[uuid.UUID]):
             )
         ):
             return await self.oauth.start(
-                user, instance.tentacle_id or "mcp", mcp_id=mcp_id, profile=profile
+                user,
+                instance.tentacle_id or "mcp",
+                mcp_id=mcp_id,
+                profile=profile,
+                flow=flow,
             )
 
     async def confirm(
@@ -320,7 +326,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
         connector = await self.oauth.resolve_connector(
             connector_id, user_id=user.id, mcp_id=mcp_id
         )
-        if isinstance(connector.flow, DeviceOAuthFlow):
+        if any(isinstance(flow, DeviceOAuthFlow) for flow in connector.flows):
             try:
                 result = await self.oauth.complete_latest(
                     user, connector_id, mcp_id=mcp_id, profile=profile

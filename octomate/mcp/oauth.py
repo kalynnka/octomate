@@ -28,6 +28,7 @@ from octomate.schemas.oauth import (
     AuthorizationLink,
 )
 from octomate.schemas.user import User, UserProfile
+from octomate.types.oauth import OAuthFlowKind
 
 # The family's namespace on the server, and its two tools' served names under it.
 OAUTH_NAMESPACE = "oauth"
@@ -71,7 +72,10 @@ def mount_oauth(
         ),
     )
     async def connect(
-        provider: ProviderId, session: OctomateSession = octomate_session
+        provider: ProviderId,
+        session: OctomateSession = octomate_session,
+        *,
+        flow: OAuthFlowKind | None = None,
     ) -> str:
         user, profile = await identity(session)
         address = session.conversation_address
@@ -87,7 +91,9 @@ def mount_oauth(
             )
         instance = await personal(provider, user)
         try:
-            authorization = await manager.connect(user, instance.id, profile=profile)
+            authorization = await manager.connect(
+                user, instance.id, profile=profile, flow=flow
+            )
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
         label = instance.name

@@ -11,7 +11,7 @@ from octomate_cli.wizard.base import TentacleSetup
 
 def github(console: Console) -> McpPreset:
     console.print(
-        "GitHub uses an OAuth App with Device Flow enabled. "
+        "GitHub offers device and browser authorization using an OAuth App with Device Flow enabled. "
         "Users install this tentacle and authorize their own accounts later."
     )
     name = Prompt.ask("Tentacle name", default="github", console=console)
@@ -23,6 +23,10 @@ def github(console: Console) -> McpPreset:
     )
     selection = McpPreset(
         provider="github", name=name, client_id=client_id, read_only=read_only
+    )
+    console.print(
+        f"Set OCTOMATE__TENTACLES__{selection.name.upper()}__CLIENT_SECRET in the generated .env. "
+        "Register the browser callback URL printed after preparation in the GitHub OAuth App."
     )
     scopes = TypeAdapter(list[str]).validate_python(selection.configuration()["scopes"])
     console.print(f"OAuth scopes: {', '.join(scopes)}")

@@ -12,7 +12,7 @@ def configure_channel(name: str, console: Console) -> str:
         console.print("Trunkline's API is enabled; its frontend is built separately.")
     else:
         console.print(
-            f"{CHANNELS[name].label}: fill credentials in config/channels.yaml, then enable channels.{name}.enabled."
+            f"{CHANNELS[name].label}: fill credentials in config/tentacles.yaml, then enable tentacles.{name}.enabled."
         )
     return name
 

@@ -112,7 +112,7 @@ async def a_linked_host() -> tuple[Octomate, Provider, UserProfile]:
     users = UserManager()
     host = Octomate(users=users, oauth_encryption_key=ENCRYPTION_KEY)
     tentacle = host.connect(Provider("gh", host))
-    host.oauth.register(OAuthConnector(id="gh", flow=StaticGitHubFlow()))
+    host.oauth.register(OAuthConnector(id="gh", flows=[StaticGitHubFlow()]))
     async with async_session() as session:
         profile = await session.one_or_none(
             UserProfile,
