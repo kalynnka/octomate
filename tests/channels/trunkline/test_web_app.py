@@ -177,7 +177,7 @@ def test_trunkline_router_requires_registered_channel() -> None:
     app = octomate
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/api/trunkline/routes" in paths
-    assert "/api/trunkline/permission-modes" in paths
+    assert "/api/trunkline/permissions" in paths
     assert "/api/trunkline/conversations/{conversation_id}/permission-mode" in paths
     assert "/api/trunkline/threads" in paths
     assert "/api/trunkline/threads/{thread_id}" in paths
@@ -520,7 +520,7 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        offered = (await client.get("/api/trunkline/permission-modes")).json()
+        offered = (await client.get("/api/trunkline/permissions")).json()
 
     assert offered == {
         "inkling": {
@@ -545,7 +545,7 @@ async def test_the_configured_default_is_what_the_endpoint_reports(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        offered = (await client.get("/api/trunkline/permission-modes")).json()
+        offered = (await client.get("/api/trunkline/permissions")).json()
 
     assert offered["inkling"]["default"] == "dontAsk"
 

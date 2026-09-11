@@ -70,7 +70,7 @@ export function fetchProjects(): Promise<ApiProject[]> {
 
 /** Each registered agent's approval vocabulary, in cycling order. */
 export function fetchPermissionModes(): Promise<ApiPermissionModes> {
-  return getJson<ApiPermissionModes>('/api/trunkline/permission-modes')
+  return getJson<ApiPermissionModes>('/api/trunkline/permissions')
 }
 
 /** Every registered agent with its whole catalog — the Agents page's read. */
@@ -97,6 +97,11 @@ export async function installMcp(body: McpInstallBody): Promise<ApiMcp> {
   const res = await apiFetch('/api/mcp', { method: 'POST', json: body })
   if (!res.ok) return refuse(res)
   return (await res.json()) as ApiMcp
+}
+
+export async function uninstallMcp(id: string): Promise<void> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) return refuse(res)
 }
 
 export async function connectMcp(id: string, flow: OAuthFlowKind): Promise<ApiMcpAuthorization> {

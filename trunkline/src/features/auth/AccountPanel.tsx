@@ -12,6 +12,7 @@ import {
 } from '@/lib/api/auth'
 import { useApiKeys } from '@/lib/api/hooks'
 import { queryClient } from '@/lib/queryClient'
+import { useDialogDrag } from '@/lib/useDialogDrag'
 import { refusalText } from '@/lib/api/auth'
 import { useAuth } from '@/state/auth'
 import { Field, Refusal } from './parts'
@@ -322,19 +323,12 @@ function IssuedKey({ issued, onDone }: { issued: ApiIssuedKey; onDone: () => voi
   )
 }
 
-function KeyState({ item }: { item: ApiApiKey }) {
+function KeyRevoke({ item }: { item: ApiApiKey }) {
   const [arming, setArming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const expired = item.expires_at !== null && Date.parse(item.expires_at) <= Date.now()
-  const state = item.revoked_at
-    ? { text: `○ revoked · ${day(item.revoked_at)}`, color: 'var(--fg-3)' }
-    : item.expires_at === null
-      ? { text: '● no expiry', color: 'var(--color-sage)' }
-      : expired
-        ? { text: `○ expired · ${day(item.expires_at)}`, color: 'var(--fg-3)' }
-        : { text: `● until ${day(item.expires_at)}`, color: 'var(--color-sage)' }
-  const live = !item.revoked_at && !expired
+  if (item.revoked_at || expired) return null
 
   const revoke = async () => {
     if (!arming) {
@@ -355,36 +349,27 @@ function KeyState({ item }: { item: ApiApiKey }) {
   }
 
   return (
-    <div style={{ opacity: live ? 1 : 0.7 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', flexWrap: 'wrap', gap: 8 }}>
-        <span style={{ ...label(9, '.1em'), color: state.color }}>
-          {state.text}
-        </span>
-        {live && (
-          <button
-            type="button"
-            disabled={busy}
-            onClick={() => void revoke()}
-            onMouseLeave={() => {
-              if (!busy) setArming(false)
-            }}
-            title={arming ? 'click again to revoke' : 'revoke this key'}
-            className={arming ? 'hov-accent-fill' : 'hov-red'}
-            style={{
-              ...label(7.5, '.12em'),
-              color: arming ? 'var(--trk-on-fill)' : 'var(--fg-3)',
-              background: arming ? 'var(--color-red)' : 'transparent',
-              border: `1px solid ${arming ? 'var(--color-red)' : 'var(--line-divider)'}`,
-              padding: '2px 7px',
-              cursor: busy ? 'default' : 'pointer',
-              flexShrink: 0,
-              transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
-            }}
-          >
-            {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
-          </button>
-        )}
-      </div>
+    <div>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void revoke()}
+        onMouseLeave={() => {
+          if (!busy) setArming(false)
+        }}
+        title={arming ? 'click again to revoke' : 'revoke this key'}
+        className={arming ? 'hov-accent-fill' : 'hov-red'}
+        style={{
+          color: arming ? 'var(--trk-on-fill)' : 'color-mix(in srgb, var(--color-red) 60%, var(--fg-1))',
+          background: arming ? 'var(--color-red)' : 'color-mix(in srgb, var(--color-red) 10%, transparent)',
+          border: '1px solid var(--color-red)',
+          cursor: busy ? 'default' : 'pointer',
+          flexShrink: 0,
+          transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
+        }}
+      >
+        {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
+      </button>
       {error && <Refusal>{error}</Refusal>}
     </div>
   )
@@ -410,11 +395,26 @@ const keyColumns: TableColumn<ApiApiKey>[] = [
     ),
   },
   { key: 'created_at', label: 'Issued', mono: true, render: (item) => day(item.created_at) },
-  { key: 'state', label: 'Status', align: 'right', render: (item) => <KeyState item={item} /> },
+  {
+    key: 'state', label: 'Status',
+    render: (item) => {
+      const expired = item.expires_at !== null && Date.parse(item.expires_at) <= Date.now()
+      const state = item.revoked_at
+        ? { text: `○ revoked · ${day(item.revoked_at)}`, color: 'var(--fg-3)' }
+        : item.expires_at === null
+          ? { text: '● no expiry', color: 'var(--color-sage)' }
+          : expired
+            ? { text: `○ expired · ${day(item.expires_at)}`, color: 'var(--fg-3)' }
+            : { text: `● until ${day(item.expires_at)}`, color: 'var(--color-sage)' }
+      return <span style={{ ...label(9, '.1em'), color: state.color, opacity: item.revoked_at || expired ? 0.7 : 1 }}>{state.text}</span>
+    },
+  },
+  { key: 'actions', label: '', ariaLabel: 'Actions', width: '1%', render: (item) => <KeyRevoke item={item} /> },
 ]
 
 function PasswordDialog({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const drag = useDialogDrag(dialog)
   const username = useAuth((s) => s.user?.username)
   useEffect(() => {
     const element = dialog.current!
@@ -424,7 +424,7 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
 
   return (
     <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" aria-describedby="password-effect" onCancel={onClose}>
-      <div className="trk-dialog-layout">
+      <div className="trk-dialog-layout" {...drag}>
         <aside className="trk-dialog-panel">
           <span className="trk-dialog-index" aria-hidden="true">04</span>
           <span className="trk-dialog-eyebrow">Account security</span>

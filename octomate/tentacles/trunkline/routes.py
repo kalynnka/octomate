@@ -91,7 +91,7 @@ class DirectiveBody(BaseModel):
     )
     permission_mode: AgentPermissionMode | None = Field(
         default=None,
-        description="A posture from GET /permission-modes, in the vocabulary of the "
+        description="A posture from GET /permissions, in the vocabulary of the "
         "agent this thread is routed to, stored on that agent's conversation before "
         "the run. This is how a thread that does not exist yet gets one; an owned "
         "thread's is switched through PATCH /conversations/{id}/permission-mode. "
@@ -114,7 +114,7 @@ class AgentPostures(BaseModel):
 class PermissionModeBody(BaseModel):
     permission_mode: AgentPermissionMode | None = Field(
         default=None,
-        description="A posture from GET /permission-modes, in this conversation's "
+        description="A posture from GET /permissions, in this conversation's "
         "own agent's vocabulary. Null clears it: nothing is declared and the agent's "
         "configured default decides again.",
     )
@@ -167,7 +167,7 @@ def build_trunkline_router(
         a project whose root disk has lost is nowhere to work."""
         return [project for project in octomate.projects.list() if project.enabled]
 
-    @router.get("/permission-modes")
+    @router.get("/permissions")
     async def permission_modes() -> dict[str, AgentPostures]:
         """Each registered agent's approval vocabulary, in the order a picker steps
         through it — a provider's own scale, never a shared one, so the list a

@@ -11,7 +11,8 @@ import { label, mono } from './text'
 export interface TableColumn<Row> {
   key: string
   label: string
-  align?: 'left' | 'center' | 'right'
+  /** Accessible name for a blank or symbolic column header. */
+  ariaLabel?: string
   /** Render the cell in the console's data voice — codes, endpoints, counts. */
   mono?: boolean
   width?: number | string
@@ -43,7 +44,7 @@ function Row<R>({
           style={{
             padding: pad,
             borderBottom: '1px solid var(--line-divider)',
-            textAlign: column.align ?? 'left',
+            textAlign: 'left',
             ...(column.mono
               ? { ...mono(12, 500), color: 'var(--fg-2)' }
               : { fontFamily: 'var(--font-sans)', fontSize: 13.5, color: 'var(--fg-1)' }),
@@ -86,6 +87,7 @@ export function Table<R>({
               <th
                 key={column.key}
                 scope="col"
+                aria-label={column.ariaLabel}
                 style={{
                   position: 'sticky',
                   top: 0,
@@ -93,7 +95,7 @@ export function Table<R>({
                   background: 'var(--card-bg-hover)',
                   ...label(10, '.15em'),
                   color: 'var(--fg-2)',
-                  textAlign: column.align ?? 'left',
+                  textAlign: 'left',
                   padding: pad,
                   borderBottom: '2px solid var(--color-ink)',
                   width: column.width,

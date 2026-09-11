@@ -126,7 +126,7 @@ them are private to the signed-in account.
 | --- | --- |
 | `GET  /health` | status-bar relay chip (offline/degraded/nominal), 15s poll |
 | `GET  /routes` | new-thread agent·model picker; the pick rides only a thread's first directive (routes are fixed after that — re-routing awaits a manual handoff verb) |
-| `GET  /permission-modes` | each registered agent's approval vocabulary, in the order ⇧⇥ steps through it — a provider's own scale, never a shared one — plus the configured default a conversation declaring nothing runs under. Absent agents cannot be switched: a tailed runtime's posture is read, not set |
+| `GET  /permissions` | each registered agent's approval vocabulary, in the order ⇧⇥ steps through it — a provider's own scale, never a shared one — plus the configured default a conversation declaring nothing runs under. Absent agents cannot be switched: a tailed runtime's posture is read, not set |
 | `GET  /agents` | the Agents page: every registered agent with its whole catalog — each model, what that route claims to be for, the effort levels it takes, its gateway half, and the sessions it is driving or reading. `/routes` answers the composer's narrower question and keeps only the entry agent's default |
 | `GET  /profile` | the Profile page: the signed-in account, every channel identity bound to it, and every registered OAuth connector with this user's grant. `/api/auth/me` stays the boot read and answers the first alone |
 | `GET  /threads` | every channel's threads (sidebar), newest first, each with its handoffs — without its messages |

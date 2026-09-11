@@ -10,6 +10,7 @@ import type { ApiMcp, ApiMcpAuthorizationResult, ApiProfileInfo } from '../src/l
 let server: ViteDevServer
 let connectMcp: typeof import('../src/lib/api/client.ts').connectMcp
 let confirmMcp: typeof import('../src/lib/api/client.ts').confirmMcp
+let uninstallMcp: typeof import('../src/lib/api/client.ts').uninstallMcp
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let ControlPage: typeof import('../src/features/control/ControlPage.tsx').ControlPage
@@ -29,7 +30,7 @@ before(async () => {
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ connectMcp, confirmMcp } = await server.ssrLoadModule('/src/lib/api/client.ts'))
+  ;({ connectMcp, confirmMcp, uninstallMcp } = await server.ssrLoadModule('/src/lib/api/client.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ ControlPage } = await server.ssrLoadModule('/src/features/control/ControlPage.tsx'))
@@ -67,6 +68,25 @@ test('a refused connection surfaces the server error without replaying the reque
   assert.equal(fetch.mock.callCount(), 1)
 })
 
+test('uninstall deletes only the selected MCP and accepts an empty response', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
+  await uninstallMcp('work/id')
+  assert.equal(fetch.mock.callCount(), 1)
+  const [path, init] = fetch.mock.calls[0].arguments
+  assert.equal(path, '/api/mcp/work%2Fid')
+  assert.equal(init?.method, 'DELETE')
+  assert.equal(new Request('https://relay.example', init).credentials, 'same-origin')
+  assert.equal(new Headers(init?.headers).get('X-Octomate-Request'), '1')
+})
+
+for (const status of [404, 500]) {
+  test(`uninstall failure (${status}) surfaces the error without replaying the deletion`, async () => {
+    const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'MCP could not be removed' }, { status }))
+    await assert.rejects(uninstallMcp(mcp.id), /MCP could not be removed/)
+    assert.equal(fetch.mock.callCount(), 1)
+  })
+}
+
 const cases: { auth: ApiMcp['auth_kind']; status: ApiMcpAuthorizationResult['status'] | 'unavailable'; enabled: boolean; text: string; action: string | null }[] = [
   { auth: 'none', status: null, enabled: true, text: 'Ready', action: null },
   { auth: 'bearer', status: null, enabled: true, text: 'Ready', action: null },
@@ -87,6 +107,8 @@ for (const item of cases) {
       oauth: item.auth !== 'oauth' || item.status === 'unavailable' ? null : { status: item.status, flows: ['device', 'authorization_code'] },
     }] })
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+    assert.match(html, /aria-label="Remove Work \(personal\/work\)">−<\/span><\/button>/)
+    assert.doesNotMatch(html, />Confirm remove<\/button>/)
     assert.match(html, new RegExp(`>${item.text}<`))
     assert.doesNotMatch(html, />Not connected</)
     if (item.action) assert.match(html, new RegExp(`>${item.action}</button>`))

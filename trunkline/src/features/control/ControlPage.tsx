@@ -3,7 +3,7 @@ import type { ReactNode } from 'react'
 import { useConsole } from '@/state/console'
 import { useAgents, useMcpServers, useMcpTentacles, useProfile } from '@/lib/api/hooks'
 import { refusalText } from '@/lib/api/auth'
-import { enableMcp } from '@/lib/api/client'
+import { enableMcp, uninstallMcp } from '@/lib/api/client'
 import { channelMeta } from '@/lib/api/live'
 import { queryClient } from '@/lib/queryClient'
 import type { ControlSection } from '@/state/console'
@@ -179,26 +179,29 @@ const serverColumns: TableColumn<ApiMcp>[] = [
     key: 'name',
     label: 'Name',
     mono: true,
-    width: '22%',
+    width: '16%',
     render: (m) => <span style={{ color: 'var(--fg-1)', fontWeight: 700 }}>{m.name}</span>,
   },
   {
     key: 'namespace',
     label: 'Namespace',
     mono: true,
+    width: '20%',
     render: (m) => <span style={{ color: 'color-mix(in srgb, var(--color-accent) 60%, var(--fg-1))', fontWeight: 600 }}>{m.namespace}</span>,
   },
   {
     key: 'url',
     label: 'Endpoint',
     mono: true,
+    width: '25%',
     render: (m) => <span title={m.url} style={{ ...ellipsis, display: 'block', maxWidth: 240, fontWeight: 400 }}>{m.url}</span>,
   },
-  { key: 'auth', label: 'Auth', mono: true, render: (m) => m.auth_kind },
+  { key: 'auth', label: 'Auth', mono: true, width: '8%', render: (m) => m.auth_kind },
   {
     key: 'source',
     label: 'Tentacle',
     mono: true,
+    width: '14%',
     render: (m) => m.tentacle_id ?? '—',
   },
 ]
@@ -218,7 +221,7 @@ const tentacleColumns: TableColumn<ApiMcpTentacle>[] = [
     mono: true,
     render: (t) => <span title={t.url} style={{ ...ellipsis, display: 'block', maxWidth: 280, fontWeight: 400 }}>{t.url}</span>,
   },
-  { key: 'auth', label: 'Auth', mono: true, align: 'right', render: (t) => t.auth_kind },
+  { key: 'auth', label: 'Auth', mono: true, render: (t) => t.auth_kind },
 ]
 
 function McpConnection({ mcp, grant, loading, onConnect }: {
@@ -267,8 +270,60 @@ function McpConnection({ mcp, grant, loading, onConnect }: {
       ) : ready || unavailable ? (
         <DotCell color={color}>{text}</DotCell>
       ) : (
-        <Button style={{ padding: '4px 7px', fontSize: 9 }} onClick={onConnect}>Connect</Button>
+        <Button style={{
+          color: 'color-mix(in srgb, var(--color-teal) 60%, var(--fg-1))',
+          borderColor: 'var(--color-teal)',
+          background: 'color-mix(in srgb, var(--color-teal) 10%, transparent)',
+        }} onClick={onConnect}>Connect</Button>
       )}
+      {error && <div role="alert"><Refusal>{error}</Refusal></div>}
+    </div>
+  )
+}
+
+function McpRemoval({ mcp, onRemoved }: { mcp: ApiMcp; onRemoved: () => void }) {
+  const [arming, setArming] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const remove = async () => {
+    if (busy) return
+    setError(null)
+    if (!arming) {
+      setArming(true)
+      return
+    }
+    setBusy(true)
+    try {
+      await uninstallMcp(mcp.id)
+      onRemoved()
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['mcp-servers'] }),
+        queryClient.invalidateQueries({ queryKey: ['profile'] }),
+      ])
+    } catch (caught) {
+      setError(refusalText(caught) ?? 'The MCP could not be removed.')
+    } finally {
+      setBusy(false)
+      setArming(false)
+    }
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 6 }}>
+        <Button
+          disabled={busy}
+          title={`Remove ${mcp.name} (${mcp.namespace})`}
+          style={{
+            color: 'color-mix(in srgb, var(--color-red) 60%, var(--fg-1))',
+            borderColor: 'var(--color-red)',
+            background: 'color-mix(in srgb, var(--color-red) 10%, transparent)',
+          }}
+          onClick={() => void remove()}
+        >{busy ? 'Removing…' : arming ? 'Confirm remove' : <span role="img" aria-label={`Remove ${mcp.name} (${mcp.namespace})`}>−</span>}</Button>
+        {arming && <Button variant="ghost" disabled={busy} onClick={() => setArming(false)}>Cancel</Button>}
+      </div>
       {error && <div role="alert"><Refusal>{error}</Refusal></div>}
     </div>
   )
@@ -440,7 +495,7 @@ export function ControlPage() {
   const mgmtSec = useConsole((s) => s.mgmtSec)
   const { goChat } = useConsole((s) => s.actions)
   const [mcpView, setMcpView] = useState<McpView>('installed')
-  const [installOpen, setInstallOpen] = useState(false)
+  const [installSource, setInstallSource] = useState<ApiMcpTentacle | 'custom' | null>(null)
   const [authorization, setAuthorization] = useState<ApiMcp | null>(null)
   const [installed, setInstalled] = useState<ApiMcp | null>(null)
   const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null)
@@ -511,7 +566,53 @@ export function ControlPage() {
       key: 'connection',
       label: 'Connection',
       mono: true,
+      width: '11%',
       render: (mcp) => <McpConnection mcp={mcp} grant={grants.get(mcp.id)} loading={profileQuery.isPending} onConnect={() => setAuthorization(mcp)} />,
+    },
+    {
+      key: 'actions',
+      label: '',
+      ariaLabel: 'Actions',
+      width: '6%',
+      render: (mcp) => <McpRemoval mcp={mcp} onRemoved={() => {
+        if (installed?.id === mcp.id) setInstalled(null)
+      }} />,
+    },
+  ]
+  const presetColumns: TableColumn<ApiMcpTentacle>[] = [
+    ...tentacleColumns,
+    {
+      key: 'installation',
+      label: 'Status',
+      mono: true,
+      render: (tentacle) => {
+        const mcps = servers?.filter((mcp) => mcp.tentacle_id === tentacle.id)
+        return mcps === undefined ? (
+          <DotCell color="var(--fg-3)">{serversQuery.isPending ? 'Loading…' : 'Unavailable'}</DotCell>
+        ) : mcps.length > 0 ? (
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
+            {mcps.map((mcp) => (
+              <div key={mcp.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                {mcps.length > 1 && <span title={mcp.namespace} style={{ ...ellipsis, maxWidth: 160 }}>{mcp.namespace}</span>}
+                <McpConnection mcp={mcp} grant={grants.get(mcp.id)} loading={profileQuery.isPending} onConnect={() => setAuthorization(mcp)} />
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Button
+            style={{
+              color: 'color-mix(in srgb, var(--color-accent) 60%, var(--fg-1))',
+              borderColor: 'var(--color-accent)',
+              background: 'color-mix(in srgb, var(--color-accent) 10%, transparent)',
+            }}
+            title={`Install ${tentacle.name}`}
+            onClick={() => {
+              setInstalled(null)
+              setInstallSource(tentacle)
+            }}
+          >Install</Button>
+        )
+      },
     },
   ]
   const count =
@@ -570,20 +671,21 @@ export function ControlPage() {
               <p className="trk-control-note">
                 {mcpView === 'installed'
                   ? 'These MCPs belong to you. Each namespace identifies a separate installation, including multiple workspaces from the same service.'
-                  : 'Configured MCP templates. Choose a tentacle when installing your own MCP.'}
+                  : 'Configured MCP templates. Install a preset for your account.'}
               </p>
               {installed && (
                 <p className="trk-control-note" role="status">
                   Installed {installed.name} as <strong>{installed.namespace}</strong>.
                 </p>
               )}
-              {installOpen && (
+              {installSource && (
                 <McpInstallDialog
-                  onClose={() => setInstallOpen(false)}
+                  preset={installSource === 'custom' ? undefined : installSource}
+                  onClose={() => setInstallSource(null)}
                   onInstalled={(mcp) => {
                     setInstalled(mcp)
                     setMcpView('installed')
-                    setInstallOpen(false)
+                    setInstallSource(null)
                     if (mcp.auth_kind === 'oauth') setAuthorization(mcp)
                   }}
                 />
@@ -592,7 +694,7 @@ export function ControlPage() {
               {mcpView === 'installed' && (
                 <button type="button" className="trk-create-button hov-accent-border-wash" onClick={() => {
                   setInstalled(null)
-                  setInstallOpen(true)
+                  setInstallSource('custom')
                 }}>+ Install MCP</button>
               )}
               {mcpView === 'installed' ? (servers ? (
@@ -607,7 +709,7 @@ export function ControlPage() {
                 <Awaiting note={serversQuery.isError ? 'Could not load installed MCPs.' : 'Loading installed MCPs…'} />
               )) : (tentacles ? (
                 <Table
-                  columns={tentacleColumns}
+                  columns={presetColumns}
                   rows={tentacles}
                   rowKey={(t) => t.id}
                   dense

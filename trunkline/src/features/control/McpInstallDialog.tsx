@@ -3,19 +3,22 @@ import { Button } from '@/components/Button'
 import { Field, Refusal } from '@/features/auth/parts'
 import { refusalText } from '@/lib/api/auth'
 import { installMcp } from '@/lib/api/client'
-import type { ApiMcp, McpAuthKind, McpInstallBody } from '@/lib/api/events'
+import type { ApiMcp, ApiMcpTentacle, McpAuthKind, McpInstallBody } from '@/lib/api/events'
 import { useMcpTentacles } from '@/lib/api/hooks'
 import { queryClient } from '@/lib/queryClient'
+import { useDialogDrag } from '@/lib/useDialogDrag'
 
-export function McpInstallDialog({ onClose, onInstalled }: {
+export function McpInstallDialog({ preset, onClose, onInstalled }: {
+  preset?: ApiMcpTentacle
   onClose: () => void
   onInstalled: (mcp: ApiMcp) => void
 }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const drag = useDialogDrag(dialog)
   const tentaclesQuery = useMcpTentacles()
-  const [source, setSource] = useState('')
-  const [name, setName] = useState('')
-  const [namespace, setNamespace] = useState('')
+  const [source, setSource] = useState(preset?.id ?? '')
+  const [name, setName] = useState(preset?.name ?? '')
+  const [namespace, setNamespace] = useState(preset?.id ?? '')
   const [url, setUrl] = useState('')
   const [auth, setAuth] = useState<McpAuthKind>('oauth')
   const [token, setToken] = useState('')
@@ -65,7 +68,7 @@ export function McpInstallDialog({ onClose, onInstalled }: {
         else onClose()
       }}
     >
-      <div className="trk-dialog-layout">
+      <div className="trk-dialog-layout" {...drag}>
         <aside className="trk-dialog-panel">
           <span className="trk-dialog-index" aria-hidden="true">03</span>
           <span className="trk-dialog-eyebrow">New connection</span>

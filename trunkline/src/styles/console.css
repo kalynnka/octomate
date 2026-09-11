@@ -95,6 +95,14 @@ html[data-interface-size='large'] { --trk-interface-scale: 1; }
   overscroll-behavior: contain;
 }
 .trk-table-scroll { flex: 1; }
+.trk-table-scroll td button {
+  padding: 2px 7px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 7.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: .12em !important;
+  text-transform: uppercase;
+}
 .trk-control-footer {
   display: flex;
   justify-content: space-between;
@@ -216,7 +224,11 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
   display: grid;
   grid-template-columns: 228px minmax(0, 1fr);
   max-height: inherit;
+  cursor: default;
+  user-select: none;
 }
+.trk-dialog-layout :is(form, label, input, select, textarea) { cursor: auto; user-select: text; }
+.trk-dialog-layout a { cursor: pointer; }
 .trk-dialog-panel {
   position: relative;
   display: flex;
@@ -270,6 +282,7 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
   justify-content: space-between;
   gap: 12px;
   color: var(--fg-3);
+  touch-action: none;
 }
 .trk-dialog-close {
   display: grid;

@@ -74,7 +74,7 @@ PERMISSION_MODES: dict[str, tuple[AgentPermissionMode, ...]] = {
     # question a driven conversation answers by being told.
     #
     # Nothing here is settable: neither id is a registered agent, so
-    # `GET /permission-modes` never offers one and the console reports rather than
+    # `GET /permissions` never offers one and the console reports rather than
     # switches. A session's posture is the client's to change, in the client.
     CLAUDE_NATIVE_ID: get_args(ClaudePermissionMode),
     CODEX_NATIVE_ID: get_args(CodexPermissionMode),

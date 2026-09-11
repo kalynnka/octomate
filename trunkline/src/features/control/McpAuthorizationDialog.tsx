@@ -6,9 +6,11 @@ import { connectMcp, confirmMcp } from '@/lib/api/client'
 import type { ApiMcp, ApiMcpAuthorization, OAuthFlowKind } from '@/lib/api/events'
 import { useProfile } from '@/lib/api/hooks'
 import { queryClient } from '@/lib/queryClient'
+import { useDialogDrag } from '@/lib/useDialogDrag'
 
 export function McpAuthorizationDialog({ mcp, onClose }: { mcp: ApiMcp; onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const drag = useDialogDrag(dialog)
   const profile = useProfile()
   const oauth = profile.data?.mcps.find((item) => item.id === mcp.id)?.oauth
   const [flow, setFlow] = useState<OAuthFlowKind | ''>('')
@@ -34,14 +36,23 @@ export function McpAuthorizationDialog({ mcp, onClose }: { mcp: ApiMcp; onClose:
 
   const start = async () => {
     if (busy || !selectedFlow) return
+    // Open during the click so the asynchronous response does not trigger popup blocking.
+    const authorizationTab = window.open('about:blank', '_blank')
+    if (authorizationTab) authorizationTab.opener = null
     setBusy(true)
     setError(null)
     try {
       const result = await connectMcp(mcp.id, selectedFlow)
       setAuthorization(result)
       setRetryAt('interval_seconds' in result ? Date.now() + result.interval_seconds * 1000 : null)
+      if (authorizationTab && !authorizationTab.closed) {
+        authorizationTab.location.replace('authorization_uri' in result
+          ? result.authorization_uri
+          : result.verification_uri_complete ?? result.verification_uri)
+      }
       await queryClient.invalidateQueries({ queryKey: ['profile'] })
     } catch (caught) {
+      authorizationTab?.close()
       setError(refusalText(caught) ?? 'Authorization could not be started.')
     } finally { setBusy(false) }
   }
@@ -69,7 +80,7 @@ export function McpAuthorizationDialog({ mcp, onClose }: { mcp: ApiMcp; onClose:
       if (busy) event.preventDefault()
       else onClose()
     }}>
-      <div className="trk-dialog-layout">
+      <div className="trk-dialog-layout" style={{ minHeight: 'min(440px, calc(100dvh / var(--trk-zoom) - 34px))' }} {...drag}>
         <aside className="trk-dialog-panel">
           <span className="trk-dialog-index" aria-hidden="true">03</span>
           <span className="trk-dialog-eyebrow">Account authorization</span>
@@ -80,7 +91,7 @@ export function McpAuthorizationDialog({ mcp, onClose }: { mcp: ApiMcp; onClose:
           </dl>
           <p className="trk-dialog-caption">This authorization belongs to your account and this MCP only.</p>
         </aside>
-        <div className="trk-dialog-main">
+        <div className="trk-dialog-main" style={{ display: 'flex', flexDirection: 'column' }}>
           <header className="trk-dialog-header">
             <span>Authorization</span>
             <button type="button" className="trk-dialog-close hov-wash" aria-label="Close MCP authorization" disabled={busy} onClick={onClose}>×</button>
@@ -100,9 +111,6 @@ export function McpAuthorizationDialog({ mcp, onClose }: { mcp: ApiMcp; onClose:
                     </Field>
                   ) : <p className="trk-dialog-hint">{profile.isFetching ? 'Loading authorization methods…' : 'No authorization method is available.'}</p>}
                   <p className="trk-dialog-hint">{pending ? 'Authorization is pending. Check its status, or get another link to continue.' : 'Continue to authorize this MCP with your provider.'}</p>
-                  <div className="trk-dialog-actions">
-                    <Button variant="accent" disabled={busy || !selectedFlow} onClick={() => void start()}>{busy ? 'Starting…' : pending ? 'Get authorization link' : 'Continue'}</Button>
-                  </div>
                 </>
               )}
               {authorization && (
@@ -118,15 +126,18 @@ export function McpAuthorizationDialog({ mcp, onClose }: { mcp: ApiMcp; onClose:
                   <p className="trk-dialog-hint">Approve access in the opened tab, then check the status here. This link expires at {new Date(authorization.expires_at).toLocaleTimeString()}.</p>
                 </>
               )}
-              {(authorization || pending) && (
-                <div className="trk-dialog-actions">
-                  <Button disabled={busy || retryAt !== null} onClick={() => void confirm()}>{busy ? 'Checking…' : retryAt !== null ? 'Wait to check' : 'Check status'}</Button>
-                </div>
-              )}
             </>
           )}
           {error && <div role="alert"><Refusal>{error}</Refusal></div>}
-          <div className="trk-dialog-actions"><Button variant="ghost" disabled={busy} onClick={onClose}>{ready ? 'Done' : 'Close'}</Button></div>
+          <div className="trk-dialog-actions" style={{ marginTop: 'auto', paddingTop: 22, flexShrink: 0 }}>
+            <Button variant="ghost" disabled={busy} onClick={onClose}>{ready ? 'Done' : 'Close'}</Button>
+            {!ready && !authorization && (
+              <Button variant="accent" disabled={busy || !selectedFlow} onClick={() => void start()}>{busy ? 'Starting…' : pending ? 'Get authorization link' : 'Continue'}</Button>
+            )}
+            {!ready && (authorization || pending) && (
+              <Button disabled={busy || retryAt !== null} onClick={() => void confirm()}>{busy ? 'Checking…' : retryAt !== null ? 'Wait to check' : 'Check status'}</Button>
+            )}
+          </div>
         </div>
       </div>
     </dialog>
