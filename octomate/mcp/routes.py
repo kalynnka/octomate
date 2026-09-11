@@ -60,13 +60,48 @@ async def install(
         raise HTTPException(status_code=400, detail=str(error)) from error
 
 
+@mcp_router.get("/{mcp_id}/authorization", response_model=OAuthStartResult | None)
+async def pending_authorization(
+    mcp_id: uuid.UUID,
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[McpManager, Depends(mcp_manager)],
+) -> JSONResponse:
+    try:
+        authorization = await manager.pending_authorization(user, mcp_id)
+        content = (
+            authorization.model_dump(mode="json") if authorization is not None else None
+        )
+        if isinstance(authorization, DeviceAuthorization):
+            assert content is not None
+            content["user_code"] = authorization.user_code.get_secret_value()
+        return JSONResponse(content=content, headers={"Cache-Control": "no-store"})
+    except McpUnavailable as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(
+            status_code=400, detail="Pending MCP authorization could not be restored"
+        ) from error
+
+
+@mcp_router.delete("/{mcp_id}/authorization", status_code=204)
+async def cancel_authorization(
+    mcp_id: uuid.UUID,
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[McpManager, Depends(mcp_manager)],
+) -> None:
+    try:
+        await manager.cancel_authorization(user, mcp_id)
+    except McpUnavailable as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+
+
 @mcp_router.post("/{mcp_id}/connect", response_model=OAuthStartResult)
 async def connect(
     mcp_id: uuid.UUID,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
     flow: OAuthFlowKind | None = None,
-) -> OAuthStartResult | JSONResponse:
+) -> JSONResponse:
     try:
         authorization = await manager.connect(user, mcp_id, flow=flow)
     except McpUnavailable as error:
@@ -76,13 +111,10 @@ async def connect(
         raise HTTPException(
             status_code=400, detail="MCP authorization could not be started"
         ) from error
+    content = authorization.model_dump(mode="json")
     if isinstance(authorization, DeviceAuthorization):
-        return JSONResponse(
-            content=authorization.model_dump(mode="json")
-            | {"user_code": authorization.user_code.get_secret_value()},
-            headers={"Cache-Control": "no-store"},
-        )
-    return authorization
+        content["user_code"] = authorization.user_code.get_secret_value()
+    return JSONResponse(content=content, headers={"Cache-Control": "no-store"})
 
 
 @mcp_router.post("/{mcp_id}/confirm", response_model=McpAuthorizationResult)

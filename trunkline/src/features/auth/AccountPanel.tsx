@@ -11,6 +11,7 @@ import {
   type ApiKeyScope,
 } from '@/lib/api/auth'
 import { useApiKeys } from '@/lib/api/hooks'
+import { closeDialog } from '@/lib/dialog'
 import { queryClient } from '@/lib/queryClient'
 import { useDialogDrag } from '@/lib/useDialogDrag'
 import { refusalText } from '@/lib/api/auth'
@@ -416,6 +417,7 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDialogElement>(null)
   const drag = useDialogDrag(dialog)
   const username = useAuth((s) => s.user?.username)
+  const close = () => void closeDialog(dialog.current, onClose)
   useEffect(() => {
     const element = dialog.current!
     element.showModal()
@@ -423,7 +425,10 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
   }, [])
 
   return (
-    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" aria-describedby="password-effect" onCancel={onClose}>
+    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" aria-describedby="password-effect" onCancel={(event) => {
+      event.preventDefault()
+      close()
+    }}>
       <div className="trk-dialog-layout" {...drag}>
         <aside className="trk-dialog-panel">
           <span className="trk-dialog-index" aria-hidden="true">04</span>
@@ -440,9 +445,9 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
         <div className="trk-dialog-main">
           <header className="trk-dialog-header">
             <span>Password details</span>
-            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close password dialog" onClick={onClose}>×</button>
+            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close password dialog" onClick={close}>×</button>
           </header>
-          <PasswordForm onCancel={onClose} />
+          <PasswordForm onCancel={close} />
         </div>
       </div>
     </dialog>

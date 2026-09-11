@@ -345,6 +345,42 @@ class McpManager(Manager, Locks[uuid.UUID]):
                 flow=flow,
             )
 
+    async def pending_authorization(
+        self, user: User, mcp_id: uuid.UUID
+    ) -> OAuthStartResult | None:
+        if self.oauth is None:
+            raise McpUnavailable
+        mcp = await self.authorizable(user_id=user.id, mcp_id=mcp_id)
+        return await self.oauth.pending_authorization(
+            user, mcp.tentacle_id or "mcp", mcp_id=mcp_id
+        )
+
+    async def cancel_authorization(self, user: User, mcp_id: uuid.UUID) -> None:
+        if self.oauth is None:
+            raise McpUnavailable
+        mcp = await self.authorizable(user_id=user.id, mcp_id=mcp_id)
+        connector_id = mcp.tentacle_id or "mcp"
+        async with (
+            self.oauth.lock(
+                OAuthLockKey(user_id=user.id, mcp_id=mcp_id, connector_id=connector_id)
+            ),
+            async_session() as session,
+        ):
+            operations = await session.list(
+                OAuthOperation,
+                limit=None,
+                expressions=[
+                    OAuthOperation["user_id"] == user.id,
+                    OAuthOperation["mcp_id"] == mcp_id,
+                    OAuthOperation["connector_id"] == connector_id,
+                    OAuthOperation["consumed_at"].is_(None),
+                ],
+            )
+            now = datetime.now(UTC)
+            for operation in operations:
+                operation.consumed_at = now
+            await session.commit()
+
     async def confirm(
         self,
         user: User,

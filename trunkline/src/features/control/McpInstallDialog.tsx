@@ -5,6 +5,7 @@ import { refusalText } from '@/lib/api/auth'
 import { installMcp } from '@/lib/api/client'
 import type { ApiMcp, ApiMcpTentacle, McpAuthKind, McpInstallBody } from '@/lib/api/events'
 import { useMcpTentacles } from '@/lib/api/hooks'
+import { closeDialog } from '@/lib/dialog'
 import { queryClient } from '@/lib/queryClient'
 import { useDialogDrag } from '@/lib/useDialogDrag'
 
@@ -27,6 +28,7 @@ export function McpInstallDialog({ preset, onClose, onInstalled }: {
   const tentacle = tentaclesQuery.data?.find((item) => item.id === source)
   const endpoint = tentacle?.url ?? url.trim()
   const authKind = tentacle?.auth_kind ?? auth
+  const close = () => void closeDialog(dialog.current, onClose)
 
   useEffect(() => {
     const element = dialog.current!
@@ -50,7 +52,7 @@ export function McpInstallDialog({ preset, onClose, onInstalled }: {
       setToken('')
       void queryClient.invalidateQueries({ queryKey: ['mcp-servers'] })
       void queryClient.invalidateQueries({ queryKey: ['profile'] })
-      onInstalled(mcp)
+      await closeDialog(dialog.current, () => onInstalled(mcp))
     } catch (caught) {
       setError(refusalText(caught) ?? 'The MCP could not be installed. Try again.')
       setBusy(false)
@@ -64,8 +66,8 @@ export function McpInstallDialog({ preset, onClose, onInstalled }: {
       aria-labelledby="mcp-install-title"
       aria-describedby="mcp-install-scope"
       onCancel={(event) => {
-        if (busy) event.preventDefault()
-        else onClose()
+        event.preventDefault()
+        if (!busy) close()
       }}
     >
       <div className="trk-dialog-layout" {...drag}>
@@ -87,7 +89,7 @@ export function McpInstallDialog({ preset, onClose, onInstalled }: {
         <div className="trk-dialog-main">
           <header className="trk-dialog-header">
             <span>Connection details</span>
-            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close MCP installation" disabled={busy} onClick={onClose}>×</button>
+            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close MCP installation" disabled={busy} onClick={close}>×</button>
           </header>
           <form onSubmit={submit} aria-busy={busy}>
             <fieldset className="trk-dialog-fields" disabled={busy}>
@@ -141,7 +143,7 @@ export function McpInstallDialog({ preset, onClose, onInstalled }: {
             </fieldset>
             {error && <div role="alert"><Refusal>{error}</Refusal></div>}
             <div className="trk-dialog-actions">
-              <Button variant="ghost" disabled={busy} onClick={onClose}>Cancel</Button>
+              <Button variant="ghost" disabled={busy} onClick={close}>Cancel</Button>
               <Button type="submit" variant="accent" disabled={busy || !name.trim() || !namespace || !endpoint || (!!source && !tentacle)}>
                 {busy ? 'Installing…' : 'Install MCP'}
               </Button>

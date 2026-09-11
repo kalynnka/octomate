@@ -5,11 +5,13 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiMcp, ApiMcpAuthorizationResult, ApiProfileInfo } from '../src/lib/api/events.ts'
+import type { ApiMcp, ApiMcpAuthorization, ApiMcpAuthorizationResult, ApiProfileInfo } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
 let connectMcp: typeof import('../src/lib/api/client.ts').connectMcp
 let confirmMcp: typeof import('../src/lib/api/client.ts').confirmMcp
+let fetchMcpAuthorization: typeof import('../src/lib/api/client.ts').fetchMcpAuthorization
+let cancelMcpAuthorization: typeof import('../src/lib/api/client.ts').cancelMcpAuthorization
 let uninstallMcp: typeof import('../src/lib/api/client.ts').uninstallMcp
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
@@ -30,7 +32,7 @@ before(async () => {
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ connectMcp, confirmMcp, uninstallMcp } = await server.ssrLoadModule('/src/lib/api/client.ts'))
+  ;({ connectMcp, confirmMcp, fetchMcpAuthorization, cancelMcpAuthorization, uninstallMcp } = await server.ssrLoadModule('/src/lib/api/client.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ ControlPage } = await server.ssrLoadModule('/src/features/control/ControlPage.tsx'))
@@ -68,6 +70,38 @@ test('a refused connection surfaces the server error without replaying the reque
   assert.equal(fetch.mock.callCount(), 1)
 })
 
+test('restoring and cancelling authorization use its authenticated endpoint', async () => {
+  const authorization: ApiMcpAuthorization = {
+    operation_id: 'op', expires_at: '2026-09-11T01:00:00Z',
+    verification_uri: 'https://provider.example/device', verification_uri_complete: null,
+    user_code: 'ABCD-EFGH', interval_seconds: 5,
+  }
+  const responses = [Response.json(authorization), new Response(null, { status: 204 })]
+  const fetch = mock.method(globalThis, 'fetch', async () => {
+    const response = responses.shift()
+    assert.ok(response, 'Unexpected extra request')
+    return response
+  })
+  assert.deepEqual(await fetchMcpAuthorization('work/id'), authorization)
+  await cancelMcpAuthorization('work/id')
+  assert.deepEqual(fetch.mock.calls.map((call) => call.arguments[0]), [
+    '/api/mcp/work%2Fid/authorization', '/api/mcp/work%2Fid/authorization',
+  ])
+  assert.equal(fetch.mock.calls[0].arguments[1]?.method ?? 'GET', 'GET')
+  const init = fetch.mock.calls[1].arguments[1]
+  assert.equal(init?.method, 'DELETE')
+  assert.equal(new Request('https://relay.example', init).credentials, 'same-origin')
+  assert.equal(new Headers(init?.headers).get('X-Octomate-Request'), '1')
+})
+
+for (const status of [404, 500]) {
+  test(`cancelling authorization failure (${status}) surfaces the error without replay`, async () => {
+    const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'Authorization could not be cancelled' }, { status }))
+    await assert.rejects(cancelMcpAuthorization(mcp.id), /Authorization could not be cancelled/)
+    assert.equal(fetch.mock.callCount(), 1)
+  })
+}
+
 test('uninstall deletes only the selected MCP and accepts an empty response', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
   await uninstallMcp('work/id')
@@ -91,8 +125,8 @@ const cases: { auth: ApiMcp['auth_kind']; status: ApiMcpAuthorizationResult['sta
   { auth: 'none', status: null, enabled: true, text: 'Ready', action: null },
   { auth: 'bearer', status: null, enabled: true, text: 'Ready', action: null },
   { auth: 'oauth', status: 'active', enabled: true, text: 'Ready', action: null },
-  { auth: 'oauth', status: 'pending_browser', enabled: true, text: 'Pending', action: null },
-  { auth: 'oauth', status: 'pending_device', enabled: true, text: 'Pending', action: null },
+  { auth: 'oauth', status: 'pending_browser', enabled: true, text: 'Continue', action: 'Continue' },
+  { auth: 'oauth', status: 'pending_device', enabled: true, text: 'Continue', action: 'Continue' },
   { auth: 'oauth', status: 'invalid', enabled: true, text: 'Connect', action: 'Connect' },
   { auth: 'oauth', status: null, enabled: true, text: 'Connect', action: 'Connect' },
   { auth: 'oauth', status: 'active', enabled: false, text: 'Disabled', action: null },
@@ -100,17 +134,16 @@ const cases: { auth: ApiMcp['auth_kind']; status: ApiMcpAuthorizationResult['sta
 ]
 
 for (const item of cases) {
-  test(`MCP row: ${item.auth}/${item.status}/${item.enabled} shows ${item.text}`, () => {
+  test(`MCP tentacle row: ${item.auth}/${item.status}/${item.enabled} shows ${item.text}`, () => {
     useConsole.getInitialState().mgmtSec = 'mcp'
     queryClient.setQueryData(['mcp-servers'], [{ ...mcp, auth_kind: item.auth, enabled: item.enabled }])
+    queryClient.setQueryData(['mcp-tentacles'], [{ id: mcp.tentacle_id, name: mcp.name, url: mcp.url, auth_kind: item.auth }])
     queryClient.setQueryData(['profile'], { ...profile, mcps: [{ ...mcp,
       oauth: item.auth !== 'oauth' || item.status === 'unavailable' ? null : { status: item.status, flows: ['device', 'authorization_code'] },
     }] })
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
-    assert.match(html, /aria-label="Remove Work \(personal\/work\)">−<\/span><\/button>/)
-    assert.doesNotMatch(html, />Confirm remove<\/button>/)
     assert.match(html, new RegExp(`>${item.text}<`))
-    assert.doesNotMatch(html, />Not connected</)
+    assert.doesNotMatch(html, />(Not connected|Pending)</)
     if (item.action) assert.match(html, new RegExp(`>${item.action}</button>`))
     else assert.doesNotMatch(html, />(Connect|Continue|Reconnect|Enable)<\/button>/)
   })
@@ -124,3 +157,33 @@ test('authorization offers both configured methods for this installation', () =>
   assert.match(html, />Browser<\/option>/)
   assert.match(html, /personal\/work/)
 })
+
+for (const device of [true, false]) {
+  test(`reopening ${device ? 'device' : 'browser'} authorization shows the saved attempt and cancellation`, () => {
+    const authorization: ApiMcpAuthorization = {
+      operation_id: 'saved-op', expires_at: '2026-09-11T01:00:00Z',
+      ...(device ? {
+        verification_uri: 'https://provider.example/device', verification_uri_complete: null,
+        user_code: 'ABCD-EFGH', interval_seconds: 5,
+      } : { authorization_uri: 'https://relay.example/oauth/start/saved-op' }),
+    }
+    queryClient.setQueryData(['profile'], { ...profile, mcps: [{ ...mcp,
+      oauth: { status: device ? 'pending_device' : 'pending_browser', flows: ['device', 'authorization_code'] },
+    }] })
+    queryClient.setQueryData(['mcp-authorization', mcp.id], authorization)
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient },
+      createElement(McpAuthorizationDialog, { mcp, onClose: () => {} })))
+    assert.match(html, />Open authorization ↗<\/a>/)
+    assert.match(html, />Cancel authorization<\/button>/)
+    assert.match(html, />Close<\/button>/)
+    assert.match(html, />Check status<\/button>/)
+    assert.doesNotMatch(html, />Continue<\/button>/)
+    if (device) {
+      assert.match(html, /value="ABCD-EFGH"/)
+      assert.match(html, /title="Copy device code"/)
+      assert.match(html, /href="https:\/\/provider.example\/device"/)
+    } else {
+      assert.match(html, /href="https:\/\/relay.example\/oauth\/start\/saved-op"/)
+    }
+  })
+}

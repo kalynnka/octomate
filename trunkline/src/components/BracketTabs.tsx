@@ -12,7 +12,7 @@ export function BracketTabs<Id extends string>({
   onPick: (id: Id) => void
 }) {
   return (
-    <div style={{ display: 'flex', flexDirection: 'column' }}>
+    <div className="trk-bracket-tabs" style={{ display: 'flex', flexDirection: 'column' }}>
       <div style={{ display: 'flex' }}>
         {tabs.map((tab) => {
           const on = tab.id === current
@@ -33,7 +33,6 @@ export function BracketTabs<Id extends string>({
                 border: 0,
                 background: 'transparent',
                 ...label(10, '.16em'),
-                transition: 'color .15s',
                 color: on ? 'var(--color-accent)' : 'var(--fg-3)',
               }}
             >
@@ -44,7 +43,15 @@ export function BracketTabs<Id extends string>({
           )
         })}
       </div>
-      <i style={{ display: 'block', height: 1, background: 'var(--color-border)' }} />
+      <i aria-hidden="true" style={{ display: 'block', position: 'relative', height: 1, background: 'var(--color-border)' }}>
+        <span
+          className="trk-tab-indicator"
+          style={{
+            width: `${100 / tabs.length}%`,
+            transform: `translateX(${tabs.findIndex((tab) => tab.id === current) * 100}%)`,
+          }}
+        />
+      </i>
     </div>
   )
 }

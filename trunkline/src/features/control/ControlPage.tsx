@@ -237,8 +237,8 @@ function McpConnection({ mcp, grant, loading, onConnect }: {
   const ready = mcp.enabled && (mcp.auth_kind !== 'oauth' || status === 'active')
   const unavailable = mcp.auth_kind === 'oauth' && !grant?.oauth
   const text = !mcp.enabled ? 'Disabled' : ready ? 'Ready'
-    : unavailable ? loading ? 'Loading…' : 'Unavailable' : 'Pending'
-  const color = ready ? 'var(--color-teal)' : mcp.enabled && pending ? 'var(--color-accent)' : 'var(--fg-3)'
+    : loading ? 'Loading…' : 'Unavailable'
+  const color = ready ? 'var(--color-teal)' : 'var(--fg-3)'
 
   const enable = async () => {
     if (busy) return
@@ -257,13 +257,13 @@ function McpConnection({ mcp, grant, loading, onConnect }: {
 
   return (
     <div className="trk-mcp-connection">
-      {!mcp.enabled || pending ? (
+      {!mcp.enabled ? (
         <button
           type="button"
           className="trk-mcp-status hov-wash"
           disabled={busy}
-          title={mcp.enabled ? 'Continue authorization' : 'Enable MCP'}
-          onClick={mcp.enabled ? onConnect : () => void enable()}
+          title="Enable MCP"
+          onClick={() => void enable()}
         >
           <DotCell color={color}>{busy ? 'Enabling…' : text}</DotCell>
         </button>
@@ -274,7 +274,7 @@ function McpConnection({ mcp, grant, loading, onConnect }: {
           color: 'color-mix(in srgb, var(--color-teal) 60%, var(--fg-1))',
           borderColor: 'var(--color-teal)',
           background: 'color-mix(in srgb, var(--color-teal) 10%, transparent)',
-        }} onClick={onConnect}>Connect</Button>
+        }} onClick={onConnect}>{pending ? 'Continue' : 'Connect'}</Button>
       )}
       {error && <div role="alert"><Refusal>{error}</Refusal></div>}
     </div>
@@ -494,7 +494,7 @@ type McpView = 'installed' | 'tentacles'
 export function ControlPage() {
   const mgmtSec = useConsole((s) => s.mgmtSec)
   const { goChat } = useConsole((s) => s.actions)
-  const [mcpView, setMcpView] = useState<McpView>('installed')
+  const [mcpView, setMcpView] = useState<McpView>('tentacles')
   const [installSource, setInstallSource] = useState<ApiMcpTentacle | 'custom' | null>(null)
   const [authorization, setAuthorization] = useState<ApiMcp | null>(null)
   const [installed, setInstalled] = useState<ApiMcp | null>(null)
@@ -661,8 +661,8 @@ export function ControlPage() {
               <div style={{ maxWidth: 360, flexShrink: 0, marginBottom: 16 }}>
                 <BracketTabs
                   tabs={[
-                    { id: 'installed', label: 'Installed' },
                     { id: 'tentacles', label: 'Tentacles' },
+                    { id: 'installed', label: 'Installed' },
                   ]}
                   current={mcpView}
                   onPick={setMcpView}
@@ -671,7 +671,7 @@ export function ControlPage() {
               <p className="trk-control-note">
                 {mcpView === 'installed'
                   ? 'These MCPs belong to you. Each namespace identifies a separate installation, including multiple workspaces from the same service.'
-                  : 'Configured MCP templates. Install a preset for your account.'}
+                  : 'Connect integrated apps to your account and use their tools in your conversations.'}
               </p>
               {installed && (
                 <p className="trk-control-note" role="status">
@@ -691,14 +691,14 @@ export function ControlPage() {
                 />
               )}
               {authorization && <McpAuthorizationDialog key={authorization.id} mcp={authorization} onClose={() => setAuthorization(null)} />}
-              {mcpView === 'installed' && (
-                <button type="button" className="trk-create-button hov-accent-border-wash" onClick={() => {
-                  setInstalled(null)
-                  setInstallSource('custom')
-                }}>+ Install MCP</button>
-              )}
+              <button type="button" className="trk-create-button hov-accent-border-wash" onClick={() => {
+                setInstalled(null)
+                setInstallSource('custom')
+              }}>+ Install MCP</button>
               {mcpView === 'installed' ? (servers ? (
                 <Table
+                  key="installed"
+                  className="trk-mcp-tab trk-mcp-tab-installed"
                   columns={installedColumns}
                   rows={servers}
                   rowKey={(m) => m.id}
@@ -709,6 +709,8 @@ export function ControlPage() {
                 <Awaiting note={serversQuery.isError ? 'Could not load installed MCPs.' : 'Loading installed MCPs…'} />
               )) : (tentacles ? (
                 <Table
+                  key="tentacles"
+                  className="trk-mcp-tab"
                   columns={presetColumns}
                   rows={tentacles}
                   rowKey={(t) => t.id}

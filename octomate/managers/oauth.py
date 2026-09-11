@@ -228,11 +228,12 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             cipher = self.cipher
             if cipher is None:
                 raise ValueError("OAuth persistence requires an encryption key")
-            resumed = await self.live_device_authorization(
-                user_id=user.id,
-                profile_id=profile.id if profile is not None else None,
-                connector_id=connector.id,
+            resumed = await self.pending_authorization(
+                user,
+                connector.id,
+                profile=profile,
                 mcp_id=mcp_id,
+                flow="device",
             )
             if resumed is not None:
                 return resumed
@@ -322,46 +323,73 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             expires_at=authorization.expires_at,
         )
 
-    async def live_device_authorization(
+    async def pending_authorization(
         self,
-        *,
-        user_id: uuid.UUID,
-        profile_id: uuid.UUID | None,
+        user: User,
         connector_id: str,
+        *,
+        profile: UserProfile | None = None,
         mcp_id: uuid.UUID | None = None,
-    ) -> DeviceAuthorization | None:
-        """This user's device authorization that is still worth returning to.
-
-        Asking to connect again while one is open would strand the code the user is
-        already looking at, so the open one is handed back untouched; only once it
-        has expired is a fresh flow the right answer.
-        """
+        flow: OAuthFlowKind | None = None,
+    ) -> OAuthStartResult | None:
+        """Restore a live authorization without starting another provider flow."""
+        if profile is not None and profile.user_id != user.id:
+            raise ValueError("OAuth profile does not belong to this user")
         cipher = self.cipher
         if cipher is None:
             raise ValueError("OAuth persistence requires an encryption key")
+        expressions = [
+            OAuthOperation["user_id"] == user.id,
+            OAuthOperation["connector_id"] == connector_id,
+            OAuthOperation["mcp_id"] == mcp_id,
+            OAuthOperation["consumed_at"].is_(None),
+            OAuthOperation["expires_at"] > datetime.now(UTC),
+        ]
+        if profile is not None or mcp_id is None:
+            expressions.append(
+                OAuthOperation["profile_id"] == (profile.id if profile else None)
+            )
+        if flow is not None:
+            expressions.append(
+                OAuthOperation["interval_seconds"].is_not(None)
+                if flow == "device"
+                else OAuthOperation["interval_seconds"].is_(None)
+            )
         async with async_session() as session:
             operation = await session.first(
                 OAuthOperation,
                 order_bys=[OAuthOperation["id"].desc()],
-                expressions=[
-                    OAuthOperation["user_id"] == user_id,
-                    OAuthOperation["profile_id"] == profile_id,
-                    OAuthOperation["connector_id"] == connector_id,
-                    OAuthOperation["mcp_id"] == mcp_id,
-                    OAuthOperation["consumed_at"].is_(None),
-                    OAuthOperation["interval_seconds"].is_not(None),
-                    OAuthOperation["expires_at"] > datetime.now(UTC),
-                ],
+                expressions=expressions,
             )
+            if operation is not None and operation.profile_id is not None:
+                profile = await session.get(UserProfile, operation.profile_id)
         if operation is None:
             return None
         if operation.interval_seconds is None:
-            raise ValueError(
-                f"device operation {operation.id} has no polling interval; it was "
-                "written by an authorization-code flow"
+            payload = self.authorization_payload(operation)
+            connector = await self.resolve_connector(
+                connector_id, user_id=user.id, mcp_id=mcp_id, state=payload.mcp_oauth
             )
-        expires_at = operation.expires_at
-        payload = DeviceOperationPayload.model_validate_json(
+            transport = connector.callback_transport
+            if transport is None:
+                raise ValueError(
+                    "authorization-code OAuth requires a callback transport"
+                )
+            return AuthorizationLink(
+                operation_id=operation.id,
+                authorization_uri=await transport.prepare_authorization(
+                    OAuthFlowContext(
+                        operation_id=operation.id,
+                        connector_id=connector_id,
+                        user=user,
+                        profile=profile,
+                        mcp_id=mcp_id,
+                    ),
+                    payload.authorization_uri,
+                ),
+                expires_at=operation.expires_at,
+            )
+        device = DeviceOperationPayload.model_validate_json(
             cipher.decrypt(
                 operation.encrypted_data,
                 context=f"operation:{operation.id}",
@@ -369,10 +397,10 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         )
         return DeviceAuthorization(
             operation_id=operation.id,
-            verification_uri=payload.verification_uri,
-            verification_uri_complete=payload.verification_uri_complete,
-            user_code=payload.user_code,
-            expires_at=expires_at,
+            verification_uri=device.verification_uri,
+            verification_uri_complete=device.verification_uri_complete,
+            user_code=device.user_code,
+            expires_at=operation.expires_at,
             interval_seconds=operation.interval_seconds,
         )
 
@@ -387,20 +415,23 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         """Poll this user's newest device operation from the originating context."""
         if profile is not None and profile.user_id != user.id:
             raise ValueError("OAuth profile does not belong to this user")
+        expressions = [
+            OAuthOperation["user_id"] == user.id,
+            OAuthOperation["connector_id"] == connector_id,
+            OAuthOperation["mcp_id"] == mcp_id,
+            OAuthOperation["consumed_at"].is_(None),
+            OAuthOperation["interval_seconds"].is_not(None),
+        ]
+        if profile is not None or mcp_id is None:
+            expressions.append(
+                OAuthOperation["profile_id"] == (profile.id if profile else None)
+            )
         async with async_session() as session:
             operations = await session.list(
                 OAuthOperation,
                 limit=1,
                 order_bys=[OAuthOperation["id"].desc()],
-                expressions=[
-                    OAuthOperation["user_id"] == user.id,
-                    OAuthOperation["profile_id"]
-                    == (profile.id if profile is not None else None),
-                    OAuthOperation["connector_id"] == connector_id,
-                    OAuthOperation["mcp_id"] == mcp_id,
-                    OAuthOperation["consumed_at"].is_(None),
-                    OAuthOperation["interval_seconds"].is_not(None),
-                ],
+                expressions=expressions,
             )
         if not operations:
             raise NoPendingAuthorization(f"no pending {connector_id} authorization")

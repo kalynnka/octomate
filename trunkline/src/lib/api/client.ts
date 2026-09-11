@@ -110,6 +110,15 @@ export async function connectMcp(id: string, flow: OAuthFlowKind): Promise<ApiMc
   return (await res.json()) as ApiMcpAuthorization
 }
 
+export function fetchMcpAuthorization(id: string): Promise<ApiMcpAuthorization | null> {
+  return getJson<ApiMcpAuthorization | null>(`/api/mcp/${encodeURIComponent(id)}/authorization`)
+}
+
+export async function cancelMcpAuthorization(id: string): Promise<void> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/authorization`, { method: 'DELETE' })
+  if (!res.ok) return refuse(res)
+}
+
 export async function confirmMcp(id: string): Promise<ApiMcpAuthorizationResult> {
   const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/confirm`, { method: 'POST' })
   if (!res.ok) return refuse(res)
