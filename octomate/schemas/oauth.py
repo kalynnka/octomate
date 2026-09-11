@@ -11,6 +11,7 @@ from typing import Annotated, ClassVar, Literal
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
 from pydantic import (
     AnyHttpUrl,
     AwareDatetime,
@@ -25,7 +26,7 @@ from uuid_utils.compat import uuid7
 from octomate.models import oauth as oauth_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.user import User, UserProfile
-from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
 
 
 class OAuthCipher:
@@ -65,7 +66,16 @@ class OAuthFlowContext:
     operation_id: uuid.UUID
     connector_id: str
     user: User
-    profile: UserProfile
+    profile: UserProfile | None
+    mcp_id: uuid.UUID | None = None
+    interval_seconds: int | None = None  # Current device polling interval.
+
+
+class McpOAuthState(BaseModel):
+    resource: HttpsUrl
+    metadata: OAuthMetadata
+    client: OAuthClientInformationFull = Field(repr=False)
+    scope: str | None = None
 
 
 class DeviceAuthorizationResponse(BaseModel):
@@ -101,6 +111,7 @@ class AuthorizationRequest(BaseModel):
         "token exchange. None for a provider that does not offer PKCE.",
     )
     expires_at: AwareDatetime
+    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False)
 
 
 class DeviceAuthorization(BaseModel):
@@ -140,9 +151,10 @@ class OAuthGrant(BaseModel):
     refresh_token: SecretStr | None = Field(default=None, repr=False)
     token_type: str = "bearer"
     scopes: list[str] = Field(default_factory=list)
-    subject: str
-    account_label: str
+    subject: str | None = None
+    account_label: str | None = None
     expires_at: AwareDatetime | None = None
+    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False, exclude=True)
 
 
 class AuthorizationLink(BaseModel):
@@ -311,9 +323,13 @@ OAuthStartResult = DeviceAuthorization | AuthorizationLink
 class OAuthTokenPayload(BaseModel):
     """The plaintext token envelope immediately before encryption or after decryption."""
 
+    flow: OAuthFlowKind = Field(
+        description="The issuing flow whose client authentication is used for refresh."
+    )
     access_token: SecretStr = Field(repr=False)
     refresh_token: SecretStr | None = Field(default=None, repr=False)
     token_type: str = "bearer"
+    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False)
 
     @field_serializer("access_token", "refresh_token", when_used="json")
     def serialize_secret(self, value: SecretStr | None) -> str | None:
@@ -352,6 +368,7 @@ class AuthorizationCodeOperationPayload(BaseModel):
     code_verifier: SecretStr | None = Field(default=None, repr=False)
     callback_uri: AnyHttpUrl
     authorization_uri: AnyHttpUrl = Field(repr=False)
+    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False)
 
     @field_serializer("state", "code_verifier", when_used="json")
     def serialize_secret(self, value: SecretStr | None) -> str | None:
@@ -364,7 +381,8 @@ class OAuthOperation(BaseTransmuter):
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     user_id: uuid.UUID
-    profile_id: uuid.UUID
+    profile_id: uuid.UUID | None = None
+    mcp_id: uuid.UUID | None = None
     connector_id: str
     encrypted_data: bytes = Field(repr=False)
     expires_at: AwareDatetime
@@ -383,10 +401,11 @@ class OAuthConnection(BaseTransmuter):
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     user_id: uuid.UUID
     connector_id: str
+    mcp_id: uuid.UUID | None = None
     status: OAuthConnectionStatus = "active"
     encrypted_tokens: bytes = Field(repr=False)
-    subject: str
-    account_label: str
+    subject: str | None = None
+    account_label: str | None = None
     scopes: list[str] = Field(default_factory=list)
     expires_at: AwareDatetime | None = None
     created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))

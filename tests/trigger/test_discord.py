@@ -55,7 +55,7 @@ async def discord_run_thread(
     trigger_targets: TriggerTargets,
 ) -> AsyncIterator[tuple[DiscordTentacle, ChannelAddress]]:
     """One real Gateway client and one fresh public thread for the whole replay."""
-    config = live_config.channels.get("discord")
+    config = live_config.tentacles.get("discord")
     target = trigger_targets.discord
     if (
         not isinstance(config, DiscordChannelConfig)
@@ -64,7 +64,7 @@ async def discord_run_thread(
     ):
         pytest.skip(
             "discord channel/trigger target not configured in "
-            "channels.yaml/trigger.yaml"
+            "tentacles.yaml/trigger.yaml"
         )
     if target.chat_type != "group":
         pytest.skip("discord live replay requires a group text-channel target")

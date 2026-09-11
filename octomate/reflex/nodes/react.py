@@ -177,9 +177,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         # Registered before anything is presented: a second turn racing this
         # conversation is refused here, loudly, not after it has started streaming.
-        with (
-            ctx.deps.gateway.driving(octomate_session),
-            reflex_logfire.span(
+        async with ctx.deps.gateway.driving(octomate_session):
+            with reflex_logfire.span(
                 "react",
                 channel_id=target_address.channel_tentacle_id,
                 agent_id=agent.id,
@@ -188,17 +187,130 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 resume_batch_id=str(self.resume_batch_id)
                 if self.resume_batch_id
                 else None,
-            ) as span,
-        ):
-            stream_results: list[AgentRunResult[ChannelOutput]] = []
-            reply_thread_message_ids: list[uuid.UUID] = []
-            assistant_replies_bound = False
-            if target_channel.config.stream.enabled:
+            ) as span:
+                stream_results: list[AgentRunResult[ChannelOutput]] = []
+                reply_thread_message_ids: list[uuid.UUID] = []
+                assistant_replies_bound = False
+                if target_channel.config.stream.enabled:
 
-                async def stream_events() -> AsyncGenerator[
-                    StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-                ]:
-                    async with agent.run_stream_events(
+                    async def stream_events() -> AsyncGenerator[
+                        StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+                    ]:
+                        async with agent.run_stream_events(
+                            user_prompt,
+                            conversation_address=target_address,
+                            thread_id=thread_id,
+                            source_thread_address=state.source_thread_address,
+                            source_thread_message_ids=state.source_thread_message_ids,
+                            run_name=state.run_name,
+                            model=run_model,
+                            effort=decision.effort,
+                            deferred_tool_results=deferred_results,
+                            deferred_suspender=suspender,
+                            capabilities=capabilities,
+                        ) as stream:
+                            async for event in stream:
+                                if isinstance(event, AgentRunResultEvent):
+                                    stream_results.append(event.result)
+                                # A send bound somewhere other than this conversation.
+                                # The timeline renders one surface, so anything else has
+                                # to be delivered here and kept off the stream. Where is
+                                # already settled: the gate resolved and refused, so this
+                                # only addresses what it was handed.
+                                if (
+                                    isinstance(event, MessageSentEvent)
+                                    and event.destination is not None
+                                ):
+                                    destination = event.destination
+                                    destination_channel = ctx.deps.channel(
+                                        destination.channel_tentacle_id
+                                    )
+                                    dm = await destination_channel.open_dm(
+                                        destination.user_id
+                                    )
+                                    if dm is not None:
+                                        # A bare message, with nobody taking the work up
+                                        # there — what separates this from `scheme`. The
+                                        # ledger row touches no conversation's model
+                                        # messages, so the DM's own agent meets it as
+                                        # pending context on its next turn.
+                                        await destination_channel.feelers.segments.present(
+                                            dm, event.segments
+                                        )
+                                        await ctx.deps.thread_manager.record_outbound(
+                                            dm,
+                                            agent_tentacle_id=agent.id,
+                                            segments=event.segments,
+                                            sender=destination_channel.self_profile,
+                                        )
+                                        continue
+                                    logger.warning(
+                                        "Channel %s could not open a DM with %s; "
+                                        "delivering the send to %s instead",
+                                        destination.channel_tentacle_id,
+                                        destination.user_id,
+                                        target_address,
+                                    )
+                                yield event
+
+                    try:
+                        async with target_channel.feelers.timeline.open(
+                            target_address
+                        ) as timeline_state:
+                            with target_channel.feelers.driving(
+                                target_address, timeline_state
+                            ):
+                                async with aclosing(stream_events()) as events:
+                                    await timeline_state.drive(events)
+                    except AgentRunError:
+                        # A model/provider failure (e.g. invalid Bedrock credentials)
+                        # surfaces here from the run stream itself, not the render. It
+                        # is the real cause — let it propagate instead of masking it as
+                        # a render warning and a generic "no result" error below.
+                        raise
+                    except Exception:
+                        logger.warning(
+                            "Channel %s: timeline render failed",
+                            target_address.channel_tentacle_id,
+                            exc_info=True,
+                        )
+                    if not stream_results:
+                        raise RuntimeError(
+                            f"react stream for {target_address} completed without a result"
+                        )
+                    run_result = stream_results[-1]
+                    run_output: ChannelOutput = run_result.output
+                    if isinstance(run_output, str):
+                        if run_output:
+                            thread_message = (
+                                await ctx.deps.thread_manager.record_outbound(
+                                    target_address,
+                                    agent_tentacle_id=agent.id,
+                                    segments=[
+                                        MarkdownSegment(data={"text": run_output})
+                                    ],
+                                    sender=target_channel.self_profile,
+                                    message_text=run_output,
+                                    raw=run_output,
+                                )
+                            )
+                            reply_thread_message_ids.append(thread_message.id)
+                    elif isinstance(run_output, Iterable):
+                        segments = list(run_output)
+                        _reply_to, body = split_reply(segments)
+                        if body:
+                            thread_message = (
+                                await ctx.deps.thread_manager.record_outbound(
+                                    target_address,
+                                    agent_tentacle_id=agent.id,
+                                    segments=body,
+                                    sender=target_channel.self_profile,
+                                    raw="\n\n".join(str(segment) for segment in body),
+                                )
+                            )
+                            reply_thread_message_ids.append(thread_message.id)
+                else:
+                    run_result = await agent.run(
                         user_prompt,
                         conversation_address=target_address,
                         thread_id=thread_id,
@@ -210,276 +322,178 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
                         capabilities=capabilities,
-                    ) as stream:
-                        async for event in stream:
-                            if isinstance(event, AgentRunResultEvent):
-                                stream_results.append(event.result)
-                            # A send bound somewhere other than this conversation.
-                            # The timeline renders one surface, so anything else has
-                            # to be delivered here and kept off the stream. Where is
-                            # already settled: the gate resolved and refused, so this
-                            # only addresses what it was handed.
-                            if (
-                                isinstance(event, MessageSentEvent)
-                                and event.destination is not None
-                            ):
-                                destination = event.destination
-                                destination_channel = ctx.deps.channel(
-                                    destination.channel_tentacle_id
-                                )
-                                dm = await destination_channel.open_dm(
-                                    destination.user_id
-                                )
-                                if dm is not None:
-                                    # A bare message, with nobody taking the work up
-                                    # there — what separates this from `scheme`. The
-                                    # ledger row touches no conversation's model
-                                    # messages, so the DM's own agent meets it as
-                                    # pending context on its next turn.
-                                    await destination_channel.feelers.segments.present(
-                                        dm, event.segments
-                                    )
-                                    await ctx.deps.thread_manager.record_outbound(
-                                        dm,
-                                        agent_tentacle_id=agent.id,
-                                        segments=event.segments,
-                                        sender=destination_channel.self_profile,
-                                    )
-                                    continue
-                                logger.warning(
-                                    "Channel %s could not open a DM with %s; "
-                                    "delivering the send to %s instead",
-                                    destination.channel_tentacle_id,
-                                    destination.user_id,
+                    )
+                    run_output: ChannelOutput = run_result.output
+                    if isinstance(run_output, str):
+                        if run_output:
+                            thread_message = (
+                                await ctx.deps.thread_manager.record_outbound(
                                     target_address,
+                                    agent_tentacle_id=agent.id,
+                                    segments=[
+                                        MarkdownSegment(data={"text": run_output})
+                                    ],
+                                    sender=target_channel.self_profile,
+                                    message_text=run_output,
+                                    raw=run_output,
                                 )
-                            yield event
-
-                try:
-                    async with target_channel.feelers.timeline.open(
-                        target_address
-                    ) as timeline_state:
-                        with target_channel.feelers.driving(
-                            target_address, timeline_state
-                        ):
-                            async with aclosing(stream_events()) as events:
-                                await timeline_state.drive(events)
-                except AgentRunError:
-                    # A model/provider failure (e.g. invalid Bedrock credentials)
-                    # surfaces here from the run stream itself, not the render. It
-                    # is the real cause — let it propagate instead of masking it as
-                    # a render warning and a generic "no result" error below.
-                    raise
-                except Exception:
-                    logger.warning(
-                        "Channel %s: timeline render failed",
-                        target_address.channel_tentacle_id,
-                        exc_info=True,
-                    )
-                if not stream_results:
-                    raise RuntimeError(
-                        f"react stream for {target_address} completed without a result"
-                    )
-                run_result = stream_results[-1]
-                run_output: ChannelOutput = run_result.output
-                if isinstance(run_output, str):
-                    if run_output:
-                        thread_message = await ctx.deps.thread_manager.record_outbound(
-                            target_address,
-                            agent_tentacle_id=agent.id,
-                            segments=[MarkdownSegment(data={"text": run_output})],
-                            sender=target_channel.self_profile,
-                            message_text=run_output,
-                            raw=run_output,
-                        )
-                        reply_thread_message_ids.append(thread_message.id)
-                elif isinstance(run_output, Iterable):
-                    segments = list(run_output)
-                    _reply_to, body = split_reply(segments)
-                    if body:
-                        thread_message = await ctx.deps.thread_manager.record_outbound(
-                            target_address,
-                            agent_tentacle_id=agent.id,
-                            segments=body,
-                            sender=target_channel.self_profile,
-                            raw="\n\n".join(str(segment) for segment in body),
-                        )
-                        reply_thread_message_ids.append(thread_message.id)
-            else:
-                run_result = await agent.run(
-                    user_prompt,
-                    conversation_address=target_address,
-                    thread_id=thread_id,
-                    source_thread_address=state.source_thread_address,
-                    source_thread_message_ids=state.source_thread_message_ids,
-                    run_name=state.run_name,
-                    model=run_model,
-                    effort=decision.effort,
-                    deferred_tool_results=deferred_results,
-                    deferred_suspender=suspender,
-                    capabilities=capabilities,
-                )
-                run_output: ChannelOutput = run_result.output
-                if isinstance(run_output, str):
-                    if run_output:
-                        thread_message = await ctx.deps.thread_manager.record_outbound(
-                            target_address,
-                            agent_tentacle_id=agent.id,
-                            segments=[MarkdownSegment(data={"text": run_output})],
-                            sender=target_channel.self_profile,
-                            message_text=run_output,
-                            raw=run_output,
-                        )
-                        reply_thread_message_ids.append(thread_message.id)
+                            )
+                            reply_thread_message_ids.append(thread_message.id)
+                            await ctx.deps.thread_manager.bind_assistant_replies(
+                                reply_thread_message_ids,
+                                run_id=run_result.run_id,
+                            )
+                            assistant_replies_bound = True
+                            message_id = await target_channel.feelers.markdown.present(
+                                target_address,
+                                run_output,
+                            )
+                            await ctx.deps.thread_manager.mark_presented(
+                                thread_message,
+                                message_id,
+                            )
+                    elif isinstance(run_output, Iterable):
+                        # A segment list is the only media-bearing reply: deliver it
+                        # natively (channels without a media transport fall back to
+                        # the joined text form in send_segments).
+                        segments = list(run_output)
+                        _reply_to, body = split_reply(segments)
+                        thread_message = None
+                        if body:
+                            thread_message = (
+                                await ctx.deps.thread_manager.record_outbound(
+                                    target_address,
+                                    agent_tentacle_id=agent.id,
+                                    segments=body,
+                                    sender=target_channel.self_profile,
+                                    raw="\n\n".join(str(segment) for segment in body),
+                                )
+                            )
+                            reply_thread_message_ids.append(thread_message.id)
                         await ctx.deps.thread_manager.bind_assistant_replies(
                             reply_thread_message_ids,
                             run_id=run_result.run_id,
                         )
                         assistant_replies_bound = True
-                        message_id = await target_channel.feelers.markdown.present(
-                            target_address,
-                            run_output,
+                        message_id = await target_channel.feelers.segments.present(
+                            target_address, segments
                         )
-                        await ctx.deps.thread_manager.mark_presented(
-                            thread_message,
-                            message_id,
-                        )
-                elif isinstance(run_output, Iterable):
-                    # A segment list is the only media-bearing reply: deliver it
-                    # natively (channels without a media transport fall back to
-                    # the joined text form in send_segments).
-                    segments = list(run_output)
-                    _reply_to, body = split_reply(segments)
-                    thread_message = None
-                    if body:
-                        thread_message = await ctx.deps.thread_manager.record_outbound(
-                            target_address,
-                            agent_tentacle_id=agent.id,
-                            segments=body,
-                            sender=target_channel.self_profile,
-                            raw="\n\n".join(str(segment) for segment in body),
-                        )
-                        reply_thread_message_ids.append(thread_message.id)
+                        if thread_message is not None:
+                            await ctx.deps.thread_manager.mark_presented(
+                                thread_message,
+                                message_id,
+                            )
+                    # DeferredToolRequests / None: nothing to deliver here.
+
+                output = run_result.output
+                if self.resume_batch_id is not None:
+                    await ctx.deps.action_manager.mark_batch(
+                        self.resume_batch_id,
+                        "completed",
+                        completed=True,
+                    )
+
+                span.set_attribute("react.run_id", run_result.run_id)
+                span.set_attribute(
+                    "react.deferred", isinstance(output, DeferredToolRequests)
+                )
+                if not assistant_replies_bound:
                     await ctx.deps.thread_manager.bind_assistant_replies(
                         reply_thread_message_ids,
                         run_id=run_result.run_id,
                     )
-                    assistant_replies_bound = True
-                    message_id = await target_channel.feelers.segments.present(
-                        target_address, segments
+                if (
+                    octomate_session is not None
+                    and octomate_session.dispelling
+                    and state.thread is not None
+                ):
+                    # The agent said this thread's work is done: its tree goes now
+                    # that the run is out of it, saved first and kept if that failed.
+                    result = await ctx.deps.workspaces.dispel(state.thread)
+                    span.set_attribute(
+                        "react.dispelled",
+                        result,
                     )
-                    if thread_message is not None:
-                        await ctx.deps.thread_manager.mark_presented(
-                            thread_message,
-                            message_id,
+                if isinstance(output, DeferredToolRequests):
+                    # `teleport` is resolved by the graph (fork + resume), not a human. The
+                    # suspender classified it by its declared metadata kind and stashed it,
+                    # so route on the typed request instead of re-scanning tool names.
+                    if suspender.teleport is not None:
+                        return Teleport(
+                            request=suspender.teleport, origin=target, agent_id=agent.id
                         )
-                # DeferredToolRequests / None: nothing to deliver here.
-
-            output = run_result.output
-            if self.resume_batch_id is not None:
-                await ctx.deps.action_manager.mark_batch(
-                    self.resume_batch_id,
-                    "completed",
-                    completed=True,
-                )
-
-            span.set_attribute("react.run_id", run_result.run_id)
-            span.set_attribute(
-                "react.deferred", isinstance(output, DeferredToolRequests)
-            )
-            if not assistant_replies_bound:
-                await ctx.deps.thread_manager.bind_assistant_replies(
-                    reply_thread_message_ids,
-                    run_id=run_result.run_id,
-                )
-            if (
-                octomate_session is not None
-                and octomate_session.dispelling
-                and state.thread is not None
-            ):
-                # The agent said this thread's work is done: its tree goes now
-                # that the run is out of it, saved first and kept if that failed.
-                result = await ctx.deps.workspaces.dispel(state.thread)
-                span.set_attribute(
-                    "react.dispelled",
-                    result,
-                )
-            if isinstance(output, DeferredToolRequests):
-                # `teleport` is resolved by the graph (fork + resume), not a human. The
-                # suspender classified it by its declared metadata kind and stashed it,
-                # so route on the typed request instead of re-scanning tool names.
-                if suspender.teleport is not None:
-                    return Teleport(
-                        request=suspender.teleport, origin=target, agent_id=agent.id
+                    return End(
+                        DeferredResult(
+                            requests=output,
+                            target=target,
+                            run_name=state.run_name,
+                            result=run_result,
+                            batch_id=suspender.suspended_batch_id,
+                        )
                     )
+
+                gateway_decision = (
+                    octomate_session.decision if octomate_session else None
+                )
+                if isinstance(gateway_decision, SchemeDecision | SummonDecision):
+                    # Where this handoff came from, as the row records it: the
+                    # conversation this turn ran in, as of its last message.
+                    conversation = (
+                        await ctx.deps.conversation_manager.ensure(
+                            thread_id, agent_tentacle_id=agent.id
+                        )
+                        if thread_id is not None
+                        else None
+                    )
+                    last = (
+                        max(
+                            conversation.messages,
+                            key=lambda message: message.id,
+                            default=None,
+                        )
+                        if conversation is not None
+                        else None
+                    )
+                    state.handoff = PendingHandoff(
+                        source_agent_tentacle_id=agent.id,
+                        source_conversation_id=conversation.id
+                        if conversation
+                        else None,
+                        source_run_id=last.run_id if last else None,
+                        source_model_message_id=last.id if last else None,
+                    )
+                if isinstance(gateway_decision, SchemeDecision):
+                    span.set_attribute("react.action", gateway_decision.action)
+                    reflex_logfire.info(
+                        "react -> scheme into the asker's dm",
+                        destination=str(gateway_decision.destination),
+                    )
+                    return Scheme(
+                        request=gateway_decision,
+                        origin=target,
+                        agent_id=agent.id,
+                    )
+                if isinstance(gateway_decision, SummonDecision):
+                    state.decision = gateway_decision
+                    state.target = target
+                    state.run_name = "summon"
+                    span.set_attribute("react.action", gateway_decision.action)
+                    span.set_attribute("react.next_agent_id", gateway_decision.agent_id)
+                    reflex_logfire.info(
+                        "react -> {action} agent={agent_id}",
+                        action=gateway_decision.action,
+                        agent_id=gateway_decision.agent_id,
+                        reason=gateway_decision.reason,
+                    )
+                    return Handoff()
+
                 return End(
-                    DeferredResult(
-                        requests=output,
+                    ReflexResult(
+                        decision=decision,
                         target=target,
-                        run_name=state.run_name,
                         result=run_result,
-                        batch_id=suspender.suspended_batch_id,
                     )
                 )
-
-            gateway_decision = octomate_session.decision if octomate_session else None
-            if isinstance(gateway_decision, SchemeDecision | SummonDecision):
-                # Where this handoff came from, as the row records it: the
-                # conversation this turn ran in, as of its last message.
-                conversation = (
-                    await ctx.deps.conversation_manager.ensure(
-                        thread_id, agent_tentacle_id=agent.id
-                    )
-                    if thread_id is not None
-                    else None
-                )
-                last = (
-                    max(
-                        conversation.messages,
-                        key=lambda message: message.id,
-                        default=None,
-                    )
-                    if conversation is not None
-                    else None
-                )
-                state.handoff = PendingHandoff(
-                    source_agent_tentacle_id=agent.id,
-                    source_conversation_id=conversation.id if conversation else None,
-                    source_run_id=last.run_id if last else None,
-                    source_model_message_id=last.id if last else None,
-                )
-            if isinstance(gateway_decision, SchemeDecision):
-                span.set_attribute("react.action", gateway_decision.action)
-                reflex_logfire.info(
-                    "react -> scheme into the asker's dm",
-                    destination=str(gateway_decision.destination),
-                )
-                return Scheme(
-                    request=gateway_decision,
-                    origin=target,
-                    agent_id=agent.id,
-                )
-            if isinstance(gateway_decision, SummonDecision):
-                state.decision = gateway_decision
-                state.target = target
-                state.run_name = "summon"
-                span.set_attribute("react.action", gateway_decision.action)
-                span.set_attribute("react.next_agent_id", gateway_decision.agent_id)
-                reflex_logfire.info(
-                    "react -> {action} agent={agent_id}",
-                    action=gateway_decision.action,
-                    agent_id=gateway_decision.agent_id,
-                    reason=gateway_decision.reason,
-                )
-                return Handoff()
-
-            return End(
-                ReflexResult(
-                    decision=decision,
-                    target=target,
-                    result=run_result,
-                )
-            )
 
 
 # React and the three nodes it hands off to name each other in their `run` return

@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
 from octomate.capabilities.history import HISTORY_TOOLS, HistoryCapability
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED
@@ -75,7 +76,11 @@ def a_turn() -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadM
             shared=True,
         ),
     )
-    server = octomate_mcp(fixed_session(session), threads)
+    server = octomate_mcp(
+        fixed_session(session),
+        threads,
+        manager=McpManager(users=threads.users, cipher=None),
+    )
     return server, session, channel, threads
 
 
@@ -105,7 +110,12 @@ async def a_native_call(
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
-    server = octomate_mcp(fixed_session(session), threads, kick=kicks.append)
+    server = octomate_mcp(
+        fixed_session(session),
+        threads,
+        kick=kicks.append,
+        manager=McpManager(users=threads.users, cipher=None),
+    )
     return server, session, channel, threads, kicks
 
 
@@ -114,7 +124,11 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     # their own subagent systems.
     server, _session, _channel, _threads = a_turn()
 
-    tools = await server.list_tools()
+    tools = [
+        tool
+        for tool in await server.list_tools()
+        if tool.name.startswith(("gateway_", "history_"))
+    ]
 
     assert [tool.name for tool in tools] == [
         "gateway_scry",
@@ -495,7 +509,11 @@ async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
             channel_tentacle_id="im", chat_type="dm", chat_id="landing", user_id="alice"
         ),
     )
-    return octomate_mcp(fixed_session(session), threads)
+    return octomate_mcp(
+        fixed_session(session),
+        threads,
+        manager=McpManager(users=threads.users, cipher=None),
+    )
 
 
 async def test_a_driven_turn_reads_every_thread_its_user_spoke_in(
@@ -552,7 +570,11 @@ async def test_a_native_session_reads_its_users_history(
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
-    server = octomate_mcp(fixed_session(session), threads)
+    server = octomate_mcp(
+        fixed_session(session),
+        threads,
+        manager=McpManager(users=threads.users, cipher=None),
+    )
 
     async with Client(server) as client:
         hits = await client.call_tool("history_search", {"query": "auth"})

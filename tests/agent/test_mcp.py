@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
 
-import httpx
+import httpx2
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
@@ -22,7 +22,12 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models import Model
-from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.models.function import (
+    AgentInfo,
+    DeltaToolCall,
+    DeltaToolCalls,
+    FunctionModel,
+)
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
@@ -34,32 +39,41 @@ from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.mcp import TentaclesToolset, tentacles_capability
-from octomate.config import BareMcpConfig, GitHubMcpConfig, LinearMcpConfig
 from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
-from octomate.mcp.server import CALL_MCP_TOOL, LIST_MCP_TOOLS, tentacles_mcp
+from octomate.mcp.server import (
+    CALL_MCP_TOOL,
+    DISABLE_MCP,
+    ENABLE_MCP,
+    INSTALL_MCP,
+    LIST_MCP_TENTACLES,
+    LIST_MCP_TOOLS,
+    LIST_MCPS,
+    UNINSTALL_MCP,
+    tentacles_mcp,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
     DeviceOAuthFlow,
-    DirectHttpOAuthCallbackTransport,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
 )
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.github import GitHubTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
-from octomate.tentacles.linear import LinearTentacle
-from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle, build_mcp
+from octomate.tentacles.mcp import (
+    BareMcpTentacle,
+    OAuthMcpTentacle,
+)
 from tests.channels.slack.test_mcp import into
 from tests.support.managers import FakeConversationManager, fixed_session
-from tests.support.mcp import discover
+from tests.support.mcp import discover, install_tentacle
 from tests.support.users import a_user
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
@@ -100,7 +114,6 @@ class Provider(OAuthMcpTentacle):
     label = "Provider"
     upstream = "https://mcp.example/mcp"
     instructions = "## Provider\n\nThe provider's own contract.\n"
-    prefix = "gh"
 
 
 async def a_linked_host() -> tuple[Octomate, Provider, UserProfile]:
@@ -109,7 +122,7 @@ async def a_linked_host() -> tuple[Octomate, Provider, UserProfile]:
     users = UserManager()
     host = Octomate(users=users, oauth_encryption_key=ENCRYPTION_KEY)
     tentacle = host.connect(Provider("gh", host))
-    host.oauth.register(OAuthConnector(id="gh", flow=StaticGitHubFlow()))
+    host.oauth.register(OAuthConnector(id="gh", flows=[StaticGitHubFlow()]))
     async with async_session() as session:
         profile = await session.one_or_none(
             UserProfile,
@@ -145,11 +158,11 @@ def a_turn(profile: UserProfile | None = None) -> OctomateSession:
 @asynccontextmanager
 async def upstream_of(
     upstream: FastMCP,
-) -> AsyncIterator[httpx.AsyncBaseTransport]:
+) -> AsyncIterator[httpx2.AsyncBaseTransport]:
     """`upstream` served, as a transport a proxy's client can be routed into."""
     app = upstream.http_app()
     async with app.router.lifespan_context(app):
-        yield httpx.ASGITransport(app=app)
+        yield httpx2.ASGITransport(app=app)
 
 
 @asynccontextmanager
@@ -159,10 +172,11 @@ async def proxied(
     upstream: FastMCP,
 ) -> AsyncIterator[Client]:
     """The tentacles' server for `session`, `tentacle`'s upstream being `upstream`."""
-    async with upstream_of(upstream) as transport:
-        server = tentacles_mcp(
-            fixed_session(session), [tentacle], httpx_client_factory=into(transport)
-        )
+    if session.user_profile is not None:
+        await install_tentacle(tentacle, session.user_profile)
+    async with upstream_of(upstream) as transport, tentacle.octomate.mcp.lifespan():
+        tentacle.octomate.mcp.httpx_client_factory = into(transport)
+        server = tentacles_mcp(fixed_session(session), manager=tentacle.octomate.mcp)
         async with Client(server) as client:
             yield client
 
@@ -186,141 +200,81 @@ def an_inkling(
     )
 
 
-async def test_a_bare_server_speaks_the_operator_credential_for_everyone() -> None:
+async def test_an_installed_bare_tentacle_uses_its_operator_credential() -> None:
     tentacle = BareMcpTentacle(
         "linear",
-        Octomate(),
-        config=BareMcpConfig(url=LINEAR_URL, token=SecretStr("lin_x")),
+        Octomate(oauth_encryption_key=ENCRYPTION_KEY),
+        url=LINEAR_URL,
+        token=SecretStr("lin_x"),
     )
     upstream, seen = an_upstream("list_issues")
 
-    # A turn by nobody registered still speaks: the credential is the
-    # deployment's, and the key is the prefix its tools carry.
-    async with proxied(tentacle, a_turn(), upstream) as client:
+    owner = await a_user("alice", profiles={"slack": "U1"})
+    profile = await tentacle.octomate.users.profile("slack", "U1")
+    assert profile is not None
+    assert profile.user_id == owner.id
+    async with proxied(tentacle, a_turn(profile), upstream) as client:
         tools = await client.list_tools()
-        catalog = await discover(client, "linear")
+        catalog = await discover(client, "personal/linear")
         result = await client.call_tool(
             CALL_MCP_TOOL,
-            {"namespace": "linear", "name": "linear_list_issues", "arguments": {}},
+            {"namespace": "personal/linear", "name": "list_issues", "arguments": {}},
         )
 
-    assert [tool.name for tool in tools] == [LIST_MCP_TOOLS, CALL_MCP_TOOL]
-    assert [tool.name for tool in catalog.tools] == ["linear_list_issues"]
-    assert result.data == "answered"
+    assert {tool.name for tool in tools} == {
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+    }
+    assert [tool.name for tool in catalog.tools] == ["list_issues"]
+    assert result.data == {"result": "answered"}
     assert seen == ["Bearer lin_x"]
-
-
-async def test_an_explicit_prefix_overrides_the_key() -> None:
-    tentacle = BareMcpTentacle(
-        "linear",
-        Octomate(),
-        config=BareMcpConfig(prefix="lin", url=LINEAR_URL, token=SecretStr("x")),
-    )
-    upstream, _seen = an_upstream("list_issues")
-
-    async with proxied(tentacle, a_turn(), upstream) as client:
-        catalog = await discover(client, "linear")
-
-    assert [tool.name for tool in catalog.tools] == ["lin_list_issues"]
-
-
-def test_bootstrap_composes_each_mcp_type_and_keys_it_by_name() -> None:
-    # `type` is the only place a provider is named; the configured key is the
-    # tentacle id, the connector id and the prefix throughout.
-    host = Octomate()
-    notion = build_mcp(
-        "notion",
-        BareMcpConfig(url="https://mcp.notion.com/mcp", token=SecretStr("ntn_x")),
-        host,
-    )
-    github = build_mcp("gh", GitHubMcpConfig(client_id="Iv1.test"), host)
-    linear = build_mcp("linear_home", LinearMcpConfig(client_id="lin"), host)
-
-    assert isinstance(notion, BareMcpTentacle)
-    assert isinstance(github, GitHubTentacle)
-    assert isinstance(linear, LinearTentacle)
-    assert (notion.id, notion.prefix, notion.upstream) == (
-        "notion",
-        "notion",
-        "https://mcp.notion.com/mcp",
-    )
-    assert (github.id, github.prefix, github.upstream) == (
-        "gh",
-        "gh",
-        "https://api.githubcopilot.com/mcp/",
-    )
-    assert (linear.id, linear.prefix, linear.upstream) == (
-        "linear_home",
-        "linear_home",
-        LINEAR_URL,
-    )
-    assert sorted(host.oauth.connectors) == ["gh", "linear_home"]
-    # Only the authorization-code half carries a transport, and it is what makes
-    # Octomate serve the routes its URIs point at.
-    assert host.oauth.connector("gh").callback_transport is None
-    assert isinstance(
-        host.oauth.connector("linear_home").callback_transport,
-        DirectHttpOAuthCallbackTransport,
-    )
-
-
-def test_two_accounts_of_one_vendor_get_their_own_connectors_and_prefixes() -> None:
-    host = Octomate()
-    work = build_mcp("linear_work", LinearMcpConfig(client_id="a"), host)
-    home = build_mcp("linear_home", LinearMcpConfig(client_id="b"), host)
-
-    # Separate connectors, so separate stored connections and separate tool
-    # names — the model is never offered two identically named sets.
-    assert sorted(host.oauth.connectors) == ["linear_home", "linear_work"]
-    assert (work.prefix, home.prefix) == ("linear_work", "linear_home")
-
-
-def test_a_configured_prefix_overrides_the_id() -> None:
-    # The id is durable — it keys stored connections — so the prefix is what
-    # moves when one vendor is mounted twice.
-    linear = build_mcp(
-        "linear_personal", LinearMcpConfig(client_id="a", prefix="linme"), Octomate()
-    )
-
-    assert (linear.id, linear.prefix) == ("linear_personal", "linme")
-
-
-def test_read_only_selects_the_readonly_endpoint() -> None:
-    github = build_mcp(
-        "gh", GitHubMcpConfig(client_id="Iv1.test", read_only=True), Octomate()
-    )
-
-    assert github.upstream == "https://api.githubcopilot.com/mcp/readonly"
 
 
 async def test_a_linked_person_speaks_with_their_own_token() -> None:
     host, tentacle, profile = await a_linked_host()
     upstream, seen = an_upstream("list_repos")
 
+    owner = await host.users.owner(profile)
+    assert owner is not None
     async with proxied(tentacle, a_turn(profile), upstream) as client:
         unlinked = await client.list_tools()
-        with pytest.raises(ToolError, match=f"`{CONNECT_TOOL}` with `gh`"):
-            await discover(client, "gh")
-        await host.oauth.start(profile, "gh")
-        await host.oauth.complete_latest(profile, "gh")
+        with pytest.raises(ToolError, match="unavailable"):
+            await discover(client, "personal/gh")
+        installed = (await host.mcp.list(owner.id))[0]
+        await host.mcp.connect(owner, installed.id, profile=profile)
+        await host.mcp.confirm(owner, installed.id, profile=profile)
         linked = await client.list_tools()
-        catalog = await discover(client, "gh")
+        catalog = await discover(client, "personal/gh")
         result = await client.call_tool(
             CALL_MCP_TOOL,
-            {"namespace": "gh", "name": "gh_list_repos", "arguments": {}},
+            {"namespace": "personal/gh", "name": "list_repos", "arguments": {}},
         )
 
     # Linking enables discovery without changing the initial tool list.
     assert [tool.name for tool in unlinked] == [tool.name for tool in linked]
     assert [tool.name for tool in linked] == [
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
     ]
-    assert [tool.name for tool in catalog.tools] == ["gh_list_repos"]
+    assert [tool.name for tool in catalog.tools] == ["list_repos"]
     assert catalog.instructions == tentacle.instructions
-    assert result.data == "answered"
+    assert result.data == {"result": "answered"}
     assert seen == ["Bearer github-user-token"]
 
 
@@ -330,13 +284,19 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
 
     async with proxied(tentacle, a_turn(), upstream) as client:
         tools = await client.list_tools()
-        with pytest.raises(ToolError, match="nobody registered did"):
+        with pytest.raises(ToolError, match="unavailable"):
             await client.call_tool(
                 CALL_MCP_TOOL,
-                {"namespace": "gh", "name": "gh_list_repos", "arguments": {}},
+                {"namespace": "personal/gh", "name": "list_repos", "arguments": {}},
             )
 
     assert [tool.name for tool in tools] == [
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
@@ -351,7 +311,7 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     _host, tentacle, profile = await a_linked_host()
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
 
-    capability = tentacles_capability(a_turn(profile), [tentacle])
+    capability = tentacles_capability(a_turn(profile), manager=tentacle.octomate.mcp)
     toolset = capability.get_toolset()
     assert toolset is not None
     tools = await toolset.get_tools(ctx)
@@ -362,12 +322,23 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     # the provider's, under the served contract.
     assert capability.defer_loading
     assert capability.id == "tentacles"
-    assert "Provider" in str(capability.description)
+    assert "user's installed MCP tools" in str(capability.description)
     assert isinstance(instructions, str)
-    assert "## Linking accounts" in instructions
+    assert "oauth_connect" in instructions
     assert "The provider's own contract." not in instructions
-    assert "`gh` (Provider)" in instructions
-    assert set(tools) == {CONNECT_TOOL, CONFIRM_TOOL, LIST_MCP_TOOLS, CALL_MCP_TOOL}
+    assert "`gh` (Provider)" not in instructions
+    assert set(tools) == {
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+    }
 
 
 async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retry() -> (
@@ -377,25 +348,31 @@ async def test_inkling_calls_a_tentacle_in_process_and_hears_a_refusal_as_a_retr
     upstream, seen = an_upstream("list_repos")
     ctx = RunContext(deps=None, model=TestModel(), usage=RunUsage())
 
-    async with upstream_of(upstream) as transport:
+    owner = await host.users.owner(profile)
+    assert owner is not None
+    await install_tentacle(tentacle, profile)
+    async with upstream_of(upstream) as transport, host.mcp.lifespan():
+        host.mcp.httpx_client_factory = into(transport)
         toolset = TentaclesToolset(
-            tentacles_mcp(
-                fixed_session(a_turn(profile)),
-                [tentacle],
-                httpx_client_factory=into(transport),
-            )
+            tentacles_mcp(fixed_session(a_turn(profile)), manager=host.mcp)
         )
         before = await toolset.get_tools(ctx)
-        with pytest.raises(ModelRetry, match=f"`{CONNECT_TOOL}` with `gh`"):
+        with pytest.raises(ModelRetry, match="Missing required argument"):
+            await toolset.call_tool(CONNECT_TOOL, {}, ctx, before[CONNECT_TOOL])
+        with pytest.raises(ModelRetry, match="unavailable"):
             await toolset.call_tool(
-                LIST_MCP_TOOLS, {"namespace": "gh"}, ctx, before[LIST_MCP_TOOLS]
+                LIST_MCP_TOOLS,
+                {"namespace": "personal/gh"},
+                ctx,
+                before[LIST_MCP_TOOLS],
             )
-        await host.oauth.start(profile, "gh")
-        await host.oauth.complete_latest(profile, "gh")
+        installed = (await host.mcp.list(owner.id))[0]
+        await host.mcp.connect(owner, installed.id, profile=profile)
+        await host.mcp.confirm(owner, installed.id, profile=profile)
         after = await toolset.get_tools(ctx)
         answer = await toolset.call_tool(
             CALL_MCP_TOOL,
-            {"namespace": "gh", "name": "gh_list_repos", "arguments": {}},
+            {"namespace": "personal/gh", "name": "list_repos", "arguments": {}},
             ctx,
             after[CALL_MCP_TOOL],
         )
@@ -415,13 +392,18 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
 
     async def reply(
         messages: list[ModelMessage], info: AgentInfo
-    ) -> AsyncIterator[str]:
+    ) -> AsyncIterator[str | DeltaToolCalls]:
         offered.append(
             (
                 {tool.name: tool.defer_loading for tool in info.function_tools},
                 info.instructions,
             )
         )
+        if len(offered) == 1:
+            yield {
+                0: DeltaToolCall(name="load_capability", json_args='{"id":"tentacles"}')
+            }
+            return
         yield "noted"
 
     inkling = an_inkling(
@@ -438,14 +420,15 @@ async def test_a_run_mounts_the_tentacles_for_its_octomate_session() -> None:
         async for _event in stream:
             pass
 
-    # The tentacles reach the model deferred, for the session its gateway
-    # capability carries: the catalog line, the tool that loads them, and their
-    # tools flagged so the model layer keeps them off the wire until discovered.
-    [(tools, instructions)] = offered
+    # The model sees the catalog first, then the tools after loading the capability.
+    [(tools, instructions), (loaded_tools, _loaded_instructions)] = offered
     assert tools["load_capability"] is False
-    assert (tools[CONNECT_TOOL], tools[CONFIRM_TOOL]) == (True, True)
+    assert CONNECT_TOOL not in tools
+    assert CONFIRM_TOOL not in tools
+    assert CONNECT_TOOL in loaded_tools
+    assert CONFIRM_TOOL in loaded_tools
     assert instructions is not None
-    assert "- tentacles: The tools of Provider" in instructions
+    assert "- tentacles: The user's installed MCP tools" in instructions
 
 
 class SpyToolset(FunctionToolset[None]):

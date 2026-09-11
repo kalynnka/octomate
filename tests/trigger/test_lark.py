@@ -41,14 +41,14 @@ def lark_run_thread(
     trigger_targets: TriggerTargets,
 ) -> tuple[LarkTentacle, ChannelAddress]:
     """One tentacle and one run-notice root message, shared by the whole run."""
-    config = live_config.channels.get("lark")
+    config = live_config.tentacles.get("lark")
     if (
         not isinstance(config, LarkChannelConfig)
         or not config.enabled
         or trigger_targets.lark is None
     ):
         pytest.skip(
-            "lark channel/trigger target not configured in channels.yaml/trigger.yaml"
+            "lark channel/trigger target not configured in tentacles.yaml/trigger.yaml"
         )
     target = trigger_targets.lark
     channel = LarkTentacle("lark", Octomate(), config=config)

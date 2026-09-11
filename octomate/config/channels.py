@@ -99,8 +99,7 @@ class ChannelConfig(BaseModel):
 
 
 # Every user-token scope Slack's MCP server advertises in its authorization-server
-# metadata. A literal for the same reason `GitHubScope` is one: a misspelled scope
-# is otherwise only discovered at the consent screen.
+# metadata. A literal catches misspelled scopes before the consent screen.
 type SlackUserScope = Literal[
     "canvases:read",
     "canvases:write",

@@ -38,6 +38,7 @@ from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
+from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
@@ -74,6 +75,18 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
     # Native hook/stream identity for this runtime, shared by its configured agents.
     native_id: ClassVar[str | None] = None
+
+    @property
+    def info(self) -> AgentInfo:
+        return AgentInfo(
+            id=self.id,
+            description=self.description,
+            gateway=self.gateway,
+            default_model=self.default_model,
+            routes=self.routes,
+            driven_sessions=sum(self.driven_sessions.values()),
+            native_sessions=sum(self.native_sessions.values()),
+        )
 
     @cached_property
     def driven_sessions(self) -> Counter[str]:

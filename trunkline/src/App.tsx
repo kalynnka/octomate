@@ -7,6 +7,11 @@ import { applyThemeAttr, useConsole } from '@/state/console'
 
 export default function App() {
   const { setSysDark } = useConsole((s) => s.actions)
+  const interfaceSize = useConsole((s) => s.interfaceSize)
+
+  useEffect(() => {
+    document.documentElement.dataset.interfaceSize = interfaceSize
+  }, [interfaceSize])
 
   useEffect(() => {
     const mq = window.matchMedia('(prefers-color-scheme: dark)')

@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 from functools import partial
+from io import StringIO
 from ipaddress import IPv4Address
 from pathlib import Path
 from unittest.mock import patch
@@ -17,15 +18,16 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
 from octomate_cli import deployment
+from octomate_cli.mcp import McpPreset
 from octomate_protocol.deployment import DatabaseBackup
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from starlette.requests import Request
 from starlette.responses import Response
 from starlette.routing import Route
 
-from octomate.config import CONFIG_FILES, AuthConfig, OctomateConfig
-from octomate.config.agents import CodexConfig
-from octomate.config.channels import TrunklineChannelConfig
+from octomate.config import CONFIG_FILES, AuthConfig, OAuthMcpConfig, OctomateConfig
+from octomate.config.agents import AgentConfig, CodexConfig, DeepseekConfig
+from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
 
@@ -48,10 +50,15 @@ def test_prepare_creates_valid_private_claude_configuration(
     config = OctomateConfig()
     assert config.host == IPv4Address("127.0.0.1")
     assert config.port == 8123
-    assert [agent.id for agent in config.agents.configured_agents] == ["claude"]
-    assert list(config.channels) == (["trunkline"] if console else [])
+    assert [
+        name
+        for name, entry in config.tentacles.items()
+        if isinstance(entry, AgentConfig) and entry.enabled
+    ] == ["claude"]
+    assert list(config.tentacles) == (
+        ["claude", "trunkline"] if console else ["claude"]
+    )
     assert config.projects == {}
-    assert config.mcp == {}
     assert all(value is None for value in config.providers.model_dump().values())
     assert config.auth is not None
     salts = {
@@ -93,14 +100,19 @@ def test_prepare_enables_selected_agents_and_routes_console(
 ) -> None:
     deployment.prepare(8123, ["trunkline"], agents)
     config = OctomateConfig()
-    assert [agent.id for agent in config.agents.configured_agents] == agents
-    assert config.channels["trunkline"].agents == agents
+    assert [
+        name
+        for name, entry in config.tentacles.items()
+        if isinstance(entry, AgentConfig) and entry.enabled
+    ] == agents
+    assert isinstance(config.tentacles["trunkline"], TrunklineChannelConfig)
+    assert config.tentacles["trunkline"].agents == agents
     if "deepseek" in agents:
-        assert config.agents.deepseek is not None
-        assert config.agents.deepseek.executable == "dsh"
+        assert isinstance(config.tentacles["deepseek"], DeepseekConfig)
+        assert config.tentacles["deepseek"].executable == "dsh"
         checklist = (preparation / "CONFIGURATION.md").read_text()
         assert "DSH (experimental)" in checklist
-        assert "agents.deepseek.executable" in checklist
+        assert "tentacles.deepseek.executable" in checklist
     assert not (preparation / "octomate.db").exists()
 
 
@@ -108,7 +120,7 @@ def test_prepare_scaffolds_selected_channels_without_collecting_credentials(
     preparation: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setenv(
-        "OCTOMATE__CHANNELS__SLACK__BOT_TOKEN", "existing-secret-do-not-copy"
+        "OCTOMATE__TENTACLES__SLACK__BOT_TOKEN", "existing-secret-do-not-copy"
     )
     monkeypatch.setenv("SLACK_BOT_TOKEN", "another-secret-do-not-copy")
     monkeypatch.setattr(
@@ -135,20 +147,29 @@ def test_prepare_scaffolds_selected_channels_without_collecting_credentials(
     )
     deployment.main()
     config = OctomateConfig()
-    assert list(config.channels) == ["slack", "lark", "discord", "trunkline"]
-    for name, channel in config.channels.items():
+    assert set(config.tentacles) == {
+        "claude",
+        "codex",
+        "slack",
+        "lark",
+        "discord",
+        "trunkline",
+    }
+    for name, channel in config.tentacles.items():
+        if not isinstance(channel, ChannelConfig):
+            continue
         assert channel.agents == ["claude", "codex"]
         assert channel.enabled == (name == "trunkline")
         assert not channel.mcp
     home = preparation / "config"
-    channel_yaml = yaml.safe_load((home / "channels.yaml").read_text())["channels"]
+    channel_yaml = yaml.safe_load((home / "tentacles.yaml").read_text())["tentacles"]
     assert channel_yaml["slack"]["app_id"] == "FILL_IN_SLACK_APP_ID"
     assert channel_yaml["slack"]["bot_token"] == "FILL_IN_SLACK_BOT_TOKEN"
     assert channel_yaml["slack"]["app_token"] == "FILL_IN_SLACK_APP_TOKEN"
     assert channel_yaml["lark"]["app_id"] == "FILL_IN_LARK_APP_ID"
     assert channel_yaml["lark"]["app_secret"] == "FILL_IN_LARK_APP_SECRET"
     assert channel_yaml["discord"]["bot_token"] == "FILL_IN_DISCORD_BOT_TOKEN"
-    assert "**********" not in (home / "channels.yaml").read_text()
+    assert "**********" not in (home / "tentacles.yaml").read_text()
     dotenv = (preparation / ".env").read_text()
     assert len(dotenv.splitlines()) == 3
     assert all(line.startswith("OCTOMATE__AUTH__") for line in dotenv.splitlines())
@@ -171,14 +192,14 @@ def test_checklist_and_templates_only_include_selected_components(
     deployment.prepare(8123, channels, ["codex"])
     home = preparation / "config"
     config = OctomateConfig()
-    assert list(config.channels) == channels
-    agent_yaml = yaml.safe_load((home / "agents.yaml").read_text())["agents"]
-    assert list(agent_yaml) == ["codex"]
+    assert list(config.tentacles) == ["codex", *channels]
+    agent_yaml = yaml.safe_load((home / "tentacles.yaml").read_text())["tentacles"]
+    assert list(agent_yaml) == ["codex", *channels]
     checklist = (preparation / "CONFIGURATION.md").read_text()
-    assert "agents.codex.runtime" in checklist
-    assert "agents.claude" not in checklist
+    assert "tentacles.codex.runtime" in checklist
+    assert "tentacles.claude" not in checklist
     for name in ("slack", "lark", "discord", "trunkline"):
-        assert (f"channels.{name}." in checklist) == (name in channels)
+        assert (f"tentacles.{name}." in checklist) == (name in channels)
     assert "template structure only" in checklist
     assert "schema check does not verify credentials" in checklist
     assert f"octomate service init --prepare --root {preparation}" in checklist
@@ -187,7 +208,7 @@ def test_checklist_and_templates_only_include_selected_components(
     assert "restart the GUI service" in checklist
     if channels and channels != ["trunkline"]:
         assert "YAML overrides `.env`" in checklist
-        assert f"channels.{channels[0]}.enabled: true" in checklist
+        assert f"tentacles.{channels[0]}.enabled: true" in checklist
     assert (preparation / "CONFIGURATION.md").stat().st_mode & 0o777 == 0o600
 
 
@@ -197,7 +218,7 @@ def test_claude_checklist_preserves_native_login(preparation: Path) -> None:
     assert "Keychain credentials" in checklist
     assert "plugins and Claude.ai connectors" in checklist
     assert "do not replace that login with a setup token" in checklist
-    assert "agents.codex" not in checklist
+    assert "tentacles.codex" not in checklist
 
 
 @pytest.mark.parametrize("channels", [["trunkline", "trunkline"], ["napcat"]])
@@ -209,7 +230,9 @@ def test_prepare_refuses_duplicate_or_unsupported_channels(
     assert list(preparation.iterdir()) == []
 
 
-@pytest.mark.parametrize("existing", [".env", "config/agents.yaml", "CONFIGURATION.md"])
+@pytest.mark.parametrize(
+    "existing", [".env", "config/tentacles.yaml", "CONFIGURATION.md"]
+)
 def test_prepare_does_not_overwrite_existing_configuration(
     preparation: Path, existing: str
 ) -> None:
@@ -461,8 +484,8 @@ async def test_verification_checks_protected_mcp_and_console_routes(
 ) -> None:
     config = OctomateConfig()
     config.host = IPv4Address(host)
-    config.agents.codex = CodexConfig()
-    config.channels["trunkline"] = TrunklineChannelConfig(
+    config.tentacles["codex"] = CodexConfig()
+    config.tentacles["trunkline"] = TrunklineChannelConfig(
         enabled=console_enabled,
         agents=["codex"],
     )
@@ -508,8 +531,8 @@ def test_maintenance_requires_an_explicit_bind_address(
 ) -> None:
     config = OctomateConfig()
     config.host = IPv4Address(host)
-    config.agents.codex = CodexConfig()
-    config.channels["trunkline"] = TrunklineChannelConfig(agents=["codex"])
+    config.tentacles["codex"] = CodexConfig()
+    config.tentacles["trunkline"] = TrunklineChannelConfig(agents=["codex"])
     monkeypatch.setattr(sys, "argv", ["maintenance", "check"])
     monkeypatch.setattr(deployment, "OctomateConfig", lambda: config)
     if host == "0.0.0.0":
@@ -518,3 +541,86 @@ def test_maintenance_requires_an_explicit_bind_address(
     else:
         deployment.main()
     assert not database.exists()
+
+
+def test_prepare_reads_mcp_presets_and_saves_private_oauth_configuration(
+    preparation: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    mcps = [
+        McpPreset(provider="github", name="github_work", client_id="test-work"),
+        McpPreset(
+            provider="github",
+            name="github_personal",
+            client_id="test-personal",
+            read_only=True,
+        ),
+    ]
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "maintenance",
+            "prepare",
+            "--port",
+            "8123",
+            "--agent",
+            "codex",
+            "--mcp-presets",
+        ],
+    )
+    monkeypatch.setattr(
+        sys, "stdin", StringIO(TypeAdapter(list[McpPreset]).dump_json(mcps).decode())
+    )
+    deployment.main()
+    config = OctomateConfig()
+    assert set(config.tentacles) == {"codex", "github_work", "github_personal"}
+    dotenv = (preparation / ".env").read_text()
+    tentacles = yaml.safe_load((preparation / "config/tentacles.yaml").read_text())[
+        "tentacles"
+    ]
+    assert list(tentacles) == ["codex", "github_work", "github_personal"]
+    for preset in mcps:
+        assert config.tentacles[preset.name] == OAuthMcpConfig.model_validate(
+            preset.configuration() | {"client_secret": "FILL_IN_OAUTH_CLIENT_SECRET"}
+        )
+        assert "client_secret" not in tentacles[preset.name]
+        assert (
+            f"OCTOMATE__TENTACLES__{preset.name.upper()}__CLIENT_SECRET=FILL_IN_OAUTH_CLIENT_SECRET"
+            in dotenv
+        )
+    assert str(config.oauth.callback_base_uri) == "http://localhost:8123/"
+    assert config.oauth.encryption_key is not None
+    key = config.oauth.encryption_key.get_secret_value()
+    assert len(key) == 43
+    assert (
+        f"OCTOMATE__OAUTH__ENCRYPTION_KEY={key}" in (preparation / ".env").read_text()
+    )
+    for path in (preparation / "config").iterdir():
+        assert key not in path.read_text()
+        assert "**********" not in path.read_text()
+        assert path.stat().st_mode & 0o777 == 0o600
+    output = capsys.readouterr().out
+    assert key not in output
+    assert "http://localhost:8123/oauth/github_work/callback" in output
+    assert "http://localhost:8123/oauth/github_personal/callback" in output
+    assert (preparation / ".env").stat().st_mode & 0o777 == 0o600
+    assert not (preparation / "octomate.db").exists()
+
+
+def test_prepare_rejects_duplicate_mcp_names_without_writing(preparation: Path) -> None:
+    preset = McpPreset(provider="github", name="github", client_id="test-app")
+    with pytest.raises(ValueError, match="MCP tentacle names must be unique"):
+        deployment.prepare(8123, [], ["codex"], [preset, preset])
+    assert list(preparation.iterdir()) == []
+
+
+@pytest.mark.parametrize("name", ["codex", "trunkline"])
+def test_prepare_rejects_mcp_names_used_by_other_tentacles(
+    preparation: Path, name: str
+) -> None:
+    preset = McpPreset(provider="github", name=name, client_id="test-app")
+    with pytest.raises(ValueError, match="Tentacle names must be unique"):
+        deployment.prepare(8123, ["trunkline"], ["codex"], [preset])
+    assert list(preparation.iterdir()) == []

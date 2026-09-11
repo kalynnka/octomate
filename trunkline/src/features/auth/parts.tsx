@@ -5,7 +5,6 @@
  */
 import type { ReactNode } from 'react'
 import { Brackets } from '@/components/Brackets'
-import { TriStripeInline } from '@/components/TriStripe'
 import { display, ellipsis, fieldLabel, label, mono, serif, statusNote } from '@/components/text'
 import type { RelayState } from '@/state/auth'
 
@@ -52,30 +51,18 @@ export function AuthPage({
         }}
       >
         <Brackets />
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <span
-            style={{
-              ...display(22),
-              lineHeight: 1,
-              letterSpacing: '-.01em',
-              textTransform: 'uppercase',
-              color: 'var(--fg-1)',
-            }}
-          >
-            Octomate
-          </span>
-          <span style={{ ...label(7.5, '.18em'), color: 'var(--fg-3)', whiteSpace: 'nowrap' }}>
-            Trunkline · console
-          </span>
-        </div>
-        <TriStripeInline style={{ width: 64, margin: '12px 0 18px' }} />
-        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
-          <span style={{ ...display(15, 600), textTransform: 'uppercase', color: 'var(--fg-1)' }}>
-            {title}
-          </span>
-          <span style={{ flex: 1 }} />
-          <span style={{ ...statusNote, color: 'var(--fg-3)', textAlign: 'right' }}>{sub}</span>
-        </div>
+        <header style={{ marginBottom: 22 }}>
+          <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
+            <span style={{ ...display(18), lineHeight: 1, letterSpacing: '-.02em', textTransform: 'uppercase' }}>Octomate</span>
+            <span style={{ ...label(7, '.16em'), color: 'var(--fg-3)' }}>
+              Trunkline / Console
+            </span>
+          </div>
+          <h1 style={{ ...display(42), lineHeight: 1, letterSpacing: '-.035em', margin: '24px 0 10px' }}>
+            {title}<span style={{ color: 'var(--color-accent)' }}>.</span>
+          </h1>
+          <p style={{ ...statusNote, margin: 0, lineHeight: 1.6, color: 'var(--fg-3)' }}>{sub}</p>
+        </header>
         {children}
         {foot && (
           <div

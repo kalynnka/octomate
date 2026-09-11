@@ -40,6 +40,7 @@ export function ConsoleShell() {
   // which is the trade the shortcut is worth.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (useConsole.getState().mgmtSec) return
       if (event.key !== 'Tab' || !event.shiftKey) return
       if (event.ctrlKey || event.metaKey || event.altKey) return
       event.preventDefault()

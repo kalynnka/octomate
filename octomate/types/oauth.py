@@ -2,6 +2,8 @@ from typing import Annotated, Literal
 
 from pydantic import AnyUrl, UrlConstraints
 
+OAuthFlowKind = Literal["device", "authorization_code"]
+
 OAuthConnectionStatus = Literal["active", "invalid"]
 
 HttpsUrl = Annotated[AnyUrl, UrlConstraints(allowed_schemes=["https"])]
