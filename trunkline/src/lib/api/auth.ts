@@ -170,7 +170,7 @@ export async function apiFetch(path: string, request: ApiRequest = {}): Promise<
 }
 
 /** Turn a refused response into the error the forms render. */
-async function refuse(res: Response): Promise<never> {
+export async function refuse(res: Response): Promise<never> {
   let detail: ApiError['detail'] = null
   try {
     detail = ((await res.json()) as { detail?: ApiError['detail'] }).detail ?? null

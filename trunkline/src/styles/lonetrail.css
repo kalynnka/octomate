@@ -352,14 +352,14 @@
 [data-theme="dark"] {
   /* base palette — warm dark */
   --ce-ink:     236 228 212; /* @kind color */  /* #ECE4D4  now the PRIMARY TEXT (light on dark) */
-  --ce-bg:       23 20 16; /* @kind color */    /* #171410  deep warm near-black page */
-  --ce-surface:  33 29 23; /* @kind color */    /* #211D17  lifted card / hover surface */
-  --ce-border:   57 50 42; /* @kind color */    /* #39322A  warm hairline */
+  --ce-bg:       43 41 37; /* @kind color */    /* #2B2925 warm charcoal page */
+  --ce-surface:  52 49 44; /* @kind color */    /* #34312C lifted card surface */
+  --ce-border:   83 78 69; /* @kind color */    /* #534E45 warm hairline */
   --ce-accent:  224 116 52; /* @kind color */   /* #E07434  burnt orange, brightened a step */
-  --ce-ghost:   140 132 117; /* @kind color */  /* #8C8475  captions, idle */
+  --ce-ghost:   168 159 142; /* @kind color */  /* #A89F8E captions, idle */
   --ce-muted:   180 170 150; /* @kind color */  /* #B4AA96  secondary body — lifted for dark */
-  --ce-raised: 42 37 30;    /* @kind color */ /* #2A251E lifted layers (dark) */
-  --ce-sunken: 16 13 10;    /* @kind color */ /* #100D0A recessed wells (dark) */
+  --ce-raised: 63 59 52;    /* @kind color */ /* #3F3B34 lifted layers (dark) */
+  --ce-sunken: 38 36 32;    /* @kind color */ /* #262420 recessed wells (dark) */
 
   /* tri-color + extended — brightened for legibility on dark */
   --rl-teal: 91 163 181; /* @kind color */      /* #5BA3B5 */
@@ -371,7 +371,7 @@
   --ex-terra: 198 124 82; /* @kind color */     /* #C67C52 */
 
   /* inverted panels become an elevated dark surface with cream text */
-  --panel-dark-bg: #2A251E;
+  --panel-dark-bg: rgb(var(--ce-raised));
   --panel-dark-fg: #ECE4D4;
 
   /* info blue — dark remap (same palette, lighter steps for AA) */
@@ -382,7 +382,7 @@
 
   --hover: rgb(255 255 255 / 0.06);
   --card-bg:       var(--color-surface);   /* cards lift off the page in dark */
-  --card-bg-hover: #2A251E;
+  --card-bg-hover: rgb(var(--ce-raised));
   --line-divider:  rgb(var(--ce-border) / 0.8);
   --line-color:    rgb(var(--ce-border) / 0.6);
 

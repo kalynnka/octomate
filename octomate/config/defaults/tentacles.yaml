@@ -13,14 +13,15 @@
 # configure a claim only for metadata the harness omits, keyed by provider:model.
 # Reported descriptions and effort capabilities take precedence over claims.
 #
-# A home that declares `agents:` replaces this whole block.
+# A home that declares `tentacles:` replaces this whole block.
 
-# agents:
+# tentacles:
 
   # The in-process pydantic-ai agent. Takes any pydantic-ai model id and reaches each
   # provider through `providers.yaml`, or that provider's own environment variable.
   #
   # inkling:
+  #   type: inkling
   #   models:
   #     - name: anthropic:claude-sonnet-5
   #     - name: anthropic:claude-opus-5
@@ -53,6 +54,7 @@
   # API token (hooks scope).
   #
   # claude:
+  #   type: claude
   #   enabled: true
   #
   #   # The SDK's own scale, handed over verbatim:
@@ -69,6 +71,7 @@
   # hook router.
   #
   # codex:
+  #   type: codex
   #   enabled: true
   #   runtime:
   #     # codex_bin: /opt/bin/codex
@@ -94,6 +97,7 @@
   # corrupt session logs. Drives it over its /api gateway.
   #
   # deepseek:
+  #   type: deepseek
   #   enabled: true
   #   host: 127.0.0.1            # loopback only; the gateway has no auth
   #   port: 3080                 # dsh's default bind, and what a started child takes
@@ -107,3 +111,82 @@
   #   agent_preset: ~            # session.create agentPreset; ~ = dsh's default
   #   approval_timeout: 3600     # seconds before a card expires; ~ = forever
   #   ready_timeout: 60          # seconds to wait for the `dsh web:` banner
+
+# Channel tentacles, keyed by instance id with `type` selecting the platform — so a
+# deployment can run two Lark apps, or two consoles, by naming them apart. The key is
+# the channel tentacle id everywhere downstream: what a stored profile names, and
+# what a thread records as its origin. Renaming a key therefore re-homes its threads,
+# so pick one and keep it.
+#
+# Every channel binds at least one agent ID. The first agent answers by default,
+# using its harness default (or Inkling's first configured model). All models of
+# every bound agent are available from the channel.
+#
+# Nothing is declared here, the web console included. Keep real secrets in the
+# environment (OCTOMATE__TENTACLES__<KEY>__<FIELD>) rather than in a config home; the
+# examples below show the shape, not the practice.
+
+#   trunkline:                    # the web console
+#     type: trunkline
+#     static_dir: /absolute/path/to/trunkline/dist  # omit for console API only
+#     agents:
+#       - inkling
+#   slack:
+#     type: slack
+#     agents:
+#       - inkling
+#       - codex
+#     app_id: A...
+#     bot_token: xoxb-...
+#     app_token: xapp-...
+#     stream:
+#       flush_interval: 0.2
+#       min_chars: 20
+#
+#   discord:
+#     type: discord
+#     agents:
+#       - inkling
+#     # Set OCTOMATE__TENTACLES__DISCORD__BOT_TOKEN in .env.
+#     stream:
+#       enabled: true
+#       flush_interval: 0.2
+#
+#   # Two Lark apps side by side: same `type`, different keys, separate threads.
+#   lark_main:
+#     type: lark
+#     agents:
+#       - inkling
+#       - claude
+#     app_id: cli_...
+#     app_secret: ...
+#     stream:
+#       flush_interval: 0.2
+#       min_chars: 20
+#   lark_ops:
+#     type: lark
+#     agents:
+#       - claude
+#     app_id: cli_...
+#     app_secret: ...
+#
+#   napcat:
+#     type: napcat
+#     agents:
+#       - inkling
+#     stream:
+#       enabled: false
+#     ws_url: ws://127.0.0.1:3001
+#     http_url: http://127.0.0.1:3000
+
+# MCP tentacles offer connection settings that users explicitly install.
+# The configured key identifies the tentacle and its OAuth application.
+#
+# Enabling an `oauth` block requires `oauth.encryption_key`; boot
+# refuses without it.
+
+#   notion:                       # one operator token for every caller
+#     type: bare
+#     url: https://mcp.notion.com/mcp
+#     token: ntn_xxx              # or OCTOMATE__TENTACLES__NOTION__TOKEN
+#     enabled: true               # default: true

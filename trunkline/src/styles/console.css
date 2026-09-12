@@ -27,6 +27,11 @@ a:hover {
 }
 
 :root {
+  --trk-display-scale: 1;
+  --trk-interface-scale: 0.9;
+  --trk-zoom: calc(var(--trk-display-scale) * var(--trk-interface-scale));
+  zoom: var(--trk-zoom);
+  color-scheme: light;
   --trk-bracket: color-mix(in srgb, var(--color-ink) 42%, transparent);
   --trk-vline: color-mix(in srgb, var(--color-ink) 14%, transparent);
   --surface-raised: #f2ecdd;
@@ -38,9 +43,351 @@ a:hover {
   --trk-on-fill: #f6f1e5;
 }
 html[data-theme='dark'] {
+  color-scheme: dark;
   --trk-bracket: rgb(236 228 212 / 0.38);
   --trk-vline: rgb(236 228 212 / 0.13);
   --surface-raised: rgb(var(--ce-raised));
+}
+
+html[data-interface-size='small'] { --trk-interface-scale: 0.8; }
+html[data-interface-size='large'] { --trk-interface-scale: 1; }
+
+.trk-control-page {
+  --trk-control-inset: clamp(12px, 2vw, 28px);
+  container-type: inline-size;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  padding: var(--trk-control-inset);
+  gap: 16px;
+  position: relative;
+  overflow: hidden;
+}
+.trk-control-card {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 18px clamp(12px, 2vw, 28px) 14px;
+  border: 1px solid var(--line-divider);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-soft);
+  overflow: hidden;
+}
+.trk-control-header, .trk-control-footer { flex-shrink: 0; }
+.trk-control-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  margin-top: 22px;
+  overflow: hidden;
+}
+.trk-table-scroll, .trk-control-scroll {
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.trk-table-scroll { flex: 1; }
+.trk-tab-indicator {
+  position: absolute;
+  top: -1px;
+  left: 0;
+  height: 2px;
+  background: var(--color-accent);
+}
+.trk-table-scroll td button:not(.trk-mcp-status) {
+  padding: 2px 7px !important;
+  font-family: var(--font-mono) !important;
+  font-size: 7.5px !important;
+  font-weight: 700 !important;
+  letter-spacing: .12em !important;
+  text-transform: uppercase;
+}
+.trk-control-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line-divider);
+  font: 700 9px var(--font-mono);
+  letter-spacing: .12em;
+  text-transform: uppercase;
+  color: var(--fg-3);
+}
+.trk-control-note {
+  margin: 0 0 16px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fg-2);
+}
+.trk-agent-table table { table-layout: fixed; }
+.trk-agent-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.trk-agent-name i { width: 5px; height: 5px; flex-shrink: 0; }
+.trk-effort { display: flex; align-items: center; gap: 3px; height: 20px; }
+.trk-effort > span {
+  width: 10px;
+  height: 10px;
+  box-sizing: border-box;
+  flex-shrink: 0;
+  border: 1px solid var(--color-border);
+}
+.trk-effort > [data-supported='true'] {
+  border-color: var(--color-accent);
+  background: var(--color-accent);
+}
+.trk-dashboard-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 18px;
+}
+.trk-dashboard-stats > div { border-top: 2px solid var(--color-ink); padding: 14px 0; }
+.trk-profile-info { margin: 0 0 24px; }
+.trk-profile-info > div { border-bottom: 1px solid var(--line-divider); padding: 14px 0; }
+.trk-profile-info dd { margin: 6px 0 0; overflow-wrap: anywhere; }
+.trk-channel-table table { table-layout: fixed; }
+.trk-channel-table td { overflow-wrap: anywhere; }
+.trk-profile-select {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  text-align: left;
+  color: var(--fg-1);
+  background: transparent;
+  cursor: pointer;
+}
+.trk-profile-select:hover, .trk-profile-select[aria-expanded='true'] {
+  border-color: var(--color-accent);
+  background: var(--trk-wash);
+}
+.trk-profile-detail { flex: 0 0 280px; box-sizing: border-box; margin: 0; }
+.trk-profile-detail-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--line-divider);
+}
+.trk-profile-detail-header h2 { margin: 0; }
+@container (max-width: 760px) {
+  .trk-profile-detail {
+    position: absolute;
+    top: var(--trk-control-inset);
+    right: var(--trk-control-inset);
+    bottom: var(--trk-control-inset);
+    width: min(320px, calc(100% - 2 * var(--trk-control-inset)));
+    z-index: 2;
+  }
+}
+.trk-setting { border: 0; padding: 0; margin: 0 0 24px; min-width: 0; }
+.trk-setting legend { margin-bottom: 10px; }
+.trk-setting-options { display: flex; flex-wrap: wrap; gap: 10px; }
+.trk-setting-option {
+  flex: 0 1 auto;
+  display: flex;
+  align-items: center;
+  min-width: 148px;
+  min-height: 44px;
+  box-sizing: border-box;
+  gap: 10px;
+  padding: 10px 14px;
+  border: 1px solid var(--line-divider);
+  cursor: pointer;
+}
+.trk-setting-option[data-selected='true'] { border-color: var(--color-accent); background: var(--trk-wash); }
+.trk-setting-option input { margin: 0; accent-color: var(--color-accent); }
+.trk-theme-swatch { width: 28px; height: 18px; border: 1px solid var(--line-divider); }
+.trk-dialog {
+  --trk-dialog-panel: #e4d4bd;
+  --trk-dialog-panel-ink: #463c34;
+  width: min(700px, calc(100vw / var(--trk-zoom) - 32px));
+  max-width: none;
+  max-height: calc(100dvh / var(--trk-zoom) - 32px);
+  box-sizing: border-box;
+  margin: auto;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--line-divider);
+  background: var(--card-bg);
+  color: var(--fg-1);
+  box-shadow: var(--shadow-card);
+}
+html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
+.trk-dialog::backdrop { background: rgb(46 41 35 / .45); }
+.trk-dialog-layout {
+  display: grid;
+  grid-template-columns: 228px minmax(0, 1fr);
+  max-height: inherit;
+  cursor: default;
+  user-select: none;
+}
+.trk-dialog-layout :is(form, label, input, select, textarea) { cursor: auto; user-select: text; }
+.trk-dialog-layout a { cursor: pointer; }
+.trk-dialog-panel {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 22px;
+  overflow: hidden;
+  background: var(--trk-dialog-panel);
+  color: var(--trk-dialog-panel-ink);
+  border-bottom: 3px solid var(--color-accent);
+}
+.trk-dialog-panel > :not(.trk-dialog-index) { position: relative; }
+.trk-dialog-panel h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 30px;
+  font-weight: 900;
+  line-height: 1.04;
+  letter-spacing: -.02em;
+}
+.trk-dialog-panel p { margin: 0; font-family: 'Noto Serif SC', serif; font-size: 13px; line-height: 1.6; }
+.trk-dialog-index {
+  position: absolute;
+  right: -10px;
+  bottom: 18px;
+  font-family: var(--font-display);
+  font-size: 140px;
+  font-weight: 900;
+  line-height: .8;
+  opacity: .08;
+  pointer-events: none;
+}
+.trk-dialog-eyebrow, .trk-dialog-summary, .trk-dialog-caption > span, .trk-dialog-header {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+}
+.trk-dialog-eyebrow { align-self: flex-start; border: 1px solid currentColor; padding: 4px 7px; }
+.trk-dialog-summary { display: flex; flex-direction: column; gap: 12px; margin: 0; }
+.trk-dialog-summary > div { display: flex; justify-content: space-between; gap: 12px; }
+.trk-dialog-summary dt { opacity: .75; }
+.trk-dialog-summary dd { margin: 0; text-align: right; text-transform: none; letter-spacing: 0; overflow-wrap: anywhere; }
+.trk-dialog-panel .trk-dialog-caption { margin-top: auto; padding-top: 18px; overflow-wrap: anywhere; }
+.trk-dialog-caption > p { margin-top: 8px; font-family: var(--font-mono); font-size: 11px; }
+.trk-dialog-main { min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 24px 22px; }
+.trk-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-3);
+  touch-action: none;
+}
+.trk-dialog-close {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid var(--line-divider);
+  background: transparent;
+  color: var(--fg-1);
+  font-size: 18px;
+  cursor: pointer;
+}
+.trk-dialog-close:disabled { opacity: .5; cursor: default; }
+.trk-dialog-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.trk-dialog-hint { font-family: 'Noto Serif SC', serif; font-size: 12px; color: var(--fg-2); line-height: 1.6; margin: 8px 0 0; }
+.trk-dialog-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; margin-top: 22px; }
+.trk-dialog-actions button { padding: 8px 12px !important; font-size: 9px !important; letter-spacing: .12em !important; }
+.trk-device-code :is(input, button) { box-sizing: border-box; height: 35px; border-radius: 0; }
+.trk-device-code button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.trk-mcp-connection { display: flex; align-items: center; flex-wrap: wrap; gap: 7px 10px; }
+.trk-mcp-status { background: none; border: 0; padding: 0; font: inherit; text-align: left; cursor: pointer; }
+.trk-mcp-status:disabled { cursor: default; opacity: .55; }
+.trk-create-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 12px;
+  flex-shrink: 0;
+  min-height: 22px;
+  padding: 3px 10px;
+  border: 1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: transparent;
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: .14em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+
+@media (max-width: 700px) {
+  .trk-dialog-layout { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .trk-dialog-panel { padding: 16px 20px; gap: 10px; }
+  .trk-dialog-panel h2 { font-size: 25px; }
+  .trk-dialog-summary, .trk-dialog-caption { display: none; }
+  .trk-dialog-main { padding: 16px 20px 20px; }
+}
+
+@media (max-width: 700px), (max-height: 600px) {
+  .trk-control-page { --trk-control-inset: 8px; }
+  .trk-control-card { padding: 12px; }
+  .trk-control-content { margin-top: 12px; }
+}
+
+@keyframes trkTabEnter {
+  from { opacity: 0; transform: translateX(var(--trk-tab-entry-x)); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes trkDialogExit {
+  from { transform: none; }
+  to { transform: translateY(8px); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .trk-tab-indicator { transition: transform var(--motion-base) var(--ease-out); }
+  .trk-bracket-tabs button span { transition: opacity var(--motion-fast) linear; }
+  .trk-mcp-tab {
+    --trk-tab-entry-x: -8px;
+    animation: trkTabEnter var(--motion-base) var(--ease-out);
+  }
+  .trk-mcp-tab-installed { --trk-tab-entry-x: 8px; }
+  .trk-dialog[open], .trk-dialog[open]::backdrop {
+    animation: lt-fade-in var(--motion-fast) var(--ease-out);
+  }
+  .trk-dialog[open] .trk-dialog-layout {
+    animation: lt-fade-up var(--motion-base) var(--ease-out);
+  }
+  .trk-dialog[open][data-closing], .trk-dialog[open][data-closing]::backdrop {
+    animation: lt-fade-out var(--motion-fast) var(--ease-out) forwards;
+  }
+  .trk-dialog[open][data-closing] .trk-dialog-layout {
+    animation: trkDialogExit var(--motion-fast) var(--ease-out) forwards;
+  }
+  .trk-control-page button, .trk-dialog button {
+    transition: background var(--motion-fast) linear,
+      color var(--motion-fast) linear,
+      border-color var(--motion-fast) linear,
+      translate var(--motion-fast) var(--ease-out),
+      scale var(--motion-fast) var(--ease-out) !important;
+  }
+  .trk-control-page button:active:not(:disabled), .trk-dialog button:active:not(:disabled) {
+    translate: 0 1px;
+    scale: .98;
+    transition-duration: 75ms !important;
+  }
 }
 
 @keyframes trkBlink {
@@ -354,12 +701,75 @@ html[data-theme='dark'] {
 .trk-input:focus {
   border-color: var(--color-accent);
 }
+/* Paint over the browser's autofill background without hiding its contents. */
+.trk-input:is(:autofill, :-webkit-autofill) {
+  box-shadow: inset 0 0 0 1000px var(--surface-sunken);
+  -webkit-text-fill-color: var(--fg-1);
+  caret-color: var(--fg-1);
+}
 .trk-input[aria-invalid='true'] {
   border-color: var(--color-red);
 }
 .trk-input:disabled {
   opacity: 0.55;
 }
+
+select.trk-input,
+select.trk-input::picker(select) {
+  appearance: base-select;
+}
+select.trk-input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+select.trk-input:disabled { cursor: default; }
+select.trk-input:open { border-color: var(--color-accent); }
+select.trk-input::picker-icon {
+  content: '▾';
+  color: var(--color-accent);
+  transition: rotate var(--motion-fast) var(--ease-out);
+}
+select.trk-input:open::picker-icon { rotate: 180deg; }
+select.trk-input::picker(select) {
+  margin-block: 4px;
+  padding: 4px;
+  max-block-size: min(18rem, 50dvh);
+  overflow: auto;
+  overscroll-behavior: contain;
+  color: var(--fg-1);
+  background: var(--card-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 0;
+  box-shadow: var(--shadow-card);
+  font: 500 12px/1.4 var(--font-mono);
+  scrollbar-color: var(--color-border) var(--card-bg);
+  scrollbar-width: thin;
+}
+select.trk-input option {
+  padding: 8px 10px;
+  gap: 10px;
+  border-inline-start: 2px solid transparent;
+  border-radius: 0;
+  color: var(--fg-2);
+  background: transparent;
+  cursor: pointer;
+}
+select.trk-input option:checked {
+  color: var(--fg-1);
+  background: color-mix(in srgb, var(--color-accent) 10%, var(--card-bg));
+  font-weight: 700;
+}
+select.trk-input option:is(:hover, :focus-visible) {
+  color: var(--fg-1);
+  background: var(--card-bg-hover);
+  border-inline-start-color: var(--color-accent);
+  outline: none;
+}
+select.trk-input option::checkmark { color: var(--color-accent); }
+select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 
 /* Channel letter-rail expands on hover */
 .trk-chrail {
@@ -378,26 +788,22 @@ html[data-theme='dark'] {
    -------------------------------------------------------------------------- */
 @media (min-width: 1800px) {
   :root {
-    zoom: 1.1;
-    --trk-zoom: 1.1;
+    --trk-display-scale: 1.1;
   }
 }
 @media (min-width: 2100px) {
   :root {
-    zoom: 1.22;
-    --trk-zoom: 1.22;
+    --trk-display-scale: 1.22;
   }
 }
 @media (min-width: 2560px) {
   :root {
-    zoom: 1.35;
-    --trk-zoom: 1.35;
+    --trk-display-scale: 1.35;
   }
 }
 @media (min-width: 3400px) {
   :root {
-    zoom: 1.55;
-    --trk-zoom: 1.55;
+    --trk-display-scale: 1.55;
   }
 }
 

@@ -3,16 +3,35 @@ from __future__ import annotations
 import secrets
 import uuid
 from collections.abc import Iterable
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import NamedTuple, Self
 
 from arcanus.materia.sqlalchemy import AsyncSession
-from pydantic import SecretStr
+from mcp.client.auth.utils import validate_authorization_response_iss
+from mcp.shared._httpx_utils import McpHttpClientFactory
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+    ValidationError,
+    model_validator,
+)
 from uuid_utils.compat import uuid7
 
+from octomate.config.oauth import OAuthConfig
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
+from octomate.mcp.transport import mcp_http_client
+from octomate.oauth.mcp import (
+    HTTPS_URL,
+    McpDeviceOAuthFlow,
+    McpOAuthFlow,
+    OAuthRefreshRejected,
+)
+from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
     AuthorizationCodeOperationPayload,
@@ -20,6 +39,8 @@ from octomate.schemas.oauth import (
     DeviceAuthorization,
     DeviceOAuthFlow,
     DeviceOperationPayload,
+    DirectHttpOAuthCallbackTransport,
+    McpOAuthState,
     OAuthCallbackTransport,
     OAuthCipher,
     OAuthConnection,
@@ -30,13 +51,8 @@ from octomate.schemas.oauth import (
     OAuthStartResult,
     OAuthTokenPayload,
 )
-from octomate.schemas.user import UserProfile
-from octomate.types.oauth import OAuthConnectionStatus
-
-# How much of an access token's remaining life is too little to start a run on.
-# A token that expires mid-session fails the same way a revoked one does, so it is
-# spent while there is still room to replace it instead.
-TOKEN_REFRESH_LEEWAY = timedelta(minutes=5)
+from octomate.schemas.user import User, UserProfile
+from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
 
 
 class NoPendingAuthorization(ValueError):
@@ -58,8 +74,7 @@ class UnusableOAuthOperation(ValueError):
     """
 
 
-@dataclass(frozen=True, kw_only=True)
-class OAuthConnector:
+class OAuthConnector(BaseModel):
     """One registered integration's injected OAuth composition.
 
     It selects the upstream flow and, for authorization code, the deployment callback
@@ -67,22 +82,43 @@ class OAuthConnector:
     channel owner when an authorization starts.
     """
 
-    id: str
-    flow: DeviceOAuthFlow | AuthorizationCodeOAuthFlow
-    callback_transport: OAuthCallbackTransport | None = None
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
-    def __post_init__(self) -> None:
-        if not self.id:
-            raise ValueError("OAuth connector id cannot be empty")
-        if isinstance(self.flow, DeviceOAuthFlow):
+    id: str = Field(min_length=1)
+    flows: list[DeviceOAuthFlow | AuthorizationCodeOAuthFlow] = Field(min_length=1)
+    callback_transport: OAuthCallbackTransport | None = None
+    mcp_url: HttpsUrl | None = None
+
+    @model_validator(mode="after")
+    def callback_matches_flow(self) -> Self:
+        if len({flow.kind for flow in self.flows}) != len(self.flows):
+            raise ValueError("OAuth flow types must be unique")
+        if all(isinstance(flow, DeviceOAuthFlow) for flow in self.flows):
             if self.callback_transport is not None:
                 raise ValueError("device OAuth does not use a callback transport")
-            return
+            return self
         if self.callback_transport is None:
             raise ValueError("authorization-code OAuth requires a callback transport")
+        return self
+
+    def select_flow(
+        self, kind: OAuthFlowKind | None = None
+    ) -> DeviceOAuthFlow | AuthorizationCodeOAuthFlow:
+        if kind is None:
+            return self.flows[0]
+        for flow in self.flows:
+            if flow.kind == kind:
+                return flow
+        raise ValueError(f"OAuth connector {self.id!r} does not support {kind!r}")
 
 
-class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
+class OAuthLockKey(NamedTuple):
+    user_id: uuid.UUID
+    mcp_id: uuid.UUID | None
+    connector_id: str
+
+
+class OAuthManager(Manager, Locks[OAuthLockKey]):
     """Registered OAuth connectors bound to the current channel user."""
 
     def __init__(
@@ -91,12 +127,24 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         users: UserManager,
         encryption_key: SecretStr | None = None,
         connectors: Iterable[OAuthConnector] = (),
+        callback_base_uri: AnyHttpUrl | None = None,
+        client_metadata_url: HttpsUrl | None = None,
+        token_refresh_leeway: timedelta | None = None,
+        httpx_client_factory: McpHttpClientFactory = mcp_http_client,
     ) -> None:
         self.users = users
         self.cipher = (
             OAuthCipher(encryption_key) if encryption_key is not None else None
         )
         self.connectors: dict[str, OAuthConnector] = {}
+        self.callback_base_uri = callback_base_uri
+        self.client_metadata_url = client_metadata_url
+        self.token_refresh_leeway = (
+            token_refresh_leeway
+            if token_refresh_leeway is not None
+            else OAuthConfig().token_refresh_leeway
+        )
+        self.httpx_client_factory = httpx_client_factory
         for connector in connectors:
             self.register(connector)
 
@@ -112,34 +160,84 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             raise ValueError(f"unknown OAuth connector {connector_id!r}")
         return connector
 
+    async def resolve_connector(
+        self,
+        connector_id: str,
+        *,
+        user_id: uuid.UUID,
+        mcp_id: uuid.UUID | None,
+        state: McpOAuthState | None = None,
+    ) -> OAuthConnector:
+        if mcp_id is None:
+            return self.connector(connector_id)
+        async with async_session() as session:
+            mcp = await session.get(OAuthMcp, mcp_id)
+        if mcp is None or mcp.user_id != user_id or not mcp.enabled:
+            raise UnusableOAuthOperation("MCP authorization is unavailable")
+        if connector_id != (mcp.tentacle_id or "mcp"):
+            raise UnusableOAuthOperation("MCP authorization names another connector")
+        url = HTTPS_URL.validate_python(mcp.url)
+        if mcp.tentacle_id is not None:
+            connector = self.connector(mcp.tentacle_id)
+            if connector.mcp_url is None or str(connector.mcp_url) != str(url):
+                raise UnusableOAuthOperation(
+                    "MCP URL does not match the configured tentacle"
+                )
+            return connector
+        if self.callback_base_uri is None:
+            raise ValueError(
+                "Configure oauth.callback_base_uri before connecting dynamic MCPs"
+            )
+        return OAuthConnector(
+            id="mcp",
+            flows=[
+                McpOAuthFlow(
+                    url=url,
+                    httpx_client_factory=self.httpx_client_factory,
+                    client_metadata_url=self.client_metadata_url,
+                    state=state,
+                )
+            ],
+            callback_transport=DirectHttpOAuthCallbackTransport(self.callback_base_uri),
+        )
+
     async def start(
         self,
-        profile: UserProfile,
+        user: User,
         connector_id: str,
+        *,
+        mcp_id: uuid.UUID | None = None,
+        profile: UserProfile | None = None,
+        flow: OAuthFlowKind | None = None,
     ) -> OAuthStartResult:
-        connector = self.connector(connector_id)
-        user = await self.users.owner(profile)
-        if user is None:
-            raise ValueError("OAuth connections require a registered user")
+        if profile is not None and profile.user_id != user.id:
+            raise ValueError("OAuth profile does not belong to this user")
 
+        connector = await self.resolve_connector(
+            connector_id, user_id=user.id, mcp_id=mcp_id
+        )
+        selected = connector.select_flow(flow)
         context = OAuthFlowContext(
             operation_id=uuid7(),
             connector_id=connector.id,
+            mcp_id=mcp_id,
             user=user,
             profile=profile,
         )
-        if isinstance(connector.flow, DeviceOAuthFlow):
+        if isinstance(selected, DeviceOAuthFlow):
             cipher = self.cipher
             if cipher is None:
                 raise ValueError("OAuth persistence requires an encryption key")
-            resumed = await self.live_device_authorization(
-                user_id=user.id,
-                profile_id=profile.id,
-                connector_id=connector.id,
+            resumed = await self.pending_authorization(
+                user,
+                connector.id,
+                profile=profile,
+                mcp_id=mcp_id,
+                flow="device",
             )
             if resumed is not None:
                 return resumed
-            authorization = await connector.flow.start(context)
+            authorization = await selected.start(context)
             payload = DeviceOperationPayload(
                 device_code=authorization.device_code,
                 user_code=authorization.user_code,
@@ -149,8 +247,9 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             operation = OAuthOperation(
                 id=context.operation_id,
                 user_id=user.id,
-                profile_id=profile.id,
+                profile_id=profile.id if profile is not None else None,
                 connector_id=connector.id,
+                mcp_id=mcp_id,
                 encrypted_data=cipher.encrypt(
                     payload.model_dump_json(),
                     context=f"operation:{context.operation_id}",
@@ -170,9 +269,8 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                 interval_seconds=authorization.interval_seconds,
             )
 
-        flow = connector.flow
-        if not isinstance(flow, AuthorizationCodeOAuthFlow):
-            raise TypeError(f"unsupported OAuth flow {type(flow).__name__}")
+        if not isinstance(selected, AuthorizationCodeOAuthFlow):
+            raise TypeError(f"unsupported OAuth flow {type(selected).__name__}")
         transport = connector.callback_transport
         if transport is None:
             raise ValueError("authorization-code OAuth requires a callback transport")
@@ -187,18 +285,23 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         # operation id alone will not do — that id travels in the public start link,
         # where anyone the link reaches can read it.
         state = SecretStr(f"{context.operation_id}.{secrets.token_urlsafe(32)}")
-        authorization = await flow.start(context, callback_uri, state)
+        try:
+            authorization = await selected.start(context, callback_uri, state)
+        except ValidationError:
+            raise ValueError("OAuth authorization returned invalid metadata") from None
         payload = AuthorizationCodeOperationPayload(
             state=state,
             code_verifier=authorization.code_verifier,
             callback_uri=callback_uri,
             authorization_uri=authorization.authorization_uri,
+            mcp_oauth=authorization.mcp_oauth,
         )
         operation = OAuthOperation(
             id=context.operation_id,
             user_id=user.id,
-            profile_id=profile.id,
+            profile_id=profile.id if profile is not None else None,
             connector_id=connector.id,
+            mcp_id=mcp_id,
             encrypted_data=cipher.encrypt(
                 payload.model_dump_json(),
                 context=f"operation:{context.operation_id}",
@@ -220,43 +323,73 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             expires_at=authorization.expires_at,
         )
 
-    async def live_device_authorization(
+    async def pending_authorization(
         self,
-        *,
-        user_id: uuid.UUID,
-        profile_id: uuid.UUID,
+        user: User,
         connector_id: str,
-    ) -> DeviceAuthorization | None:
-        """This user's device authorization that is still worth returning to.
-
-        Asking to connect again while one is open would strand the code the user is
-        already looking at, so the open one is handed back untouched; only once it
-        has expired is a fresh flow the right answer.
-        """
+        *,
+        profile: UserProfile | None = None,
+        mcp_id: uuid.UUID | None = None,
+        flow: OAuthFlowKind | None = None,
+    ) -> OAuthStartResult | None:
+        """Restore a live authorization without starting another provider flow."""
+        if profile is not None and profile.user_id != user.id:
+            raise ValueError("OAuth profile does not belong to this user")
         cipher = self.cipher
         if cipher is None:
             raise ValueError("OAuth persistence requires an encryption key")
+        expressions = [
+            OAuthOperation["user_id"] == user.id,
+            OAuthOperation["connector_id"] == connector_id,
+            OAuthOperation["mcp_id"] == mcp_id,
+            OAuthOperation["consumed_at"].is_(None),
+            OAuthOperation["expires_at"] > datetime.now(UTC),
+        ]
+        if profile is not None or mcp_id is None:
+            expressions.append(
+                OAuthOperation["profile_id"] == (profile.id if profile else None)
+            )
+        if flow is not None:
+            expressions.append(
+                OAuthOperation["interval_seconds"].is_not(None)
+                if flow == "device"
+                else OAuthOperation["interval_seconds"].is_(None)
+            )
         async with async_session() as session:
             operation = await session.first(
                 OAuthOperation,
                 order_bys=[OAuthOperation["id"].desc()],
-                expressions=[
-                    OAuthOperation["user_id"] == user_id,
-                    OAuthOperation["profile_id"] == profile_id,
-                    OAuthOperation["connector_id"] == connector_id,
-                    OAuthOperation["consumed_at"].is_(None),
-                    OAuthOperation["expires_at"] > datetime.now(UTC),
-                ],
+                expressions=expressions,
             )
+            if operation is not None and operation.profile_id is not None:
+                profile = await session.get(UserProfile, operation.profile_id)
         if operation is None:
             return None
         if operation.interval_seconds is None:
-            raise ValueError(
-                f"device operation {operation.id} has no polling interval; it was "
-                "written by an authorization-code flow"
+            payload = self.authorization_payload(operation)
+            connector = await self.resolve_connector(
+                connector_id, user_id=user.id, mcp_id=mcp_id, state=payload.mcp_oauth
             )
-        expires_at = operation.expires_at
-        payload = DeviceOperationPayload.model_validate_json(
+            transport = connector.callback_transport
+            if transport is None:
+                raise ValueError(
+                    "authorization-code OAuth requires a callback transport"
+                )
+            return AuthorizationLink(
+                operation_id=operation.id,
+                authorization_uri=await transport.prepare_authorization(
+                    OAuthFlowContext(
+                        operation_id=operation.id,
+                        connector_id=connector_id,
+                        user=user,
+                        profile=profile,
+                        mcp_id=mcp_id,
+                    ),
+                    payload.authorization_uri,
+                ),
+                expires_at=operation.expires_at,
+            )
+        device = DeviceOperationPayload.model_validate_json(
             cipher.decrypt(
                 operation.encrypted_data,
                 context=f"operation:{operation.id}",
@@ -264,63 +397,76 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         )
         return DeviceAuthorization(
             operation_id=operation.id,
-            verification_uri=payload.verification_uri,
-            verification_uri_complete=payload.verification_uri_complete,
-            user_code=payload.user_code,
-            expires_at=expires_at,
+            verification_uri=device.verification_uri,
+            verification_uri_complete=device.verification_uri_complete,
+            user_code=device.user_code,
+            expires_at=operation.expires_at,
             interval_seconds=operation.interval_seconds,
         )
 
     async def complete_latest(
         self,
-        profile: UserProfile,
+        user: User,
         connector_id: str,
+        *,
+        mcp_id: uuid.UUID | None = None,
+        profile: UserProfile | None = None,
     ) -> OAuthGrant | OAuthPending:
-        """Poll the newest pending device operation owned by ``profile``'s user."""
-        user = await self.users.owner(profile)
-        if user is None:
-            raise ValueError("OAuth connections require a registered user")
+        """Poll this user's newest device operation from the originating context."""
+        if profile is not None and profile.user_id != user.id:
+            raise ValueError("OAuth profile does not belong to this user")
+        expressions = [
+            OAuthOperation["user_id"] == user.id,
+            OAuthOperation["connector_id"] == connector_id,
+            OAuthOperation["mcp_id"] == mcp_id,
+            OAuthOperation["consumed_at"].is_(None),
+            OAuthOperation["interval_seconds"].is_not(None),
+        ]
+        if profile is not None or mcp_id is None:
+            expressions.append(
+                OAuthOperation["profile_id"] == (profile.id if profile else None)
+            )
         async with async_session() as session:
             operations = await session.list(
                 OAuthOperation,
                 limit=1,
                 order_bys=[OAuthOperation["id"].desc()],
-                expressions=[
-                    OAuthOperation["user_id"] == user.id,
-                    OAuthOperation["profile_id"] == profile.id,
-                    OAuthOperation["connector_id"] == connector_id,
-                    OAuthOperation["consumed_at"].is_(None),
-                ],
+                expressions=expressions,
             )
         if not operations:
             raise NoPendingAuthorization(f"no pending {connector_id} authorization")
-        return await self.complete(profile, operations[0].id)
+        return await self.complete(user, operations[0].id, profile=profile)
 
     async def complete(
         self,
-        profile: UserProfile,
+        user: User,
         operation_id: uuid.UUID,
+        *,
+        profile: UserProfile | None = None,
     ) -> OAuthGrant | OAuthPending:
-        """Complete one device operation without accepting an owner from the caller."""
+        """Complete a device operation owned by this user and originating profile."""
         cipher = self.cipher
         if cipher is None:
             raise ValueError("OAuth persistence requires an encryption key")
-        user = await self.users.owner(profile)
-        if user is None:
-            raise ValueError("OAuth connections require a registered user")
+        if profile is not None and profile.user_id != user.id:
+            raise ValueError("OAuth profile does not belong to this user")
 
         async with async_session() as session:
             operation = await session.get(OAuthOperation, operation_id)
             if operation is None:
                 raise ValueError("unknown OAuth operation")
-            key = (user.id, operation.connector_id)
+            key = OAuthLockKey(
+                user_id=user.id,
+                mcp_id=operation.mcp_id,
+                connector_id=operation.connector_id,
+            )
 
         async with self.lock(key), async_session() as session:
             operation = await session.get(OAuthOperation, operation_id)
             if (
                 operation is None
                 or operation.user_id != user.id
-                or operation.profile_id != profile.id
+                or (profile is not None and operation.profile_id != profile.id)
             ):
                 raise ValueError("unknown OAuth operation")
             if operation.consumed_at is not None:
@@ -331,15 +477,22 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                 await session.commit()
                 raise ValueError("OAuth operation has expired")
 
-            connector = self.connector(operation.connector_id)
-            flow = connector.flow
-            if not isinstance(flow, DeviceOAuthFlow):
+            connector = await self.resolve_connector(
+                operation.connector_id, user_id=user.id, mcp_id=operation.mcp_id
+            )
+            flow = connector.select_flow("device")
+            if (
+                not isinstance(flow, DeviceOAuthFlow)
+                or operation.interval_seconds is None
+            ):
                 raise ValueError("OAuth operation is not a device authorization")
             context = OAuthFlowContext(
                 operation_id=operation.id,
                 connector_id=connector.id,
                 user=user,
                 profile=profile,
+                mcp_id=operation.mcp_id,
+                interval_seconds=operation.interval_seconds,
             )
             payload = DeviceOperationPayload.model_validate_json(
                 cipher.decrypt(
@@ -349,16 +502,17 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             )
             result = await flow.complete(context, payload.device_code)
             if isinstance(result, OAuthPending):
+                operation.interval_seconds = result.retry_after_seconds
+                await session.commit()
                 return result
 
-            # Unfiltered by status: this is replacing whatever is there, and a
-            # connection that went invalid is what reconnecting has to revive rather
-            # than collide with — `(user, connector)` is unique.
+            # Reauthorization replaces this grant, including when it is invalid.
             existing = await session.one_or_none(
                 OAuthConnection,
                 expressions=[
                     OAuthConnection["user_id"] == user.id,
                     OAuthConnection["connector_id"] == connector.id,
+                    OAuthConnection["mcp_id"] == operation.mcp_id,
                 ],
             )
             session.add(
@@ -367,6 +521,8 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                     user_id=user.id,
                     connector_id=connector.id,
                     existing=existing,
+                    flow=flow.kind,
+                    mcp_id=operation.mcp_id,
                 )
             )
             operation.consumed_at = datetime.now(UTC)
@@ -380,6 +536,8 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         user_id: uuid.UUID,
         connector_id: str,
         existing: OAuthConnection | None,
+        flow: OAuthFlowKind,
+        mcp_id: uuid.UUID | None = None,
     ) -> OAuthConnection:
         """This user's connection to a connector, carrying a grant, encrypted.
 
@@ -400,15 +558,18 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             user_id=user_id,
             connector_id=connector_id,
             encrypted_tokens=b"",
+            mcp_id=mcp_id,
             subject=grant.subject,
             account_label=grant.account_label,
         )
         connection.status = "active"
         connection.encrypted_tokens = cipher.encrypt(
             OAuthTokenPayload(
+                flow=flow,
                 access_token=grant.access_token,
                 refresh_token=grant.refresh_token,
                 token_type=grant.token_type,
+                mcp_oauth=grant.mcp_oauth,
             ).model_dump_json(),
             context=f"connection:{connection.id}",
         )
@@ -442,6 +603,7 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         *,
         state: str,
         code: str,
+        issuer: str | None = None,
     ) -> OAuthGrant:
         """Finish an authorization-code operation from the provider's callback.
 
@@ -454,50 +616,65 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         """
         async with async_session() as session:
             operation, _ = await self.operation_for_state(session, connector_id, state)
-            key = (operation.user_id, operation.connector_id)
+            key = OAuthLockKey(
+                user_id=operation.user_id,
+                mcp_id=operation.mcp_id,
+                connector_id=operation.connector_id,
+            )
 
         async with self.lock(key), async_session() as session:
             operation, payload = await self.operation_for_state(
                 session, connector_id, state
             )
-            profile = await session.get(UserProfile, operation.profile_id)
-            if profile is None:
-                raise UnusableOAuthOperation("OAuth operation has no profile")
-            user = await self.users.owner(profile)
+            profile = (
+                await session.get(UserProfile, operation.profile_id)
+                if operation.profile_id is not None
+                else None
+            )
+            if operation.profile_id is None:
+                user = await session.get(User, operation.user_id)
+            else:
+                user = await self.users.owner(profile) if profile is not None else None
             if user is None or user.id != operation.user_id:
                 raise UnusableOAuthOperation(
                     "the profile that started this authorization is no longer linked "
                     "to the user it was started for"
                 )
-            connector = self.connector(operation.connector_id)
-            flow = connector.flow
+            connector = await self.resolve_connector(
+                operation.connector_id,
+                user_id=user.id,
+                mcp_id=operation.mcp_id,
+                state=payload.mcp_oauth,
+            )
+            if payload.mcp_oauth is not None:
+                validate_authorization_response_iss(issuer, payload.mcp_oauth.metadata)
+            flow = connector.select_flow("authorization_code")
             if not isinstance(flow, AuthorizationCodeOAuthFlow):
                 raise UnusableOAuthOperation(
                     "OAuth operation is not an authorization-code authorization"
                 )
-            # Spent before the exchange, inside the same transaction: a code is
-            # single-use at the provider too, and burning the operation first is what
-            # makes a replayed callback fail here rather than upstream.
+            # Consume before contacting the provider, including when the exchange fails.
             operation.consumed_at = datetime.now(UTC)
+            await session.commit()
             grant = await flow.exchange(
                 OAuthFlowContext(
                     operation_id=operation.id,
                     connector_id=connector.id,
                     user=user,
                     profile=profile,
+                    mcp_id=operation.mcp_id,
                 ),
                 code=code,
                 code_verifier=payload.code_verifier,
                 callback_uri=payload.callback_uri,
             )
-            # Unfiltered by status: this is replacing whatever is there, and a
-            # connection that went invalid is what reconnecting has to revive rather
-            # than collide with — `(user, connector)` is unique.
+            # Reauthorization replaces this grant, including when it is invalid.
             existing = await session.one_or_none(
                 OAuthConnection,
                 expressions=[
                     OAuthConnection["user_id"] == user.id,
                     OAuthConnection["connector_id"] == connector.id,
+                    OAuthConnection["mcp_id"] == operation.mcp_id,
                 ],
             )
             session.add(
@@ -506,12 +683,16 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                     user_id=user.id,
                     connector_id=connector.id,
                     existing=existing,
+                    flow=flow.kind,
+                    mcp_id=operation.mcp_id,
                 )
             )
             await session.commit()
         return grant
 
-    async def abandon_callback(self, connector_id: str, *, state: str) -> None:
+    async def abandon_callback(
+        self, connector_id: str, *, state: str, issuer: str | None = None
+    ) -> None:
         """Close an operation the provider says the user turned down.
 
         A denial is an answer, so the operation is spent rather than left to expire —
@@ -519,10 +700,18 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         """
         async with async_session() as session:
             operation, _ = await self.operation_for_state(session, connector_id, state)
-            key = (operation.user_id, operation.connector_id)
+            key = OAuthLockKey(
+                user_id=operation.user_id,
+                mcp_id=operation.mcp_id,
+                connector_id=operation.connector_id,
+            )
 
         async with self.lock(key), async_session() as session:
-            operation, _ = await self.operation_for_state(session, connector_id, state)
+            operation, payload = await self.operation_for_state(
+                session, connector_id, state
+            )
+            if payload.mcp_oauth is not None:
+                validate_authorization_response_iss(issuer, payload.mcp_oauth.metadata)
             operation.consumed_at = datetime.now(UTC)
             await session.commit()
 
@@ -578,7 +767,14 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             )
         )
 
-    async def invalidate(self, profile: UserProfile, connector_id: str) -> None:
+    async def invalidate(
+        self,
+        user: User,
+        connector_id: str,
+        *,
+        mcp_id: uuid.UUID | None = None,
+        expected_token: SecretStr | None = None,
+    ) -> None:
         """Record that this user's credentials for a connector no longer work.
 
         Only the provider can say so — a revoked token answers 401 while nothing
@@ -587,32 +783,47 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         credential out again, which is what turns a capability that can only fail
         into an offer to authorize afresh.
 
-        Nothing to mark is a normal outcome, not an error: a visitor has no
-        connection, and a second 401 from the same dead session finds it already
-        recorded.
+        Nothing to mark is a normal outcome: a second 401 from the same dead
+        session finds it already recorded.
         """
-        user = await self.users.owner(profile)
-        if user is None:
-            return
-        async with async_session() as session:
+        async with (
+            self.lock(
+                OAuthLockKey(user_id=user.id, mcp_id=mcp_id, connector_id=connector_id)
+            ),
+            async_session() as session,
+        ):
             connection = await session.one_or_none(
                 OAuthConnection,
                 expressions=[
                     OAuthConnection["user_id"] == user.id,
                     OAuthConnection["connector_id"] == connector_id,
+                    OAuthConnection["mcp_id"] == mcp_id,
                     OAuthConnection["status"] == "active",
                 ],
             )
             if connection is None:
                 return
+            if expected_token is not None:
+                if self.cipher is None:
+                    raise ValueError("OAuth persistence requires an encryption key")
+                payload = OAuthTokenPayload.model_validate_json(
+                    self.cipher.decrypt(
+                        connection.encrypted_tokens,
+                        context=f"connection:{connection.id}",
+                    )
+                )
+                if payload.access_token != expected_token:
+                    return
             connection.status = "invalid"
             connection.updated_at = datetime.now(UTC)
             await session.commit()
 
     async def connection_status(
         self,
-        profile: UserProfile,
+        user: User,
         connector_id: str,
+        *,
+        mcp_id: uuid.UUID | None = None,
     ) -> OAuthConnectionStatus | None:
         """Whether this user has a connection to a connector, and whether it works.
 
@@ -621,30 +832,27 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         and wrong for explaining its absence — a user who was connected a moment ago
         cannot see that they no longer are, and only this tells them apart.
         """
-        user = await self.users.owner(profile)
-        if user is None:
-            return None
         async with async_session() as session:
             connection = await session.one_or_none(
                 OAuthConnection,
                 expressions=[
                     OAuthConnection["user_id"] == user.id,
                     OAuthConnection["connector_id"] == connector_id,
+                    OAuthConnection["mcp_id"] == mcp_id,
                 ],
             )
         return connection.status if connection is not None else None
 
     async def access_token(
         self,
-        profile: UserProfile,
+        user: User,
         connector_id: str,
+        *,
+        mcp_id: uuid.UUID | None = None,
     ) -> SecretStr | None:
-        """Return the active connector token for the profile's registered owner."""
+        """Return this user's active connector token."""
         cipher = self.cipher
         if cipher is None:
-            return None
-        user = await self.users.owner(profile)
-        if user is None:
             return None
         async with async_session() as session:
             connection = await session.one_or_none(
@@ -652,6 +860,7 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                 expressions=[
                     OAuthConnection["user_id"] == user.id,
                     OAuthConnection["connector_id"] == connector_id,
+                    OAuthConnection["mcp_id"] == mcp_id,
                     OAuthConnection["status"] == "active",
                 ],
             )
@@ -669,14 +878,21 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
             # Expiry is the one death the row can announce by itself; record it
             # so the next run offers a fresh authorization rather than re-reading
             # the same dead token.
-            await self.invalidate(profile, connector_id)
+            await self.invalidate(
+                user,
+                connector_id,
+                mcp_id=mcp_id,
+                expected_token=payload.access_token,
+            )
             return None
-        return await self.refresh(profile, connector_id)
+        return await self.refresh(user, connector_id, mcp_id=mcp_id)
 
     async def refresh(
         self,
-        profile: UserProfile,
+        user: User,
         connector_id: str,
+        *,
+        mcp_id: uuid.UUID | None = None,
     ) -> SecretStr | None:
         """Spend this user's refresh token for a credential worth starting a run on.
 
@@ -689,21 +905,21 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
         the same way a 401 does. A provider that merely failed to answer raises,
         because nothing about the credential was learned.
         """
-        user = await self.users.owner(profile)
-        if user is None:
-            return None
-        flow = self.connector(connector_id).flow
-        if not isinstance(flow, AuthorizationCodeOAuthFlow):
-            raise ValueError(f"{connector_id!r} has no refreshable OAuth flow")
         cipher = self.cipher
         if cipher is None:
             return None
-        async with self.lock((user.id, connector_id)), async_session() as session:
+        async with (
+            self.lock(
+                OAuthLockKey(user_id=user.id, mcp_id=mcp_id, connector_id=connector_id)
+            ),
+            async_session() as session,
+        ):
             connection = await session.one_or_none(
                 OAuthConnection,
                 expressions=[
                     OAuthConnection["user_id"] == user.id,
                     OAuthConnection["connector_id"] == connector_id,
+                    OAuthConnection["mcp_id"] == mcp_id,
                     OAuthConnection["status"] == "active",
                 ],
             )
@@ -723,9 +939,23 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                 return payload.access_token
             if payload.refresh_token is None:
                 return None
+            connector = await self.resolve_connector(
+                connector_id, user_id=user.id, mcp_id=mcp_id, state=payload.mcp_oauth
+            )
+            flow = connector.select_flow(payload.flow)
+            if not isinstance(flow, (AuthorizationCodeOAuthFlow, McpDeviceOAuthFlow)):
+                raise ValueError(f"{connector_id!r} has no refreshable OAuth flow")
             try:
                 grant = await flow.refresh(payload.refresh_token)
-            except ValueError:
+            except ValueError as error:
+                if isinstance(error, ValidationError):
+                    raise ValueError(
+                        "OAuth refresh returned invalid credentials"
+                    ) from None
+                if isinstance(
+                    flow, (McpOAuthFlow, McpDeviceOAuthFlow)
+                ) and not isinstance(error, OAuthRefreshRejected):
+                    raise
                 connection.status = "invalid"
                 connection.updated_at = datetime.now(UTC)
                 await session.commit()
@@ -737,11 +967,12 @@ class OAuthManager(Manager, Locks[tuple[uuid.UUID, str]]):
                 user_id=user.id,
                 connector_id=connector_id,
                 existing=connection,
+                flow=flow.kind,
+                mcp_id=mcp_id,
             )
             await session.commit()
         return grant.access_token
 
-    @staticmethod
-    def expiring(expires_at: datetime) -> bool:
+    def expiring(self, expires_at: datetime) -> bool:
         """Whether a credential has too little life left to start a run on."""
-        return expires_at <= datetime.now(UTC) + TOKEN_REFRESH_LEEWAY
+        return expires_at <= datetime.now(UTC) + self.token_refresh_leeway

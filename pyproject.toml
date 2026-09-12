@@ -12,13 +12,15 @@ dependencies = [
     "octomate-protocol>=0.0.1,<0.1",
     "anyio>=4",
     "httpx>=0.28.1",
+    "httpx2>=2",
+    "httpcore2>=2.12.0,<3",
     "pydantic>=2.12.5",
     "pydantic-settings>=2",
     "pyyaml>=6",
     "websockets>=15",
     "lark-oapi>=1.4.8",
     "discord.py>=2.7.1",
-    "pydantic-ai[bedrock]>=2.20.0",
+    "pydantic-ai[bedrock]>=2.42.0,<3",
     "pydantic-graph>=2.20.0",
     "pydantic-ai-harness[code-mode]>=0.14",
     "watchfiles>=1.1.1",
@@ -34,7 +36,7 @@ dependencies = [
     "claude-agent-sdk>=0.2.152",
     "cryptography>=48",
     "google-genai>=1.55.0",
-    "fastapi>=0.115",
+    "fastapi>=0.133",
     "uvicorn>=0.34",
     "logfire[httpx,sqlalchemy]>=4.29.0",
     "rich>=13",
@@ -46,7 +48,7 @@ dependencies = [
     # streamable-HTTP app it is served as. The client half already arrives with
     # pydantic-ai; the slim distribution is the same package without the CLI's
     # dependencies.
-    "fastmcp-slim[server]>=3.4",
+    "fastmcp-slim[server]>=4.0.3,<5",
     "argon2-cffi>=25.1.0",
 ]
 

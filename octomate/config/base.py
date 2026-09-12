@@ -1,7 +1,7 @@
 """The deployment: what a config home is, and the settings class it validates into.
 
 A deployment is a *config home* — one directory holding one flat file per subsystem,
-so a change to channels touches `channels.yaml` and nothing else. Each file's
+with all tentacle declarations in `tentacles.yaml`. Each file's
 top-level keys are `OctomateConfig` field names, which is what lets several files
 add up to one settings payload with no wrapper key and no section to traverse.
 
@@ -14,18 +14,19 @@ to the database and the client's `cli.toml`, which are not deployment config and
 must not make a directory look like one.
 
 The packaged defaults under `defaults/` are the floor beneath whichever home wins.
-They are layered per top-level key and wholesale — a home that declares `agents:`
-replaces the default `agents:` entirely rather than merging into it, which is the
+They are layered per top-level key and wholesale — a home that declares `tentacles:`
+replaces the default `tentacles:` entirely rather than merging into it, which is the
 behaviour `octomate.default.yaml` and `octomate.yaml` had between them.
 """
 
 from __future__ import annotations
 
-import os
 from ipaddress import IPv4Address
 from pathlib import Path
 from typing import Annotated, Self
 
+from octomate_protocol.config import CONFIG_FILES, config_home
+from octomate_protocol.config import OCTOMATE_HOME_ENV as OCTOMATE_HOME_ENV
 from pydantic import (
     Field,
     IPvAnyAddress,
@@ -42,55 +43,22 @@ from pydantic_settings import (
     YamlConfigSettingsSource,
 )
 
-from octomate.config.agents import AgentsConfig
+from octomate.config.agents import AgentConfig
 from octomate.config.auth import AuthConfig
-from octomate.config.channels import ChannelConfigVariant, SlackChannelConfig
-from octomate.config.mcp import McpConfigVariant, OAuthMcpConfig
+from octomate.config.channels import ChannelConfig, SlackChannelConfig
+from octomate.config.mcp import OAuthMcpConfig
+from octomate.config.mcp.base import AuthorizationCodeFlowConfig
+from octomate.config.mcp.pool import McpPoolConfig
 from octomate.config.mirrors import MirrorsConfig
 from octomate.config.oauth import OAuthConfig
 from octomate.config.observability import LogfireConfig, LoggingConfig
 from octomate.config.projects import ProjectsConfig
 from octomate.config.providers import ProvidersConfig
+from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.schemas.project import Project
 
-OCTOMATE_HOME_ENV = "OCTOMATE_HOME"
-
-# One file per subsystem, in the order they are read. `octomate.yaml` carries the
-# host's own settings (host, port, db_url) and comes first so a later
-# file cannot be shadowed by it.
-CONFIG_FILES: tuple[str, ...] = (
-    "octomate.yaml",
-    "agents.yaml",
-    "channels.yaml",
-    "auth.yaml",
-    "projects.yaml",
-    "providers.yaml",
-    "mcp.yaml",
-    "observability.yaml",
-    "oauth.yaml",
-)
-
 DEFAULTS_DIR = Path(__file__).parent / "defaults"
-
-
-def config_home() -> Path:
-    """The directory this process reads its deployment from.
-
-    Returned whether or not it exists — a machine with no config at all still names
-    a home, which is what `octomate init` writes into and what a boot error can say.
-    """
-    from_env = os.environ.get(OCTOMATE_HOME_ENV)
-    if from_env:
-        return Path(from_env).expanduser()
-    candidates = (
-        Path.cwd() / ".octomate" / "config",
-        Path.home() / ".octomate" / "config",
-    )
-    for candidate in candidates:
-        if any((candidate / name).is_file() for name in CONFIG_FILES):
-            return candidate
-    return candidates[-1]
 
 
 def config_files() -> tuple[Path, ...]:
@@ -119,28 +87,15 @@ class OctomateConfig(BaseSettings):
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
 
-    agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    tentacles: dict[str, TentacleConfigVariant] = Field(
+        default_factory=dict,
+        description="Tentacles keyed by deployment ID, with type selecting the implementation. "
+        "The ID is shared by routing, channel profiles, and MCP installation.",
+    )
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     logfire: LogfireConfig = Field(default_factory=LogfireConfig)
-    channels: dict[str, ChannelConfigVariant] = Field(
-        default_factory=dict,
-        description=(
-            "Channel tentacles keyed by instance id, `type` selecting the platform — "
-            "so one platform can be mounted more than once, a key per app. The key is "
-            "the channel tentacle id throughout, including a thread's origin."
-        ),
-    )
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
-    mcp: dict[str, McpConfigVariant] = Field(
-        default_factory=dict,
-        description=(
-            "MCP tentacles keyed by instance id, `type` selecting the provider — a "
-            "vendor's server on one operator credential, or a person's own account "
-            "linked through the provider's OAuth flow. The key is the tentacle id "
-            "throughout: the prefix its tools carry, and the connector its tokens "
-            "live under, so one vendor can be mounted once per account."
-        ),
-    )
+    mcp_pool: McpPoolConfig = Field(default_factory=McpPoolConfig)
     oauth: OAuthConfig = Field(default_factory=OAuthConfig)
     auth: AuthConfig | None = Field(
         default=None,
@@ -187,31 +142,62 @@ class OctomateConfig(BaseSettings):
             )
             raise ValueError(f"{faults} — got {value!r}") from error
 
+    @field_validator("tentacles")
+    @classmethod
+    def validate_unique_agent_runtimes(
+        cls, tentacles: dict[str, TentacleConfigVariant]
+    ) -> dict[str, TentacleConfigVariant]:
+        """Agent runtimes own fixed native hook routes, so each is declared once."""
+        runtimes: set[str] = set()
+        for tentacle in tentacles.values():
+            if isinstance(tentacle, AgentConfig):
+                if tentacle.type in runtimes:
+                    raise ValueError(f"duplicate agent runtime {tentacle.type!r}")
+                runtimes.add(tentacle.type)
+        return tentacles
+
     @model_validator(mode="after")
     def validate_oauth_configuration(self) -> Self:
         """Every enabled linked-account MCP tentacle stores credentials, and so does
         a Slack channel with an OAuth client: one of them needs the key."""
         enabled = [
-            f"mcp.{name}"
-            for name, server in self.mcp.items()
+            f"tentacles.{name}"
+            for name, server in self.tentacles.items()
             if isinstance(server, OAuthMcpConfig) and server.enabled
         ] + [
-            f"channels.{name}.oauth"
-            for name, channel in self.channels.items()
+            f"tentacles.{name}.oauth"
+            for name, channel in self.tentacles.items()
             if isinstance(channel, SlackChannelConfig) and channel.oauth is not None
         ]
         if enabled and self.oauth.encryption_key is None:
             raise ValueError(
                 f"oauth.encryption_key is required when {', '.join(enabled)} is enabled"
             )
+        if self.oauth.callback_base_uri is None and any(
+            isinstance(server, OAuthMcpConfig)
+            and server.enabled
+            and any(
+                isinstance(flow, AuthorizationCodeFlowConfig) for flow in server.flows
+            )
+            for server in self.tentacles.values()
+        ):
+            raise ValueError(
+                "oauth.callback_base_uri is required for authorization-code MCPs"
+            )
         return self
 
     @model_validator(mode="after")
     def validate_channel_agent_routes(self) -> Self:
         """Every channel binding must name an enabled, configured agent."""
-        configured = {agent.id for agent in self.agents.configured_agents}
+        configured = {
+            name
+            for name, tentacle in self.tentacles.items()
+            if isinstance(tentacle, AgentConfig) and tentacle.enabled
+        }
         errors: list[InitErrorDetails] = []
-        for channel_id, channel in self.channels.items():
+        for channel_id, channel in self.tentacles.items():
+            if not isinstance(channel, ChannelConfig):
+                continue
             for index, agent_id in enumerate(channel.agents):
                 if agent_id not in configured:
                     errors.append(
@@ -221,7 +207,7 @@ class OctomateConfig(BaseSettings):
                                 "{agent} does not match a configured agent tentacle",
                                 {"agent": repr(agent_id)},
                             ),
-                            loc=("channels", channel_id, "agents", index),
+                            loc=("tentacles", channel_id, "agents", index),
                             input=agent_id,
                         )
                     )

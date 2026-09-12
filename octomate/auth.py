@@ -6,9 +6,8 @@ from pydantic import AwareDatetime, Field, SecretStr
 from typing_extensions import TypedDict
 
 from octomate.database import async_session
-from octomate.dependencies import auth_manager, user_manager
+from octomate.dependencies import auth_manager
 from octomate.managers.auth import AuthManager, InvalidCredentials, UsernameUnavailable
-from octomate.managers.user import UserManager
 from octomate.schemas.auth import SessionTokens, UserApiKey, UserSession
 from octomate.schemas.user import User
 from octomate.types.auth import ApiKeyScope, NewPassword
@@ -115,7 +114,6 @@ async def register(
     body: RegistrationBody,
     response: Response,
     manager: Annotated[AuthManager, Depends(auth_manager)],
-    users: Annotated[UserManager, Depends(user_manager)],
 ) -> User:
     try:
         user = await manager.register(**body)
@@ -126,7 +124,6 @@ async def register(
         raise HTTPException(status_code=409, detail=str(error)) from error
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
-    users.cache_user(user)
     session_cookies(response, tokens, manager)
     return user
 

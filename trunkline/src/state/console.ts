@@ -20,8 +20,9 @@ import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
 
-export type ControlSection = '' | 'agents' | 'mcp' | 'users' | 'dash' | 'settings' | 'account'
+export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'channels' | 'keys' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
+export type InterfaceSize = 'small' | 'standard' | 'large'
 export type RailKey = 'sb' | 'mgmt' | 'trace' | 'pv'
 
 interface ChannelPrefs {
@@ -44,6 +45,15 @@ const loadTheme = (): ThemeMode => {
     return t === 'light' || t === 'dark' || t === 'auto' ? t : 'auto'
   } catch {
     return 'auto'
+  }
+}
+
+const loadInterfaceSize = (): InterfaceSize => {
+  try {
+    const size = localStorage.getItem('trk-interface-size')
+    return size === 'small' || size === 'large' ? size : 'standard'
+  } catch {
+    return 'standard'
   }
 }
 
@@ -163,6 +173,8 @@ export interface ConsoleActions {
   setSysDark(dark: boolean): void
   isDark(): boolean
   toggleTheme(): void
+  setTheme(theme: ThemeMode): void
+  setInterfaceSize(size: InterfaceSize): void
   toggleSidebar(): void
   toggleChannelFold(id: string): void
   toggleChannelPin(id: string): void
@@ -235,6 +247,7 @@ interface ConsoleState {
   // theme
   theme: ThemeMode
   sysDark: boolean
+  interfaceSize: InterfaceSize
 
   // panels
   sbFold: boolean
@@ -577,14 +590,24 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       return s.theme === 'dark' || (s.theme === 'auto' && s.sysDark)
     },
     toggleTheme() {
-      const t: ThemeMode = actions.isDark() ? 'light' : 'dark'
+      actions.setTheme(actions.isDark() ? 'light' : 'dark')
+    },
+    setTheme(theme: ThemeMode) {
       try {
-        localStorage.setItem('trk-theme', t)
+        localStorage.setItem('trk-theme', theme)
       } catch {
         // non-persistent theme is fine
       }
-      set({ theme: t })
-      applyThemeAttr(t === 'dark')
+      set({ theme })
+      applyThemeAttr(theme === 'dark' || (theme === 'auto' && get().sysDark))
+    },
+    setInterfaceSize(size: InterfaceSize) {
+      try {
+        localStorage.setItem('trk-interface-size', size)
+      } catch {
+        // Match theme preferences when browser storage is unavailable.
+      }
+      set({ interfaceSize: size })
     },
 
     /* ---------------------------------------------------- panels --------- */
@@ -611,7 +634,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         const narrow = window.innerWidth < 1200
         return {
           mgmtOpen: opening,
-          mgmtSec: opening ? s.mgmtSec : '',
+          mgmtSec: opening ? s.mgmtSec || 'dash' : '',
           traceOn: opening && narrow ? false : s.traceOn,
         }
       })
@@ -1262,6 +1285,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     notices: [],
     theme: loadTheme(),
     sysDark: false,
+    interfaceSize: loadInterfaceSize(),
     sbFold: false,
     chFold: prefs.fold,
     chPins: prefs.pins,

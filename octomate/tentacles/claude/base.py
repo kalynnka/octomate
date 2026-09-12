@@ -715,16 +715,17 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # normal tool-approval route like any other MCP tool; deliberately
         # nothing goes into `allowed_tools`.
         mcp_servers: dict[str, McpServerConfig] = {}
-        served = list(self.octomate.mcps.values())
         if octomate_session is not None:
             mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
-                octomate_session, self.octomate.thread_manager, served
+                octomate_session,
+                self.octomate.thread_manager,
+                manager=self.octomate.mcp,
             )
         appended = "\n\n".join(
             part
             for part in (
                 instructions if isinstance(instructions, str) else None,
-                octomate_instructions(served) if octomate_session is not None else None,
+                octomate_instructions() if octomate_session is not None else None,
             )
             if part
         )

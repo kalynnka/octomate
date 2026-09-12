@@ -19,12 +19,16 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
+from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.managers.oauth import OAuthConnector
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.oauth import OAuthConnection
 from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import User, UserProfile
@@ -42,6 +46,7 @@ from octomate.tentacles.trunkline.base import (
     TrunklineDirective,
 )
 from octomate.types.permissions import InklingPermissionMode
+from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
 
@@ -172,7 +177,7 @@ def test_trunkline_router_requires_registered_channel() -> None:
     app = octomate
     paths = {route.path for route in app.routes if isinstance(route, APIRoute)}
     assert "/api/trunkline/routes" in paths
-    assert "/api/trunkline/permission-modes" in paths
+    assert "/api/trunkline/permissions" in paths
     assert "/api/trunkline/conversations/{conversation_id}/permission-mode" in paths
     assert "/api/trunkline/threads" in paths
     assert "/api/trunkline/threads/{thread_id}" in paths
@@ -254,6 +259,7 @@ async def test_directive_records_chat_ledger(
 async def _register_routes(
     octomate: Octomate, agents: dict[str, Agent[None, InklingOutput]]
 ) -> TrunklineTentacle:
+    octomate.dependency_overrides[current_user] = console_user
     receptions = []
     for agent_id, agent in agents.items():
         assert agent.model is not None
@@ -514,7 +520,7 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        offered = (await client.get("/api/trunkline/permission-modes")).json()
+        offered = (await client.get("/api/trunkline/permissions")).json()
 
     assert offered == {
         "inkling": {
@@ -539,7 +545,7 @@ async def test_the_configured_default_is_what_the_endpoint_reports(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        offered = (await client.get("/api/trunkline/permission-modes")).json()
+        offered = (await client.get("/api/trunkline/permissions")).json()
 
     assert offered["inkling"]["default"] == "dontAsk"
 
@@ -644,6 +650,215 @@ async def test_a_posture_with_no_agent_to_read_it_is_refused(
                 permission_mode="dontAsk",
             )
         )
+
+
+async def test_the_agents_endpoint_keeps_the_models_routes_drops(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    inkling, _ = build_scripted_agent(["from inkling"])
+    claude, _ = build_scripted_agent(["from claude"])
+    channel = await _register_routes(octomate, {"inkling": inkling, "claude": claude})
+    channel.config.agents = ["claude"]
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        listed = (await client.get("/api/trunkline/agents")).json()
+
+    assert [agent["id"] for agent in listed] == ["inkling", "claude"]
+    # /routes answers the composer with the entry agent's default alone; the page
+    # asks what the instance is made of, so every agent keeps its whole catalog.
+    assert all(
+        [route["model"] for route in agent["routes"]] == [RECEPTION_MODEL]
+        for agent in listed
+    )
+    assert all(agent["default_model"] == RECEPTION_MODEL for agent in listed)
+    assert all(agent["driven_sessions"] == 0 for agent in listed)
+    assert all(agent["native_sessions"] == 0 for agent in listed)
+
+
+async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    inkling, _ = build_scripted_agent(["from inkling"])
+    await _register_routes(octomate, {"inkling": inkling})
+    tentacle = octomate.agents["inkling"]
+    tentacle.set_model_catalog(
+        dict(tentacle.models),
+        {RECEPTION_MODEL: Claim("triage and reply", efforts=("low", "high"))},
+    )
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        [listed] = (await client.get("/api/trunkline/agents")).json()
+
+    assert listed["routes"] == [
+        {
+            "agent_id": "inkling",
+            "model": RECEPTION_MODEL,
+            "claim": {"ability": "triage and reply", "efforts": ["low", "high"]},
+        }
+    ]
+
+
+async def test_a_route_claiming_no_efforts_says_so_rather_than_all_of_them(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    inkling, _ = build_scripted_agent(["from inkling"])
+    await _register_routes(octomate, {"inkling": inkling})
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        [listed] = (await client.get("/api/trunkline/agents")).json()
+
+    # An unclaimed route falls back to the agent's blurb and an empty scale —
+    # "takes no effort levels", which is not "takes them all".
+    assert listed["routes"][0]["claim"]["efforts"] == []
+    assert (
+        listed["routes"][0]["claim"]["ability"]
+        == octomate.agents["inkling"].description
+    )
+
+
+async def test_the_profile_endpoint_answers_identity_and_channels(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    async with async_session() as session:
+        session.add(
+            UserProfile(
+                channel_tentacle_id="slack",
+                channel_user_id="U1",
+                name="Operator",
+                user_id=CONSOLE_USER_ID,
+            )
+        )
+        await session.commit()
+
+    async with async_session() as session:
+        user = await session.get(User, CONSOLE_USER_ID)
+    assert user is not None
+    octomate.dependency_overrides[current_user] = lambda: user
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        listed = (await client.get("/api/trunkline/profile")).json()
+
+    assert listed["user"]["username"] == "operator"
+    assert [
+        (profile["channel_tentacle_id"], profile["channel_user_id"])
+        for profile in listed["profiles"]
+    ] == [("slack", "U1")]
+    # The profile rows carry their channel identity, not the account they hang off.
+    assert "user" not in listed["profiles"][0]
+
+
+async def test_the_profile_endpoint_does_not_treat_uninstalled_connectors_as_grants(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    octomate.oauth.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        listed = (await client.get("/api/trunkline/profile")).json()
+
+    assert listed["mcps"] == []
+
+
+async def test_profile_oauth_status_belongs_to_each_users_installation(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    octomate.oauth.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
+    other = User(username="other")
+    mcps = [
+        OAuthMcp(
+            user_id=user_id,
+            name=name,
+            namespace=f"personal/{name}",
+            url="https://mcp.example/mcp",
+            tentacle_id="github",
+            enabled=name != "work",
+        )
+        for user_id, name in [
+            (CONSOLE_USER_ID, "home"),
+            (CONSOLE_USER_ID, "work"),
+            (CONSOLE_USER_ID, "new"),
+            (other.id, "other"),
+        ]
+    ]
+    async with async_session() as session:
+        session.add(other)
+        await session.commit()
+        for mcp in mcps:
+            session.add(mcp)
+        session.add(
+            NoAuthMcp(
+                user_id=CONSOLE_USER_ID,
+                name="public",
+                namespace="personal/public",
+                url="https://public.example/mcp",
+            )
+        )
+        await session.commit()
+        for mcp in (mcps[0], mcps[1], mcps[3]):
+            session.add(
+                OAuthConnection(
+                    user_id=mcp.user_id,
+                    connector_id="github",
+                    mcp_id=mcp.id,
+                    status="invalid" if mcp.name == "work" else "active",
+                    encrypted_tokens=b"secret-token",
+                )
+            )
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate),
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        response = await client.get("/api/trunkline/profile")
+
+    assert response.status_code == 200
+    listed = {mcp["name"]: mcp for mcp in response.json()["mcps"]}
+    assert set(listed) == {"home", "work", "new"}
+    assert listed["home"]["oauth"] == {"flows": ["device"], "status": "active"}
+    assert listed["work"]["oauth"]["status"] == "invalid"
+    assert listed["work"]["enabled"] is False
+    assert listed["new"]["oauth"]["status"] is None
+    assert "encrypted_tokens" not in response.text
+    assert "secret-token" not in response.text
+    assert "password_hash" not in response.text
 
 
 async def test_the_projects_endpoint_offers_only_enabled_ones(
