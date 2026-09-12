@@ -10,9 +10,8 @@ gives validated partial output but not thinking/tool events. `stream_events` dri
   validate to `list[MessageSegment]` also stream one `ResultSegmentEvent` per
   segment as partial validation reveals them. Other structured outputs surface
   only at `FinalResult`.
-- capability-injected events (e.g. todo events) flow through: each node's stream is
-  wrapped with the run's capabilities' `wrap_run_event_stream`, which the manual
-  `iter()` path would otherwise bypass (pydantic-ai applies it only inside `run()`),
+- capability-injected events (e.g. todo events) flow through the capability
+  wrapper that Pydantic AI applies to each node's stream,
 - a terminal `AgentRunResultEvent` closes the stream (run-complete / deferred).
 
 The two `output_type` overloads carry the output type into the event stream, so the
@@ -37,8 +36,6 @@ from pydantic_ai import (
     UsageLimits,
 )
 
-# Pydantic AI applies capability wrap_run_event_stream only inside run()'s hooked
-# path; stream_events drives iter() directly, so we replicate the wrap per node.
 # build_run_context is private — no public RunContext-from-AgentRun exists in 1.93.0.
 from pydantic_ai._agent_graph import build_run_context
 from pydantic_ai.agent.abstract import (
@@ -206,9 +203,6 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     # outputs instead surface segment-list elements as
                     # ResultSegmentEvent; every output type still reaches FinalResult.
                     async with node.stream(run.ctx) as stream:
-                        wrapped = capability.wrap_run_event_stream(
-                            build_run_context(run.ctx), stream=stream
-                        )
                         final_event: FinalResultEvent | None = None
                         emitted_segments = 0
                         # The element whose text is streaming as deltas, and how much
@@ -249,7 +243,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                         # A capability injecting a non-AgentStreamEvent before the
                         # FinalResultEvent passes through here; injecting after it is
                         # not supported (todo events inject on the tools node).
-                        async for event in wrapped:
+                        async for event in stream:
                             if first_token is None:
                                 first_token = time.perf_counter()
                                 react_logfire.info("llm.first_token")
@@ -340,10 +334,7 @@ class Agent(PydanticAgent[AgentDepsT, OutputDataT]):
                     # run's capabilities lets capability-injected events (e.g. todo
                     # events stashed on a ToolReturn) reach the consumer.
                     async with node.stream(run.ctx) as tool_stream:
-                        wrapped = capability.wrap_run_event_stream(
-                            build_run_context(run.ctx), stream=tool_stream
-                        )
-                        async for tool_event in wrapped:
+                        async for tool_event in tool_stream:
                             yield tool_event
                 # `wrap_node_run` → `on_node_run_error` → `after_node_run`, around the
                 # step that advances the graph. The context is rebuilt so those hooks

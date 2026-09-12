@@ -7,7 +7,6 @@ from __future__ import annotations
 from octomate.config.agents import (
     AgentConfig,
     AgentRouteModelName,
-    AgentsConfig,
     ClaudeCodeConfig,
     ClaudeSSHConfig,
     CodexConfig,
@@ -40,12 +39,11 @@ from octomate.config.channels import (
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.mcp import (
     BareMcpConfig,
-    GitHubMcpConfig,
-    LinearMcpConfig,
     McpConfig,
     McpConfigVariant,
     OAuthMcpConfig,
 )
+from octomate.config.mcp.pool import McpPoolConfig
 from octomate.config.mirrors import GitIdentity, MirrorsConfig
 from octomate.config.models import (
     AnthropicModelSettings,
@@ -66,15 +64,16 @@ from octomate.config.providers import (
     ProvidersConfig,
     VertexProviderConfig,
 )
+from octomate.config.tentacles import TentacleConfigVariant
 from octomate.config.workspaces import WorkspacesConfig
 
 # Grouped by subsystem behind the section comments below, which say more than
 # alphabetical order would; sorting this would strand each comment on the wrong name.
 __all__ = [  # noqa: RUF022
     "OctomateConfig",
+    "TentacleConfigVariant",
     # agents
     "AgentConfig",
-    "AgentsConfig",
     "AgentRouteModelName",
     "ClaudeCodeConfig",
     "ClaudeSSHConfig",
@@ -107,10 +106,9 @@ __all__ = [  # noqa: RUF022
     "config_home",
     # mcp
     "BareMcpConfig",
-    "GitHubMcpConfig",
-    "LinearMcpConfig",
     "McpConfig",
     "McpConfigVariant",
+    "McpPoolConfig",
     "OAuthMcpConfig",
     # users
     "AuthConfig",

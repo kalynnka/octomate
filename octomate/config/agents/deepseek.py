@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Literal
 
 from pydantic import AfterValidator, ConfigDict, Field
 from pydantic_ai.settings import ThinkingEffort
@@ -33,7 +33,7 @@ class DeepseekConfig(AgentConfig):
 
     model_config = ConfigDict(extra="ignore")
 
-    id: ClassVar[str] = "deepseek"
+    type: Literal["deepseek"] = "deepseek"
 
     instrument: bool = Field(
         default=False,

@@ -7,18 +7,26 @@
  * Every request goes through `apiFetch`: the reads are private to the signed-in
  * account, and the writes must carry the same-origin header (see lib/api/auth).
  */
-import { apiFetch } from './auth'
+import { apiFetch, refuse } from './auth'
 import type {
+  ApiAgentInfo,
   ApiChannelInfo,
   ApiConversation,
   ApiDeferredBatch,
+  ApiMcp,
+  ApiMcpAuthorization,
+  ApiMcpAuthorizationResult,
+  ApiMcpTentacle,
   ApiPermissionModes,
+  ApiProfileInfo,
   ApiProject,
   ApiRoute,
   ApiThread,
   ApiThreadMessage,
   BatchResponseBody,
   DirectiveBody,
+  McpInstallBody,
+  OAuthFlowKind,
   WireEvent,
 } from './events'
 
@@ -62,7 +70,65 @@ export function fetchProjects(): Promise<ApiProject[]> {
 
 /** Each registered agent's approval vocabulary, in cycling order. */
 export function fetchPermissionModes(): Promise<ApiPermissionModes> {
-  return getJson<ApiPermissionModes>('/api/trunkline/permission-modes')
+  return getJson<ApiPermissionModes>('/api/trunkline/permissions')
+}
+
+/** Every registered agent with its whole catalog — the Agents page's read. */
+export function fetchAgents(): Promise<ApiAgentInfo[]> {
+  return getJson<ApiAgentInfo[]>('/api/trunkline/agents')
+}
+
+/** This account's identity, channel profiles and OAuth MCP authorizations. */
+export function fetchProfile(): Promise<ApiProfileInfo> {
+  return getJson<ApiProfileInfo>('/api/trunkline/profile')
+}
+
+/** The MCP servers this account installed, enabled and disabled alike. */
+export function fetchMcpServers(): Promise<ApiMcp[]> {
+  return getJson<ApiMcp[]>('/api/mcp')
+}
+
+/** The configured tentacles that can supply an MCP, with their auth kind. */
+export function fetchMcpTentacles(): Promise<ApiMcpTentacle[]> {
+  return getJson<ApiMcpTentacle[]>('/api/mcp/tentacles')
+}
+
+export async function installMcp(body: McpInstallBody): Promise<ApiMcp> {
+  const res = await apiFetch('/api/mcp', { method: 'POST', json: body })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcp
+}
+
+export async function uninstallMcp(id: string): Promise<void> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) return refuse(res)
+}
+
+export async function connectMcp(id: string, flow: OAuthFlowKind): Promise<ApiMcpAuthorization> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/connect?flow=${flow}`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcpAuthorization
+}
+
+export function fetchMcpAuthorization(id: string): Promise<ApiMcpAuthorization | null> {
+  return getJson<ApiMcpAuthorization | null>(`/api/mcp/${encodeURIComponent(id)}/authorization`)
+}
+
+export async function cancelMcpAuthorization(id: string): Promise<void> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/authorization`, { method: 'DELETE' })
+  if (!res.ok) return refuse(res)
+}
+
+export async function confirmMcp(id: string): Promise<ApiMcpAuthorizationResult> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/confirm`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcpAuthorizationResult
+}
+
+export async function enableMcp(id: string): Promise<ApiMcp> {
+  const res = await apiFetch(`/api/mcp/${encodeURIComponent(id)}/enable`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiMcp
 }
 
 /**

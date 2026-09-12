@@ -49,7 +49,7 @@ function Chip({
 
 export function StatusBar() {
   const { toggleControl, setControlSection } = useConsole((s) => s.actions)
-  const onAccount = useConsole((s) => s.mgmtSec === 'account')
+  const onAccount = useConsole((s) => s.mgmtSec === 'profile')
   const user = useAuth((s) => s.user)
   const { signOut } = useAuth((s) => s.actions)
   const [signingOut, setSigningOut] = useState(false)
@@ -164,11 +164,10 @@ export function StatusBar() {
             overflow: 'hidden',
           }}
         >
-          {/* The signed-in account, and the way out. The name opens the Account
-              page — the keys this account issued, and who it is on the relay. */}
+          {/* The signed-in account, and the way out. The name opens Profile. */}
           <Chip
-            tip={`${user?.name ?? ''} · account, api keys`}
-            onClick={() => setControlSection('account')}
+            tip={`${user?.name ?? ''} · profile`}
+            onClick={() => setControlSection('profile')}
             style={{
               fontWeight: 700,
               color: onAccount ? 'var(--color-accent)' : undefined,

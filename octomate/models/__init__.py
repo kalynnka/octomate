@@ -7,6 +7,12 @@ from octomate.models.deferred import (
     DeferredApprovalAction,
     DeferredQuestionAction,
 )
+from octomate.models.mcp import (
+    BearerMcp,
+    Mcp,
+    NoAuthMcp,
+    OAuthMcp,
+)
 from octomate.models.messages import (
     ModelMessage,
     ModelRequest,
@@ -28,6 +34,7 @@ from octomate.models.user import User, UserProfile
 __all__ = [
     "AgentRun",
     "Base",
+    "BearerMcp",
     "Conversation",
     "DeferredAction",
     "DeferredActionBatch",
@@ -35,11 +42,14 @@ __all__ = [
     "DeferredQuestionAction",
     "ExternalAgentRun",
     "Handoff",
+    "Mcp",
     "MessageBinding",
     "ModelMessage",
     "ModelRequest",
     "ModelResponse",
+    "NoAuthMcp",
     "OAuthConnection",
+    "OAuthMcp",
     "OAuthOperation",
     "Project",
     "Thread",

@@ -1,18 +1,17 @@
 import { useConsole } from '@/state/console'
 import type { ControlSection } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
-import { TriStripe } from '@/components/TriStripe'
 import { ellipsis, label, mono } from '@/components/text'
+import { controlHints } from './sections'
 
-// Hints name what a section holds, never how much of it: no read counts any of
-// this yet, and a number here would be one nobody measured.
-const defs: { id: ControlSection; label: string; hint: string }[] = [
-  { id: 'agents', label: 'Agents', hint: 'routes · models' },
-  { id: 'mcp', label: 'MCP', hint: 'servers · connectors' },
-  { id: 'users', label: 'Users', hint: 'identities · grants' },
-  { id: 'dash', label: 'Dashboard', hint: 'ledger · verbs' },
-  { id: 'settings', label: 'Settings', hint: 'providers · hooks' },
-  { id: 'account', label: 'Account', hint: 'api keys · session' },
+const defs: { id: Exclude<ControlSection, ''>; label: string }[] = [
+  { id: 'dash', label: 'Dashboard' },
+  { id: 'agents', label: 'Agents' },
+  { id: 'mcp', label: 'MCP' },
+  { id: 'profile', label: 'Profile' },
+  { id: 'channels', label: 'Channels' },
+  { id: 'keys', label: 'API Keys' },
+  { id: 'settings', label: 'Settings' },
 ]
 
 /** Management rail — the Control sections index beside the sidebar. */
@@ -95,8 +94,10 @@ export function ControlRail() {
         {defs.map((d, i) => {
           const on = mgmtSec === d.id
           return (
-            <div
+            <button
               key={d.id}
+              type="button"
+              aria-current={on ? 'page' : undefined}
               onClick={() => setControlSection(d.id)}
               className="hov-wash"
               style={{
@@ -104,6 +105,9 @@ export function ControlRail() {
                 alignItems: 'center',
                 gap: 12,
                 padding: '10px 16px 10px 13px',
+                width: '100%',
+                border: 0,
+                textAlign: 'left',
                 cursor: 'pointer',
                 borderLeft: `3px solid ${on ? 'var(--color-accent)' : 'transparent'}`,
                 background: on ? 'var(--card-bg-hover)' : 'transparent',
@@ -131,7 +135,7 @@ export function ControlRail() {
               </span>
               <span style={{ flex: 1 }} />
               <span style={{ ...mono(8), color: 'var(--fg-3)', ...ellipsis, minWidth: 0, flexShrink: 1 }}>
-                {d.hint}
+                {controlHints[d.id]}
               </span>
               {on && (
                 <i
@@ -144,32 +148,10 @@ export function ControlRail() {
                   }}
                 />
               )}
-            </div>
+            </button>
           )
         })}
       </div>
-      <div
-        style={{
-          flexShrink: 0,
-          borderTop: '1px solid var(--line-divider)',
-          padding: '7px 16px 9px',
-          display: 'flex',
-          alignItems: 'center',
-          gap: 8,
-        }}
-      >
-        <span style={{ ...mono(8, 700), letterSpacing: '.1em', color: 'var(--fg-1)', flexShrink: 0 }}>
-          127.0.0.1:8000
-        </span>
-        <span style={{ flex: 1 }} />
-        <span
-          title="default.yaml → octomate.yaml → OCTOMATE__* env"
-          style={{ ...mono(7.5), color: 'var(--fg-3)', ...ellipsis, minWidth: 0 }}
-        >
-          default.yaml → octomate.yaml → env
-        </span>
-      </div>
-      <TriStripe />
       <span
         onMouseDown={dragStart}
         title="Drag to resize"

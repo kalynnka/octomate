@@ -13,8 +13,8 @@ session from.
 from __future__ import annotations
 
 import uuid
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
@@ -816,8 +816,8 @@ class GatewayManager(Manager):
             for channel_id, channel in channels.items()
         }
 
-    @contextmanager
-    def driving(self, session: OctomateSession | None) -> Generator[None]:
+    @asynccontextmanager
+    async def driving(self, session: OctomateSession | None) -> AsyncGenerator[None]:
         """The registration span of one driven turn: external tool calls reach
         `session` only while the run that mounted it is in flight, and a second
         turn of the same conversation is refused at the door. Tolerates a gateway

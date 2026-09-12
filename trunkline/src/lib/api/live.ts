@@ -43,7 +43,9 @@ const CHANNEL_DISPLAY: Record<string, Omit<ChannelMeta, 'id'>> = {
 }
 
 export function channelMeta(id: string): ChannelMeta {
-  const display = CHANNEL_DISPLAY[id] ?? { label: id, sub: '', brand: 'var(--fg-3)' }
+  const display = CHANNEL_DISPLAY[id] ?? {
+    label: id.charAt(0).toUpperCase() + id.slice(1), sub: '', brand: 'var(--fg-3)',
+  }
   return { id, ...display }
 }
 

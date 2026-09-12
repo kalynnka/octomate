@@ -14,11 +14,10 @@ person never touches the prompt prefix.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from typing import Any
 
 from fastmcp import FastMCP
-from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ToolError, ValidationError
 from mcp.types import TextContent
 from pydantic_ai import RunContext
 from pydantic_ai.capabilities import Toolset
@@ -29,8 +28,8 @@ from pydantic_ai.toolsets.abstract import ToolsetTool
 from pydantic_core import SchemaValidator, core_schema
 
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.mcp.server import tentacles_mcp
-from octomate.tentacles.mcp import McpTentacle
 
 # The upstream validates a call's arguments itself, as the served proxy lets it;
 # nothing is checked twice.
@@ -76,7 +75,7 @@ class TentaclesToolset(AbstractToolset[None]):
     ) -> dict[str, Any] | str:
         try:
             result = await self.server.call_tool(name, tool_args)
-        except ToolError as refusal:
+        except (ToolError, ValidationError) as refusal:
             # The same corrective sentence every runtime reads, as the retry
             # Inkling corrects from.
             raise ModelRetry(str(refusal)) from refusal
@@ -86,6 +85,8 @@ class TentaclesToolset(AbstractToolset[None]):
         texts = [
             block.text for block in result.content if isinstance(block, TextContent)
         ]
+        if result.is_error:
+            raise ModelRetry("\n".join(texts) or "MCP tool call failed")
         if len(texts) == len(result.content):
             return "\n".join(texts)
         if result.structured_content is not None:
@@ -94,7 +95,9 @@ class TentaclesToolset(AbstractToolset[None]):
 
 
 def tentacles_capability(
-    session: OctomateSession, tentacles: Sequence[McpTentacle]
+    session: OctomateSession,
+    *,
+    manager: McpManager,
 ) -> Toolset[None]:
     """The capability a run mounts: the tentacles' server built over `session`,
     deferred behind a catalog line naming what it holds."""
@@ -102,13 +105,13 @@ def tentacles_capability(
     async def fixed() -> OctomateSession:
         return session
 
-    server = tentacles_mcp(fixed, tentacles)
-    labels = ", ".join(dict.fromkeys(tentacle.label for tentacle in tentacles))
+    server = tentacles_mcp(fixed, manager=manager)
     return Toolset(
         TentaclesToolset(server),
         id=server.name,
         description=(
-            f"The tools of {labels}, acting as the person you are answering, and "
+            "The user's installed MCP tools, "
+            "acting as the person you are answering, and "
             "the linking of their accounts."
         ),
         defer_loading=True,

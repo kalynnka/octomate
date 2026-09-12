@@ -5,12 +5,13 @@ from typing import Annotated
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field, SecretStr
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from uuid_utils.compat import uuid7
 
 from octomate.models.user import User as UserModel
 from octomate.models.user import UserProfile as UserProfileModel
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.mcp import McpServerSummary
 
 # Placeholder channel_user_id for a profile with no real channel identity — an
 # agent's display shim, an unenriched default. "0" is the value the field has
@@ -99,3 +100,13 @@ class User(BaseTransmuter):
 # incomplete until this runs. Subclasses inherit that, and a cold import of one —
 # napcat's sender — fails to validate rather than to build.
 UserProfile.model_rebuild()
+
+
+class ProfileInfo(BaseModel):
+    user: User
+    profiles: list[UserProfile] = Field(
+        description="Every channel identity bound to this account."
+    )
+    mcps: list[McpServerSummary] = Field(
+        description="This user's OAuth MCP installations and their authorization status."
+    )

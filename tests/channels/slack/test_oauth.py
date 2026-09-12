@@ -8,13 +8,18 @@ from base64 import urlsafe_b64encode
 from hashlib import sha256
 from urllib.parse import parse_qs
 
-import httpx
+import httpx2
 import pytest
 from pydantic import AnyHttpUrl, SecretStr
 
+from octomate import Octomate
+from octomate.config import OctomateConfig, SlackChannelConfig
+from octomate.config.channels import SlackOAuthClientConfig
+from octomate.oauth.mcp import McpOAuthFlow, OAuthRefreshRejected
 from octomate.schemas.oauth import OAuthFlowContext
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.slack.oauth import SlackAuthorizationCodeOAuthFlow
+from octomate.tentacles.slack import SlackTentacle
+from octomate.types.json import JsonObject
 
 CALLBACK = AnyHttpUrl("http://127.0.0.1:8000/oauth/slack/callback")
 
@@ -35,21 +40,21 @@ def flow_context() -> OAuthFlowContext:
 
 
 def slack_transport(
-    token: dict[str, object],
+    token: JsonObject,
     *,
-    posted: list[httpx.Request] | None = None,
-) -> httpx.MockTransport:
+    posted: list[httpx2.Request] | None = None,
+) -> httpx2.MockTransport:
     """Answer the token endpoint with `token`, then `auth.test` for whoever holds
     the token it granted."""
 
-    def respond(request: httpx.Request) -> httpx.Response:
+    def respond(request: httpx2.Request) -> httpx2.Response:
         if request.url.path == "/api/oauth.v2.user.access":
             if posted is not None:
                 posted.append(request)
-            return httpx.Response(200, json=token)
+            return httpx2.Response(200, json=token)
         assert request.url.path == "/api/auth.test"
         assert request.headers["Authorization"] == f"Bearer {token['access_token']}"
-        return httpx.Response(
+        return httpx2.Response(
             200,
             json={
                 "ok": True,
@@ -61,24 +66,43 @@ def slack_transport(
             },
         )
 
-    return httpx.MockTransport(respond)
+    return httpx2.MockTransport(respond)
 
 
-def slack_flow(transport: httpx.AsyncBaseTransport) -> SlackAuthorizationCodeOAuthFlow:
-    return SlackAuthorizationCodeOAuthFlow(
-        client_id="1.2",
-        client_secret=SecretStr("shh"),
-        scopes=["search:read.public", "users:read"],
-        transport=transport,
+def slack_flow(transport: httpx2.AsyncBaseTransport) -> McpOAuthFlow:
+    host = Octomate(config=OctomateConfig())
+    host.oauth.httpx_client_factory = lambda headers=None, timeout=None, auth=None: (
+        httpx2.AsyncClient(
+            transport=transport, headers=headers, timeout=timeout, auth=auth
+        )
     )
+    SlackTentacle(
+        id="slack",
+        octomate=host,
+        config=SlackChannelConfig(
+            app_id="A-test",
+            bot_token=SecretStr("xoxb-test"),
+            app_token=SecretStr("xapp-test"),
+            agents=["codex"],
+            mcp=True,
+            oauth=SlackOAuthClientConfig(
+                client_id="1.2",
+                client_secret=SecretStr("shh"),
+                scopes=["search:read.public", "users:read"],
+            ),
+        ),
+    )
+    flow = host.oauth.connector("slack").select_flow()
+    assert isinstance(flow, McpOAuthFlow)
+    return flow
 
 
 async def test_start_builds_a_pkce_authorization_request() -> None:
-    flow = slack_flow(httpx.MockTransport(lambda request: httpx.Response(500)))
+    flow = slack_flow(httpx2.MockTransport(lambda request: httpx2.Response(500)))
 
     request = await flow.start(flow_context(), CALLBACK, SecretStr("op-id.random-half"))
 
-    url = httpx.URL(str(request.authorization_uri))
+    url = httpx2.URL(str(request.authorization_uri))
     assert f"{url.scheme}://{url.host}{url.path}" == (
         "https://slack.com/oauth/v2_user/authorize"
     )
@@ -102,14 +126,14 @@ async def test_start_builds_a_pkce_authorization_request() -> None:
 
 
 async def test_exchange_posts_the_secret_and_names_the_account() -> None:
-    posted: list[httpx.Request] = []
+    posted: list[httpx2.Request] = []
     flow = slack_flow(
         slack_transport(
             {
                 "ok": True,
                 "access_token": "xoxp-user",
                 "token_type": "user",
-                "authed_user": {"id": "U1", "scope": "search:read.public,users:read"},
+                "authed_user": {"id": "U1", "scope": "search:read.public"},
                 "team": {"id": "T1"},
             },
             posted=posted,
@@ -137,7 +161,7 @@ async def test_exchange_posts_the_secret_and_names_the_account() -> None:
     assert grant.access_token.get_secret_value() == "xoxp-user"
     assert grant.refresh_token is None
     assert grant.expires_at is None
-    assert grant.scopes == ["search:read.public", "users:read"]
+    assert grant.scopes == ["search:read.public"]
     # Named as Slack names the person: the id every other Slack surface uses.
     assert grant.subject == "U1"
     assert grant.account_label == "steve.li in Ancher"
@@ -157,7 +181,10 @@ async def test_a_rotating_token_keeps_its_refresh_token_and_expiry() -> None:
     )
 
     grant = await flow.exchange(
-        flow_context(), code="auth-code", code_verifier=None, callback_uri=CALLBACK
+        flow_context(),
+        code="auth-code",
+        code_verifier=SecretStr("pkce-verifier"),
+        callback_uri=CALLBACK,
     )
 
     assert grant.refresh_token is not None
@@ -166,7 +193,7 @@ async def test_a_rotating_token_keeps_its_refresh_token_and_expiry() -> None:
 
 
 async def test_refresh_keeps_the_token_it_spent_when_slack_returns_none() -> None:
-    posted: list[httpx.Request] = []
+    posted: list[httpx2.Request] = []
     flow = slack_flow(
         slack_transport(
             {"ok": True, "access_token": "xoxp-user-2", "token_type": "user"},
@@ -190,10 +217,26 @@ async def test_slack_saying_no_is_a_refused_authorization() -> None:
     # Slack refuses with a 200 whose body says so, not with a status.
     flow = slack_flow(slack_transport({"ok": False, "error": "invalid_code"}))
 
-    with pytest.raises(ValueError, match="Slack authorization failed: invalid_code"):
+    with pytest.raises(ValueError, match="OAuth token request failed: invalid_code"):
         await flow.exchange(
             flow_context(),
             code="stale-code",
-            code_verifier=None,
+            code_verifier=SecretStr("pkce-verifier"),
             callback_uri=CALLBACK,
         )
+
+
+async def test_invalid_refresh_token_requires_reauthorization() -> None:
+    flow = slack_flow(slack_transport({"ok": False, "error": "invalid_refresh_token"}))
+
+    with pytest.raises(OAuthRefreshRejected):
+        await flow.refresh(SecretStr("revoked-token"))
+
+
+async def test_transient_token_failure_is_not_a_credential_rejection() -> None:
+    flow = slack_flow(slack_transport({"ok": False, "error": "internal_error"}))
+
+    with pytest.raises(ValueError, match="internal_error") as failure:
+        await flow.refresh(SecretStr("valid-token"))
+
+    assert not isinstance(failure.value, OAuthRefreshRejected)

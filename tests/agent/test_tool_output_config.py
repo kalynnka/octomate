@@ -101,11 +101,16 @@ def test_an_inkling_naming_no_tool_output_leaves_reduction_on() -> None:
     the rest of the conversation."""
 
     declared = OctomateConfig.model_validate(
-        {"agents": {"inkling": {"models": [{"name": "openai:gpt-4o"}]}}}
+        {
+            "tentacles": {
+                "inkling": {"type": "inkling", "models": [{"name": "openai:gpt-4o"}]}
+            }
+        }
     )
 
-    assert declared.agents.inkling is not None
-    assert declared.agents.inkling.tool_output == ToolOutputConfig()
+    inkling = declared.tentacles["inkling"]
+    assert isinstance(inkling, InklingConfig)
+    assert inkling.tool_output == ToolOutputConfig()
 
 
 def test_retention_is_offered_as_a_timedelta() -> None:

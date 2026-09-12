@@ -30,6 +30,7 @@ from octomate.config.mirrors import MirrorsConfig
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
@@ -319,7 +320,11 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
     tmp_path: Path,
 ) -> None:
     harness = await a_harness(tmp_path)
-    server = octomate_mcp(fixed_session(harness.session), FakeThreadManager())
+    server = octomate_mcp(
+        fixed_session(harness.session),
+        FakeThreadManager(),
+        manager=McpManager(users=harness.threads.users, cipher=None),
+    )
 
     async with Client(server) as client:
         listed = await client.call_tool("gateway_scry", {"reveal": "projects"})

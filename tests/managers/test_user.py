@@ -121,6 +121,57 @@ async def test_owner_loads_a_registered_user_with_a_fresh_manager() -> None:
     assert owner.username == "luhui"
 
 
+async def test_owner_reloads_updates_from_the_database() -> None:
+    user = await a_user("luhui", name="Original", profiles={"slack": "U1"})
+    async with async_session() as session:
+        profile = await session.one_or_none(
+            UserProfile, expressions=[UserProfile["user_id"] == user.id]
+        )
+        assert profile is not None
+        related = await profile.user
+        assert related is not None
+        assert related.name == "Original"
+    manager = UserManager()
+    first = await manager.owner(profile)
+    assert first is not None
+    assert first.name == "Original"
+
+    async with async_session() as session:
+        stored = await session.get(User, user.id)
+        assert stored is not None
+        stored.name = "Updated"
+        await session.commit()
+
+    fresh = await manager.owner(profile)
+    assert fresh is not None
+    assert fresh.name == "Updated"
+
+
+async def test_native_profile_reloads_updates_and_deletion_from_the_database() -> None:
+    user = await a_user("original", name="Original")
+    manager = UserManager()
+    first = await manager.native_profile(CLAUDE_NATIVE_ID, "original")
+    assert first is not None
+
+    async with async_session() as session:
+        stored = await session.get(User, user.id)
+        assert stored is not None
+        stored.name = "Updated"
+        await session.commit()
+
+    fresh = await manager.native_profile(CLAUDE_NATIVE_ID, "original")
+    assert fresh is not None
+    assert fresh.user_id == user.id
+    assert fresh.name == "Updated"
+
+    async with async_session() as session:
+        stored = await session.get(User, user.id)
+        assert stored is not None
+        await session.delete(stored)
+        await session.commit()
+    assert await manager.native_profile(CLAUDE_NATIVE_ID, "original") is None
+
+
 async def test_linked_profiles_follow_a_registered_human(
     in_memory_engine: None,
 ) -> None:
@@ -134,6 +185,13 @@ async def test_linked_profiles_follow_a_registered_human(
     assert [(p.channel_tentacle_id, p.channel_user_id) for p in linked] == [
         ("lark", "ou_1")
     ]
+
+    async with async_session() as session:
+        other = await session.get(UserProfile, linked[0].id)
+        assert other is not None
+        other.user_id = None
+        await session.commit()
+    assert await manager.linked_profiles(here) == []
 
 
 async def test_linked_profiles_are_empty_for_a_visitor(

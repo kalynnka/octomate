@@ -1,12 +1,8 @@
-/**
- * The Account page's body: who is signed in, and the API keys the account
- * holds. A key is issued with a name, its scopes and an expiry, disclosed
- * exactly once, and revoked from its row; the list keeps revoked keys, as the
- * relay does, so a client that stopped authenticating can be traced to one.
- */
-import { useState, type FormEvent } from 'react'
+/** Account details, password dialog, and the dedicated API keys panel. */
+import { useEffect, useRef, useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
-import { chipLabel, ellipsis, fieldLabel, label, mono, sectionLabel, serif } from '@/components/text'
+import { Table, type TableColumn } from '@/components/Table'
+import { chipLabel, fieldLabel, label, mono, serif } from '@/components/text'
 import {
   createApiKey,
   revokeApiKey,
@@ -15,7 +11,9 @@ import {
   type ApiKeyScope,
 } from '@/lib/api/auth'
 import { useApiKeys } from '@/lib/api/hooks'
+import { closeDialog } from '@/lib/dialog'
 import { queryClient } from '@/lib/queryClient'
+import { useDialogDrag } from '@/lib/useDialogDrag'
 import { refusalText } from '@/lib/api/auth'
 import { useAuth } from '@/state/auth'
 import { Field, Refusal } from './parts'
@@ -39,23 +37,7 @@ const day = (iso: string) =>
 
 const refreshKeys = () => queryClient.invalidateQueries({ queryKey: ['api-keys'] })
 
-function Section({ first, children }: { first?: boolean; children: string }) {
-  return (
-    <div
-      style={{
-        borderTop: first ? undefined : '1px solid var(--line-color)',
-        margin: '6px 16px 0',
-        padding: '8px 0 4px',
-        ...sectionLabel,
-        color: 'var(--fg-3)',
-      }}
-    >
-      {children}
-    </div>
-  )
-}
-
-function PasswordForm() {
+function PasswordForm({ onCancel }: { onCancel: () => void }) {
   const { changePassword } = useAuth((s) => s.actions)
   const [current, setCurrent] = useState('')
   const [password, setPassword] = useState('')
@@ -64,7 +46,7 @@ function PasswordForm() {
   const [error, setError] = useState<string | null>(null)
   const matches = confirm === password
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !current || !password || !matches) return
     setBusy(true)
@@ -78,12 +60,14 @@ function PasswordForm() {
   }
 
   return (
-    <form onSubmit={submit} style={{ margin: '0 16px 12px', maxWidth: 400 }}>
+    <form onSubmit={submit}>
       <Field name="Current password">
         <input
           className="trk-input"
           type="password"
           name="current_password"
+          autoFocus
+          required
           autoComplete="current-password"
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
@@ -94,6 +78,7 @@ function PasswordForm() {
           className="trk-input"
           type="password"
           name="password"
+          required
           autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -108,20 +93,19 @@ function PasswordForm() {
           className="trk-input"
           type="password"
           name="confirm"
+          required
           autoComplete="new-password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
         />
       </Field>
       {error && <Refusal>{error}</Refusal>}
-      <Button
-        type="submit"
-        variant="accent"
-        disabled={busy || !current || !password || !matches}
-        style={{ marginTop: 14 }}
-      >
-        {busy ? 'Changing…' : 'Change password'}
-      </Button>
+      <div className="trk-dialog-actions">
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+        <Button type="submit" variant="accent" disabled={busy || !current || !password || !matches}>
+          {busy ? 'Changing…' : 'Change password'}
+        </Button>
+      </div>
     </form>
   )
 }
@@ -145,7 +129,7 @@ function NewKeyForm({
       held.includes(scope) ? held.filter((each) => each !== scope) : [...held, scope],
     )
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !ready) return
     setBusy(true)
@@ -340,19 +324,12 @@ function IssuedKey({ issued, onDone }: { issued: ApiIssuedKey; onDone: () => voi
   )
 }
 
-function KeyRow({ item }: { item: ApiApiKey }) {
+function KeyRevoke({ item }: { item: ApiApiKey }) {
   const [arming, setArming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const expired = item.expires_at !== null && Date.parse(item.expires_at) <= Date.now()
-  const state = item.revoked_at
-    ? { text: `○ revoked · ${day(item.revoked_at)}`, color: 'var(--fg-3)' }
-    : item.expires_at === null
-      ? { text: '● no expiry', color: 'var(--color-sage)' }
-      : expired
-        ? { text: `○ expired · ${day(item.expires_at)}`, color: 'var(--fg-3)' }
-        : { text: `● until ${day(item.expires_at)}`, color: 'var(--color-sage)' }
-  const live = !item.revoked_at && !expired
+  if (item.revoked_at || expired) return null
 
   const revoke = async () => {
     if (!arming) {
@@ -373,143 +350,180 @@ function KeyRow({ item }: { item: ApiApiKey }) {
   }
 
   return (
-    <div style={{ padding: '5px 16px', opacity: live ? 1 : 0.7 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ ...mono(9.5, 700), color: 'var(--fg-1)', width: 120, flexShrink: 0, ...ellipsis }}>
-          {item.name}
-        </span>
-        <span style={{ ...mono(8.5), color: 'var(--fg-2)', flexShrink: 0 }}>{item.key_prefix}…</span>
-        <span style={{ display: 'inline-flex', gap: 3, flexShrink: 0 }}>
-          {item.scopes.map((scope) => (
-            <span
-              key={scope}
-              style={{
-                ...chipLabel,
-                color: 'var(--color-accent)',
-                border: '1px solid var(--color-accent)',
-                padding: '1px 4px',
-              }}
-            >
-              {scope}
-            </span>
-          ))}
-        </span>
-        <span style={{ ...mono(8), color: 'var(--fg-3)', flex: 1, ...ellipsis }}>
-          issued {day(item.created_at)}
-        </span>
-        <span style={{ ...label(7.5, '.1em'), color: state.color, whiteSpace: 'nowrap', flexShrink: 0 }}>
-          {state.text}
-        </span>
-        {live && (
-          <span
-            onClick={busy ? undefined : () => void revoke()}
-            onMouseLeave={() => {
-              if (!busy) setArming(false)
-            }}
-            title={arming ? 'click again to revoke' : 'revoke this key'}
-            className={arming ? 'hov-accent-fill' : 'hov-red'}
-            style={{
-              ...label(7.5, '.12em'),
-              color: arming ? 'var(--trk-on-fill)' : 'var(--fg-3)',
-              background: arming ? 'var(--color-red)' : 'transparent',
-              border: `1px solid ${arming ? 'var(--color-red)' : 'var(--line-divider)'}`,
-              padding: '2px 7px',
-              cursor: busy ? 'default' : 'pointer',
-              flexShrink: 0,
-              transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
-            }}
-          >
-            {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
-          </span>
-        )}
-      </div>
+    <div>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void revoke()}
+        onMouseLeave={() => {
+          if (!busy) setArming(false)
+        }}
+        title={arming ? 'click again to revoke' : 'revoke this key'}
+        className={arming ? 'hov-accent-fill' : 'hov-red'}
+        style={{
+          color: arming ? 'var(--trk-on-fill)' : 'color-mix(in srgb, var(--color-red) 60%, var(--fg-1))',
+          background: arming ? 'var(--color-red)' : 'color-mix(in srgb, var(--color-red) 10%, transparent)',
+          border: '1px solid var(--color-red)',
+          cursor: busy ? 'default' : 'pointer',
+          flexShrink: 0,
+          transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
+        }}
+      >
+        {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
+      </button>
       {error && <Refusal>{error}</Refusal>}
     </div>
   )
 }
 
+const keyColumns: TableColumn<ApiApiKey>[] = [
+  {
+    key: 'name', label: 'Name', mono: true,
+    render: (item) => <strong style={{ color: 'var(--fg-1)', overflowWrap: 'anywhere' }}>{item.name}</strong>,
+  },
+  { key: 'key_prefix', label: 'Key', mono: true, render: (item) => `${item.key_prefix}…` },
+  {
+    key: 'scopes', label: 'Scopes',
+    render: (item) => (
+      <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
+        {item.scopes.map((scope) => (
+          <span key={scope} style={{
+            ...chipLabel, color: 'var(--color-accent)',
+            border: '1px solid var(--color-accent)', padding: '1px 4px',
+          }}>{scope}</span>
+        ))}
+      </span>
+    ),
+  },
+  { key: 'created_at', label: 'Issued', mono: true, render: (item) => day(item.created_at) },
+  {
+    key: 'state', label: 'Status',
+    render: (item) => {
+      const expired = item.expires_at !== null && Date.parse(item.expires_at) <= Date.now()
+      const state = item.revoked_at
+        ? { text: `○ revoked · ${day(item.revoked_at)}`, color: 'var(--fg-3)' }
+        : item.expires_at === null
+          ? { text: '● no expiry', color: 'var(--color-sage)' }
+          : expired
+            ? { text: `○ expired · ${day(item.expires_at)}`, color: 'var(--fg-3)' }
+            : { text: `● until ${day(item.expires_at)}`, color: 'var(--color-sage)' }
+      return <span style={{ ...label(9, '.1em'), color: state.color, opacity: item.revoked_at || expired ? 0.7 : 1 }}>{state.text}</span>
+    },
+  },
+  { key: 'actions', label: '', ariaLabel: 'Actions', width: '1%', render: (item) => <KeyRevoke item={item} /> },
+]
+
+function PasswordDialog({ onClose }: { onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const drag = useDialogDrag(dialog)
+  const username = useAuth((s) => s.user?.username)
+  const close = () => void closeDialog(dialog.current, onClose)
+  useEffect(() => {
+    const element = dialog.current!
+    element.showModal()
+    return () => element.close()
+  }, [])
+
+  return (
+    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" aria-describedby="password-effect" onCancel={(event) => {
+      event.preventDefault()
+      close()
+    }}>
+      <div className="trk-dialog-layout" {...drag}>
+        <aside className="trk-dialog-panel">
+          <span className="trk-dialog-index" aria-hidden="true">04</span>
+          <span className="trk-dialog-eyebrow">Account security</span>
+          <h2 id="password-title">Change password</h2>
+          <dl className="trk-dialog-summary">
+            <div><dt>Account</dt><dd>@{username}</dd></div>
+            <div><dt>Access</dt><dd>Password</dd></div>
+          </dl>
+          <p id="password-effect" className="trk-dialog-caption">
+            Changing your password signs out all browser sessions. Sign in again with your new password.
+          </p>
+        </aside>
+        <div className="trk-dialog-main">
+          <header className="trk-dialog-header">
+            <span>Password details</span>
+            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close password dialog" onClick={close}>×</button>
+          </header>
+          <PasswordForm onCancel={close} />
+        </div>
+      </div>
+    </dialog>
+  )
+}
+
 export function AccountPanel() {
   const user = useAuth((s) => s.user)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+
+  return (
+    <div className="trk-control-scroll">
+      <dl className="trk-profile-info">
+        {[
+          ['Name', user?.name],
+          ['Username', user?.username],
+          ['Nickname', user?.nickname],
+          ['User ID', user?.id],
+        ].map(([name, value]) => (
+          <div key={name}>
+            <dt style={{ ...label(10), color: 'var(--fg-3)' }}>{name}</dt>
+            <dd style={{ ...mono(13), color: 'var(--fg-1)' }}>{value || '—'}</dd>
+          </div>
+        ))}
+      </dl>
+      <Button onClick={() => setPasswordOpen(true)} style={{ padding: '5px 10px', fontSize: 9 }}>
+        Change password
+      </Button>
+      {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}
+    </div>
+  )
+}
+
+export function ApiKeysPanel() {
   const { data: keys, error: loadError } = useApiKeys()
   const [issuing, setIssuing] = useState(false)
   const [issued, setIssued] = useState<ApiIssuedKey | null>(null)
 
   return (
-    <div
-      className="lt-entry"
-      style={{
-        borderTop: '1px solid var(--line-color)',
-        borderBottom: '1px solid var(--line-divider)',
-        background: 'var(--surface-sunken)',
-        padding: '2px 0 8px',
-      }}
-    >
-      <Section first>Signed in as</Section>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '2px 16px 6px' }}>
-        <span style={{ ...mono(12, 700), color: 'var(--fg-1)' }}>{user?.name}</span>
-        <span style={{ ...mono(9.5, 700), color: 'var(--color-accent)' }}>@{user?.username}</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ ...mono(8), color: 'var(--fg-3)' }} title="account id">
-          {user?.id}
-        </span>
+    <>
+      <div className="trk-control-scroll" style={{ flexShrink: 0, maxHeight: '60%' }}>
+        <p style={{ margin: '0 0 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
+          A key lets a client machine speak for this account: <b>hooks</b> for native session
+          hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
+          hash and shows the token once, when it is issued.
+        </p>
+        {issued && (
+          <IssuedKey
+            issued={issued}
+            onDone={() => setIssued(null)}
+          />
+        )}
+        {issuing ? (
+          <NewKeyForm
+            onIssued={(key) => {
+              setIssued(key)
+              setIssuing(false)
+            }}
+            onCancel={() => setIssuing(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setIssuing(true)}
+            className="trk-create-button hov-accent-border-wash"
+          >
+            + new key
+          </button>
+        )}
+        {loadError && (
+          <div style={{ padding: '0 16px' }}>
+            <Refusal>{refusalText(loadError) ?? 'The key list could not be read.'}</Refusal>
+          </div>
+        )}
       </div>
-
-      <Section>Password</Section>
-      <PasswordForm />
-
-      <Section>API keys</Section>
-      <p style={{ margin: '0 16px 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
-        A key lets a client machine speak for this account: <b>hooks</b> for native session
-        hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
-        hash and shows the token once, when it is issued.
-      </p>
-      {issued && (
-        <IssuedKey
-          issued={issued}
-          onDone={() => setIssued(null)}
-        />
-      )}
-      {issuing ? (
-        <NewKeyForm
-          onIssued={(key) => {
-            setIssued(key)
-            setIssuing(false)
-          }}
-          onCancel={() => setIssuing(false)}
-        />
-      ) : (
-        <span
-          onClick={() => setIssuing(true)}
-          className="hov-accent-border-wash"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '2px 16px 8px',
-            height: 22,
-            boxSizing: 'border-box',
-            border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
-            color: 'var(--color-accent)',
-            ...label(8, '.14em'),
-            cursor: 'pointer',
-          }}
-        >
-          + new key
-        </span>
-      )}
-      {loadError && (
-        <div style={{ padding: '0 16px' }}>
-          <Refusal>{refusalText(loadError) ?? 'The key list could not be read.'}</Refusal>
-        </div>
-      )}
-      {keys && keys.length === 0 && (
-        <div style={{ padding: '8px 16px 4px', ...mono(8.5), color: 'var(--fg-3)' }}>
-          no keys issued yet
-        </div>
-      )}
-      {(keys ?? []).map((item) => (
-        <KeyRow key={item.id} item={item} />
-      ))}
-    </div>
+      {keys && <Table columns={keyColumns} rows={keys} rowKey={(item) => item.id} dense empty="No keys issued yet." />}
+    </>
   )
 }

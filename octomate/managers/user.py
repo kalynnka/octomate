@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.schemas.user import User, UserProfile
@@ -10,32 +8,17 @@ PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
 
 class UserManager(Manager, Locks[tuple[str, str]]):
-    """The persisted cross-channel user registry.
-
-    Profiles are queried by their indexed channel identity. Owners are loaded
-    and cached when a profile needs them.
-    """
-
-    def __init__(self) -> None:
-        self.users: dict[uuid.UUID, User] = {}
-
-    def cache_user(self, user: User) -> None:
-        self.users[user.id] = user
+    """The persisted cross-channel user registry, queried fresh on each lookup."""
 
     async def owner(self, profile: UserProfile) -> User | None:
         """Return the registered owner of ``profile``, or ``None`` for a visitor."""
-        if (user_id := profile.user_id) is None:
+        user_id = profile.user_id
+        if user_id is None:
             return None
-        if (cached := self.users.get(user_id)) is not None:
-            return cached
-        if (related := profile.user.peek()) is not None:
-            self.cache_user(related)
-            return related
         async with async_session() as session:
             user = await session.get(User, user_id)
         if user is None:
             raise ValueError(f"unknown user {user_id}")
-        self.cache_user(user)
         return user
 
     async def linked_profiles(
@@ -52,28 +35,18 @@ class UserManager(Manager, Locks[tuple[str, str]]):
         user = await self.owner(profile)
         if user is None:
             return []
-        # Sessions do not expire on commit, so a user cached with its profiles still
-        # has them and `peek` answers without IO. It returns None only when the
-        # relation was never loaded — touching it then would lazy-load a detached
-        # instance into a DetachedInstanceError, so query instead.
-        if user.profiles.peek() is None:
-            async with async_session() as session:
-                return list(
-                    await session.list(
-                        UserProfile,
-                        limit=None,
-                        expressions=[
-                            UserProfile["user_id"] == user.id,
-                            UserProfile["channel_tentacle_id"]
-                            != profile.channel_tentacle_id,
-                        ],
-                    )
+        async with async_session() as session:
+            return list(
+                await session.list(
+                    UserProfile,
+                    limit=None,
+                    expressions=[
+                        UserProfile["user_id"] == user.id,
+                        UserProfile["channel_tentacle_id"]
+                        != profile.channel_tentacle_id,
+                    ],
                 )
-        return [
-            other
-            for other in user.profiles
-            if other.channel_tentacle_id != profile.channel_tentacle_id
-        ]
+            )
 
     async def native_profile(self, runtime: str, username: str) -> UserProfile | None:
         """A transient anchor for `username`'s native session on `runtime`'s
@@ -84,21 +57,12 @@ class UserManager(Manager, Locks[tuple[str, str]]):
         linked-profile walk its starting point — owned like a stored profile,
         and standing on a channel id no channel ever resolves.
         """
-        user = next(
-            (cached for cached in self.users.values() if cached.username == username),
-            None,
-        )
+        async with async_session() as session:
+            user = await session.one_or_none(
+                User, expressions=[User["username"] == username]
+            )
         if user is None:
-            async with async_session() as session:
-                user = await session.one_or_none(
-                    User, expressions=[User["username"] == username]
-                )
-            if user is None:
-                return None
-            self.cache_user(user)
-        # `user_id` alone carries the ownership: `owner()` resolves it through the
-        # cache, and assigning the relation itself would backpopulate
-        # `user.profiles` — a lazy load the detached cached instance cannot do.
+            return None
         return UserProfile(
             channel_tentacle_id=runtime,
             channel_user_id=username,
@@ -158,9 +122,6 @@ class UserManager(Manager, Locks[tuple[str, str]]):
                 if observed.user_id is not None:
                     profile.user_id = observed.user_id
 
-            owner = await profile.user
             await session.commit()
 
-        if owner is not None:
-            self.cache_user(owner)
         return profile

@@ -70,7 +70,7 @@ trunkline/
         ├── review/             # ReviewPanel: dossier tabs, diff/clean, line
         │                       #   quotes + comments that ride the next send
         ├── timeline/           # TimelinePanel: per-session event index
-        └── control/            # ControlRail + ControlPage (Agents/MCP/Users/
+        └── control/            # ControlRail + ControlPage (Agents/MCP/Profile/
                                 #   Dashboard/Settings)
 ```
 
@@ -100,8 +100,9 @@ single-use), and a 401 that survives that returns the console to the login
 page with a "session expired" notice. A `/#invitation=…` link from
 `octomate service invite --url` opens the registration page with the token filled in
 and struck from the address bar; a bare code can be pasted instead. The status
-bar carries `@username` (opens the Account page: identity and API keys — issue
-with scopes and expiry, copy once, revoke) and Sign out, which also clears the
+bar carries `@username` (opens the Profile page, which hosts the account panel:
+identity and API keys — issue with scopes and expiry, copy once, revoke) and
+Sign out, which also clears the
 query cache and the console's selection. Every write carries
 `X-Octomate-Request: 1`, which the relay requires of cookie-authenticated
 requests.
@@ -112,7 +113,7 @@ requests.
 | `POST /login` · `POST /register` | the login and registration pages; cookies are the reply |
 | `POST /refresh` | one rotation per lapsed access token, shared by every request that met the 401 |
 | `POST /logout` | the status bar's Sign out |
-| `GET · POST /api-keys` · `DELETE /api-keys/{id}` | the Account page's key list, issue (name, scopes, expiry), and revoke |
+| `GET · POST /api-keys` · `DELETE /api-keys/{id}` | the Profile page's key list, issue (name, scopes, expiry), and revoke |
 
 ## Backend endpoints used today (`/api/trunkline`)
 
@@ -125,7 +126,9 @@ them are private to the signed-in account.
 | --- | --- |
 | `GET  /health` | status-bar relay chip (offline/degraded/nominal), 15s poll |
 | `GET  /routes` | new-thread agent·model picker; the pick rides only a thread's first directive (routes are fixed after that — re-routing awaits a manual handoff verb) |
-| `GET  /permission-modes` | each registered agent's approval vocabulary, in the order ⇧⇥ steps through it — a provider's own scale, never a shared one — plus the configured default a conversation declaring nothing runs under. Absent agents cannot be switched: a tailed runtime's posture is read, not set |
+| `GET  /permissions` | each registered agent's approval vocabulary, in the order ⇧⇥ steps through it — a provider's own scale, never a shared one — plus the configured default a conversation declaring nothing runs under. Absent agents cannot be switched: a tailed runtime's posture is read, not set |
+| `GET  /agents` | the Agents page: every registered agent with its whole catalog — each model, what that route claims to be for, the effort levels it takes, its gateway half, and the sessions it is driving or reading. `/routes` answers the composer's narrower question and keeps only the entry agent's default |
+| `GET  /profile` | the Profile page: the signed-in account, every channel identity bound to it, and every registered OAuth connector with this user's grant. `/api/auth/me` stays the boot read and answers the first alone |
 | `GET  /threads` | every channel's threads (sidebar), newest first, each with its handoffs — without its messages |
 | `GET  /threads/{id}` | one thread and its handoffs, by row id — any channel's |
 | `GET  /threads/{id}/messages` | the chat ledger, oldest first; fetched when a thread is opened, never with the listing |
@@ -135,6 +138,13 @@ them are private to the signed-in account.
 | `POST /threads/{id}/messages` | send a directive; SSE of the native run events — a fresh id creates the thread, an existing id continues it. `{id}` here is the platform thread key, not the row id the GETs take. Carries the posture picked for a thread that has no row yet |
 | `PATCH /conversations/{id}/permission-mode` | switch a live conversation's approval posture; a run reads it as it starts, so the switch lands on the next turn |
 | `POST /batches/{id}/resolve` | answer a feeler; SSE of the resumed run |
+
+The MCP page reads two endpoints outside this prefix, because the rows are the
+account's own rather than the console's: `GET /api/mcp` lists the MCP servers
+this account installed (enabled and disabled alike) and `GET /api/mcp/tentacles`
+the configured tentacles that can supply one. The console only reads them —
+installing, enabling and revoking are the agent's own management tools, and a
+second door onto them would be a second place to keep correct.
 
 The SSE payloads are pydantic-ai's own `AgentStreamEvent` union plus
 octomate's extension events, serialized natively (see
@@ -173,32 +183,44 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
    session found running in it. Plus **git state per project** (branch, dirty,
    ahead/behind), which no backend component provides — the project strip
    leaves the chip out until one does.
-6. **`GET /api/agents`** — agent tentacles with models, effort ranges, state,
-   pool/hook info (`octomate/config/agents.py`, `config/models.py`; Agents
-   page — `/api/trunkline/routes` covers only route ids).
-7. **`GET /api/mcp` · `GET /api/connections`** — MCP tentacles with warm/cold
-    status, OAuth connectors, per-user grants (`config/mcp.py`, `OAuthManager`;
-    MCP page).
-8. **`GET /api/users`** — users + linked channel profiles + grant state
-    (`UserManager`; Users page).
-9. **`GET /api/stats` · `GET /api/activity`** — dashboard tiles, gateway-verb
+6. **Agent pool and hook state** — `GET /api/trunkline/agents` answers the
+   models, effort ranges, gateway half and live session counts, which is what
+   the Agents page shows. What it still leaves out is the harness pool: how many
+   runtime slots an agent holds and which native hooks are attached, neither of
+   which any component reports.
+7. **MCP warm/cold status and per-tool budgets** — the MCP page reads
+   `GET /api/mcp` and `/api/mcp/tentacles` for the rows and
+   `GET /api/trunkline/profile` for connector grants, so a server's
+   configuration and a grant's standing are live. Whether a client is *warm* is
+   not: `McpManager` holds the pooled clients in process and nothing publishes
+   their state, so the page reports `enabled`/`disabled` — the configured fact —
+   and no latency, which nothing measures.
+8. **`GET /api/users`** — the whole registry: users, their linked channel
+    profiles and grant state (`UserManager`). No page wants it today — Profile
+    answers for the signed-in account alone (`GET /api/trunkline/profile`) — so
+    this is for a roster view that does not exist yet.
+9. **Writing a profile** — the Profile page is a reader. `/api/auth` changes a
+    password and issues keys; a display name, a handle and a reply-route
+    preference have no endpoint and no column, so the page shows the identity
+    rather than offering to edit it.
+11. **`GET /api/stats` · `GET /api/activity`** — dashboard tiles, gateway-verb
     counts, relay feed (no aggregation exists; needs counters or queries over
     threads/runs/handoffs).
-10. **`GET /api/settings`** — provider/hook/observability snapshot of the
+12. **`GET /api/settings`** — provider/hook/observability snapshot of the
     resolved `OctomateConfig` (Settings page).
-11. **`GET /api/spills/{handle}`** — read a spilled tool output
+13. **`GET /api/spills/{handle}`** — read a spilled tool output
     (`SpillStore` exists with no HTTP surface; spill chips link to it).
-12. **Dossier review** — file artifacts with revisions and line comments
+14. **Dossier review** — file artifacts with revisions and line comments
     (review panel): no backend concept yet; closest seam is conversation
     artifacts + a `plan.apply_edits`-style tool contract.
-13. **Relay verbs** — `POST /api/threads/{id}/teleport` and relay/send to
+15. **Relay verbs** — `POST /api/threads/{id}/teleport` and relay/send to
     another channel (reflex verbs exist in-process; not exposed over HTTP).
-14. **Auth + CORS** — invited local accounts use HttpOnly
+16. **Auth + CORS** — invited local accounts use HttpOnly
     sessions and private thread access, and the console signs in through them
     (see Accounts above). The console and API share an origin; cross-origin
     access is not enabled. Password reset and channel-account binding remain
     backend follow-ups, so the console has no page for either.
-15. **A title on the thread row** — the sidebar names each thread by its
+17. **A title on the thread row** — the sidebar names each thread by its
     surface (the platform thread key), because a listing carries no messages
     and reading one line per thread would be a request per row. The fix is a
     column on the thread, written from its first human message.

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, ClassVar
+from typing import Annotated
 
 from pydantic import BaseModel, Field
 from pydantic_ai.settings import ThinkingEffort
@@ -40,7 +40,7 @@ class AgentConfig(BaseModel):
     drives: the agent reads the same way everywhere — declared and enabled, or
     absent — and carries its own half of the gateway switch."""
 
-    id: ClassVar[str]  # Registered tentacle ID, fixed by each agent runtime.
+    type: str
 
     enabled: bool = Field(
         default=True,

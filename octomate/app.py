@@ -5,7 +5,22 @@ import logging
 import logfire
 
 from octomate import Octomate
-from octomate.config import OctomateConfig
+from octomate.config import (
+    BareMcpConfig,
+    ClaudeCodeConfig,
+    CodexConfig,
+    DeepseekConfig,
+    InklingConfig,
+    OAuthMcpConfig,
+    OctomateConfig,
+)
+from octomate.config.channels import (
+    DiscordChannelConfig,
+    LarkChannelConfig,
+    NapcatChannelConfig,
+    SlackChannelConfig,
+    TrunklineChannelConfig,
+)
 from octomate.database import engine as db_engine
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
@@ -117,53 +132,30 @@ def create_app() -> Octomate:
     for name, level in config.logging.loggers.items():
         logging.getLogger(name).setLevel(level)
 
-    if (inkling_config := config.agents.inkling) is not None and inkling_config.enabled:
-        octomate.connect(
-            build_inkling(
-                "inkling",
-                inkling_config,
-                octomate,
-                registry=registry,
-            )
-        )
-
-    if (claude_config := config.agents.claude) is not None and claude_config.enabled:
-        octomate.connect(
-            ClaudeCodeTentacle(
-                "claude",
-                octomate,
-                config=claude_config,
-            )
-        )
-
-    if (codex_config := config.agents.codex) is not None and codex_config.enabled:
-        octomate.connect(
-            CodexTentacle(
-                "codex",
-                octomate,
-                config=codex_config,
-            )
-        )
-
-    if (
-        deepseek_config := config.agents.deepseek
-    ) is not None and deepseek_config.enabled:
-        octomate.connect(
-            DeepseekTentacle(
-                "deepseek",
-                octomate,
-                config=deepseek_config,
-            )
-        )
-
-    for channel_id, channel_config in config.channels.items():
-        if channel_config.enabled:
-            octomate.connect(
-                build_channel(channel_id, channel_config, octomate),
-            )
-
-    for mcp_id, mcp_config in config.mcp.items():
-        if mcp_config.enabled:
-            octomate.connect(build_mcp(mcp_id, mcp_config, octomate))
+    for id, tentacle_config in config.tentacles.items():
+        if not tentacle_config.enabled:
+            continue
+        match tentacle_config:
+            case InklingConfig():
+                tentacle = build_inkling(
+                    id, tentacle_config, octomate, registry=registry
+                )
+            case ClaudeCodeConfig():
+                tentacle = ClaudeCodeTentacle(id, octomate, config=tentacle_config)
+            case CodexConfig():
+                tentacle = CodexTentacle(id, octomate, config=tentacle_config)
+            case DeepseekConfig():
+                tentacle = DeepseekTentacle(id, octomate, config=tentacle_config)
+            case (
+                SlackChannelConfig()
+                | LarkChannelConfig()
+                | DiscordChannelConfig()
+                | NapcatChannelConfig()
+                | TrunklineChannelConfig()
+            ):
+                tentacle = build_channel(id, tentacle_config, octomate)
+            case BareMcpConfig() | OAuthMcpConfig():
+                tentacle = build_mcp(id, tentacle_config, octomate)
+        octomate.connect(tentacle)
 
     return octomate

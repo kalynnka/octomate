@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 from pydantic_ai.models import KnownModelName
@@ -125,7 +125,7 @@ class ToolOutputConfig(BaseModel):
 
 
 class InklingConfig(AgentConfig):
-    id: ClassVar[str] = "inkling"
+    type: Literal["inkling"] = "inkling"
 
     models: list[ModelConfig] = Field(min_length=1)
 
