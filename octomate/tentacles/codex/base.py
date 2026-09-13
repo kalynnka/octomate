@@ -8,12 +8,21 @@ import time
 import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Sequence
+from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import cached_property
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, cast, get_args, overload
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    NotRequired,
+    TypedDict,
+    cast,
+    get_args,
+    overload,
+)
 
 import anyio
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -85,7 +94,11 @@ from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
-from octomate.schemas.deferred import DeferredActionBatch, QuestionRequest
+from octomate.schemas.deferred import (
+    MAX_QUESTION_CHOICES,
+    DeferredActionBatch,
+    QuestionRequest,
+)
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
@@ -319,6 +332,29 @@ class CodexBridgeContext:
     conversation_address: ChannelAddress
     run_name: str | None
     session_allowed: set[str]
+    # Captured per turn: SDK transport threads have no channel sink or run context.
+    task_context: Context = field(default_factory=copy_context)
+
+
+# The pinned SDK generates notifications but omits this server-request shape.
+class CodexInputOption(TypedDict):
+    label: str
+    description: str
+
+
+class CodexInputQuestion(TypedDict):
+    id: str
+    header: str
+    question: str
+    options: NotRequired[list[CodexInputOption] | None]
+
+
+class CodexInputRequest(TypedDict):
+    itemId: str
+    questions: list[CodexInputQuestion]
+
+
+codex_input_adapter = TypeAdapter(CodexInputRequest)
 
 
 @dataclass
@@ -789,9 +825,26 @@ class CodexTentacle(AgentTentacle[str, None]):
         # onto the run's event loop and block that thread until the human answers.
         context = self.bridge_contexts.get(conversation_id)
         if context is None:
+            if method == "item/tool/requestUserInput":
+                logger.warning("Codex has no live context for %s", method)
+                return {"answers": {}}
             return self.deny_sdk_request(f"Octomate has no live context for {method}.")
+        if method == "item/tool/requestUserInput":
+            future = context.task_context.copy().run(
+                asyncio.run_coroutine_threadsafe,
+                self.answer_sdk_user_input_request(context=context, params=params),
+                context.loop,
+            )
+            try:
+                return future.result()
+            except Exception:
+                logger.exception(
+                    "Codex input request could not be presented or resolved"
+                )
+                return {"answers": {}}
         if self.is_approval_request(method):
-            future = asyncio.run_coroutine_threadsafe(
+            future = context.task_context.copy().run(
+                asyncio.run_coroutine_threadsafe,
                 self.answer_sdk_approval_request(
                     context=context, method=method, params=params
                 ),
@@ -802,7 +855,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             except Exception as exc:
                 return self.deny_sdk_request(str(exc))
         if self.is_question_request(method):
-            future = asyncio.run_coroutine_threadsafe(
+            future = context.task_context.copy().run(
+                asyncio.run_coroutine_threadsafe,
                 self.answer_sdk_question_request(
                     context=context, method=method, params=params
                 ),
@@ -812,7 +866,57 @@ class CodexTentacle(AgentTentacle[str, None]):
                 return future.result()
             except Exception as exc:
                 return {"action": "decline", "message": str(exc)}
+        logger.warning("Unhandled Codex server request: %s", method)
         return {}
+
+    async def answer_sdk_user_input_request(
+        self,
+        *,
+        context: CodexBridgeContext,
+        params: JsonObject | None,
+    ) -> JsonObject:
+        """Present Codex's choices, including MCP consent, without choosing for
+        the human. The reply must name Codex's question ids, not our card ids."""
+        request = codex_input_adapter.validate_python(params)
+        questions: list[QuestionRequest] = []
+        for question in request["questions"]:
+            options = (question.get("options") or [])[:MAX_QUESTION_CHOICES]
+            questions.append(
+                QuestionRequest(
+                    question=question["question"],
+                    choices=[option["label"] for option in options] or None,
+                    hint="\n".join(
+                        [
+                            question["header"],
+                            *(
+                                f"{option['label']}: {option['description']}"
+                                for option in options
+                            ),
+                        ]
+                    ),
+                )
+            )
+        batch, response = await self._await_human(
+            context=context,
+            requests=DeferredToolRequests(
+                calls=[
+                    ToolCallPart(
+                        tool_name="codex_user_input",
+                        tool_call_id=request["itemId"],
+                        args={"questions": questions},
+                        provider_name=CODEX_PROVIDER_NAME,
+                    )
+                ]
+            ),
+        )
+        answers: JsonObject = {}
+        if response is not None:
+            for action in batch.questions:
+                answer = response.answers.get(action.id)
+                if answer:
+                    question_id = request["questions"][action.position]["id"]
+                    answers[question_id] = {"answers": [answer]}
+        return {"answers": answers}
 
     async def answer_sdk_approval_request(
         self,

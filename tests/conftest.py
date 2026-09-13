@@ -96,6 +96,17 @@ async def in_memory_engine(
     engine = database.create_engine(f"sqlite+aiosqlite:///{tmp_path}/octomate-test.db")
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # FTS5 virtual tables are derived indexes, not ORM entities, so metadata
+        # cannot create the one the production migration installs.
+        await conn.exec_driver_sql(
+            """
+            CREATE VIRTUAL TABLE thread_messages_fts USING fts5(
+                message_id UNINDEXED,
+                message_text,
+                tokenize = 'porter unicode61'
+            )
+            """
+        )
 
     maker = async_sessionmaker(
         engine,

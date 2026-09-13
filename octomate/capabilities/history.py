@@ -41,8 +41,9 @@ Thread history is what people, bots, and agents visibly said — in this thread,
 in every other thread the person you are answering has spoken in, on any of their
 linked accounts. Messages that did not wake you are there too.
 
-- `{search_thread_history}` searches all of it for a substring, optionally by
-  actor kind. Prefer it when the user refers to what was said, here or elsewhere.
+- `{search_thread_history}` searches all of it for English terms, requiring every
+  term and ranking the best lexical matches first. It accepts an optional actor
+  kind. Prefer it when the user refers to what was said, here or elsewhere.
 - `{read_thread_history_before}` and `{read_thread_history_after}` page a thread
   around a search hit, or around a `#msg:<id>` handle a brief cited.
 """
@@ -137,14 +138,18 @@ class HistoryCapability(AbstractCapability[Any]):
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
     ) -> list[ThreadMessage]:
-        """Find visible thread messages whose text contains `query`
-        (case-insensitive), across every thread the person you are answering has
-        spoken in — this one, their direct messages, other chats, on any of their
-        linked accounts. Optionally restrict to an actor kind such as "human",
-        "agent", "bot", or "system". Oldest first."""
-        return await self.thread_manager.search_chat_messages(
-            self.reader, query, actor_kind=actor_kind, limit=limit
-        )
+        """Find visible thread messages matching every English term in `query`,
+        with related word forms matched by stemming, across every thread the person
+        you are answering has spoken in — this one, their direct messages, other
+        chats, on any of their linked accounts. Optionally restrict to an actor kind
+        such as "human", "agent", "bot", or "system". Best lexical match first,
+        newest first when scores tie. Use a hit's id to page its local context."""
+        try:
+            return await self.thread_manager.search_chat_messages(
+                self.reader, query, actor_kind=actor_kind, limit=limit
+            )
+        except ValueError as refusal:
+            raise ModelRetry(str(refusal)) from refusal
 
     async def read_thread_history_before(
         self, message_id: str, limit: int = 10

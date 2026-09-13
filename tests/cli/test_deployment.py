@@ -415,6 +415,12 @@ def test_actual_migrations_initialize_empty_database(database: Path) -> None:
         Config(str(deployment.ALEMBIC_INI))
     ).get_current_head()
     assert deployment.revisions(database) == (head,)
+    with sqlite3.connect(database) as connection:
+        definition = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE name = 'thread_messages_fts'"
+        ).fetchone()
+    assert definition is not None
+    assert "porter unicode61" in definition[0]
     before = database.read_bytes()
     deployment.migrate(deployment.backup_database(database))
     assert database.read_bytes() == before
@@ -443,14 +449,11 @@ def test_failed_rehearsal_never_migrates_source(
     assert deployment.revisions(database) == ("old",)
 
 
-def test_actual_upgrade_rehearses_on_a_copy(database: Path) -> None:
+@pytest.mark.parametrize("previous", ["88a4f648c14d", "f973cff9f077"])
+def test_actual_upgrade_rehearses_on_a_copy(database: Path, previous: str) -> None:
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
     assert head is not None
-    revision = script.get_revision(head)
-    assert revision is not None
-    previous = revision.down_revision
-    assert isinstance(previous, str)
     subprocess.run(
         [
             sys.executable,
@@ -468,6 +471,122 @@ def test_actual_upgrade_rehearses_on_a_copy(database: Path) -> None:
     deployment.migrate(snapshot)
     assert deployment.revisions(database) == (head,)
     assert deployment.revisions(snapshot.backup) == (previous,)
+
+
+def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
+    database: Path,
+) -> None:
+    script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
+    head = script.get_current_head()
+    assert head is not None
+    revision = script.get_revision("88a4f648c14d")
+    assert revision is not None
+    previous = revision.down_revision
+    assert isinstance(previous, str)
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(deployment.ALEMBIC_INI),
+            "upgrade",
+            previous,
+        ],
+        check=True,
+    )
+    message_id = "00000000000070008000000000000001"
+    thread_id = "00000000000070008000000000000002"
+    sender_id = "00000000000070008000000000000003"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            """
+            INSERT INTO user_profiles(
+                id, channel_tentacle_id, channel_user_id, name
+            ) VALUES (?, 'test', 'alice', 'Alice')
+            """,
+            (sender_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO threads(
+                id,
+                channel_tentacle_id,
+                chat_type,
+                chat_id,
+                status,
+                created_at,
+                updated_at,
+                kind
+            ) VALUES (?, 'test', 'dm', 'alice', 'active', ?, ?, 'dm')
+            """,
+            (thread_id, "2026-09-07 00:00:00", "2026-09-07 00:00:00"),
+        )
+        connection.execute(
+            """
+            INSERT INTO thread_messages(
+                id,
+                thread_id,
+                reply_id,
+                happened_at,
+                direction,
+                actor_kind,
+                user_id,
+                segments,
+                message_text,
+                raw,
+                created_at,
+                sender_id
+            ) VALUES (?, ?, '', ?, 'inbound', 'human', 'alice', '[]', ?, '', ?, ?)
+            """,
+            (
+                message_id,
+                thread_id,
+                "2026-09-07 00:00:00",
+                "migration backfill marker",
+                "2026-09-07 00:00:00",
+                sender_id,
+            ),
+        )
+        connection.commit()
+    snapshot = deployment.backup_database(database)
+    assert snapshot.backup is not None
+    deployment.migrate(snapshot)
+    assert deployment.revisions(database) == (head,)
+    assert deployment.revisions(snapshot.backup) == (previous,)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            """
+            SELECT message_id
+            FROM thread_messages_fts
+            WHERE thread_messages_fts MATCH 'migration'
+            """
+        ).fetchall() == [(message_id,)]
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            str(deployment.ALEMBIC_INI),
+            "downgrade",
+            previous,
+        ],
+        check=True,
+    )
+
+    assert deployment.revisions(database) == (previous,)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT message_text FROM thread_messages WHERE id = ?", (message_id,)
+        ).fetchone() == ("migration backfill marker",)
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE name = 'thread_messages_fts'"
+            ).fetchone()
+            is None
+        )
 
 
 @pytest.mark.parametrize("auth_configured", [False, True])
