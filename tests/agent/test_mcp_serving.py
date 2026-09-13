@@ -30,7 +30,7 @@ from octomate.config.base import OctomateConfig
 from octomate.config.channels import ChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
-from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     DISABLE_MCP,
@@ -226,6 +226,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
 
 
@@ -291,6 +292,7 @@ async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
 
 

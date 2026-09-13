@@ -19,6 +19,7 @@ from octomate.database import async_session
 from octomate.managers.mcp import McpClientKey, McpUnavailable
 from octomate.managers.oauth import OAuthConnector, OAuthLockKey, UnusableOAuthOperation
 from octomate.oauth.base import McpBearerAuth
+from octomate.schemas.auth import LinkProfileSession
 from octomate.schemas.mcp import McpInstallRequest, OAuth, OAuthMcp
 from octomate.schemas.oauth import (
     AuthorizationLink,
@@ -230,6 +231,50 @@ async def expire(instance: OAuthMcp) -> None:
         assert stored is not None
         stored.expires_at = datetime.now(UTC) - timedelta(seconds=1)
         await session.commit()
+
+
+async def test_browser_oauth_and_link_profile_share_authorization_settings(
+    in_memory_engine: AsyncEngine, upstream: OAuthServer
+) -> None:
+    lifetime = timedelta(minutes=3)
+    host = Octomate(
+        config=OctomateConfig(
+            auth=auth_config(),
+            oauth=OAuthConfig(
+                callback_base_uri=AnyHttpUrl("https://octomate.example"),
+                authorization_lifetime=lifetime,
+            ),
+        ),
+        oauth_encryption_key=ENCRYPTION_KEY,
+    )
+    host.oauth.httpx_client_factory = upstream.client
+    user = await a_user("alice")
+    instance = await install(host, user, "work")
+    profile = UserProfile(channel_tentacle_id="slack", channel_user_id="U1")
+    async with async_session() as session:
+        session.add(profile)
+        await session.commit()
+
+    before = datetime.now(UTC)
+    profile_link = await host.users.start_link_profile(profile)
+    authorization = await host.mcp.connect(user, instance.id)
+    after = datetime.now(UTC)
+
+    assert isinstance(authorization, AuthorizationLink)
+    assert str(profile_link.authorization_uri).startswith(
+        "https://octomate.example/#link-profile="
+    )
+    assert str(authorization.authorization_uri).startswith(
+        "https://octomate.example/oauth/mcp/start/"
+    )
+    async with async_session() as session:
+        [ticket] = await session.list(LinkProfileSession)
+        operation = await session.get(OAuthOperation, authorization.operation_id)
+    assert operation is not None
+    assert ticket.expires_at == profile_link.expires_at
+    assert operation.expires_at == authorization.expires_at
+    for expires_at in (profile_link.expires_at, authorization.expires_at):
+        assert before + lifetime <= expires_at <= after + lifetime
 
 
 async def test_same_url_has_independent_user_and_workspace_grants(

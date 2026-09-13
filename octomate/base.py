@@ -165,10 +165,17 @@ class Octomate(FastAPI):
             AuthManager(self.config.auth) if self.config.auth is not None else None
         )
         self.bearers = KnownBearers(self.auth)
+        self.users.authorization_base_uri = (
+            self.config.oauth.callback_base_uri
+            if self.config.auth is not None
+            else None
+        )
+        self.users.authorization_lifetime = self.config.oauth.authorization_lifetime
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=self.oauth_encryption_key,
             callback_base_uri=self.config.oauth.callback_base_uri,
+            authorization_lifetime=self.config.oauth.authorization_lifetime,
             client_metadata_url=self.config.oauth.client_metadata_url,
             token_refresh_leeway=self.config.oauth.token_refresh_leeway,
         )

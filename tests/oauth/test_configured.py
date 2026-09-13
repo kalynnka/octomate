@@ -3,8 +3,9 @@ from __future__ import annotations
 import uuid
 from base64 import b64decode, urlsafe_b64encode
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from inspect import Parameter, signature
 from urllib.parse import parse_qs
 
 import httpx2
@@ -38,6 +39,13 @@ from octomate.schemas.oauth import (
 from octomate.schemas.user import User
 from octomate.tentacles.mcp import build_mcp
 from tests.support.users import a_user
+
+
+def test_browser_flow_requires_an_explicit_authorization_lifetime() -> None:
+    assert (
+        signature(McpOAuthFlow).parameters["authorization_lifetime"].default
+        is Parameter.empty
+    )
 
 
 def context() -> OAuthFlowContext:
@@ -107,7 +115,13 @@ async def test_device_start_and_exchange_use_configured_endpoints() -> None:
         )
 
     flow = device_flow(httpx2.MockTransport(respond))
+    before = datetime.now(UTC)
     authorization = await flow.start(context())
+    assert (
+        before + timedelta(seconds=900)
+        <= authorization.expires_at
+        <= datetime.now(UTC) + timedelta(seconds=900)
+    )
     assert authorization.interval_seconds == 5
     assert authorization.verification_uri_complete is not None
     assert "device-secret" not in authorization.model_dump_json()
@@ -184,6 +198,7 @@ async def test_authorization_code_pkce_and_client_authentication(method: str) ->
     )
     flow = McpOAuthFlow(
         url=AnyUrl("https://mcp.example/mcp"),
+        authorization_lifetime=timedelta(minutes=10),
         authorization_endpoint=AnyUrl("https://auth.example/authorize"),
         tokens=tokens,
         httpx_client_factory=tokens.httpx_client_factory,
@@ -274,6 +289,8 @@ async def test_device_polling_and_refresh_through_manager(
 
     manager = OAuthManager(
         users=UserManager(),
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=SecretStr(urlsafe_b64encode(bytes(range(32))).decode()),
         connectors=[
             OAuthConnector(
@@ -333,6 +350,7 @@ async def test_configured_callback_keeps_overlapping_users_separate(
         config=OctomateConfig(
             oauth=OAuthConfig(
                 callback_base_uri=AnyHttpUrl("https://octomate.example"),
+                authorization_lifetime=timedelta(minutes=4),
             )
         ),
         oauth_encryption_key=SecretStr(urlsafe_b64encode(bytes(range(32))).decode()),
@@ -384,10 +402,17 @@ async def test_configured_callback_keeps_overlapping_users_separate(
     assert isinstance(first_mcp, OAuthMcp)
     assert first_mcp.tentacle_id == "work"
     assert first_mcp.id != second_mcp.id
+    before = datetime.now(UTC)
     first = await host.mcp.connect(alice, first_mcp.id)
     second = await host.mcp.connect(bob, second_mcp.id)
     assert isinstance(first, AuthorizationLink)
     assert isinstance(second, AuthorizationLink)
+    for authorization in (first, second):
+        assert (
+            before + timedelta(minutes=4)
+            <= authorization.expires_at
+            <= datetime.now(UTC) + timedelta(minutes=4)
+        )
     first_payload = await host.oauth.staged_authorization("work", first.operation_id)
     second_payload = await host.oauth.staged_authorization("work", second.operation_id)
     assert first_payload.code_verifier != second_payload.code_verifier

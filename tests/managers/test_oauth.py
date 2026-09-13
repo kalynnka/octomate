@@ -7,6 +7,7 @@ from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
+from inspect import Parameter, signature
 
 import httpx2
 import pytest
@@ -208,6 +209,8 @@ async def linear_manager(
     flow = flow or FakeAuthorizationCodeFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[
             OAuthConnector(
@@ -269,11 +272,23 @@ def test_connector_validates_its_id_and_endpoint(connector_id: str, url: str) ->
 
 
 def test_manager_rejects_duplicate_connector_ids() -> None:
-    manager = OAuthManager(users=UserManager(), encryption_key=ENCRYPTION_KEY)
+    manager = OAuthManager(
+        users=UserManager(),
+        encryption_key=ENCRYPTION_KEY,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
+    )
     manager.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
 
     with pytest.raises(ValueError, match="already registered"):
         manager.register(OAuthConnector(id="github", flows=[FakeDeviceFlow()]))
+
+
+@pytest.mark.parametrize(
+    "parameter", ["authorization_lifetime", "token_refresh_leeway"]
+)
+def test_manager_requires_explicit_timing(parameter: str) -> None:
+    assert signature(OAuthManager).parameters[parameter].default is Parameter.empty
 
 
 @pytest.mark.parametrize("seconds", [0, 60])
@@ -294,6 +309,8 @@ async def test_device_flow_uses_the_registered_channel_owner() -> None:
     flow = FakeDeviceFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -322,6 +339,8 @@ async def test_visitor_cannot_start_oauth() -> None:
     flow = FakeDeviceFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -388,6 +407,8 @@ async def test_authorization_code_connector_can_select_a_relay() -> None:
     users, profile = await linked_user_manager()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[
             OAuthConnector(
@@ -675,6 +696,8 @@ async def test_device_completion_persists_an_owner_bound_encrypted_token() -> No
     flow = FakeDeviceFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -702,6 +725,8 @@ async def test_pending_device_completion_keeps_the_operation_available() -> None
     flow.completion = OAuthPending(retry_after_seconds=7)
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -721,6 +746,8 @@ async def test_complete_latest_orders_uuid7_operation_ids() -> None:
     flow = FakeDeviceFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -746,6 +773,8 @@ async def test_start_resumes_a_device_authorization_that_is_still_live() -> None
     flow = FakeDeviceFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -767,6 +796,8 @@ async def test_start_replaces_a_device_authorization_that_has_expired() -> None:
     flow.lifetime = timedelta(seconds=-1)
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -797,6 +828,8 @@ async def test_device_operation_can_only_be_confirmed_by_its_starting_profile() 
     assert lark is not None
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[FakeDeviceFlow()])],
     )
@@ -821,6 +854,8 @@ async def test_authorization_rejects_a_profile_belonging_to_another_user() -> No
     flow = FakeDeviceFlow()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id="github", flows=[flow])],
     )
@@ -922,6 +957,8 @@ async def test_github_connect_emits_only_the_link_and_code() -> None:
     users, profile = await linked_user_manager()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[FakeDeviceFlow()])],
     )
@@ -952,6 +989,8 @@ async def test_github_confirm_asks_the_model_to_connect_first() -> None:
     users, profile = await linked_user_manager()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[FakeDeviceFlow()])],
     )
@@ -969,6 +1008,8 @@ async def test_github_confirm_activates_the_connection() -> None:
     users, profile = await linked_user_manager()
     manager = OAuthManager(
         users=users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
         encryption_key=ENCRYPTION_KEY,
         connectors=[OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[FakeDeviceFlow()])],
     )
@@ -994,7 +1035,12 @@ async def _connected(
 ) -> tuple[OAuthManager, UserProfile, Mcp]:
     """A registered user who has finished a device authorization."""
     users, profile = await linked_user_manager()
-    manager = OAuthManager(users=users, encryption_key=ENCRYPTION_KEY)
+    manager = OAuthManager(
+        users=users,
+        encryption_key=ENCRYPTION_KEY,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
+    )
     manager.register(
         OAuthConnector(id=GITHUB_CONNECTOR_ID, flows=[flow or FakeDeviceFlow()])
     )

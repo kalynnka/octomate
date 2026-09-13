@@ -1,14 +1,50 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
+import uuid
+from datetime import UTC, datetime, timedelta
+
+from pydantic import AnyHttpUrl, SecretStr
+from sqlalchemy.orm.exc import StaleDataError
+
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
+from octomate.schemas.auth import (
+    LinkProfileAuthorization,
+    LinkProfileInfo,
+    LinkProfileSession,
+)
 from octomate.schemas.user import User, UserProfile
 
 PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
 
-class UserManager(Manager, Locks[tuple[str, str]]):
-    """The persisted cross-channel user registry, queried fresh on each lookup."""
+class LinkProfileUnavailable(RuntimeError):
+    pass
+
+
+class InvalidLinkProfile(ValueError):
+    def __init__(self) -> None:
+        super().__init__("This profile link is invalid, expired, or already used")
+
+
+class ProfileAlreadyLinked(ValueError):
+    def __init__(self) -> None:
+        super().__init__("This channel profile is already linked")
+
+
+class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
+    """The persisted cross-channel user registry and verified profile links."""
+
+    def __init__(
+        self,
+        *,
+        authorization_base_uri: AnyHttpUrl | None = None,
+        authorization_lifetime: timedelta = timedelta(minutes=10),
+    ) -> None:
+        self.authorization_base_uri = authorization_base_uri
+        self.authorization_lifetime = authorization_lifetime
 
     async def owner(self, profile: UserProfile) -> User | None:
         """Return the registered owner of ``profile``, or ``None`` for a visitor."""
@@ -125,3 +161,105 @@ class UserManager(Manager, Locks[tuple[str, str]]):
             await session.commit()
 
         return profile
+
+    @staticmethod
+    def hash_link_token(token: SecretStr) -> SecretStr:
+        return SecretStr(hashlib.sha256(token.get_secret_value().encode()).hexdigest())
+
+    async def start_link_profile(
+        self, profile: UserProfile
+    ) -> LinkProfileAuthorization:
+        """Replace this ownerless profile's pending ticket and return its private URL."""
+        if self.authorization_base_uri is None:
+            raise LinkProfileUnavailable(
+                "Configure local auth and oauth.callback_base_uri before linking channel profiles"
+            )
+        token = SecretStr(secrets.token_urlsafe(32))
+        now = datetime.now(UTC)
+        async with self.lock(profile.id), async_session() as session:
+            stored = await session.get(UserProfile, profile.id)
+            if stored is None:
+                raise InvalidLinkProfile
+            if stored.user_id is not None:
+                raise ProfileAlreadyLinked
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["profile_id"] == stored.id],
+            )
+            if pending is None:
+                pending = LinkProfileSession(
+                    profile_id=stored.id,
+                    token_hash=self.hash_link_token(token),
+                    expires_at=now + self.authorization_lifetime,
+                )
+                session.add(pending)
+            else:
+                pending.token_hash = self.hash_link_token(token)
+                pending.expires_at = now + self.authorization_lifetime
+                pending.created_at = now
+                pending.consumed_at = None
+            await session.commit()
+
+        root = str(self.authorization_base_uri).rstrip("/")
+        return LinkProfileAuthorization(
+            authorization_uri=AnyHttpUrl(
+                f"{root}/#link-profile={token.get_secret_value()}"
+            ),
+            expires_at=now + self.authorization_lifetime,
+        )
+
+    async def inspect_link_profile(self, token: SecretStr) -> LinkProfileInfo:
+        token_hash = self.hash_link_token(token)
+        async with async_session() as session:
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[
+                    LinkProfileSession["token_hash"] == token_hash,
+                    LinkProfileSession["consumed_at"].is_(None),
+                    LinkProfileSession["expires_at"] > datetime.now(UTC),
+                ],
+            )
+            if pending is None:
+                raise InvalidLinkProfile
+            profile = await session.get(UserProfile, pending.profile_id)
+            if profile is None:
+                raise InvalidLinkProfile
+            if profile.user_id is not None:
+                raise ProfileAlreadyLinked
+            return LinkProfileInfo(profile=profile, expires_at=pending.expires_at)
+
+    async def confirm_link_profile(self, token: SecretStr, user: User) -> UserProfile:
+        """Consume a valid ticket and link its exact profile to ``user`` once."""
+        token_hash = self.hash_link_token(token)
+        async with async_session() as session:
+            found = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["token_hash"] == token_hash],
+            )
+        if found is None:
+            raise InvalidLinkProfile
+
+        async with self.lock(found.profile_id), async_session() as session:
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[
+                    LinkProfileSession["token_hash"] == token_hash,
+                    LinkProfileSession["consumed_at"].is_(None),
+                    LinkProfileSession["expires_at"] > datetime.now(UTC),
+                ],
+            )
+            if pending is None:
+                raise InvalidLinkProfile
+            profile = await session.get(UserProfile, pending.profile_id)
+            if profile is None or await session.get(User, user.id) is None:
+                raise InvalidLinkProfile
+            if profile.user_id is not None:
+                raise ProfileAlreadyLinked
+            profile.user_id = user.id
+            pending.consumed_at = datetime.now(UTC)
+            try:
+                await session.flush()
+            except StaleDataError as error:
+                raise InvalidLinkProfile from error
+            await session.commit()
+            return profile

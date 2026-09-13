@@ -1,4 +1,4 @@
-"""Authorize the current user's installed MCP by its personal namespace.
+"""Link the current channel profile and authorize the user's installed MCPs.
 
 Authorization links and device codes go to the user's direct messages.
 The model receives status only; device flows finish through `confirm`.
@@ -18,6 +18,11 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
+from octomate.managers.user import (
+    InvalidLinkProfile,
+    LinkProfileUnavailable,
+    ProfileAlreadyLinked,
+)
 from octomate.schemas.mcp import (
     McpAuthorizationStatus,
     McpBrowserAuthorizationPending,
@@ -30,10 +35,11 @@ from octomate.schemas.oauth import (
 from octomate.schemas.user import User, UserProfile
 from octomate.types.oauth import OAuthFlowKind
 
-# The family's namespace on the server, and its two tools' served names under it.
+# The family's namespace on the server, and its tools' served names under it.
 OAUTH_NAMESPACE = "oauth"
 CONNECT_TOOL = f"{OAUTH_NAMESPACE}_connect"
 CONFIRM_TOOL = f"{OAUTH_NAMESPACE}_confirm"
+LINK_PROFILE_TOOL = f"{OAUTH_NAMESPACE}_link_profile"
 
 ProviderId = Annotated[str, Field(description="The user's installed MCP namespace.")]
 
@@ -43,7 +49,7 @@ def mount_oauth(
     octomate_session: OctomateSession,
     manager: McpManager,
 ) -> None:
-    """Authorize installed MCPs for the person identified by the current session."""
+    """Link profiles and authorize MCPs for the person driving the current turn."""
 
     async def identity(session: OctomateSession) -> tuple[User, UserProfile]:
         if session.user_profile is None:
@@ -140,3 +146,58 @@ def mount_oauth(
                 return f"{provider} is waiting for approval in the browser. Confirm after approval."
             case _:
                 return f"{provider} needs authorization. Call `{CONNECT_TOOL}` with `{provider}`."
+
+    @mcp.tool(
+        name="link_profile",
+        description=(
+            "Send a private Octomate sign-in link that links the channel profile "
+            "driving this turn to the signed-in user's account. Use this when the "
+            "user asks to link their current channel profile. The profile and "
+            "destination come from the current turn, never tool arguments; the "
+            "link goes to that user's direct messages and is not returned here."
+        ),
+    )
+    async def link_profile(session: OctomateSession = octomate_session) -> str:
+        profile = session.user_profile
+        address = session.conversation_address
+        channel = (
+            session.channels.get(address.channel_tentacle_id)
+            if address is not None
+            else None
+        )
+        if profile is None or address is None or channel is None:
+            raise ToolError(
+                "Linking a profile requires a turn from a user on a channel."
+            )
+        if (
+            profile.channel_tentacle_id != address.channel_tentacle_id
+            or profile.channel_user_id != address.user_id
+        ):
+            raise ToolError(
+                "The current channel profile does not match the user who drove this turn."
+            )
+        try:
+            private_address = await channel.feelers.oauth.deliver_to(address)
+        except RuntimeError as error:
+            raise ToolError(
+                "This channel has no private surface for a profile link."
+            ) from error
+        try:
+            authorization = await manager.users.start_link_profile(profile)
+        except (
+            InvalidLinkProfile,
+            ProfileAlreadyLinked,
+            LinkProfileUnavailable,
+        ) as error:
+            raise ToolError(str(error)) from error
+        message_id = await channel.feelers.markdown.present(
+            private_address,
+            "[Link this channel profile to Octomate]"
+            f"({authorization.authorization_uri})\n\n"
+            "Sign in if needed, then confirm the exact profile in the browser. "
+            "An existing Octomate browser session is reused. This link is "
+            "short-lived and works once.",
+        )
+        if message_id is None:
+            raise ToolError("The channel could not deliver the private profile link.")
+        return "The profile link was sent privately to this user."

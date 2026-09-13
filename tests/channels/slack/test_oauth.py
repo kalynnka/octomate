@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import uuid
 from base64 import urlsafe_b64encode
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from urllib.parse import parse_qs
 
@@ -13,7 +14,7 @@ import pytest
 from pydantic import AnyHttpUrl, SecretStr
 
 from octomate import Octomate
-from octomate.config import OctomateConfig, SlackChannelConfig
+from octomate.config import OAuthConfig, OctomateConfig, SlackChannelConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.oauth.mcp import McpOAuthFlow, OAuthRefreshRejected
 from octomate.schemas.oauth import OAuthFlowContext
@@ -70,7 +71,11 @@ def slack_transport(
 
 
 def slack_flow(transport: httpx2.AsyncBaseTransport) -> McpOAuthFlow:
-    host = Octomate(config=OctomateConfig())
+    host = Octomate(
+        config=OctomateConfig(
+            oauth=OAuthConfig(authorization_lifetime=timedelta(minutes=3))
+        )
+    )
     host.oauth.httpx_client_factory = lambda headers=None, timeout=None, auth=None: (
         httpx2.AsyncClient(
             transport=transport, headers=headers, timeout=timeout, auth=auth
@@ -100,7 +105,13 @@ def slack_flow(transport: httpx2.AsyncBaseTransport) -> McpOAuthFlow:
 async def test_start_builds_a_pkce_authorization_request() -> None:
     flow = slack_flow(httpx2.MockTransport(lambda request: httpx2.Response(500)))
 
+    before = datetime.now(UTC)
     request = await flow.start(flow_context(), CALLBACK, SecretStr("op-id.random-half"))
+    assert (
+        before + timedelta(minutes=3)
+        <= request.expires_at
+        <= datetime.now(UTC) + timedelta(minutes=3)
+    )
 
     url = httpx2.URL(str(request.authorization_uri))
     assert f"{url.scheme}://{url.host}{url.path}" == (

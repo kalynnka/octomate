@@ -6,10 +6,20 @@ from pydantic import AwareDatetime, Field, SecretStr
 from typing_extensions import TypedDict
 
 from octomate.database import async_session
-from octomate.dependencies import auth_manager
+from octomate.dependencies import auth_manager, user_manager
 from octomate.managers.auth import AuthManager, InvalidCredentials, UsernameUnavailable
-from octomate.schemas.auth import SessionTokens, UserApiKey, UserSession
-from octomate.schemas.user import User
+from octomate.managers.user import (
+    InvalidLinkProfile,
+    ProfileAlreadyLinked,
+    UserManager,
+)
+from octomate.schemas.auth import (
+    LinkProfileInfo,
+    SessionTokens,
+    UserApiKey,
+    UserSession,
+)
+from octomate.schemas.user import User, UserProfile
 from octomate.types.auth import ApiKeyScope, NewPassword
 
 
@@ -102,6 +112,16 @@ class ApiKeyResponse(TypedDict):
 
     key: UserApiKey
     token: str
+
+
+class LinkProfileBody(TypedDict):
+    token: Annotated[SecretStr, Field(min_length=1, max_length=200)]
+
+
+class LinkProfileConfirmationBody(LinkProfileBody):
+    expected_user_id: Annotated[
+        uuid.UUID, Field(description="The account displayed on the confirmation page.")
+    ]
 
 
 auth_router = APIRouter(
@@ -225,3 +245,38 @@ async def revoke_api_key(
         await manager.revoke_api_key(user.id, key_id)
     except InvalidCredentials as error:
         raise HTTPException(status_code=404, detail="API key not found") from error
+
+
+@auth_router.post("/link-profile/inspect")
+async def inspect_link_profile(
+    body: LinkProfileBody,
+    manager: Annotated[UserManager, Depends(user_manager)],
+) -> LinkProfileInfo:
+    try:
+        return await manager.inspect_link_profile(body["token"])
+    except InvalidLinkProfile as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ProfileAlreadyLinked as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@auth_router.post("/link-profile/confirm")
+async def confirm_link_profile(
+    body: LinkProfileConfirmationBody,
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[UserManager, Depends(user_manager)],
+) -> UserProfile:
+    if body["expected_user_id"] != user.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Your signed-in account changed. Reopen the profile link "
+                "and confirm your account again."
+            ),
+        )
+    try:
+        return await manager.confirm_link_profile(body["token"], user)
+    except InvalidLinkProfile as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ProfileAlreadyLinked as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
