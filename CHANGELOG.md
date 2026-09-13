@@ -1,5 +1,67 @@
 # Changelog
 
+## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-v0.0.2...octomate-v0.0.3) (2026-09-13)
+
+
+### Features
+
+* add agent tracing and reduce response latency ([a3904b3](https://github.com/kalynnka/octomate/commit/a3904b3fbe4323d5727812337f04a2c60d2ab3ea))
+* add invite-only user accounts and API token authentication ([05cbc80](https://github.com/kalynnka/octomate/commit/05cbc80c78794c52ba7569de96e39175dfbe8a59))
+* add invite-only user accounts and Trunkline authentication ([93d4269](https://github.com/kalynnka/octomate/commit/93d426904dac9930a29fe0fada719c4a66c42f4e))
+* add live Trunkline control panels ([bb7944e](https://github.com/kalynnka/octomate/commit/bb7944ed67636edaf526a313f8e58b0844c8a7c8))
+* add local user credentials and UTC timestamps ([e10b60b](https://github.com/kalynnka/octomate/commit/e10b60b68569051ecc349bad00614a455be4f57f))
+* add macOS GUI service CLI management ([2e3890d](https://github.com/kalynnka/octomate/commit/2e3890db275d2c5d4806b2d8f2544ae9b4f309d9))
+* add macOS service initialization and GUI management ([eebffdc](https://github.com/kalynnka/octomate/commit/eebffdcefd658d013385c44c96d217edf9975f70))
+* add MCP installation and authorization controls ([0104582](https://github.com/kalynnka/octomate/commit/01045820069cac120f902cff0bc96929350aff83))
+* add MCP removal and refine Trunkline controls ([12949f9](https://github.com/kalynnka/octomate/commit/12949f9d4bf7f92401b53defb77e2da69070b67c))
+* add password recovery and fix account sign-out ([16c42f3](https://github.com/kalynnka/octomate/commit/16c42f3eaee98a9f6ab6c7f5a7e13fa37f7a4a36))
+* add Trunkline account and API key UI ([3734342](https://github.com/kalynnka/octomate/commit/37343424ef83babfda21d41493a9dc5cb9970263))
+* add user-scoped MCPs, unified tentacles, and live control panels ([1336420](https://github.com/kalynnka/octomate/commit/1336420c097ff8cdbac7866e0a419c309af5e7ea))
+* add user-scoped remote MCPs ([ddc1eea](https://github.com/kalynnka/octomate/commit/ddc1eea9a19ae7ce3f4cb3d5bdd916ad99bcbc23))
+* configure MCP presets through tentacle setup wizard ([a00e82b](https://github.com/kalynnka/octomate/commit/a00e82b8df1545237d854aec5b93ec5ccfef8ba3))
+* discover agent models from native harnesses ([88c6254](https://github.com/kalynnka/octomate/commit/88c6254aeae7ae0f77abb322b77fb083b480c159))
+* discover harness models and bind channels to agents ([904ee07](https://github.com/kalynnka/octomate/commit/904ee07ef66cf24644b4f024d6bde5f0d20de2af))
+* export agent telemetry under driving traces ([0796c7f](https://github.com/kalynnka/octomate/commit/0796c7f7a2108a2793e949a0fe150fa6bdaf5bbf))
+* expose user-scoped MCP management tools ([88c109a](https://github.com/kalynnka/octomate/commit/88c109ab484bcaaf8a27ea0d71784adb15e06564))
+* install configured MCP tentacles per user ([fedc307](https://github.com/kalynnka/octomate/commit/fedc30741324a7ee03187e1a534980b2822854f3))
+* lazily discover proxied MCP tools ([7320921](https://github.com/kalynnka/octomate/commit/73209213c0598c0f4f34e2bbc9d20326cceef10d))
+* refine sign-in typography and themed autofill ([2844881](https://github.com/kalynnka/octomate/commit/284488112c1fc857ec604064caf9aae79a6106b2))
+* resume MCP authorization and animate Trunkline dialogs ([2aad591](https://github.com/kalynnka/octomate/commit/2aad591d690c2570cd57dc0a7036ec12e6d686f7))
+* scaffold macOS service installations with init wizard ([e8a57d8](https://github.com/kalynnka/octomate/commit/e8a57d841c6f43964d7a0d233aba9842c02e927b))
+* support user-scoped MCP OAuth authorization ([b416d07](https://github.com/kalynnka/octomate/commit/b416d0735cebde42266f572da455947d6ad3a5e5))
+* unify tentacle configuration and OAuth flows ([931f10e](https://github.com/kalynnka/octomate/commit/931f10e6eaff6354767eba7c2f02e8f6d2ed0335))
+
+
+### Bug Fixes
+
+* activate database materia for WebSocket requests ([689dd25](https://github.com/kalynnka/octomate/commit/689dd25afc543b0ab019c540abf8328321ff7c85))
+* activate database materia for WebSocket requests ([bea1ac2](https://github.com/kalynnka/octomate/commit/bea1ac2afdfd8cec857c95a8f19cbb0690609a93))
+* align driven agent MCP and telemetry ([09308f7](https://github.com/kalynnka/octomate/commit/09308f739c7f9e973afa1308baee9093c7e5e25a))
+* clarify password errors and correct debug entry points ([4914d01](https://github.com/kalynnka/octomate/commit/4914d01ac28b2e1fa061fce29cf096cef7f99d98))
+* drain agent runs after observer detachment ([babad1b](https://github.com/kalynnka/octomate/commit/babad1b737167562aa84b8ec96d5a965176b4d87))
+* exclude driven agent sessions from native ingest ([c597860](https://github.com/kalynnka/octomate/commit/c5978608fd94d06b1b52817ea9c0dc1da50f67aa))
+* exclude driven Claude sessions from native ingest ([0541e2d](https://github.com/kalynnka/octomate/commit/0541e2d4d8ae20d30c5815c762ae0b9c00299ba8))
+* ignore unknown configuration keys ([0d00b94](https://github.com/kalynnka/octomate/commit/0d00b9450a2396218cae66a4aaecc723242381cd))
+* keep Codex and DeepSeek runs alive after observer detachment ([9b16867](https://github.com/kalynnka/octomate/commit/9b168670759eec1924813a21df47788e55deb8da))
+* resolve Ruff typing and unused-variable checks ([42cc2a6](https://github.com/kalynnka/octomate/commit/42cc2a6cc073a1858a1628d130c29af55baf9090))
+* scope bare MCP logger names to their module ([bc2d401](https://github.com/kalynnka/octomate/commit/bc2d401717edd9f0bea8c9fae2eef241e9b0c3aa))
+* share native session exclusion across agents ([ff487ec](https://github.com/kalynnka/octomate/commit/ff487ec5da5d69a3d4c1dba4f7c6b7088178a9e6))
+* stop debugger from automatically opening browser ([25d1404](https://github.com/kalynnka/octomate/commit/25d1404604a070950dec717fb86835ec88397675))
+* support configurable Trunkline UI deployment ([3d6471f](https://github.com/kalynnka/octomate/commit/3d6471f454062cc11910020970f6330ac9698068))
+* support configurable Trunkline UI deployment ([2218a54](https://github.com/kalynnka/octomate/commit/2218a5474dd2a7952e61e1eaaab17ed836dab47a))
+* upgrade Codex SDK to 0.147.0 ([af5db69](https://github.com/kalynnka/octomate/commit/af5db696c9d463c777e5a1e06bfee7fc63cc9527))
+
+
+### Performance Improvements
+
+* keep Codex startup outside the client pool lock ([bb7e98b](https://github.com/kalynnka/octomate/commit/bb7e98bd65100d69879b5ba36ff914af2085f96c))
+* reduce conversation and channel startup latency ([e464a17](https://github.com/kalynnka/octomate/commit/e464a17dd556a7b7045c4aaf81e2d557a6f87299))
+
+
+### Documentation
+
+* mark DeepSeek tentacle as WIP ([6008f83](https://github.com/kalynnka/octomate/commit/6008f833c44e57956c148f2385573e4ea3cdb1b0))
+
 ## [0.0.2](https://github.com/kalynnka/octomate/compare/octomate-v0.0.1...octomate-v0.0.2) (2026-09-06)
 
 

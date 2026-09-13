@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.2...octomate-cli-v0.0.3) (2026-09-13)
+
+
+### Features
+
+* add agent tracing and reduce response latency ([a3904b3](https://github.com/kalynnka/octomate/commit/a3904b3fbe4323d5727812337f04a2c60d2ab3ea))
+* add invite-only user accounts and API token authentication ([05cbc80](https://github.com/kalynnka/octomate/commit/05cbc80c78794c52ba7569de96e39175dfbe8a59))
+* add invite-only user accounts and Trunkline authentication ([93d4269](https://github.com/kalynnka/octomate/commit/93d426904dac9930a29fe0fada719c4a66c42f4e))
+* add macOS GUI service CLI management ([2e3890d](https://github.com/kalynnka/octomate/commit/2e3890db275d2c5d4806b2d8f2544ae9b4f309d9))
+* add macOS service initialization and GUI management ([eebffdc](https://github.com/kalynnka/octomate/commit/eebffdcefd658d013385c44c96d217edf9975f70))
+* add password recovery and fix account sign-out ([16c42f3](https://github.com/kalynnka/octomate/commit/16c42f3eaee98a9f6ab6c7f5a7e13fa37f7a4a36))
+* add user-scoped MCPs, unified tentacles, and live control panels ([1336420](https://github.com/kalynnka/octomate/commit/1336420c097ff8cdbac7866e0a419c309af5e7ea))
+* configure MCP presets through tentacle setup wizard ([a00e82b](https://github.com/kalynnka/octomate/commit/a00e82b8df1545237d854aec5b93ec5ccfef8ba3))
+* discover harness models and bind channels to agents ([904ee07](https://github.com/kalynnka/octomate/commit/904ee07ef66cf24644b4f024d6bde5f0d20de2af))
+* install configured MCP tentacles per user ([fedc307](https://github.com/kalynnka/octomate/commit/fedc30741324a7ee03187e1a534980b2822854f3))
+* scaffold macOS service installations with init wizard ([e8a57d8](https://github.com/kalynnka/octomate/commit/e8a57d841c6f43964d7a0d233aba9842c02e927b))
+* select tentacles by capability before wizard setup ([90bfc72](https://github.com/kalynnka/octomate/commit/90bfc72d918bbd31ba806c5ce798a8dc2ed82642))
+* unify tentacle configuration and OAuth flows ([931f10e](https://github.com/kalynnka/octomate/commit/931f10e6eaff6354767eba7c2f02e8f6d2ed0335))
+
+
+### Bug Fixes
+
+* align driven agent MCP and telemetry ([09308f7](https://github.com/kalynnka/octomate/commit/09308f739c7f9e973afa1308baee9093c7e5e25a))
+* clarify password errors and correct debug entry points ([4914d01](https://github.com/kalynnka/octomate/commit/4914d01ac28b2e1fa061fce29cf096cef7f99d98))
+* ignore unknown configuration keys ([0d00b94](https://github.com/kalynnka/octomate/commit/0d00b9450a2396218cae66a4aaecc723242381cd))
+
+
+### Performance Improvements
+
+* reduce conversation and channel startup latency ([e464a17](https://github.com/kalynnka/octomate/commit/e464a17dd556a7b7045c4aaf81e2d557a6f87299))
+
 ## [0.0.2](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.1...octomate-cli-v0.0.2) (2026-09-06)
 
 
