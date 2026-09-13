@@ -14,11 +14,11 @@ added stands around it, and `untagged` is what takes the scaffolding away again.
 from __future__ import annotations
 
 import re
-from typing import Literal, TypeAlias, get_args
+from typing import Literal, get_args
 
 # Every marking the tree emits. `untagged` strips these and nothing else, so a
 # person who writes `<summary>` in a message keeps it.
-PromptTag: TypeAlias = Literal["chat_recap", "instructions"]
+type PromptTag = Literal["chat_recap", "instructions"]
 
 
 def tagged(tag: PromptTag, body: str) -> str:
@@ -30,7 +30,7 @@ def tagged(tag: PromptTag, body: str) -> str:
 
 
 MARKINGS = re.compile(
-    rf"<(?P<tag>{'|'.join(get_args(PromptTag))})>\n.*?\n</(?P=tag)>\n*",
+    rf"<(?P<tag>{'|'.join(get_args(PromptTag.__value__))})>\n.*?\n</(?P=tag)>\n*",
     re.DOTALL,
 )
 
