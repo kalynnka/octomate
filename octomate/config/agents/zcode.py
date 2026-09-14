@@ -7,11 +7,9 @@ from typing import ClassVar, Literal
 
 from pydantic import Field
 
-from octomate.config.agents.common import AgentConfig, Claim
+from octomate.config.agents.common import AgentConfig, AgentRouteModelName, Claim
 from octomate.config.agents.deepseek import ConfigPath
 from octomate.types.permissions import ZcodePermissionMode
-
-type ZcodeModelName = Literal["GLM-5.3", "GLM-5.3-Flash", "GLM-5.2", "GLM-5-Turbo"]
 
 
 class ZcodeConfig(AgentConfig):
@@ -48,10 +46,7 @@ class ZcodeConfig(AgentConfig):
         min_length=1,
         description="Provider identifier in the ZCode desktop configuration.",
     )
-    models: set[ZcodeModelName] = Field(
-        min_length=1, description="ZCode models exposed as channel routes."
-    )
-    claims: dict[ZcodeModelName, Claim] = Field(
+    claims: dict[AgentRouteModelName, Claim] = Field(
         default_factory=dict,
         description="Per-model routing abilities and effort levels.",
     )

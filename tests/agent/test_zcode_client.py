@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import signal
 import sys
 from pathlib import Path
 
@@ -10,7 +13,11 @@ from pydantic import SecretStr
 from pydantic_ai.exceptions import AgentRunError
 
 from octomate.tentacles.zcode.client import ZcodeClient
-from octomate.tentacles.zcode.wire import InteractionRequest
+from octomate.tentacles.zcode.wire import (
+    InteractionRequest,
+    StateUpdated,
+    TurnStartedEvent,
+)
 from octomate.types.json import JsonObject
 from tests.support.zcode import permission_request, question_request
 
@@ -169,7 +176,7 @@ for line in sys.stdin:
         print(json.dumps({{'id': 'after-resolution', **callback}}), flush=True)
         request = frame
     elif frame.get('id') == 'prefs':
-        print(json.dumps({{'method': 'session/event', 'params': {{'sessionId': 'session-1', 'eventId': 'prefs-answered', 'seq': 1, 'type': 'session.updated', 'payload': frame['result']}}}}), flush=True)
+        print(json.dumps({{'method': 'session/event', 'params': {{'sessionId': 'session-1', 'eventId': 'prefs-answered', 'seq': 1, 'turnId': 'turn-1', 'type': 'turn.started', 'payload': {{'inputId': 'input-1', 'messageId': 'message-1'}}}}}}), flush=True)
     else:
         answers.append(frame['result'])
         if len(answers) == 3:
@@ -191,8 +198,8 @@ for line in sys.stdin:
         await asyncio.wait_for(started.wait(), 1)
         assert await client.call("ping", {}) == "pong"
         event = await asyncio.wait_for(client.events.get(), 1)
-        assert not isinstance(event, AgentRunError)
-        assert event.payload["askUserQuestionAutoResolutionEnabled"] is False
+        assert isinstance(event, TurnStartedEvent)
+        assert event.payload.input_id == "input-1"
         assert len(calls) == 1
         release.set()
         assert await client.call("repeat", {}) == [{"decision": "allow"}] * 3
@@ -229,3 +236,79 @@ sys.stdin.read()
         assert "interaction" in str(error.value)
     assert not client.interactions
     assert not client.callback_tasks
+
+
+@pytest.mark.parametrize("parent_exits", [True, False])
+async def test_cleanup_kills_children_even_after_parent_exit(
+    tmp_path: Path, parent_exits: bool
+) -> None:
+    script = f"""
+import json, os, signal, subprocess, sys
+request = json.loads(sys.stdin.readline())
+child = subprocess.Popen([sys.executable, '-u', '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print("ready", flush=True); time.sleep(60)'],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+assert child.stdout.readline() == b'ready\\n'
+print(json.dumps({{'id': request['id'], 'result': child.pid}}), flush=True)
+if not {parent_exits!r}:
+    sys.stdin.read()
+"""
+    client = client_for(script, tmp_path)
+    child_pid: int | None = None
+    try:
+        async with client:
+            result = await client.call("spawn", {})
+            assert isinstance(result, int)
+            child_pid = result
+            assert client.process is not None
+            if parent_exits:
+                await asyncio.wait_for(client.process.wait(), 2)
+        status = await asyncio.create_subprocess_exec(
+            "ps", "-o", "stat=", "-p", str(child_pid), stdout=asyncio.subprocess.PIPE
+        )
+        stdout, _ = await status.communicate()
+        assert not stdout.strip() or stdout.strip().startswith(b"Z")
+    finally:
+        if child_pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(child_pid, signal.SIGKILL)
+
+
+async def test_oversized_protocol_frame_is_reported_explicitly(tmp_path: Path) -> None:
+    script = "import json,sys; q=json.loads(sys.stdin.readline()); print(json.dumps({'id':q['id'],'result':'x'*(17*1024*1024)}),flush=True); sys.stdin.read()"
+    async with client_for(script, tmp_path) as client:
+        with pytest.raises(AgentRunError, match="exceeds the 16 MiB limit"):
+            await client.call("session/messages", {})
+
+
+async def test_state_failures_and_typed_events_reach_consumers(tmp_path: Path) -> None:
+    script = """
+import json, sys
+q = json.loads(sys.stdin.readline())
+for frame in [
+    {'method':'workspace/unrelated', 'params':{}},
+    {'method':'session/event', 'params':{'type':'session.updated'}},
+    {'id':q['id'], 'result':{'accepted':True, 'sessionId':'s', 'stateRevision':2}},
+    {'method':'state.updated', 'params':{'type':'state.updated', 'scope':'session', 'sessionId':'s', 'revision':3, 'reason':'prompt_failed', 'patch':{'status':'idle'}}},
+]:
+    print(json.dumps(frame), flush=True)
+sys.stdin.read()
+"""
+    async with client_for(script, tmp_path) as client:
+        await client.call("session/send", {})
+        update = await asyncio.wait_for(client.events.get(), 1)
+        assert isinstance(update, StateUpdated)
+        assert update.reason == "prompt_failed"
+        assert update.revision == 3
+        assert client.events.empty()
+
+
+async def test_malformed_supported_event_fails_the_transport(tmp_path: Path) -> None:
+    script = """
+import json, sys
+sys.stdin.readline()
+print(json.dumps({'method':'session/event','params':{'type':'model.streaming','sessionId':'s','turnId':'t','seq':1,'eventId':'e','payload':{'kind':'text_delta'}}}), flush=True)
+sys.stdin.read()
+"""
+    async with client_for(script, tmp_path) as client:
+        with pytest.raises(AgentRunError, match="invalid protocol frame"):
+            await client.call("session/send", {})

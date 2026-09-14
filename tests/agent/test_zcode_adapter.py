@@ -239,3 +239,184 @@ def test_canonical_tool_errors_preserve_pairing() -> None:
     assert isinstance(result, NativeToolReturnPart)
     assert call.tool_call_id == result.tool_call_id == "t"
     assert result.outcome == "failed"
+
+
+@pytest.mark.parametrize("hidden", ["synthetic", "visibility", "semantics", "part"])
+def test_native_context_is_not_recorded_as_human_input(hidden: str) -> None:
+    accumulator = ZcodeRunAccumulator("prompt", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event("turn.started", {"inputId": "input", "messageId": "prompt"})
+        )
+    )
+    reminder = history_message("reminder", "internal reminder", user=True)
+    info = reminder["info"]
+    assert isinstance(info, dict)
+    if hidden == "synthetic":
+        info["synthetic"] = True
+    elif hidden == "visibility":
+        info["visibility"] = "model-only"
+    elif hidden == "semantics":
+        info["semantics"] = {
+            "origin": "agent_runtime",
+            "kind": "system_reminder",
+            "uiVisibility": "hidden",
+            "transcriptVisibility": "hidden",
+            "providerVisibility": "visible",
+        }
+    else:
+        reminder["parts"] = [
+            {"type": "text", "text": "internal reminder", "synthetic": True}
+        ]
+    accumulator.reconcile(
+        SessionMessages.model_validate(
+            {
+                "messages": [
+                    history_message("prompt", "prompt", user=True),
+                    reminder,
+                    history_message("answer", "answer"),
+                ]
+            }
+        )
+    )
+    assert len(accumulator.messages) == 2
+    assert "internal reminder" not in str(accumulator.messages)
+
+
+@pytest.mark.parametrize(
+    ("finish", "expected"),
+    [
+        ("length", "length"),
+        ("tool-calls", "tool_call"),
+        ("content-filter", "content_filter"),
+        ("new-native-reason", None),
+        (None, None),
+    ],
+)
+def test_native_finish_reasons_are_not_reported_as_success(
+    finish: str | None, expected: str | None
+) -> None:
+    accumulator = ZcodeRunAccumulator("prompt", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event("turn.started", {"inputId": "input", "messageId": "prompt"})
+        )
+    )
+    answer = history_message("answer", "partial")
+    info = answer["info"]
+    assert isinstance(info, dict)
+    info["finish"] = finish
+    accumulator.reconcile(
+        SessionMessages.model_validate(
+            {"messages": [history_message("prompt", "prompt", user=True), answer]}
+        )
+    )
+    response = accumulator.messages[-1]
+    assert isinstance(response, ModelResponse)
+    assert response.finish_reason == expected
+    assert response.provider_details == {"finish": finish}
+
+
+def test_reconciliation_discards_abandoned_attempts_and_preserves_errors() -> None:
+    accumulator = ZcodeRunAccumulator("prompt", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event("turn.started", {"inputId": "input", "messageId": "prompt"})
+        )
+    )
+    discarded = history_message("discarded", "abandoned")
+    failed = history_message("failed", "incomplete")
+    for message, finish, error in [
+        (discarded, "stream_recovery_discarded", "StreamRecoveryDiscarded"),
+        (failed, "stop", "APIError"),
+    ]:
+        info = message["info"]
+        assert isinstance(info, dict)
+        info.update(
+            {
+                "finish": finish,
+                "error": {"name": error, "data": {"message": "native failure"}},
+            }
+        )
+    accumulator.reconcile(
+        SessionMessages.model_validate(
+            {
+                "messages": [
+                    history_message("prompt", "prompt", user=True),
+                    discarded,
+                    failed,
+                ]
+            }
+        )
+    )
+    assert len(accumulator.messages) == 2
+    response = accumulator.messages[-1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts == [TextPart("incomplete")]
+    assert response.finish_reason == "error"
+    assert response.provider_details is not None
+    assert response.provider_details["error"]["name"] == "APIError"
+
+
+@pytest.mark.parametrize("control", [True, False])
+def test_completed_turn_without_stored_prompt_keeps_its_response(control: bool) -> None:
+    accumulator = ZcodeRunAccumulator("prompt", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event(
+                "turn.started",
+                {
+                    "inputId": "input",
+                    **({} if control else {"messageId": "blocked-prompt"}),
+                },
+            )
+        )
+    )
+    list(
+        accumulator.consume(
+            event(
+                "turn.completed",
+                {"resultType": "success", "response": "completed without a prompt"},
+            )
+        )
+    )
+    accumulator.reconcile(SessionMessages(messages=[]))
+    response = accumulator.messages[-1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts == [TextPart("completed without a prompt")]
+
+
+def test_compaction_without_prompt_preserves_model_usage_and_command_response() -> None:
+    accumulator = ZcodeRunAccumulator("/compact", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event("turn.started", {"inputId": "input", "inputVisibility": "model-only"})
+        )
+    )
+    list(
+        accumulator.consume(
+            event(
+                "model.streaming",
+                {"kind": "text_delta", "delta": "internal compaction summary"},
+            )
+        )
+    )
+    list(
+        accumulator.consume(
+            event(
+                "turn.completed",
+                {
+                    "resultType": "success",
+                    "response": "Compacted conversation",
+                    "usage": {"modelRequestCount": 1, "inputTokens": 100},
+                },
+            )
+        )
+    )
+    accumulator.reconcile(SessionMessages(messages=[]))
+    assert accumulator.usage.requests == 1
+    assert accumulator.usage.input_tokens == 100
+    assert len(accumulator.messages) == 2
+    response = accumulator.messages[-1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts == [TextPart("Compacted conversation")]

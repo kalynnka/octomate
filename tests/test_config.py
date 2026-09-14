@@ -156,7 +156,7 @@ def test_configured_agents_preserves_model_iteration_and_serialization() -> None
         claude=ClaudeCodeConfig(enabled=False),
         codex=CodexConfig(),
         deepseek=DeepseekConfig(),
-        zcode=ZcodeConfig(models={"GLM-5.3"}),
+        zcode=ZcodeConfig(),
     )
     fields = dict(agents)
     assert set(fields) == {"inkling", "claude", "codex", "deepseek", "zcode"}
