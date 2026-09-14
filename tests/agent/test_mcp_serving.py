@@ -75,11 +75,11 @@ async def served(
     the task that entered it, and a fixture's teardown runs in another."""
     octomate = octomate or Octomate(config=OctomateConfig(auth=auth_config()))
     app = octomate
-    async with app.router.lifespan_context(app):
+    async with app.router.lifespan_context(app), octomate.run_tentacles():
         yield octomate, app
 
 
-async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
+async def test_tentacles_start_after_api_lifespan_and_agents_before_channels() -> None:
     started: list[str] = []
 
     class DiscoveringAgent(FakeAgent):
@@ -98,8 +98,10 @@ async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
     octomate.connect(ReadyChannel(octomate=octomate))
     octomate.connect(DiscoveringAgent(octomate=octomate, models={}))
 
-    async with served(octomate):
-        assert started == ["agent", "channel"]
+    async with octomate.lifespan(octomate):
+        assert started == []
+        async with octomate.run_tentacles():
+            assert started == ["agent", "channel"]
 
 
 def over(
