@@ -421,6 +421,10 @@ def test_actual_migrations_initialize_empty_database(database: Path) -> None:
         ).fetchone()
     assert definition is not None
     assert "porter unicode61" in definition[0]
+    subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(deployment.ALEMBIC_INI), "check"],
+        check=True,
+    )
     before = database.read_bytes()
     deployment.migrate(deployment.backup_database(database))
     assert database.read_bytes() == before
@@ -449,7 +453,7 @@ def test_failed_rehearsal_never_migrates_source(
     assert deployment.revisions(database) == ("old",)
 
 
-@pytest.mark.parametrize("previous", ["88a4f648c14d", "f973cff9f077"])
+@pytest.mark.parametrize("previous", ["0d0112888c17", "f973cff9f077", "ebb904508e50"])
 def test_actual_upgrade_rehearses_on_a_copy(database: Path, previous: str) -> None:
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
@@ -479,7 +483,7 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
     assert head is not None
-    revision = script.get_revision("88a4f648c14d")
+    revision = script.get_revision(head)
     assert revision is not None
     previous = revision.down_revision
     assert isinstance(previous, str)
@@ -562,6 +566,26 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
             WHERE thread_messages_fts MATCH 'migration'
             """
         ).fetchall() == [(message_id,)]
+        connection.execute(
+            "UPDATE thread_messages SET message_text = 'replacement marker' WHERE id = ?",
+            (message_id,),
+        )
+        assert (
+            connection.execute(
+                "SELECT message_id FROM thread_messages_fts "
+                "WHERE thread_messages_fts MATCH 'migration'"
+            ).fetchall()
+            == []
+        )
+        assert connection.execute(
+            "SELECT message_id FROM thread_messages_fts "
+            "WHERE thread_messages_fts MATCH 'replacement'"
+        ).fetchall() == [(message_id,)]
+        connection.execute("DELETE FROM thread_messages WHERE id = ?", (message_id,))
+        assert connection.execute(
+            "SELECT count(*) FROM thread_messages_fts"
+        ).fetchone() == (0,)
+        connection.rollback()
 
     subprocess.run(
         [

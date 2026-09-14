@@ -5,7 +5,12 @@ from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 
 import pytest
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from octomate_cli.config import cli_settings
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 import octomate.database as database
@@ -13,6 +18,10 @@ from octomate.config.base import OCTOMATE_HOME_ENV
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
 from tests.support.config import ISOLATED_HOME, without_dotenv
+
+HISTORY_MIGRATIONS = ScriptDirectory.from_config(
+    Config(str(Path(__file__).resolve().parents[1] / "octomate/migrations/alembic.ini"))
+).get_revisions(("9c5cd2f0c70d",))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -93,20 +102,17 @@ async def in_memory_engine(
     connection and the WAL pragmas `create_engine` sets, so the concurrency a test
     sees is the concurrency production sees.
     """
+
+    def create_schema(connection: Connection) -> None:
+        Base.metadata.create_all(connection)
+        # Run the same history-search migration used by deployments.
+        with Operations.context(MigrationContext.configure(connection)):
+            for revision in HISTORY_MIGRATIONS:
+                revision.module.upgrade()
+
     engine = database.create_engine(f"sqlite+aiosqlite:///{tmp_path}/octomate-test.db")
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-        # FTS5 virtual tables are derived indexes, not ORM entities, so metadata
-        # cannot create the one the production migration installs.
-        await conn.exec_driver_sql(
-            """
-            CREATE VIRTUAL TABLE thread_messages_fts USING fts5(
-                message_id UNINDEXED,
-                message_text,
-                tokenize = 'porter unicode61'
-            )
-            """
-        )
+        await conn.run_sync(create_schema)
 
     maker = async_sessionmaker(
         engine,

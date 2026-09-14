@@ -46,9 +46,10 @@ and `LIMIT` are applied. Never fetch global top matches and filter them in Pytho
 
 1. [`ThreadManager.record_inbound()` and `record_outbound()`](../octomate/managers/thread.py)
    project visible text into `ThreadMessage.message_text`.
-2. [`ThreadManager.store_message()`](../octomate/managers/thread.py) flushes the ledger
-   row and writes its UUID and non-empty text to `thread_messages_fts` in the same
-   transaction.
+2. SQLite triggers installed by the
+   [Alembic migrations](../octomate/migrations/versions) synchronize non-empty text
+   into `thread_messages_fts` on insert, update, and delete, in the ledger's own
+   transaction. Arcanus callers only persist the ledger row.
 3. [`history_match_query()`](../octomate/managers/thread.py) turns plain English terms
    into a safely quoted FTS5 `AND` expression.
 4. [`ThreadManager.search_chat_messages()`](../octomate/managers/thread.py) joins the
@@ -57,13 +58,28 @@ and `LIMIT` are applied. Never fetch global top matches and filter them in Pytho
 5. [`HistoryCapability`](../octomate/capabilities/history.py) exposes the in-process
    tools. [`mount_history()`](../octomate/mcp/history.py) exposes the same contract to
    native runtimes over MCP.
-6. The Alembic revision under [`octomate/migrations/versions`](../octomate/migrations/versions)
-   creates and backfills the virtual table for existing databases.
+6. One Alembic revision creates the index and triggers and backfills existing messages.
+   The unit-test fixture runs that revision after creating the ordinary
+   tables from metadata; deployment tests exercise the full migration chain.
+   [Alembic's environment](../octomate/migrations/env.py) excludes FTS5 storage from
+   ordinary table comparisons. Trigger changes are authored in revisions;
+   autogeneration does not compare or generate them.
 
 Only `message_text` is indexed. Vendor payloads, segment JSON, model thinking, tool
-traces, and the model ledger are outside the search corpus. Message body updates and
-deletions are not currently supported; a future implementation of either must update
-the derived index in the same transaction.
+traces, and the model ledger are outside the search corpus. The database maintains
+the index for direct ledger writes and foreign-key cascades too, and rolls it back
+with the originating transaction.
+
+`ThreadMessageFTS` maps the virtual table, including its hidden `rowid` and BM25
+`rank` columns. Its Arcanus schema is used by search. The migration defines the
+three triggers directly in SQLite SQL. Models register no DDL events. Only
+migration upgrades and downgrades create or drop the FTS table and triggers;
+SQLite executes the installed triggers for subsequent ledger writes.
+
+The existing UUID key is retained: an external-content FTS5 index needs a stable
+integer rowid, and SQLite may renumber an implicit rowid during `VACUUM`. This keeps
+the current schema, at the cost of duplicated text and a scan of the unindexed UUID
+column when updating or deleting an index entry.
 
 Repository engineering, persistence, typing, and verification rules remain
 canonical in [`AGENTS.md`](../AGENTS.md). Do not copy them into feature code or a
