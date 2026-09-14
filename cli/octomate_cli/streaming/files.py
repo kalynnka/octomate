@@ -14,13 +14,13 @@ tail ships every spooled file keyed by its basename — the server classifies ea
 its own opening `session_meta` line, keeping even that parsing server-side.
 
 Spawned per session by the launcher hook (`launch.py`), detached so the turn never
-waits on it; one instance per session, enforced with a file lock the OS releases with
-the process. The server owns every cursor: each connect re-asks where to resume, so
-this process holds no durable state and a crash anywhere costs a re-stream, never a
-loss. It ends when the server says `finalize` (the turn stopped or the session ended;
-the next prompt's launcher spawns a fresh tail), when the session goes quiet past the
-idle window (drain and `eof` — the same bet the server tailer's idle reclaim makes),
-or when the server refuses it outright (close code 1008).
+waits on it; one instance per config scope, agent and session, enforced with a file
+lock the OS releases with the process. The server owns every cursor: each connect
+re-asks where to resume, so this process holds no durable state and a crash anywhere
+costs a re-stream, never a loss. It ends when the server says `finalize` (the turn
+stopped or the session ended; the next prompt's launcher spawns a fresh tail), when
+the session goes quiet past the idle window (drain and `eof` — the same bet the server
+tailer's idle reclaim makes), or when the server refuses it outright (close code 1008).
 """
 
 from __future__ import annotations
@@ -28,6 +28,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
+import hashlib
+import json
 import sys
 import tempfile
 import time
@@ -35,6 +37,7 @@ from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import monotonic
+from typing import Literal
 
 from octomate_protocol.stream import (
     SESSION_FILE,
@@ -50,7 +53,12 @@ from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
 
-from octomate_cli.config import CLISettings, cli_settings
+from octomate_cli.config import (
+    CLISettings,
+    cli_settings,
+    project_config_path,
+    user_config_path,
+)
 
 # Mirror the server tailer's cadence: the watch wakes at least this often, and a
 # session quiet this long is drained and closed out.
@@ -111,10 +119,15 @@ class FileCursor:
         return lines
 
 
-def spool_path(session_id: str) -> Path:
-    """The per-session file the Codex launcher spools child rollout paths into — one
-    absolute path per line, appended as each `SubagentStop` hook names one."""
-    return Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.paths"
+def tail_path(agent: Literal["claude", "codex", "deepseek"], session_id: str) -> Path:
+    """Lock/spool basename scoped by config location, never its URL or contents."""
+    config_path = project_config_path()
+    if not config_path.is_file():
+        config_path = user_config_path()
+    key = json.dumps((str(config_path), agent, session_id)).encode()
+    return (
+        Path(tempfile.gettempdir()) / f"octomate-tail-{hashlib.sha256(key).hexdigest()}"
+    )
 
 
 @dataclass
@@ -328,13 +341,15 @@ async def run_tail(
 
 def main(
     *,
+    agent: Literal["claude", "codex"],
     session_id: str,
     transcript_path: Path,
     url: str,
     cwd: str,
-    spool: Path | None = None,
     agent_path: Path | None = None,
 ) -> None:
+    runtime_path = tail_path(agent, session_id)
+    spool = runtime_path.with_suffix(".paths") if agent == "codex" else None
     # Spool before the lock: when a tail already holds the session, this invocation's
     # whole job is handing it the child's path — the holder re-reads the spool on
     # every pump. O_APPEND keeps concurrent hook fires from clobbering each other.
@@ -350,10 +365,9 @@ def main(
             file=sys.stderr,
         )
         raise SystemExit(1)
-    # One tail per session: the launcher fires on every prompt, and the lock is what
-    # makes the second spawn a no-op. flock dies with the process, so there is no
-    # stale-pidfile state to manage.
-    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+    # One tail per session in this config scope; changing TOML contents does not
+    # replace its lock or affect the holder. flock dies with the process.
+    lock_path = runtime_path.with_suffix(".lock")
     with lock_path.open("w") as lock:
         deadline = monotonic() + LOCK_GRACE
         while True:

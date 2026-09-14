@@ -571,6 +571,7 @@ def serve(
     import uvicorn
 
     from octomate.config import OctomateConfig
+    from octomate.server import run
 
     if tmux:
         if shutil.which("tmux") is None:
@@ -620,13 +621,16 @@ def serve(
         # wired with included — agrees with the bind.
         os.environ["OCTOMATE__PORT"] = str(port)
     config = OctomateConfig()
-    uvicorn.run(
-        "octomate.app:create_app",
-        factory=True,
-        host=str(config.host) if host is None else host,
-        port=config.port if port is None else port,
-        reload=reload,
-        # Watch application code without watching the deployment's mutable data.
-        reload_dirs=[str(Path(inspect.getfile(OctomateConfig)).parent.parent)],
-        log_level=config.logging.level.lower(),
+    run(
+        uvicorn.Config(
+            "octomate.app:create_app",
+            factory=True,
+            lifespan="on",
+            host=str(config.host) if host is None else host,
+            port=config.port if port is None else port,
+            reload=reload,
+            # Watch application code without watching the deployment's mutable data.
+            reload_dirs=[str(Path(inspect.getfile(OctomateConfig)).parent.parent)],
+            log_level=config.logging.level.lower(),
+        )
     )

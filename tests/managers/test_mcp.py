@@ -76,7 +76,11 @@ async def test_summary_reports_live_authorization_without_polling(
     expected: str | None,
 ) -> None:
     user, other = await a_user("alice"), await a_user("bob")
-    manager.oauth = OAuthManager(users=manager.users)
+    manager.oauth = OAuthManager(
+        users=manager.users,
+        authorization_lifetime=timedelta(minutes=10),
+        token_refresh_leeway=timedelta(minutes=5),
+    )
     mcp = OAuthMcp(
         user_id=user.id,
         name="Work",

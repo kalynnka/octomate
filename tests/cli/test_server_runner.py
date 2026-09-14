@@ -27,18 +27,20 @@ def test_foreground_run_passes_bind_and_reload_options(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OCTOMATE__PORT", "8000")
-    with patch("uvicorn.run") as run:
+    with patch("octomate.server.run") as run:
         result = CliRunner().invoke(
             app,
             ["service", "serve", "--host", "127.0.0.1", "--port", "9000", "--reload"],
         )
     assert result.exit_code == 0, result.output
     run.assert_called_once()
-    assert run.call_args.args == ("octomate.app:create_app",)
-    assert run.call_args.kwargs["factory"] is True
-    assert run.call_args.kwargs["host"] == "127.0.0.1"
-    assert run.call_args.kwargs["port"] == 9000
-    assert run.call_args.kwargs["reload"] is True
+    config = run.call_args.args[0]
+    assert config.app == "octomate.app:create_app"
+    assert config.factory is True
+    assert config.lifespan == "on"
+    assert config.host == "127.0.0.1"
+    assert config.port == 9000
+    assert config.reload is True
     assert os.environ["OCTOMATE__PORT"] == "9000"
 
 

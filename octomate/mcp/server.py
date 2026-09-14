@@ -83,7 +83,10 @@ def tentacle_instructions() -> str:
         "and an available OAuth flow to send the user a private authorization "
         "link, then `oauth_confirm`. Installing does not authorize an MCP. "
         "OAuth links require a channel with private delivery. Enter personal "
-        "bearer tokens through the authenticated MCP HTTP API, never tool arguments."
+        "bearer tokens through the authenticated MCP HTTP API, never tool arguments. "
+        "When an unregistered channel user asks to link the profile driving the "
+        "current turn to an Octomate account, use `oauth_link_profile`; it privately "
+        "delivers the browser flow without accepting or returning an identity."
     )
 
 

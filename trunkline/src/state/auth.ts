@@ -27,9 +27,8 @@ export type RelayState = 'ok' | 'unconfigured' | 'offline'
 export interface AuthActions {
   /** restore the session the cookies hold, or land on a signed-out page */
   boot(): Promise<void>
-  /** read an invitation off the address bar, on load and on a hash change — a
-   *  link pasted into the console's own tab reloads nothing */
-  takeInvitation(): void
+  /** read a one-time entry link off the address bar, on load and hash changes */
+  takeEntryLink(): void
   /** throws the ApiError for the form to word; the relay state is kept here */
   signIn(username: string, password: string): Promise<void>
   register(body: RegistrationBody): Promise<void>
@@ -37,6 +36,7 @@ export interface AuthActions {
   changePassword(body: PasswordBody): Promise<void>
   goRegister(): void
   goLogin(): void
+  finishLinkProfile(): void
 }
 
 interface AuthState {
@@ -45,6 +45,8 @@ interface AuthState {
   page: AuthPage
   /** the invitation a registration link carried in its fragment; '' when none did */
   invitation: string
+  /** the private profile-linking ticket being carried through sign-in */
+  linkProfile: string
   /** why the login page is back — a session that lapsed — or null on a first visit */
   notice: string | null
   relay: RelayState
@@ -73,17 +75,27 @@ export const useAuth = create<AuthState>()((set, get) => {
   })
 
   const actions: AuthActions = {
-    // The token is struck from the address bar as it is read, so it outlives
-    // neither the form nor a screenshot of it.
-    takeInvitation() {
-      const token = new URLSearchParams(window.location.hash.slice(1)).get('invitation')
-      if (!token) return
+    // A secret is struck from the address bar as it is read, so it outlives
+    // neither the in-memory ceremony nor a screenshot of the URL.
+    takeEntryLink() {
+      const params = new URLSearchParams(window.location.hash.slice(1))
+      const invitation = params.get('invitation')
+      const linkProfile = params.get('link-profile')
+      if (!invitation && !linkProfile) return
       history.replaceState(null, '', window.location.pathname + window.location.search)
-      set({ invitation: token, page: 'register' })
+      if (linkProfile) {
+        set({
+          linkProfile,
+          page: 'login',
+          notice: 'Sign in to choose the account for this channel profile.',
+        })
+      } else if (invitation) {
+        set({ invitation, page: 'register' })
+      }
     },
 
     async boot() {
-      actions.takeInvitation()
+      actions.takeEntryLink()
       try {
         const user = await fetchMe()
         set({ status: 'signed-in', user, relay: 'ok' })
@@ -128,6 +140,7 @@ export const useAuth = create<AuthState>()((set, get) => {
 
     goRegister: () => set({ page: 'register' }),
     goLogin: () => set({ page: 'login' }),
+    finishLinkProfile: () => set({ linkProfile: '', notice: null }),
   }
 
   return {
@@ -135,6 +148,7 @@ export const useAuth = create<AuthState>()((set, get) => {
     user: null,
     page: 'login',
     invitation: '',
+    linkProfile: '',
     notice: null,
     relay: 'ok',
     actions,

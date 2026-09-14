@@ -10,7 +10,14 @@
         "${workspaceFolder}/.octomate/cli.debug.toml",
         "${workspaceFolder}/.octomate/cli.toml"
       ],
-      "problemMatcher": []
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never",
+        "echo": false,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "close": true
+      }
     },
     {
       "label": "Octomate: debug attachment off",
@@ -21,7 +28,14 @@
         "${workspaceFolder}/.octomate/cli.macmini.toml",
         "${workspaceFolder}/.octomate/cli.toml"
       ],
-      "problemMatcher": []
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "never",
+        "echo": false,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "close": true
+      }
     }
   ]
 }

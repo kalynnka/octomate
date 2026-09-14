@@ -5,4 +5,8 @@
 # Generate a key with: openssl rand -base64 32 | tr '+/' '-_'
 
 # oauth:
+#   # Public Octomate origin shared by OAuth callbacks and profile-linking URLs.
+#   callback_base_uri: https://octomate.example.com
+#   # Browser authorization and binding links; device expiry is provider-issued.
+#   authorization_lifetime: PT10M
 #   encryption_key: ...

@@ -30,6 +30,7 @@ import type {
  */
 const CHANNEL_DISPLAY: Record<string, Omit<ChannelMeta, 'id'>> = {
   trunkline: { label: 'Trunkline', sub: 'mention-free', brand: 'var(--color-accent)' },
+  discord: { label: 'Discord', sub: 'gateway', brand: '#5865F2' },
   slack: { label: 'Slack', sub: 'socket', brand: '#746576' },
   lark: { label: 'Lark', sub: 'webhook', brand: '#666D82' },
   napcat: { label: 'Napcat', sub: 'ws', brand: '#6A828B' },
@@ -46,7 +47,7 @@ export function channelMeta(id: string): ChannelMeta {
   const display = CHANNEL_DISPLAY[id] ?? {
     label: id.charAt(0).toUpperCase() + id.slice(1), sub: '', brand: 'var(--fg-3)',
   }
-  return { id, ...display }
+  return { id, ...display, brand: `color-mix(in srgb, ${display.brand} 50%, var(--fg-1))` }
 }
 
 /** "deepseek:deepseek-v4-pro" → "deepseek-v4-pro" for tight route chips. */

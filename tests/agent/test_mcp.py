@@ -43,7 +43,7 @@ from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.oauth import OAuthConnector
 from octomate.managers.user import UserManager
-from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     DISABLE_MCP,
@@ -232,6 +232,7 @@ async def test_an_installed_bare_tentacle_uses_its_operator_credential() -> None
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     }
     assert [tool.name for tool in catalog.tools] == ["list_issues"]
     assert result.data == {"result": "answered"}
@@ -271,6 +272,7 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
     assert [tool.name for tool in catalog.tools] == ["list_repos"]
     assert catalog.instructions == tentacle.instructions
@@ -301,6 +303,7 @@ async def test_a_turn_by_nobody_registered_gets_nothing_of_a_persons_provider() 
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
     assert seen == []
 
@@ -330,6 +333,7 @@ async def test_inkling_mounts_the_tentacles_deferred_for_the_person_of_its_turn(
     assert set(tools) == {
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
         LIST_MCP_TENTACLES,
         LIST_MCPS,
         INSTALL_MCP,
