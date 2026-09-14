@@ -170,8 +170,7 @@ cython_debug/
 *.iws
 .idea_modules/
 
-# VS Code — shared editor setup is checked in; tasks are each developer's own.
-.vscode/tasks.json
+# VS Code — shared editor setup and debug tasks are checked in.
 *.code-workspace
 .history/
 
