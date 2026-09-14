@@ -19,9 +19,11 @@ from octomate.tentacles.zcode.wire import (
     RpcNotification,
     RpcRequest,
     RpcResponse,
-    SessionEvent,
+    RunEvent,
+    StateUpdated,
     interaction_request_adapter,
     json_object_adapter,
+    run_event_adapter,
 )
 from octomate.types.json import JsonObject, JsonValue
 
@@ -57,7 +59,9 @@ class ZcodeClient:
         self.reader: asyncio.Task[None] | None = None
         self.stderr_reader: asyncio.Task[None] | None = None
         self.pending: dict[int, asyncio.Future[JsonValue]] = {}
-        self.events: asyncio.Queue[SessionEvent | AgentRunError] = asyncio.Queue()
+        self.events: asyncio.Queue[RunEvent | StateUpdated | AgentRunError] = (
+            asyncio.Queue()
+        )
         self.write_lock: asyncio.Lock = asyncio.Lock()
         self.next_id: int = 0
         self.failure: AgentRunError | None = None
@@ -114,16 +118,18 @@ class ZcodeClient:
             self.callback_tasks.clear()
             self.interactions.clear()
             process = self.process
-            if process is not None and process.returncode is None:
+            if process is not None:
                 # The runtime may own tool subprocesses. Its process group belongs to this run.
                 with contextlib.suppress(ProcessLookupError):
                     os.killpg(process.pid, signal.SIGTERM)
                 try:
                     await asyncio.wait_for(process.wait(), timeout=5)
                 except TimeoutError:
-                    with contextlib.suppress(ProcessLookupError):
-                        os.killpg(process.pid, signal.SIGKILL)
-                    await process.wait()
+                    pass
+                # Waiting for the parent does not account for children that ignore SIGTERM.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
+                await process.wait()
             if self.stderr_reader is not None:
                 self.stderr_reader.cancel()
                 with contextlib.suppress(asyncio.CancelledError):
@@ -181,7 +187,15 @@ class ZcodeClient:
         if process is None or process.stdout is None:
             return
         try:
-            while line := await process.stdout.readline():
+            while True:
+                try:
+                    line = await process.stdout.readline()
+                except ValueError:
+                    raise AgentRunError(
+                        "ZCode protocol frame exceeds the 16 MiB limit"
+                    ) from None
+                if not line:
+                    break
                 raw = json_object_adapter.validate_json(line)
                 if "method" in raw and "id" in raw:
                     request = RpcRequest.model_validate(raw)
@@ -276,9 +290,26 @@ class ZcodeClient:
                         future.set_result(response.result)
                 elif "method" in raw:
                     notification = RpcNotification.model_validate(raw)
-                    if notification.method == "session/event":
+                    if (
+                        notification.method == "session/event"
+                        and notification.params.get("type")
+                        in {
+                            "turn.started",
+                            "model.streaming",
+                            "tool.updated",
+                            "turn.completed",
+                            "turn.failed",
+                        }
+                    ):
                         await self.events.put(
-                            SessionEvent.model_validate(notification.params)
+                            run_event_adapter.validate_python(notification.params)
+                        )
+                    elif (
+                        notification.method == "state.updated"
+                        and notification.params.get("scope") == "session"
+                    ):
+                        await self.events.put(
+                            StateUpdated.model_validate(notification.params)
                         )
                 else:
                     raise AgentRunError("ZCode sent an invalid RPC envelope")

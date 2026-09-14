@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, get_args, overload
 
@@ -39,6 +40,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import ZcodeConfig
+from octomate.config.agents.common import Claim
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -59,8 +61,12 @@ from octomate.tentacles.zcode.wire import (
     InteractionRequest,
     PermissionRequest,
     PlanInput,
+    RuntimeConfig,
+    SendAccepted,
     SessionMessages,
     SessionSnapshot,
+    StateUpdated,
+    WorkspaceState,
 )
 from octomate.types.json import JsonObject
 from octomate.types.permissions import ZcodePermissionMode, is_zcode_mode
@@ -79,6 +85,7 @@ class ZcodeBridgeContext:
     interactive: bool
     session_allowed: set[str]
     session_id: str | None = None
+    input_accepted: bool = False
 
 
 class ZcodeTentacle(AgentTentacle[str, None]):
@@ -100,10 +107,87 @@ class ZcodeTentacle(AgentTentacle[str, None]):
         self.gateway = False
         self.pending = {}
         self.live_clients = {}
-        # Widen the literal keys to the shared route vocabulary; dict(...) cannot do that.
-        self.claims = {model: claim for model, claim in config.claims.items()}  # noqa: C416
-        self.models = {model: model for model in config.models}
+        self.claims = {}
+        self.models = {}
         self.conversation_locks = SessionLocks()
+
+    async def discover_models(self) -> None:
+        desktop = await asyncio.to_thread(
+            DesktopConfig.read, self.config.desktop_config
+        )
+        provider = desktop.provider.get(self.config.provider)
+        if provider is None or not provider.enabled:
+            raise ValueError(
+                f"ZCode desktop provider {self.config.provider!r} is missing or disabled"
+            )
+        desktop_models = sorted(provider.models)
+        if not desktop_models:
+            raise ValueError("ZCode desktop provider has no models")
+        runtime = desktop.runtime_model(self.config.provider, desktop_models[0], None)
+        runtime.provider.models = [
+            desktop.runtime_model(self.config.provider, model, None).provider.models[0]
+            for model in desktop_models
+        ]
+        async with ZcodeClient(
+            self.config.command,
+            cwd=Path.cwd(),
+            state_dir=self.config.state_dir.resolve(),
+            request_timeout=self.config.request_timeout,
+            secrets=[
+                provider.options.api_key,
+                *[SecretStr(value) for value in provider.options.headers.values()],
+            ],
+        ) as client:
+            state = WorkspaceState.model_validate(
+                await client.call(
+                    "workspace/readState",
+                    {
+                        "workspace": {
+                            "workspacePath": str(client.cwd),
+                            "workspaceKey": str(client.cwd),
+                        },
+                        "runtimeModel": runtime.model_dump(
+                            mode="json", by_alias=True, exclude_none=True
+                        ),
+                    },
+                )
+            )
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
+        for model in state.model_catalog.available:
+            if (
+                model.ref.provider_id != self.config.provider
+                or model.ref.model_id not in provider.models
+            ):
+                continue
+            if model.disabled_reason is not None:
+                raise ValueError(
+                    f"ZCode model {model.ref.model_id!r} is unavailable: {model.disabled_reason}"
+                )
+            key = f"{model.ref.provider_id}:{model.ref.model_id}"
+            configured = self.config.claims.get(key) or self.config.claims.get(
+                model.ref.model_id
+            )
+            efforts = model.reasoning.efforts if model.reasoning is not None else ()
+            models[key] = model.ref.model_id
+            claims[key] = Claim(
+                configured.ability if configured else model.description or model.label,
+                tuple(
+                    effort
+                    for effort in efforts
+                    if configured is None or effort in configured.efforts
+                ),
+            )
+        missing = provider.models.keys() - models.values()
+        if missing:
+            raise ValueError(
+                f"ZCode did not advertise configured models: {', '.join(sorted(missing))}"
+            )
+        self.set_model_catalog(models, claims)
+
+    async def __aenter__(self) -> ZcodeTentacle:
+        await self.discover_models()
+        return await super().__aenter__()
 
     @property
     def default_permission_mode(self) -> str:
@@ -127,6 +211,7 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                 client.fail(AgentRunError("ZCode tentacle is shutting down"))
                 await client.__aexit__(exc_type, exc, traceback)
             self.live_clients.clear()
+            await super().__aexit__(exc_type, exc, traceback)
 
     async def await_human(
         self, context: ZcodeBridgeContext, requests: DeferredToolRequests
@@ -310,6 +395,94 @@ class ZcodeTentacle(AgentTentacle[str, None]):
             return {**denial, "reason": "The user did not answer."}
         return {"action": "accept", "content": content}
 
+    async def drive_turn(
+        self,
+        client: ZcodeClient,
+        context: ZcodeBridgeContext,
+        accumulator: ZcodeRunAccumulator,
+        *,
+        runtime_model: RuntimeConfig,
+        mode: ZcodePermissionMode,
+        prompt: str,
+    ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        params: JsonObject = {
+            "workspace": {
+                "workspacePath": str(client.cwd),
+                "workspaceKey": str(client.cwd),
+            },
+            "runtimeModel": runtime_model.model_dump(
+                mode="json", by_alias=True, exclude_none=True
+            ),
+        }
+        if context.conversation.external_id:
+            params["sessionId"] = context.conversation.external_id
+            snapshot = SessionSnapshot.model_validate(
+                await client.call("session/resume", params)
+            )
+        else:
+            params.update({"mode": mode, "titleGenerationEnabled": False})
+            snapshot = SessionSnapshot.model_validate(
+                await client.call("session/create", params)
+            )
+        session_id = context.session_id = snapshot.session.session_id
+        await client.call("session/setMode", {"sessionId": session_id, "mode": mode})
+        await client.call(
+            "session/subscribe",
+            {"sessionId": session_id, "deliveryKind": "desktop-continuous"},
+        )
+        baseline = SessionMessages.model_validate(
+            await client.call("session/messages", {"sessionId": session_id, "limit": 1})
+        )
+        accepted = SendAccepted.model_validate(
+            await client.call(
+                "session/send",
+                {
+                    "sessionId": session_id,
+                    "inputId": accumulator.input_id,
+                    "content": prompt,
+                },
+            )
+        )
+        if accepted.session_id != session_id:
+            raise AgentRunError("ZCode acknowledged input for a different session")
+        context.input_accepted = True
+        while not accumulator.ended:
+            event = await client.events.get()
+            if isinstance(event, AgentRunError):
+                raise event
+            if event.session_id != session_id:
+                continue
+            if isinstance(event, StateUpdated):
+                if event.revision <= accepted.state_revision:
+                    continue
+                if event.reason in {"prompt_failed", "prompt_completed"}:
+                    if accumulator.turn_id is None:
+                        context.input_accepted = False
+                    raise AgentRunError(
+                        f"ZCode execution ended without a terminal turn event: {event.reason}"
+                    )
+                continue
+            for translated in accumulator.consume(event):
+                yield translated
+        if accumulator.prompt_message_id is None:
+            # Control commands do not persist a user message; their response is the turn result.
+            accumulator.reconcile(SessionMessages(messages=[]))
+        else:
+            history_params: JsonObject = {"sessionId": session_id}
+            if baseline.messages:
+                history_params["afterMessageId"] = baseline.messages[-1].info.message_id
+            history = SessionMessages.model_validate(
+                await client.call("session/messages", history_params)
+            )
+            accumulator.reconcile(
+                history,
+                after_message_id=baseline.messages[-1].info.message_id
+                if baseline.messages
+                else None,
+            )
+        if accumulator.error:
+            raise AgentRunError(client.redact(accumulator.error))
+
     async def iter_events(
         self,
         user_prompt: str | Sequence[UserContent] | None,
@@ -347,15 +520,30 @@ class ZcodeTentacle(AgentTentacle[str, None]):
             prompt = ""
         if not prompt.strip():
             raise ValueError("ZcodeTentacle requires a non-empty text prompt")
+        if not self.models:
+            await self.discover_models()
         model_name = model.model_name if isinstance(model, Model) else model
         if model_name is None:
             if len(self.models) != 1:
                 raise ValueError(
-                    "Select a model for a ZCode agent with multiple configured models"
+                    "Select a model for a ZCode agent with multiple available models"
                 )
             model_name = next(iter(self.models))
-        if model_name not in self.config.models:
-            raise ValueError(f"ZCode model {model_name!r} is not configured")
+        key = (
+            model_name
+            if model_name in self.models
+            else f"{self.config.provider}:{model_name}"
+        )
+        if key not in self.models:
+            raise ValueError(f"ZCode model {model_name!r} is not available")
+        selected = self.models[key]
+        if not isinstance(selected, str):
+            raise ValueError("ZCode requires a discovered model identifier")
+        model_name = selected
+        if effort is not None and effort not in self.claims[key].efforts:
+            raise ValueError(
+                f"ZCode model {model_name!r} does not support effort {effort!r}"
+            )
         if instructions is not None and not isinstance(instructions, str):
             raise ValueError("ZcodeTentacle supports string instructions only")
         sent_prompt = (
@@ -368,23 +556,20 @@ class ZcodeTentacle(AgentTentacle[str, None]):
         )
         runtime_model = desktop.runtime_model(self.config.provider, model_name, effort)
         provider = desktop.provider[self.config.provider]
-        missing = self.config.models - provider.models.keys()
-        if missing:
-            raise ValueError(
-                f"ZCode desktop provider is missing configured models: {', '.join(sorted(missing))}"
-            )
         secrets = [
             provider.options.api_key,
             *[SecretStr(value) for value in provider.options.headers.values()],
         ]
         if conversation_id is None:
             conversation = await self.octomate.conversations.ensure(
-                thread_id, agent_tentacle_id=self.id
+                thread_id, agent_tentacle_id=self.id, with_history=False
             )
             conversation_id = conversation.id
         async with self.conversation_locks.hold(str(conversation_id)):
             # Re-read after acquiring the lock: the preceding turn may have created its session.
-            conversation = await self.octomate.conversations.get(conversation_id)
+            conversation = await self.octomate.conversations.get(
+                conversation_id, with_history=False
+            )
             if (
                 conversation.thread_id != thread_id
                 or conversation.agent_tentacle_id != self.id
@@ -404,7 +589,6 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                 prompt, input_id=input_id, model=model_name
             )
             run_id = str(uuid7())
-            session_id: str | None = None
             context = ZcodeBridgeContext(
                 conversation=conversation,
                 address=conversation_address,
@@ -424,55 +608,16 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                 ) as client,
             ):
                 self.live_clients[client] = context
-                workspace_ref: JsonObject = {
-                    "workspacePath": str(workspace.path),
-                    "workspaceKey": str(workspace.path),
-                }
                 try:
-                    params: JsonObject = {
-                        "workspace": workspace_ref,
-                        "runtimeModel": runtime_model,
-                    }
-                    if conversation.external_id:
-                        params["sessionId"] = conversation.external_id
-                        snapshot = SessionSnapshot.model_validate(
-                            await client.call("session/resume", params)
-                        )
-                    else:
-                        params.update({"mode": mode, "titleGenerationEnabled": False})
-                        snapshot = SessionSnapshot.model_validate(
-                            await client.call("session/create", params)
-                        )
-                    session_id = snapshot.session.session_id
-                    context.session_id = session_id
-                    await client.call(
-                        "session/setMode", {"sessionId": session_id, "mode": mode}
-                    )
-                    await client.call(
-                        "session/subscribe",
-                        {"sessionId": session_id, "deliveryKind": "desktop-continuous"},
-                    )
-                    await client.call(
-                        "session/send",
-                        {
-                            "sessionId": session_id,
-                            "inputId": input_id,
-                            "content": sent_prompt,
-                        },
-                    )
-                    while not accumulator.ended:
-                        event = await client.events.get()
-                        if isinstance(event, AgentRunError):
-                            raise event
-                        if event.session_id == session_id:
-                            for translated in accumulator.consume(event):
-                                yield translated
-                    history = SessionMessages.model_validate(
-                        await client.call("session/messages", {"sessionId": session_id})
-                    )
-                    accumulator.reconcile(history)
-                    if accumulator.error:
-                        raise AgentRunError(client.redact(accumulator.error))
+                    async for translated in self.drive_turn(
+                        client,
+                        context,
+                        accumulator,
+                        runtime_model=runtime_model,
+                        mode=mode,
+                        prompt=sent_prompt,
+                    ):
+                        yield translated
                 except ValidationError as error:
                     details = "; ".join(
                         f"{'.'.join(str(part) for part in item['loc'])}: {item['msg']}"
@@ -486,17 +631,19 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                 finally:
                     self.live_clients.pop(client, None)
                     with anyio.CancelScope(shield=True):
-                        if session_id is not None:
+                        if context.session_id is not None:
                             if not accumulator.ended and client.failure is None:
                                 try:
                                     await client.call(
-                                        "session/stop", {"sessionId": session_id}
+                                        "session/stop",
+                                        {"sessionId": context.session_id},
                                     )
                                 except AgentRunError as error:
                                     # Cleanup still persists the partial run and closes the owned process.
                                     logger.warning(
                                         "Could not stop ZCode session: %s", error
                                     )
+                        if context.input_accepted:
                             recorded = (
                                 await self.octomate.conversations.record_agent_run(
                                     conversation,
@@ -504,7 +651,7 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                                     messages=accumulator.messages,
                                     name=run_name,
                                     cwd=workspace.path,
-                                    external_id=session_id,
+                                    external_id=context.session_id,
                                 )
                             )
                             if source_thread_message_ids:

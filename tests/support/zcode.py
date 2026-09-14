@@ -18,7 +18,9 @@ from octomate.tentacles.zcode.wire import (
     QuestionOption,
     QuestionParams,
     QuestionRequest,
-    SessionEvent,
+    RunEvent,
+    RuntimeConfig,
+    run_event_adapter,
 )
 from octomate.types.json import JsonObject, JsonValue
 
@@ -94,7 +96,13 @@ for line in sys.stdin:
     frame = json.loads(line)
     method = frame.get("method")
     params = frame.get("params", {})
-    if method == "session/create":
+    if method == "workspace/readState":
+        provider = params["runtimeModel"]["provider"]
+        available = [{"ref": {"providerId": provider["providerId"], "modelId": model["modelId"]},
+                      "label": model["modelId"], **({"reasoning": model["reasoning"]} if "reasoning" in model else {})}
+                     for model in provider["models"]]
+        send({"id": frame["id"], "result": {"modelCatalog": {"available": available}}})
+    elif method == "session/create":
         session_id = str(uuid.uuid4())
         sessions[session_id] = []
         send({"id": frame["id"], "result": {"session": {"sessionId": session_id}}})
@@ -104,10 +112,14 @@ for line in sys.stdin:
         send({"id": frame["id"], "result": {"session": {"sessionId": session_id}}})
     elif method == "session/send":
         input_id, prompt = params["inputId"], params["content"]
+        if prompt == "preflight-failure":
+            send({"id": frame["id"], "result": {"accepted": True, "sessionId": session_id, "stateRevision": 1}})
+            send({"method": "state.updated", "params": {"type": "state.updated", "scope": "session", "sessionId": session_id, "revision": 2, "reason": "prompt_failed", "patch": {"status": "idle"}}})
+            continue
         sessions[session_id].append(message(input_id, prompt, "user"))
         answered = False
         event("turn.started", {"inputId": input_id, "messageId": input_id})
-        send({"id": frame["id"], "result": {"accepted": True}})
+        send({"id": frame["id"], "result": {"accepted": True, "sessionId": session_id, "stateRevision": 1}})
         callback = {"requestId": input_id, "sessionId": session_id, "toolCallId": "tool-1"}
         if prompt == "ask":
             callback.update({"toolName": "AskUserQuestion", "questions": [{
@@ -122,7 +134,12 @@ for line in sys.stdin:
             send({"id": rpc_id, "method": callback_method, "params": callback})
         event("model.streaming", {"kind": "reasoning_delta", "delta": "Waiting", "assistantMessageId": "thinking"})
     elif method == "session/messages":
-        send({"id": frame["id"], "result": {"messages": sessions[session_id]}})
+        messages = sessions[session_id]
+        cursor = next((index for index, item in enumerate(messages) if item["info"]["id"] == params.get("afterMessageId")), -1)
+        messages = messages[cursor + 1:]
+        if "limit" in params:
+            messages = messages[-params["limit"]:]
+        send({"id": frame["id"], "result": {"messages": messages}})
     elif method:
         send({"id": frame["id"], "result": {}})
     elif "result" in frame and not answered:
@@ -163,9 +180,7 @@ def desktop_config(path: Path) -> ZcodeConfig:
             }
         )
     )
-    return ZcodeConfig(
-        models={"GLM-5.3"}, desktop_config=file, state_dir=path / "state"
-    )
+    return ZcodeConfig(desktop_config=file, state_dir=path / "state")
 
 
 def history_message(message_id: str, text: str, *, user: bool = False) -> JsonObject:
@@ -186,14 +201,16 @@ def event(
     *,
     turn_id: str = "turn-1",
     event_id: str | None = None,
-) -> SessionEvent:
-    return SessionEvent(
-        type=kind,
-        payload=payload,
-        turn_id=turn_id,
-        session_id="session-1",
-        event_id=event_id or str(uuid4()),
-        seq=1,
+) -> RunEvent:
+    return run_event_adapter.validate_python(
+        {
+            "type": kind,
+            "payload": payload,
+            "turnId": turn_id,
+            "sessionId": "session-1",
+            "eventId": event_id or str(uuid4()),
+            "seq": 1,
+        }
     )
 
 
@@ -221,6 +238,31 @@ class FakeZcodeClient(ZcodeClient):
 
     async def call(self, method: str, params: JsonObject) -> JsonValue:
         self.calls.append((method, params))
+        if method == "workspace/readState":
+            runtime = RuntimeConfig.model_validate(params["runtimeModel"])
+            return {
+                "modelCatalog": {
+                    "available": [
+                        {
+                            "ref": {
+                                "providerId": runtime.provider.provider_id,
+                                "modelId": model.model_id,
+                            },
+                            "label": model.label or model.model_id,
+                            **(
+                                {
+                                    "reasoning": model.reasoning.model_dump(
+                                        mode="json", by_alias=True, exclude_none=True
+                                    )
+                                }
+                                if model.reasoning
+                                else {}
+                            ),
+                        }
+                        for model in runtime.provider.models
+                    ]
+                }
+            }
         if method == "session/create":
             self.session_id = str(uuid4())
             self.history[self.session_id] = []
@@ -277,8 +319,21 @@ class FakeZcodeClient(ZcodeClient):
                 )
                 completed.session_id = self.session_id
                 self.events.put_nowait(completed)
-            return {"accepted": True}
+            return {"accepted": True, "sessionId": self.session_id, "stateRevision": 1}
         if method == "session/messages":
-            messages: list[JsonValue] = list(self.history[self.session_id])
-            return {"messages": messages}
+            messages = self.history[self.session_id]
+            cursor = next(
+                (
+                    index
+                    for index, message in enumerate(messages)
+                    if isinstance(message["info"], dict)
+                    and message["info"]["id"] == params.get("afterMessageId")
+                ),
+                -1,
+            )
+            messages = messages[cursor + 1 :]
+            limit = params.get("limit")
+            if isinstance(limit, int):
+                messages = messages[-limit:]
+            return {"messages": list(messages)}
         return {}

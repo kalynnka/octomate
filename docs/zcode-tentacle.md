@@ -4,6 +4,8 @@ The `zcode` agent drives the runtime bundled with ZCode Desktop. It streams text
 reasoning and tool activity, records each turn in Octomate, and resumes ZCode's
 own session on the next turn. It uses the same thread workspaces as Claude and
 Codex. The integration targets ZCode Desktop 3.11.2 / bundled runtime 0.16.5.
+The official `zai-sdk` supplies GLM inference, not the ZCode session and tool
+runtime; this tentacle uses the desktop app-server protocol.
 
 ## Setup
 
@@ -14,7 +16,6 @@ app, then add this to your Octomate config home's `agents.yaml`:
 agents:
   zcode:
     provider: builtin:bigmodel
-    models: [GLM-5.3]
     claims:
       GLM-5.3:
         ability: Repository-aware coding and software engineering with ZCode.
@@ -23,7 +24,9 @@ agents:
 ```
 
 Add `zcode` to the desired channel's `agents` list in `channels.yaml`, following
-its existing agent entries. Select a configured ZCode model in the web UI.
+its existing agent entries. Select a discovered ZCode model in the web UI. Routes
+use provider-qualified identifiers such as `builtin:bigmodel:GLM-5.3`. Existing unqualified model names
+remain accepted for direct runs and claim overrides.
 
 The default command is:
 
@@ -35,8 +38,10 @@ node /Applications/ZCode.app/Contents/Resources/glm/zcode.cjs app-server --stdio
 No standalone CLI installation or UI automation is required.
 
 `desktop_config` defaults to `~/.zcode/v2/config.json`. The provider identifier must
-match an enabled provider in that file, and all configured models must belong to
-it. Octomate reads its API key, endpoint and model settings at each run without
+match an enabled provider in that file. Octomate discovers all models configured
+for that provider through `workspace/readState` during startup and verifies the
+catalog before advertising routes. Model names are not restricted to a fixed list.
+Octomate reads its API key, endpoint and model settings at each run without
 modifying the file. The API key travels only to the local child over stdin; it
 does not become a command argument or Octomate ledger metadata. Desktop-login
 providers requiring authentication callbacks are unsupported in this version.
@@ -72,13 +77,25 @@ configuration, plugins and tool behavior.
 - Runtime preferences disable native-search enhancements, memory and automatic
   question answering. Other unsupported callbacks receive an explicit RPC error.
 - Effort maps minimal/low to `low`, medium/high to `high`, and xhigh to `max`.
-  Without an override, the desktop model's default is used. Unsupported effort
-  levels fail explicitly.
+  Routes advertise only the levels supported by the runtime catalog; configured
+  claims can restrict that set further. Without an override, the desktop model's
+  default is used. Unsupported effort levels fail explicitly.
 - Inputs and outputs are text only. String instructions are carried in a marked
   section before the prompt. Structured output, attachments and deferred tool
   results are rejected.
 - Gateway tools, native-session ingest and hooks are deferred. `gateway` is fixed
   to false. This does not install, change or grant trust to desktop hooks.
+- Setup and rejected submissions do not record an unsent prompt or advance its
+  source cursor. A confirmed preflight failure after acknowledgement ends the run
+  without a generation timeout. Control commands and hook-blocked prompts can
+  complete without a native prompt message.
+- History retrieval starts after the pre-turn tail, retaining the entire current
+  turn. Missing prompt boundaries fail explicitly. Hidden synthetic context and
+  discarded assistant attempts are excluded from canonical conversation history;
+  native errors and finish reasons are preserved. Individual protocol frames over
+  16 MiB fail with an explicit size error.
+- Correction of already displayed text after native stream recovery remains
+  deferred.
 - Cancellation stops the session, records available partial history and closes
   the owned process group. Transport failures do not trigger retries. A future
   turn can resume the same persisted session.
@@ -87,7 +104,9 @@ configuration, plugins and tool behavior.
 
 Focused tests cover protocol interleaving, repeated callbacks, card decisions,
 question answers, history reconciliation, provider configuration, streaming,
-cancellation and fresh-process resume with conversation grants.
+cancellation and fresh-process resume with conversation grants. Regression cases
+also cover discovery, malformed event variants, preflight failure, no-prompt turns,
+history visibility and finish reasons, and child processes that outlive their parent.
 Live checks require the desktop installation and its configured provider: send
 an initial prompt, follow up after the app-server exits, ask for read-only tool
 activity and cancel an active turn. Confirm the same session identifier is used

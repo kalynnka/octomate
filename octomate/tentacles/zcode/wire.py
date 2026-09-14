@@ -14,11 +14,20 @@ from pydantic import (
     Field,
     SecretStr,
     TypeAdapter,
+    field_validator,
 )
 from pydantic.alias_generators import to_camel
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.types.json import JsonObject, JsonValue
+
+EFFORT_LEVELS: dict[ThinkingEffort, str] = {
+    "minimal": "low",
+    "low": "low",
+    "medium": "high",
+    "high": "high",
+    "xhigh": "max",
+}
 
 json_object_adapter = TypeAdapter(JsonObject)
 
@@ -31,6 +40,80 @@ class WireModel(BaseModel):
         populate_by_name=True,
         hide_input_in_errors=True,
     )
+
+
+class ModelRef(WireModel):
+    provider_id: str
+    model_id: str
+
+
+class ReasoningLevel(WireModel):
+    value: str
+    label: str
+
+
+class RuntimeReasoning(WireModel):
+    enabled: bool
+    levels: list[ReasoningLevel]
+    default_level: str | None = None
+
+    @property
+    def efforts(self) -> tuple[ThinkingEffort, ...]:
+        supported = {level.value for level in self.levels} if self.enabled else set()
+        return tuple(
+            effort for effort, level in EFFORT_LEVELS.items() if level in supported
+        )
+
+
+class RuntimeModel(WireModel):
+    model_id: str
+    label: str | None = None
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    supports_images: bool = False
+    supports_pdf: bool = False
+    supports_video: bool = False
+    provider_options: JsonObject | None = None
+    reasoning: RuntimeReasoning | None = None
+
+
+class InlineApiKey(WireModel):
+    source: Literal["inline"] = "inline"
+    value: str = Field(repr=False)
+
+
+class RuntimeProvider(WireModel):
+    provider_id: str
+    kind: Literal["anthropic", "openai", "openai-compatible"]
+    source: Literal["custom"] = "custom"
+    base_url: str = Field(validation_alias="baseURL", serialization_alias="baseURL")
+    api_key: InlineApiKey
+    headers: dict[str, str] = Field(repr=False)
+    models: list[RuntimeModel]
+
+
+class RuntimeConfig(WireModel):
+    revision: str = Field(default_factory=lambda: str(uuid4()))
+    generated_at: int = Field(default_factory=lambda: int(time.time() * 1000))
+    model: ModelRef
+    provider: RuntimeProvider
+    thought_level: str | None = None
+
+
+class AvailableModel(WireModel):
+    ref: ModelRef
+    label: str
+    description: str | None = None
+    reasoning: RuntimeReasoning | None = None
+    disabled_reason: str | None = None
+
+
+class ModelCatalog(WireModel):
+    available: list[AvailableModel]
+
+
+class WorkspaceState(WireModel):
+    model_catalog: ModelCatalog
 
 
 class DesktopReasoning(WireModel):
@@ -81,7 +164,7 @@ class DesktopConfig(WireModel):
         provider_id: str,
         model_id: str,
         effort: ThinkingEffort | None,
-    ) -> JsonObject:
+    ) -> RuntimeConfig:
         provider = self.provider.get(provider_id)
         if provider is None or not provider.enabled:
             raise ValueError(
@@ -101,13 +184,7 @@ class DesktopConfig(WireModel):
                 "authentication callbacks are not supported"
             )
         thought_level = (
-            {
-                "minimal": "low",
-                "low": "low",
-                "medium": "high",
-                "high": "high",
-                "xhigh": "max",
-            }[effort]
+            EFFORT_LEVELS[effort]
             if effort is not None
             else model.reasoning.default_variant
         )
@@ -117,50 +194,39 @@ class DesktopConfig(WireModel):
             raise ValueError(
                 f"ZCode model {model_id!r} does not support thought level {thought_level!r}"
             )
-        runtime_model: JsonObject = {"modelId": model_id}
-        if model.name:
-            runtime_model["label"] = model.name
-        if model.limit.context is not None:
-            runtime_model["contextWindow"] = model.limit.context
-        if model.limit.output is not None:
-            runtime_model["maxOutputTokens"] = model.limit.output
-        for modality, key in [
-            ("image", "supportsImages"),
-            ("pdf", "supportsPdf"),
-            ("video", "supportsVideo"),
-        ]:
-            runtime_model[key] = modality in model.modalities.input
-        if model.options:
-            runtime_model["providerOptions"] = model.options
-        if model.reasoning.enabled:
-            runtime_model["reasoning"] = {
-                "enabled": True,
-                "levels": [
-                    {"value": level, "label": level}
-                    for level in model.reasoning.variants
+        return RuntimeConfig(
+            model=ModelRef(provider_id=provider_id, model_id=model_id),
+            thought_level=thought_level,
+            provider=RuntimeProvider(
+                provider_id=provider_id,
+                kind=provider.kind,
+                base_url=provider.options.base_url,
+                api_key=InlineApiKey(value=provider.options.api_key.get_secret_value()),
+                headers=provider.options.headers,
+                models=[
+                    RuntimeModel(
+                        model_id=model_id,
+                        label=model.name,
+                        context_window=model.limit.context,
+                        max_output_tokens=model.limit.output,
+                        supports_images="image" in model.modalities.input,
+                        supports_pdf="pdf" in model.modalities.input,
+                        supports_video="video" in model.modalities.input,
+                        provider_options=model.options or None,
+                        reasoning=RuntimeReasoning(
+                            enabled=True,
+                            levels=[
+                                ReasoningLevel(value=level, label=level)
+                                for level in model.reasoning.variants
+                            ],
+                            default_level=thought_level,
+                        )
+                        if model.reasoning.enabled
+                        else None,
+                    )
                 ],
-                **({"defaultLevel": thought_level} if thought_level else {}),
-            }
-        result: JsonObject = {
-            "revision": str(uuid4()),
-            "generatedAt": int(time.time() * 1000),
-            "model": {"providerId": provider_id, "modelId": model_id},
-            "provider": {
-                "providerId": provider_id,
-                "kind": provider.kind,
-                "source": "custom",
-                "baseURL": provider.options.base_url,
-                "apiKey": {
-                    "source": "inline",
-                    "value": provider.options.api_key.get_secret_value(),
-                },
-                "headers": dict(provider.options.headers),
-                "models": [runtime_model],
-            },
-        }
-        if thought_level is not None:
-            result["thoughtLevel"] = thought_level
-        return result
+            ),
+        )
 
 
 class RpcError(WireModel):
@@ -254,15 +320,6 @@ class RpcNotification(WireModel):
     params: JsonObject = Field(default_factory=dict)
 
 
-class SessionEvent(WireModel):
-    session_id: str
-    turn_id: str | None = None
-    event_id: str
-    seq: int
-    type: str
-    payload: JsonObject = Field(default_factory=dict)
-
-
 class SessionIdentity(WireModel):
     session_id: str
 
@@ -273,7 +330,8 @@ class SessionSnapshot(WireModel):
 
 class TurnStarted(WireModel):
     input_id: str | None = None
-    message_id: str
+    message_id: str | None = None
+    execution_kind: Literal["agent", "controlOnly"] = "agent"
 
 
 class Usage(WireModel):
@@ -287,7 +345,14 @@ class Usage(WireModel):
 
 class TurnCompleted(WireModel):
     response: str
-    result_type: str
+    result_type: Literal[
+        "success",
+        "cancelled",
+        "error_max_turns",
+        "error_max_budget",
+        "error_during_execution",
+        "error_max_tool_calls",
+    ]
     usage: Usage = Field(default_factory=Usage)
 
 
@@ -299,13 +364,50 @@ class TurnFailed(WireModel):
     error: ErrorDetail
 
 
-class ModelStreaming(WireModel):
-    kind: str
+class ContentDelta(WireModel):
+    kind: Literal["text_delta", "reasoning_delta"]
     assistant_message_id: str | None = None
-    delta: str = ""
-    tool_call_id: str | None = None
+    delta: str
+
+
+class ToolInputStart(WireModel):
+    kind: Literal["tool_input_start"]
+    assistant_message_id: str | None = None
+    tool_call_id: str
+    tool_name: str
+
+
+class ToolInputDelta(WireModel):
+    kind: Literal["tool_input_delta"]
+    tool_call_id: str
+    delta: str
+
+
+class ToolCall(WireModel):
+    kind: Literal["tool_call"]
+    assistant_message_id: str | None = None
+    tool_call_id: str
     tool_name: str | None = None
-    input: JsonValue = None
+    input: JsonObject | None = None
+
+
+class StreamMarker(WireModel):
+    kind: Literal[
+        "start",
+        "finish",
+        "error",
+        "text_start",
+        "text_end",
+        "reasoning_start",
+        "reasoning_end",
+        "tool_input_end",
+    ]
+
+
+type ModelStreaming = Annotated[
+    ContentDelta | ToolInputStart | ToolInputDelta | ToolCall | StreamMarker,
+    Field(discriminator="kind"),
+]
 
 
 class ToolResult(WireModel):
@@ -314,14 +416,92 @@ class ToolResult(WireModel):
     error: str | ErrorDetail | None = None
 
 
-class ToolEvent(WireModel):
-    kind: str
-    tool_call_id: str | None = None
-    tool_name: str | None = None
-    source: str | None = None
-    input: JsonValue = None
-    result: ToolResult | None = None
-    error: ErrorDetail | None = None
+class ToolIdentity(WireModel):
+    tool_call_id: str
+    source: Literal["subagent"] | None = None
+
+
+class ToolScheduled(ToolIdentity):
+    kind: Literal["scheduled"]
+    tool_name: str
+    input: JsonObject | str | None = None
+
+
+class ToolFinished(ToolIdentity):
+    kind: Literal["result"]
+    result: ToolResult
+
+
+class ToolFailed(ToolIdentity):
+    kind: Literal["error"]
+    error: ErrorDetail
+
+
+class ToolProgress(WireModel):
+    kind: Literal["started", "progress", "batch", "raw"]
+
+
+type ToolEvent = Annotated[
+    ToolScheduled | ToolFinished | ToolFailed | ToolProgress,
+    Field(discriminator="kind"),
+]
+
+
+class SessionEvent[PayloadT](WireModel):
+    session_id: str
+    event_id: str
+    seq: int
+    payload: PayloadT
+
+
+class TurnStartedEvent(SessionEvent[TurnStarted]):
+    type: Literal["turn.started"]
+    turn_id: str = Field(min_length=1)
+
+
+class ModelStreamingEvent(SessionEvent[ModelStreaming]):
+    type: Literal["model.streaming"]
+    turn_id: str | None = None
+
+
+class ToolUpdatedEvent(SessionEvent[ToolEvent]):
+    type: Literal["tool.updated"]
+    turn_id: str | None = None
+
+
+class TurnCompletedEvent(SessionEvent[TurnCompleted]):
+    type: Literal["turn.completed"]
+    turn_id: str | None = None
+
+
+class TurnFailedEvent(SessionEvent[TurnFailed]):
+    type: Literal["turn.failed"]
+    turn_id: str | None = None
+
+
+type RunEvent = Annotated[
+    TurnStartedEvent
+    | ModelStreamingEvent
+    | ToolUpdatedEvent
+    | TurnCompletedEvent
+    | TurnFailedEvent,
+    Field(discriminator="type"),
+]
+run_event_adapter = TypeAdapter(RunEvent)
+
+
+class StateUpdated(WireModel):
+    type: Literal["state.updated"]
+    scope: Literal["session"]
+    session_id: str
+    revision: int
+    reason: str | None = None
+
+
+class SendAccepted(WireModel):
+    accepted: Literal[True]
+    session_id: str
+    state_revision: int
 
 
 class CacheTokens(WireModel):
@@ -341,24 +521,60 @@ class StoredModelRef(WireModel):
     model_id: str = Field(validation_alias="modelID")
 
 
-class UserMessageInfo(WireModel):
+class MessageSemantics(WireModel):
+    origin: str
+    kind: str
+    ui_visibility: Literal["visible", "hidden"]
+    transcript_visibility: Literal["visible", "hidden"]
+    provider_visibility: Literal["visible", "hidden"]
+
+
+class MessageInfo(WireModel):
     message_id: str = Field(validation_alias="id")
+    synthetic: bool = False
+    visibility: Literal["user-visible", "model-only"] = "user-visible"
+    semantics: MessageSemantics | None = None
+
+    @property
+    def visible(self) -> bool:
+        return (
+            not self.synthetic
+            and self.visibility != "model-only"
+            and (
+                self.semantics is None
+                or (
+                    self.semantics.ui_visibility == "visible"
+                    and self.semantics.transcript_visibility == "visible"
+                    and self.semantics.origin != "agent_runtime"
+                )
+            )
+        )
+
+
+class UserMessageInfo(MessageInfo):
     role: Literal["user"]
     model: StoredModelRef
 
 
-class AssistantMessageInfo(WireModel):
-    message_id: str = Field(validation_alias="id")
+class StoredError(WireModel):
+    name: str
+    data: JsonObject = Field(default_factory=dict)
+
+
+class AssistantMessageInfo(MessageInfo):
     role: Literal["assistant"]
     model_id: str = Field(validation_alias="modelID")
     provider_id: str = Field(validation_alias="providerID")
     finish: str | None = None
+    error: StoredError | None = None
     tokens: MessageTokens = Field(default_factory=MessageTokens)
 
 
 class TextPart(WireModel):
     type: Literal["text"]
     text: str
+    synthetic: bool = False
+    ignored: bool = False
 
 
 class ReasoningPart(WireModel):
@@ -392,14 +608,26 @@ class ToolPart(WireModel):
     ]
 
 
-message_part_adapter = TypeAdapter(
-    Annotated[TextPart | ReasoningPart | ToolPart, Field(discriminator="type")]
-)
+type MessagePart = Annotated[
+    TextPart | ReasoningPart | ToolPart, Field(discriminator="type")
+]
 
 
 class HistoryMessage(WireModel):
     info: Annotated[UserMessageInfo | AssistantMessageInfo, Field(discriminator="role")]
-    parts: list[JsonObject]
+    parts: list[MessagePart]
+
+    @field_validator("parts", mode="before")
+    @classmethod
+    def consumed_parts(cls, value: JsonValue) -> JsonValue:
+        if not isinstance(value, list):
+            return value
+        return [
+            part
+            for part in value
+            if not isinstance(part, dict)
+            or part.get("type") in {"text", "reasoning", "tool"}
+        ]
 
 
 class SessionMessages(WireModel):

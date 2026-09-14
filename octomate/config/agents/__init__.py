@@ -33,7 +33,7 @@ from octomate.config.agents.inkling import (
     ToolOutputConfig,
     TruncateAction,
 )
-from octomate.config.agents.zcode import ZcodeConfig, ZcodeModelName
+from octomate.config.agents.zcode import ZcodeConfig
 
 __all__ = [
     "AgentConfig",
@@ -58,5 +58,4 @@ __all__ = [
     "ToolOutputConfig",
     "TruncateAction",
     "ZcodeConfig",
-    "ZcodeModelName",
 ]
