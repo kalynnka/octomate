@@ -88,6 +88,16 @@ class ThreadKey:
         )
 
 
+@sqlalchemy_materia.bless(thread_models.ThreadMessageFTS)
+class ThreadMessageFTS(BaseTransmuter):
+    model_config = ConfigDict(from_attributes=True)
+
+    rowid: Annotated[int, Identity]
+    message_id: uuid.UUID
+    message_text: str
+    rank: float | None = None
+
+
 @sqlalchemy_materia.bless(thread_models.ThreadMessage)
 class ThreadMessage(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)

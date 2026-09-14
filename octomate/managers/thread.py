@@ -4,18 +4,7 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus.materia.sqlalchemy import noload, selectinload
-from sqlalchemy import (
-    String,
-    Uuid,
-    and_,
-    column,
-    func,
-    insert,
-    literal_column,
-    or_,
-    select,
-    table,
-)
+from sqlalchemy import and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
@@ -36,14 +25,9 @@ from octomate.schemas.thread import (
     ThreadKey,
     ThreadMessage,
     ThreadMessageDirection,
+    ThreadMessageFTS,
 )
 from octomate.schemas.user import UserProfile
-
-THREAD_MESSAGES_FTS = table(
-    "thread_messages_fts",
-    column("message_id", Uuid),
-    column("message_text", String),
-)
 
 
 def history_match_query(query: str) -> str:
@@ -398,14 +382,6 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         """
         async with async_session() as session:
             session.add(message)
-            await session.flush()
-            if message.message_text:
-                await session.execute(
-                    insert(THREAD_MESSAGES_FTS).values(
-                        message_id=message.id,
-                        message_text=message.message_text,
-                    )
-                )
             row = await session.get(Thread, thread.id)
             if row is not None:
                 row.updated_at = datetime.now(UTC)
@@ -797,7 +773,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             *(linked.id for linked in await self.users.linked_profiles(profile)),
         ]
         expressions = [
-            literal_column(THREAD_MESSAGES_FTS.name).op("MATCH")(match_query),
+            ThreadMessageFTS["message_text"].match(match_query),
             ThreadMessage["thread_id"].in_(
                 select(ThreadMessage["thread_id"]).where(
                     ThreadMessage["sender_id"].in_(senders)
@@ -810,13 +786,13 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             statement = (
                 select(ThreadMessage)
                 .join(
-                    THREAD_MESSAGES_FTS,
-                    ThreadMessage["id"] == THREAD_MESSAGES_FTS.c.message_id,
+                    ThreadMessageFTS,
+                    ThreadMessage["id"] == ThreadMessageFTS["message_id"],
                 )
                 .where(*expressions)
                 .options(noload(ThreadMessage["model_messages"]))
                 .order_by(
-                    func.bm25(literal_column(THREAD_MESSAGES_FTS.name)),
+                    ThreadMessageFTS["rank"],
                     ThreadMessage["happened_at"].desc(),
                     ThreadMessage["id"].desc(),
                 )

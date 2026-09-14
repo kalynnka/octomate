@@ -2,6 +2,7 @@ import asyncio
 from logging.config import fileConfig
 
 from alembic import context
+from alembic.runtime.environment import NameFilterParentNames, NameFilterType
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
@@ -61,11 +62,26 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def include_name(
+    name: str | None, type_: NameFilterType, parent_names: NameFilterParentNames
+) -> bool:
+    # FTS5 owns these tables; ordinary table comparison would generate drops.
+    return type_ != "table" or name not in {
+        "thread_messages_fts",
+        "thread_messages_fts_data",
+        "thread_messages_fts_idx",
+        "thread_messages_fts_content",
+        "thread_messages_fts_docsize",
+        "thread_messages_fts_config",
+    }
+
+
 def do_run_migrations(connection: Connection) -> None:
     context.configure(
         connection=connection,
         target_metadata=target_metadata,
         render_as_batch=True,
+        include_name=include_name,
     )
 
     with context.begin_transaction():
