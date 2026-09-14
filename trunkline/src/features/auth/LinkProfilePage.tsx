@@ -6,11 +6,52 @@ import {
   inspectLinkProfile,
   refusalText,
   type ApiLinkProfile,
+  type ApiUser,
 } from '@/lib/api/auth'
+import type { ApiUserProfile } from '@/lib/api/events'
 import { channelMeta } from '@/lib/api/live'
 import { queryClient } from '@/lib/queryClient'
 import { useAuth } from '@/state/auth'
 import { AuthPage, Notice, Refusal } from './parts'
+
+export function LinkProfileDetails({ profile, user }: { profile: ApiUserProfile; user: ApiUser | null }) {
+  const channel = channelMeta(profile.channel_tentacle_id)
+  const displayName = profile.name || profile.nickname
+  const fields = [
+    ['Requested through', channel.label],
+    ['Display name', displayName || 'Name not provided by the channel'],
+    ['Nickname', profile.nickname !== displayName ? profile.nickname : null],
+    ['Title', profile.title],
+    ['Gender', profile.gender],
+    ['Age', profile.age],
+    ['Octomate account', user ? `${user.name || user.nickname || user.username} (@${user.username})` : null],
+  ] as const
+
+  return (
+    <>
+      <dl className="trk-profile-info" style={{ marginTop: 16 }}>
+        {fields.filter(([, value]) => value !== null && value !== '').map(([name, value]) => (
+          <div key={name}>
+            <dt style={{ ...label(9), color: 'var(--fg-3)' }}>{name}</dt>
+            <dd style={{ ...serif(14), color: 'var(--fg-1)' }}>{value}</dd>
+          </div>
+        ))}
+      </dl>
+      <details style={{ marginBottom: 24 }}>
+        <summary style={{ ...label(9), color: 'var(--fg-3)', cursor: 'pointer' }}>Technical details</summary>
+        <dl className="trk-profile-info" style={{ marginBottom: 8 }}>
+          <div>
+            <dt style={{ ...label(9), color: 'var(--fg-3)' }}>{channel.label} user ID</dt>
+            <dd style={{ ...mono(12), color: 'var(--fg-1)' }}>{profile.channel_user_id}</dd>
+          </div>
+        </dl>
+        <p style={{ ...serif(12), color: 'var(--fg-3)' }}>
+          Assigned by {channel.label}, not an Octomate internal profile ID.
+        </p>
+      </details>
+    </>
+  )
+}
 
 export function LinkProfilePage({ token }: { token: string }) {
   const user = useAuth((s) => s.user)
@@ -58,15 +99,15 @@ export function LinkProfilePage({ token }: { token: string }) {
   const channel = profile ? channelMeta(profile.channel_tentacle_id) : null
   return (
     <AuthPage
-      title={linked ? 'Profile linked' : 'Link profile'}
-      sub="channel identity · local account"
+      title={linked ? 'Profile linked' : 'Authorize profile'}
+      sub={`${channel?.label ?? 'Channel'} → Octomate · link profile`}
       width={440}
     >
       {linked ? (
         <>
           <Notice tone="sage">
-            {channel?.label ?? 'Channel'} profile {profile?.name || profile?.channel_user_id}{' '}
-            now belongs to {user?.name || user?.username}.
+            {channel?.label ?? 'Channel'} profile {profile?.name || profile?.nickname || ''}{' '}
+            now belongs to {user?.name || user?.nickname || user?.username}.
           </Notice>
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: 20 }}>
             <Button variant="accent" onClick={finishLinkProfile}>Continue →</Button>
@@ -78,22 +119,16 @@ export function LinkProfilePage({ token }: { token: string }) {
           {profile && channel && (
             <>
               <p style={{ ...serif(13), lineHeight: 1.65, color: 'var(--fg-2)' }}>
-                Confirm that this channel identity should belong to your signed-in
-                Octomate account.
+                This channel is requesting authorization from Octomate. Review
+                the profile and the signed-in account before linking them.
               </p>
-              <dl className="trk-profile-info" style={{ marginTop: 16 }}>
-                {[
-                  ['Channel', channel.label],
-                  ['Profile', profile.name || profile.nickname || profile.channel_user_id],
-                  ['Channel ID', profile.channel_user_id],
-                  ['Octomate account', user?.username ?? ''],
-                ].map(([name, value]) => (
-                  <div key={name}>
-                    <dt style={{ ...label(9), color: 'var(--fg-3)' }}>{name}</dt>
-                    <dd style={{ ...mono(12), color: 'var(--fg-1)' }}>{value}</dd>
-                  </div>
-                ))}
-              </dl>
+              <LinkProfileDetails profile={profile} user={user} />
+              <Notice tone="gold">
+                <ul style={{ margin: 0, paddingLeft: 20 }}>
+                  <li>No access token is sent to the channel.</li>
+                  <li>Nothing is linked until you approve.</li>
+                </ul>
+              </Notice>
             </>
           )}
           {error && <Refusal>{error}</Refusal>}
@@ -104,7 +139,7 @@ export function LinkProfilePage({ token }: { token: string }) {
               disabled={busy || loading || pending === null || user === null || error !== null}
               onClick={confirm}
             >
-              {busy ? 'Linking…' : 'Link profile →'}
+              {busy ? 'Linking…' : 'Authorize and link →'}
             </Button>
           </div>
         </>

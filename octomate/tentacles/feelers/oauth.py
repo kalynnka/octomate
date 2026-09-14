@@ -15,9 +15,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import replace
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING
 
 from octomate.capabilities.harness.events import (
+    LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
@@ -28,11 +29,24 @@ from octomate.tentacles.feelers.output import IMMessageID, MarkdownFeeler
 if TYPE_CHECKING:
     from octomate.tentacles.channel import Ink
 
-MessageT = TypeVar("MessageT")
+AuthorizationEvent = OAuthAuthorizationEvent | LinkProfileAuthorizationEvent
 
 
-class OAuthFeeler(ABC, Generic[MessageT]):
+def link_profile_body(event: LinkProfileAuthorizationEvent) -> str:
+    profile = event.authorization.profile
+    return (
+        f"Requested through: {profile.channel_tentacle_id}\n"
+        f"Profile ID: {profile.channel_user_id}\n\n"
+        f"Link this profile to your {event.host} account. "
+        "Review the profile and signed-in account, then confirm in the browser. "
+        "Your existing sign-in is reused. No access token is sent to the channel."
+    )
+
+
+class OAuthFeeler[MessageT](ABC):
     """Presents one pending authorization for one response target."""
+
+    ink: Ink[MessageT]
 
     def __init__(self, ink: Ink[MessageT]) -> None:
         self.ink = ink
@@ -40,7 +54,7 @@ class OAuthFeeler(ABC, Generic[MessageT]):
     async def present(
         self,
         address: ChannelAddress,
-        event: OAuthAuthorizationEvent,
+        event: AuthorizationEvent,
     ) -> IMMessageID | None:
         """The only way an authorization reaches a channel.
 
@@ -81,13 +95,13 @@ class OAuthFeeler(ABC, Generic[MessageT]):
     async def send(
         self,
         address: ChannelAddress,
-        event: OAuthAuthorizationEvent,
+        event: AuthorizationEvent,
     ) -> IMMessageID | None:
         """Render this authorization onto `address`, which `present` has already
         made private. Never call this with an address of your own."""
 
 
-class PlainTextOAuthFeeler(OAuthFeeler[MessageT]):
+class PlainTextOAuthFeeler[MessageT](OAuthFeeler[MessageT]):
     def __init__(self, ink: Ink[MessageT], markdown: MarkdownFeeler) -> None:
         super().__init__(ink)
         self.markdown = markdown
@@ -96,8 +110,14 @@ class PlainTextOAuthFeeler(OAuthFeeler[MessageT]):
     async def send(
         self,
         address: ChannelAddress,
-        event: OAuthAuthorizationEvent,
+        event: AuthorizationEvent,
     ) -> IMMessageID | None:
+        if isinstance(event, LinkProfileAuthorizationEvent):
+            return await self.markdown.present(
+                address,
+                f"[{event.host} authorization]({event.authorization.authorization_uri})"
+                f"\n\n{link_profile_body(event)}",
+            )
         link = f"[Connect {event.label}]({event.authorization_uri})"
         if isinstance(event, OAuthDeviceAuthorizationEvent):
             body = (

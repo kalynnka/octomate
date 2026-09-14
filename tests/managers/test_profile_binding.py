@@ -67,6 +67,7 @@ async def test_ticket_links_its_exact_profile_once(
 
     assert pending.profile.id == profile.id
     assert pending.profile.channel_user_id == "U1"
+    assert authorization.profile.id == pending.profile.id
     assert linked.id == profile.id
     assert linked.user_id == user.id
     with pytest.raises(InvalidLinkProfile):
@@ -79,6 +80,23 @@ async def test_ticket_links_its_exact_profile_once(
     assert ticket.get_secret_value() not in stored.token_hash.get_secret_value()
     assert linked is not None
     assert linked.user_id == user.id
+
+
+async def test_authorization_uses_the_stored_profile_not_the_callers_snapshot(
+    manager: UserManager,
+) -> None:
+    _, profile = await account_and_profile()
+    claimed = profile.model_copy(update={"name": "Wrong name", "channel_user_id": "U2"})
+
+    authorization = await manager.start_link_profile(claimed)
+    pending = await manager.inspect_link_profile(
+        ticket_from(authorization.authorization_uri)
+    )
+
+    assert authorization.profile.name == pending.profile.name == "Alice on Slack"
+    assert (
+        authorization.profile.channel_user_id == pending.profile.channel_user_id == "U1"
+    )
 
 
 async def test_start_replaces_an_earlier_ticket(
@@ -265,8 +283,11 @@ async def test_browser_confirmation_uses_the_displayed_account(
 
     assert inspected.status_code == 200
     assert inspected.json()["profile"]["id"] == str(profile.id)
+    assert set(inspected.json()) == {"profile", "expires_at"}
     assert confirmed.status_code == 200
     assert confirmed.json()["user_id"] == str(user.id)
+    assert "access_token" not in confirmed.json()
+    assert "refresh_token" not in confirmed.json()
 
 
 @pytest.mark.parametrize("configured", ["auth", "origin"])

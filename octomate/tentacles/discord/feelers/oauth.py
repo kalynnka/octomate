@@ -3,13 +3,17 @@ from __future__ import annotations
 import discord
 
 from octomate.capabilities.harness.events import (
-    OAuthAuthorizationEvent,
+    LinkProfileAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
-from octomate.tentacles.feelers.oauth import OAuthFeeler
+from octomate.tentacles.feelers.oauth import (
+    AuthorizationEvent,
+    OAuthFeeler,
+    link_profile_body,
+)
 from octomate.tentacles.feelers.output import IMMessageID
 
 
@@ -18,26 +22,34 @@ class DiscordOAuthFeeler(OAuthFeeler[DiscordOutboundMessage]):
     async def send(
         self,
         address: ChannelAddress,
-        event: OAuthAuthorizationEvent,
+        event: AuthorizationEvent,
     ) -> IMMessageID | None:
-        label = event.label[:100]
-        if isinstance(event, OAuthDeviceAuthorizationEvent):
-            content = (
-                f"**Connect {label}**\n"
-                f"Enter code `{event.user_code}` on the verification page, then "
-                "return here and tell me to confirm."
-            )
+        if isinstance(event, LinkProfileAuthorizationEvent):
+            label = event.host[:100]
+            content = f"**{label} authorization**\n{link_profile_body(event)}"
+            button_label = f"Continue in {label}"
+            authorization_uri = str(event.authorization.authorization_uri)
         else:
-            content = (
-                f"**Connect {label}**\n"
-                "Open the authorization page and approve the request."
-            )
+            label = event.label[:100]
+            button_label = f"Open {label}"
+            authorization_uri = event.authorization_uri
+            if isinstance(event, OAuthDeviceAuthorizationEvent):
+                content = (
+                    f"**Connect {label}**\n"
+                    f"Enter code `{event.user_code}` on the verification page, then "
+                    "return here and tell me to confirm."
+                )
+            else:
+                content = (
+                    f"**Connect {label}**\n"
+                    "Open the authorization page and approve the request."
+                )
         view = discord.ui.View(timeout=None)
         view.add_item(
             discord.ui.Button(
-                label=f"Open {label}"[:80],
+                label=button_label[:80],
                 style=discord.ButtonStyle.link,
-                url=event.authorization_uri,
+                url=authorization_uri,
             )
         )
         chat_id = address.chat_id or address.user_id

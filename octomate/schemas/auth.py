@@ -91,18 +91,18 @@ class SessionTokens(BaseModel):
     refresh_expires_at: AwareDatetime
 
 
-class LinkProfileAuthorization(BaseModel):
-    """The private URL returned only to the channel profile that requested it."""
-
-    authorization_uri: AnyHttpUrl = Field(repr=False)
-    expires_at: AwareDatetime
-
-
 class LinkProfileInfo(BaseModel):
     """The profile link an authenticated browser is being asked to confirm."""
 
     profile: UserProfile
     expires_at: AwareDatetime
+    # TODO: Model requested scopes and consent once per-profile permissions are enforced.
+
+
+class LinkProfileAuthorization(LinkProfileInfo):
+    """The host authorization request delivered only to its channel profile."""
+
+    authorization_uri: AnyHttpUrl = Field(repr=False)
 
 
 class IssuedApiKey(BaseModel):

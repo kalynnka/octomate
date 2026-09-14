@@ -11,7 +11,9 @@ from websockets.exceptions import ConnectionClosed
 
 from octomate.config import NapcatChannelConfig
 from octomate.tentacles.channel import ChannelSurfaces, ChannelTentacle
+from octomate.tentacles.feelers.output import DefaultTimelineFeeler
 from octomate.tentacles.napcat.chromo import NapcatChromo
+from octomate.tentacles.napcat.feelers import NapcatOAuthFeeler
 from octomate.tentacles.napcat.ink import NapcatInk
 from octomate.tentacles.napcat.schema import NapcatOutboundMessage
 
@@ -55,6 +57,15 @@ class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
         )
         self.ink = ink
         self.chromo = chromo
+        self.feelers.oauth = NapcatOAuthFeeler(ink)
+        self.feelers.timeline = DefaultTimelineFeeler(
+            ink=ink,
+            chromo=chromo,
+            ask_questions=self.feelers.ask_questions,
+            approvals=self.feelers.approvals,
+            oauth=self.feelers.oauth,
+            deferred_actions=octomate.deferred_actions,
+        )
         self.ws_url = config.ws_url
         self.access_token = config.access_token
         self.backoff_base = config.backoff_base

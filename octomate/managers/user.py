@@ -202,6 +202,7 @@ class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
 
         root = str(self.authorization_base_uri).rstrip("/")
         return LinkProfileAuthorization(
+            profile=stored,
             authorization_uri=AnyHttpUrl(
                 f"{root}/#link-profile={token.get_secret_value()}"
             ),

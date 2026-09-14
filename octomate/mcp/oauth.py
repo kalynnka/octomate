@@ -13,6 +13,7 @@ from fastmcp.exceptions import ToolError
 from pydantic import Field
 
 from octomate.capabilities.harness.events import (
+    LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
@@ -150,14 +151,19 @@ def mount_oauth(
     @mcp.tool(
         name="link_profile",
         description=(
-            "Send a private Octomate sign-in link that links the channel profile "
-            "driving this turn to the signed-in user's account. Use this when the "
+            "Request authorization from the Octomate host to link the channel profile "
+            "driving this turn to the signed-in user's account. The host authorization "
+            "card is sent privately through the channel. Use this when the "
             "user asks to link their current channel profile. The profile and "
             "destination come from the current turn, never tool arguments; the "
-            "link goes to that user's direct messages and is not returned here."
+            "link goes to that user's direct messages and is not returned here. "
+            "Trunkline already uses the signed-in Octomate identity and cannot link profiles."
         ),
     )
     async def link_profile(session: OctomateSession = octomate_session) -> str:
+        # Trunkline's routers import Octomate, which mounts this MCP module.
+        from octomate.tentacles.trunkline.base import TrunklineTentacle
+
         profile = session.user_profile
         address = session.conversation_address
         channel = (
@@ -165,6 +171,11 @@ def mount_oauth(
             if address is not None
             else None
         )
+        if isinstance(channel, TrunklineTentacle):
+            raise ToolError(
+                "Trunkline already uses your signed-in Octomate identity; "
+                "profile linking is not needed."
+            )
         if profile is None or address is None or channel is None:
             raise ToolError(
                 "Linking a profile requires a turn from a user on a channel."
@@ -190,13 +201,12 @@ def mount_oauth(
             LinkProfileUnavailable,
         ) as error:
             raise ToolError(str(error)) from error
-        message_id = await channel.feelers.markdown.present(
+        message_id = await channel.feelers.oauth.present(
             private_address,
-            "[Link this channel profile to Octomate]"
-            f"({authorization.authorization_uri})\n\n"
-            "Sign in if needed, then confirm the exact profile in the browser. "
-            "An existing Octomate browser session is reused. This link is "
-            "short-lived and works once.",
+            LinkProfileAuthorizationEvent(
+                host=channel.octomate.title,
+                authorization=authorization,
+            ),
         )
         if message_id is None:
             raise ToolError("The channel could not deliver the private profile link.")
