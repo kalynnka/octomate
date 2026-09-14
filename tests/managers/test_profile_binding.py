@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
@@ -11,15 +12,20 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import AuthConfig, OAuthConfig, OctomateConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import AsyncSession, async_session
+from octomate.dependencies import application
 from octomate.managers.user import (
     InvalidLinkProfile,
     LinkProfileUnavailable,
     ProfileAlreadyLinked,
+    ProfileNotLinked,
     UserManager,
 )
 from octomate.schemas.auth import LinkProfileSession
 from octomate.schemas.user import User, UserProfile
+from octomate.tentacles.trunkline import TrunklineTentacle
+from tests.support.users import auth_config
 
 PASSWORD = SecretStr("Correct horse battery staple1!")
 
@@ -80,6 +86,111 @@ async def test_ticket_links_its_exact_profile_once(
     assert ticket.get_secret_value() not in stored.token_hash.get_secret_value()
     assert linked is not None
     assert linked.user_id == user.id
+
+
+@pytest.mark.parametrize("confirmed", [False, True])
+async def test_unlink_preserves_profile_and_requires_fresh_authorization(
+    manager: UserManager, confirmed: bool
+) -> None:
+    user, profile = await account_and_profile()
+    ticket = ticket_from((await manager.start_link_profile(profile)).authorization_uri)
+    if confirmed:
+        await manager.confirm_link_profile(ticket, user)
+    else:
+        await manager.ensure_profile(
+            profile.channel_tentacle_id, profile.model_copy(update={"user_id": user.id})
+        )
+
+    await manager.unlink_profile(user, profile.id)
+
+    async with async_session() as session:
+        stored = await session.get(UserProfile, profile.id)
+    assert stored is not None
+    assert stored.user_id is None
+    assert stored.name == profile.name
+    assert stored.channel_user_id == profile.channel_user_id
+    with pytest.raises(InvalidLinkProfile):
+        await manager.confirm_link_profile(ticket, user)
+    with pytest.raises(ProfileNotLinked):
+        await manager.unlink_profile(user, profile.id)
+
+    fresh = ticket_from((await manager.start_link_profile(stored)).authorization_uri)
+    assert (await manager.confirm_link_profile(fresh, user)).user_id == user.id
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_unlink_rejects_unknown_and_other_users_profiles(
+    manager: UserManager, missing: bool
+) -> None:
+    user, profile = await account_and_profile()
+    other = User(username="bob")
+    async with async_session() as session:
+        session.add(other)
+        await session.commit()
+    ticket = ticket_from((await manager.start_link_profile(profile)).authorization_uri)
+    await manager.confirm_link_profile(ticket, user)
+
+    with pytest.raises(ProfileNotLinked):
+        await manager.unlink_profile(other, uuid.uuid4() if missing else profile.id)
+    stored = await manager.profile("slack", "U1")
+    assert stored is not None
+    assert stored.user_id == user.id
+
+
+@pytest.mark.parametrize("channel_id", ["slack", "trunkline", "console-alias"])
+@pytest.mark.parametrize("override_host", [False, True])
+async def test_browser_disconnect_checks_session_ownership_and_direct_identity(
+    channel_id: str,
+    override_host: bool,
+) -> None:
+    app = Octomate(config=OctomateConfig(auth=auth_config()))
+    assert app.auth is not None
+    host = Octomate(config=app.config) if override_host else app
+    if override_host:
+        app.dependency_overrides[application] = lambda: host
+    if channel_id != "slack":
+        host.connect(
+            TrunklineTentacle(
+                channel_id, host, config=TrunklineChannelConfig(agents=["inkling"])
+            )
+        )
+    user = User(username="alice", password_hash=await app.auth.hash_password(PASSWORD))
+    other = User(username="bob", password_hash=user.password_hash)
+    async with async_session() as session:
+        session.add(user)
+        session.add(other)
+        await session.flush()
+        profile = UserProfile(
+            channel_tentacle_id=channel_id, channel_user_id="U1", user_id=user.id
+        )
+        session.add(profile)
+        await session.commit()
+
+    path = f"/api/auth/profiles/{profile.id}"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="https://testserver"
+    ) as client:
+        assert (await client.delete(path)).status_code == 403
+        client.headers["X-Octomate-Request"] = "1"
+        assert (await client.delete(path)).status_code == 401
+        for username in ["bob", "alice"]:
+            login = await client.post(
+                "/api/auth/login",
+                json={"username": username, "password": PASSWORD.get_secret_value()},
+            )
+            assert login.status_code == 204
+            response = await client.delete(path)
+            expected = (
+                404 if username == "bob" else 204 if channel_id == "slack" else 409
+            )
+            assert response.status_code == expected
+        assert (
+            await client.delete(f"/api/auth/profiles/{uuid.uuid4()}")
+        ).status_code == 404
+    async with async_session() as session:
+        stored = await session.get(UserProfile, profile.id)
+    assert stored is not None
+    assert stored.user_id == (None if channel_id == "slack" else user.id)
 
 
 async def test_authorization_uses_the_stored_profile_not_the_callers_snapshot(

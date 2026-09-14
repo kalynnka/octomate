@@ -20,7 +20,7 @@ import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
 
-export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'channels' | 'keys' | 'dash' | 'settings'
+export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
 export type InterfaceSize = 'small' | 'standard' | 'large'
 export type RailKey = 'sb' | 'mgmt' | 'trace' | 'pv'

@@ -152,45 +152,107 @@ html[data-interface-size='large'] { --trk-interface-scale: 1; }
 .trk-profile-info { margin: 0 0 24px; }
 .trk-profile-info > div { border-bottom: 1px solid var(--line-divider); padding: 14px 0; }
 .trk-profile-info dd { margin: 6px 0 0; overflow-wrap: anywhere; }
-.trk-channel-table table { table-layout: fixed; }
-.trk-channel-table td { overflow-wrap: anywhere; }
-.trk-profile-select {
+.trk-profile-workspace { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 24px; padding: 2px 2px 12px; }
+.trk-profile-picker { display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; max-width: 248px; min-width: 0; }
+.trk-profile-picker-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 0 10px 10px; margin-bottom: 6px; border-bottom: 1px solid var(--line-divider); color: var(--fg-3); }
+.trk-profile-picker-heading::before { content: ''; width: 22px; height: 5px; background: repeating-linear-gradient(115deg, var(--trk-bracket) 0 1px, transparent 1px 5px); }
+.trk-profile-picker-heading > span:first-of-type { flex: 1; }
+.trk-profile-picker button {
+  position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 10px;
-  width: 100%;
-  padding: 6px 8px;
-  border: 1px solid transparent;
+  padding: 8px 10px;
   text-align: left;
-  color: var(--fg-1);
+  border: 0;
+  border-left: 2px solid transparent;
+  border-bottom: 1px solid var(--line-divider);
   background: transparent;
   cursor: pointer;
+  transition: border-color var(--motion-fast), background var(--motion-fast);
 }
-.trk-profile-select:hover, .trk-profile-select[aria-expanded='true'] {
-  border-color: var(--color-accent);
-  background: var(--trk-wash);
+.trk-profile-picker button[data-channel='false'] { margin-bottom: 6px; }
+.trk-profile-picker button[data-channel='true'] { margin-left: 18px; }
+.trk-profile-picker button[data-channel='true']::before {
+  content: '';
+  position: absolute;
+  left: -11px;
+  top: -3px;
+  bottom: -3px;
+  border-left: 1px solid var(--line-divider);
 }
-.trk-profile-detail { flex: 0 0 280px; box-sizing: border-box; margin: 0; }
-.trk-profile-detail-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  flex-shrink: 0;
-  padding-bottom: 10px;
+.trk-profile-picker button[data-channel='false'] + button::before { top: -9px; }
+.trk-profile-picker button[data-channel='true']:last-of-type::before { bottom: 50%; }
+.trk-profile-picker button[data-channel='true']::after {
+  content: '';
+  position: absolute;
+  left: -11px;
+  top: 50%;
+  width: 7px;
   border-bottom: 1px solid var(--line-divider);
 }
-.trk-profile-detail-header h2 { margin: 0; }
-@container (max-width: 760px) {
-  .trk-profile-detail {
-    position: absolute;
-    top: var(--trk-control-inset);
-    right: var(--trk-control-inset);
-    bottom: var(--trk-control-inset);
-    width: min(320px, calc(100% - 2 * var(--trk-control-inset)));
-    z-index: 2;
-  }
+.trk-profile-picker button:hover { background: var(--trk-wash); }
+.trk-profile-picker button[aria-pressed='true'] { border-left-color: currentColor; background: var(--card-bg-hover); }
+.trk-profile-picker button:focus-visible { outline: 2px solid var(--fg-2); outline-offset: 3px; }
+.trk-profile-picker button:disabled { cursor: wait; opacity: 0.6; }
+.trk-profile-picker-index { flex: 0 0 26px; letter-spacing: .08em; opacity: .65; }
+.trk-profile-picker button[aria-pressed='true'] .trk-profile-picker-index { opacity: 1; }
+.trk-profile-picker-copy { display: flex; flex-direction: column; gap: 3px; min-width: 0; flex: 1; }
+.trk-profile-picker-copy > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.trk-profile-picker-status { flex: 0 0 5px; height: 5px; border-radius: 50%; background: currentColor; opacity: 0; }
+.trk-profile-picker button[aria-pressed='true'] .trk-profile-picker-status { opacity: 1; }
+.trk-profile-disconnect { width: 100%; }
+.trk-profile-disconnect p { margin: 0 0 16px; color: var(--fg-2); font-size: 13px; line-height: 1.6; }
+.trk-profile-disconnect > div:last-child { display: flex; flex-wrap: wrap; gap: 10px; }
+.trk-profile-stack { display: grid; grid-template-columns: minmax(0, 1fr); position: relative; isolation: isolate; flex: 3 1 340px; min-width: 0; max-width: 560px; }
+.trk-account-card, .trk-profile-back {
+  position: relative;
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 420px;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--line-divider);
+  background: var(--card-bg);
+  box-shadow: var(--shadow-soft);
+  padding: clamp(16px, 3vw, 28px);
+}
+.trk-profile-back { pointer-events: none; }
+.trk-account-card { opacity: 0; z-index: 0; transition: opacity var(--motion-fast) linear; }
+.trk-account-card[data-front='true'] { opacity: 1; z-index: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .trk-account-card { transition: none; }
+}
+.trk-account-masthead { display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 8px; padding-bottom: 18px; margin-bottom: 24px; border-bottom: 1px solid var(--line-divider); }
+.trk-account-identity { display: flex; flex-wrap: wrap; align-items: center; gap: 20px; }
+.trk-account-avatar {
+  display: grid;
+  place-items: center;
+  flex: 0 0 64px;
+  height: 64px;
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+  background: color-mix(in srgb, currentColor 6%, transparent);
+  color: var(--fg-2);
+  font: 600 24px var(--font-mono);
+}
+.trk-account-name { flex: 1 1 180px; min-width: 0; overflow-wrap: anywhere; }
+.trk-account-name h2 { margin: 8px 0; color: var(--fg-1); font-family: var(--font-display); font-size: 32px; font-weight: 900; letter-spacing: -.035em; line-height: 1.1; }
+.trk-account-name p { margin: 6px 0 0; color: var(--fg-2); }
+.trk-account-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 24px 0; }
+.trk-account-facts > div { min-width: 0; }
+.trk-account-facts > div[data-technical='true'] { grid-column: 1 / -1; }
+.trk-account-facts dd { margin: 6px 0 0; overflow-wrap: anywhere; }
+.trk-account-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px;
+  margin-top: auto;
+  padding-top: 18px;
+  border-top: 1px solid var(--line-divider);
 }
 .trk-setting { border: 0; padding: 0; margin: 0 0 24px; min-width: 0; }
 .trk-setting legend { margin-bottom: 10px; }

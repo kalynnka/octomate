@@ -10,6 +10,7 @@ import type { ApiLinkProfile, ApiUser } from '../src/lib/api/auth.ts'
 let server: ViteDevServer
 let inspectLinkProfile: typeof import('../src/lib/api/auth.ts').inspectLinkProfile
 let confirmLinkProfile: typeof import('../src/lib/api/auth.ts').confirmLinkProfile
+let unlinkProfile: typeof import('../src/lib/api/auth.ts').unlinkProfile
 let LinkProfileDetails: typeof import('../src/features/auth/LinkProfilePage.tsx').LinkProfileDetails
 
 const profile: ApiUserProfile = {
@@ -23,7 +24,7 @@ before(async () => {
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ inspectLinkProfile, confirmLinkProfile } = await server.ssrLoadModule('/src/lib/api/auth.ts'))
+  ;({ inspectLinkProfile, confirmLinkProfile, unlinkProfile } = await server.ssrLoadModule('/src/lib/api/auth.ts'))
   ;({ LinkProfileDetails } = await server.ssrLoadModule('/src/features/auth/LinkProfilePage.tsx'))
 })
 after(async () => { await server?.close() })
@@ -121,3 +122,21 @@ test('an account switch refusal reaches the form without retrying confirmation',
   await assert.rejects(confirmLinkProfile('private-ticket', 'alice-id'), /account changed/)
   assert.equal(fetch.mock.callCount(), 1)
 })
+
+test('disconnect sends a CSRF-protected DELETE for the exact encoded profile ID', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
+  await unlinkProfile('profile/id')
+  const [path, init] = fetch.mock.calls[0].arguments
+  assert.equal(path, '/api/auth/profiles/profile%2Fid')
+  assert.equal(init?.method, 'DELETE')
+  assert.equal(new Headers(init?.headers).get('X-Octomate-Request'), '1')
+  assert.equal(fetch.mock.callCount(), 1)
+})
+
+for (const status of [403, 404, 409, 500]) {
+  test(`disconnect surfaces a ${status} refusal without retrying the write`, async () => {
+    const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'Cannot disconnect' }, { status }))
+    await assert.rejects(unlinkProfile('profile-id'), /Cannot disconnect/)
+    assert.equal(fetch.mock.callCount(), 1)
+  })
+}

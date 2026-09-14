@@ -233,6 +233,11 @@ export async function revokeApiKey(id: string): Promise<void> {
   if (!res.ok) return refuse(res)
 }
 
+export async function unlinkProfile(id: string): Promise<void> {
+  const res = await apiFetch(`/api/auth/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) return refuse(res)
+}
+
 export async function inspectLinkProfile(token: string): Promise<ApiLinkProfile> {
   const res = await apiFetch('/api/auth/link-profile/inspect', {
     method: 'POST',

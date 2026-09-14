@@ -34,6 +34,11 @@ class ProfileAlreadyLinked(ValueError):
         super().__init__("This channel profile is already linked")
 
 
+class ProfileNotLinked(ValueError):
+    def __init__(self) -> None:
+        super().__init__("This profile is not linked to your account")
+
+
 class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
     """The persisted cross-channel user registry and verified profile links."""
 
@@ -45,6 +50,20 @@ class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
     ) -> None:
         self.authorization_base_uri = authorization_base_uri
         self.authorization_lifetime = authorization_lifetime
+
+    async def unlink_profile(self, user: User, profile_id: uuid.UUID) -> None:
+        async with self.lock(profile_id), async_session() as session:
+            profile = await session.get(UserProfile, profile_id)
+            if profile is None or profile.user_id != user.id:
+                raise ProfileNotLinked
+            profile.user_id = None
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["profile_id"] == profile_id],
+            )
+            if pending is not None:
+                pending.consumed_at = datetime.now(UTC)
+            await session.commit()
 
     async def owner(self, profile: UserProfile) -> User | None:
         """Return the registered owner of ``profile``, or ``None`` for a visitor."""
