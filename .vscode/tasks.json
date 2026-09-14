@@ -1,0 +1,27 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Octomate: debug attachment on",
+      "type": "process",
+      "command": "cp",
+      "args": [
+        "-p",
+        "${workspaceFolder}/.octomate/cli.debug.toml",
+        "${workspaceFolder}/.octomate/cli.toml"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Octomate: debug attachment off",
+      "type": "process",
+      "command": "cp",
+      "args": [
+        "-p",
+        "${workspaceFolder}/.octomate/cli.macmini.toml",
+        "${workspaceFolder}/.octomate/cli.toml"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}
