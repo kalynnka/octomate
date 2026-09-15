@@ -112,6 +112,7 @@ def build_mcp(id: str, config: McpConfigVariant, octomate: Octomate) -> McpTenta
                             )
                         flow = McpOAuthFlow(
                             url=config.url,
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
                             authorization_endpoint=flow_config.authorization_endpoint,
                             tokens=tokens,
                             httpx_client_factory=octomate.oauth.httpx_client_factory,

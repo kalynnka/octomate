@@ -9,7 +9,6 @@ const defs: { id: Exclude<ControlSection, ''>; label: string }[] = [
   { id: 'agents', label: 'Agents' },
   { id: 'mcp', label: 'MCP' },
   { id: 'profile', label: 'Profile' },
-  { id: 'channels', label: 'Channels' },
   { id: 'keys', label: 'API Keys' },
   { id: 'settings', label: 'Settings' },
 ]

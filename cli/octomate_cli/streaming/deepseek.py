@@ -21,9 +21,9 @@ event is an interrupted `turn/end` withholds everything from that turn's
 follows it — a successor event is the proof the closers are the log's own.
 
 Spawned per session by the launcher hook (`launch.py`), detached; one
-instance per session via the same flock the file tails use. The server owns
-the cursor: each connect re-asks where to resume (the committed floor), so
-this process holds no durable state. It ends on the server's `finalize` (a
+instance per config scope, agent and session via the same flock the file tails use.
+The server owns the cursor: each connect re-asks where to resume (the committed
+floor), so this process holds no durable state. It ends on the server's `finalize` (a
 `Stop` settled), on the idle window, or on a policy refusal (close 1008, such
 as a stale protocol).
 """
@@ -35,7 +35,6 @@ import contextlib
 import fcntl
 import json
 import sys
-import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -64,6 +63,7 @@ from octomate_cli.streaming.files import (
     LOCK_GRACE,
     LOCK_POLL,
     REFUSED,
+    tail_path,
 )
 
 # The gateway is polled rather than watched: an attached session's history is
@@ -358,7 +358,7 @@ def main(
     # gateway the events come from.
     if session_origin(dsh_url, session_id) == "subagent":
         return
-    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+    lock_path = tail_path("deepseek", session_id).with_suffix(".lock")
     with lock_path.open("w") as lock:
         deadline = monotonic() + LOCK_GRACE
         while True:

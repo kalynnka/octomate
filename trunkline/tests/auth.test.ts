@@ -24,7 +24,7 @@ before(async () => {
 after(async () => { await server?.close() })
 afterEach(() => {
   mock.restoreAll()
-  useAuth.setState({ status: 'booting', user: null, page: 'login', invitation: '', notice: null, relay: 'ok' })
+  useAuth.setState({ status: 'booting', user: null, page: 'login', invitation: '', linkProfile: '', notice: null, relay: 'ok' })
   delete browser.window
   delete browser.history
 })
@@ -50,6 +50,51 @@ test('registration signs in and discards the invitation', async () => {
   assert.equal(useAuth.getState().status, 'signed-in')
   assert.deepEqual(useAuth.getState().user, user)
   assert.equal(useAuth.getState().invitation, '')
+})
+
+test('a profile link survives sign-in and leaves the address bar', async () => {
+  browser.window = {
+    location: {
+      hash: '#link-profile=link-ticket',
+      pathname: '/',
+      search: '',
+    },
+  }
+  const replaceState = mock.fn<History['replaceState']>()
+  browser.history = { replaceState }
+  mock.method(globalThis, 'fetch', async () => new Response(null, { status: 401 }))
+
+  await useAuth.getState().actions.boot()
+
+  assert.equal(useAuth.getState().status, 'signed-out')
+  assert.equal(useAuth.getState().page, 'login')
+  assert.equal(useAuth.getState().linkProfile, 'link-ticket')
+  assert.deepEqual(replaceState.mock.calls[0].arguments, [null, '', '/'])
+
+  mock.method(globalThis, 'fetch', async () => Response.json(user))
+  await useAuth.getState().actions.signIn('alice', 'Test password1!')
+  assert.equal(useAuth.getState().status, 'signed-in')
+  assert.equal(useAuth.getState().linkProfile, 'link-ticket')
+})
+
+test('a profile link reuses an existing browser session', async () => {
+  browser.window = {
+    location: {
+      hash: '#link-profile=link-ticket',
+      pathname: '/',
+      search: '',
+    },
+  }
+  const replaceState = mock.fn<History['replaceState']>()
+  browser.history = { replaceState }
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json(user))
+
+  await useAuth.getState().actions.boot()
+
+  assert.equal(useAuth.getState().status, 'signed-in')
+  assert.deepEqual(useAuth.getState().user, user)
+  assert.equal(useAuth.getState().linkProfile, 'link-ticket')
+  assert.equal(fetch.mock.callCount(), 1)
 })
 
 test('reload refreshes an expired access session before restoring the account', async () => {

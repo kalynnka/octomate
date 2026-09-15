@@ -892,6 +892,39 @@ def test_oauth_refresh_leeway_rejects_negative_durations() -> None:
         OctomateConfig.model_validate({"oauth": {"token_refresh_leeway": -1}})
 
 
+def test_oauth_authorization_lifetime_loads_from_yaml_and_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
+    assert OctomateConfig().oauth.authorization_lifetime == timedelta(minutes=10)
+    (tmp_path / "oauth.yaml").write_text("oauth:\n  authorization_lifetime: 180\n")
+    assert OctomateConfig().oauth.authorization_lifetime == timedelta(minutes=3)
+    monkeypatch.setenv("OCTOMATE__OAUTH__AUTHORIZATION_LIFETIME", "PT2M")
+    assert OctomateConfig().oauth.authorization_lifetime == timedelta(minutes=2)
+
+
+@pytest.mark.parametrize("lifetime", [0, -1])
+def test_oauth_authorization_lifetime_rejects_nonpositive_durations(
+    lifetime: int,
+) -> None:
+    with pytest.raises(ValidationError, match="authorization_lifetime"):
+        OctomateConfig.model_validate({"oauth": {"authorization_lifetime": lifetime}})
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "https://user:password@octomate.example",
+        "https://octomate.example/path",
+        "https://octomate.example?query=1",
+        "https://octomate.example#fragment",
+    ],
+)
+def test_shared_authorization_uri_requires_a_public_origin(uri: str) -> None:
+    with pytest.raises(ValidationError, match="callback_base_uri"):
+        OctomateConfig.model_validate({"oauth": {"callback_base_uri": uri}})
+
+
 @pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan")])
 def test_mcp_pool_rejects_invalid_timeout(timeout: float) -> None:
     with pytest.raises(ValidationError, match="idle_timeout"):

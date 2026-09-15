@@ -38,6 +38,7 @@ from uuid_utils import uuid7
 
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
+    LinkProfileAuthorizationEvent,
     RunErrorEvent,
     RunResultEvent,
     StreamEvents,
@@ -67,6 +68,7 @@ from octomate.tentacles.channel import (
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.deferred import ApprovalFeeler, QuestionFeeler
+from octomate.tentacles.feelers.oauth import AuthorizationEvent, OAuthFeeler
 from octomate.tentacles.feelers.output import (
     SubagentTimelineState,
     TimelineState,
@@ -306,6 +308,23 @@ class TrunklineApprovalFeeler(ApprovalFeeler):
         return {action.id: None for action in actions}
 
 
+class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
+    """Deliver provider authorizations to the active private browser stream."""
+
+    async def send(
+        self, address: ChannelAddress, event: AuthorizationEvent
+    ) -> IMMessageID | None:
+        if isinstance(event, LinkProfileAuthorizationEvent):
+            raise RuntimeError("Trunkline does not support profile linking")
+        sink = current_sink.get()
+        if sink is None:
+            raise RuntimeError(
+                "Trunkline authorization requires an active browser request"
+            )
+        await sink.send(event)
+        return uuid7().hex
+
+
 class TrunklineTimelineFeeler:
     """Opens a per-run timeline that streams into the active request's sink."""
 
@@ -389,6 +408,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         # claude/codex `_await_human` presents through these directly.
         self.feelers.ask_questions = TrunklineQuestionFeeler()
         self.feelers.approvals = TrunklineApprovalFeeler()
+        self.feelers.oauth = TrunklineOAuthFeeler(self.ink)
         self.feelers.timeline = TrunklineTimelineFeeler(
             ask_questions=self.feelers.ask_questions,
             approvals=self.feelers.approvals,

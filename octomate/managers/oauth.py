@@ -20,7 +20,6 @@ from pydantic import (
 )
 from uuid_utils.compat import uuid7
 
-from octomate.config.oauth import OAuthConfig
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
@@ -125,11 +124,12 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         self,
         *,
         users: UserManager,
+        authorization_lifetime: timedelta,
+        token_refresh_leeway: timedelta,
         encryption_key: SecretStr | None = None,
         connectors: Iterable[OAuthConnector] = (),
         callback_base_uri: AnyHttpUrl | None = None,
         client_metadata_url: HttpsUrl | None = None,
-        token_refresh_leeway: timedelta | None = None,
         httpx_client_factory: McpHttpClientFactory = mcp_http_client,
     ) -> None:
         self.users = users
@@ -138,12 +138,9 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         )
         self.connectors: dict[str, OAuthConnector] = {}
         self.callback_base_uri = callback_base_uri
+        self.authorization_lifetime: timedelta = authorization_lifetime
         self.client_metadata_url = client_metadata_url
-        self.token_refresh_leeway = (
-            token_refresh_leeway
-            if token_refresh_leeway is not None
-            else OAuthConfig().token_refresh_leeway
-        )
+        self.token_refresh_leeway: timedelta = token_refresh_leeway
         self.httpx_client_factory = httpx_client_factory
         for connector in connectors:
             self.register(connector)
@@ -193,6 +190,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
             flows=[
                 McpOAuthFlow(
                     url=url,
+                    authorization_lifetime=self.authorization_lifetime,
                     httpx_client_factory=self.httpx_client_factory,
                     client_metadata_url=self.client_metadata_url,
                     state=state,

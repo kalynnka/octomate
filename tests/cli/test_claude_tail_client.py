@@ -4,7 +4,6 @@ per-session single-instance lock, and what `main` refuses to run without."""
 from __future__ import annotations
 
 import fcntl
-import tempfile
 import threading
 from pathlib import Path
 from uuid import uuid4
@@ -12,7 +11,7 @@ from uuid import uuid4
 import octomate_cli.streaming.files as tail_mod
 import pytest
 from octomate_cli.config import CLISettings
-from octomate_cli.streaming.files import FileCursor, SessionTail, main
+from octomate_cli.streaming.files import FileCursor, SessionTail, main, tail_path
 
 
 @pytest.fixture(autouse=True)
@@ -105,6 +104,7 @@ async def test_main_refuses_to_run_without_the_hook_credential(
     monkeypatch.chdir(tmp_path)
     with pytest.raises(SystemExit):
         main(
+            agent="claude",
             session_id="s1",
             transcript_path=tmp_path / "t.jsonl",
             url="ws://127.0.0.1:1/hooks/claude/stream",
@@ -134,11 +134,12 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
 
     monkeypatch.setattr(tail_mod, "run_tail", record_only)
     session_id = f"lock-{uuid4()}"
-    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+    lock_path = tail_path("claude", session_id).with_suffix(".lock")
 
     with lock_path.open("w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         main(
+            agent="claude",
             session_id=session_id,
             transcript_path=tmp_path / "t.jsonl",
             url="ws://127.0.0.1:1/hooks/claude/stream",
@@ -147,6 +148,7 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
     assert streamed == []  # the held lock made it a no-op
 
     main(
+        agent="claude",
         session_id=session_id,
         transcript_path=tmp_path / "t.jsonl",
         url="ws://127.0.0.1:1/hooks/claude/stream",
@@ -178,7 +180,7 @@ def test_a_spawn_during_the_drain_waits_out_the_lock(
 
     monkeypatch.setattr(tail_mod, "run_tail", record_only)
     session_id = f"grace-{uuid4()}"
-    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+    lock_path = tail_path("claude", session_id).with_suffix(".lock")
 
     held = lock_path.open("w")
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -186,6 +188,7 @@ def test_a_spawn_during_the_drain_waits_out_the_lock(
     release.start()
     try:
         main(
+            agent="claude",
             session_id=session_id,
             transcript_path=tmp_path / "t.jsonl",
             url="ws://127.0.0.1:1/hooks/claude/stream",
@@ -210,18 +213,19 @@ def test_a_spool_handoff_reaches_a_running_tail_and_defers(
         tail_mod, "run_tail", None
     )  # any call would TypeError: nothing may stream here
     session_id = f"spool-{uuid4()}"
-    spool = tmp_path / "session.paths"
+    runtime_path = tail_path("codex", session_id)
+    spool = runtime_path.with_suffix(".paths")
     child = tmp_path / "rollout-child.jsonl"
-    lock_path = Path(tempfile.gettempdir()) / f"octomate-tail-{session_id}.lock"
+    lock_path = runtime_path.with_suffix(".lock")
 
     with lock_path.open("w") as held:
         fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
         main(
+            agent="codex",
             session_id=session_id,
             transcript_path=tmp_path / "rollout-parent.jsonl",
             url="ws://127.0.0.1:1/hooks/codex/stream",
             cwd="",
-            spool=spool,
             agent_path=child,
         )
     assert spool.read_text() == f"{child}\n"

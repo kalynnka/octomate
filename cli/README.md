@@ -40,3 +40,19 @@ Issue an API token through the authenticated account API, then run
 environment override is `OCTOMATE_CLI_TOKEN`. Old `secret` values and
 `OCTOMATE_CLI_SECRET` are no longer used. Install hooks and MCP after configuring
 the token, and reinstall MCP entries when it changes.
+
+## Workspace development
+
+`./.octomate/cli.toml` overrides `~/.config/octomate/cli.toml` per key. Set both
+`url` and `token` for a debugger server; environment overrides still take precedence.
+
+When a workspace TOML exists, its location gives transcript tails their own runtime
+scope, even if its settings match the user config. Locks and Codex child-path spools
+are separate per config location, agent and session. Replacing the TOML contents
+does not change those paths, restart existing tails, or redirect their connections.
+
+Switch TOML before starting a fresh development conversation. Later hooks read the
+current config, while an already-running tail keeps its startup URL and token,
+including on reconnect. This is not whole-session pinning: switching during an
+existing conversation can split its hooks and transcript stream across servers.
+Runtime scoping also does not isolate server data for the same native session.

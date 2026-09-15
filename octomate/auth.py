@@ -5,11 +5,23 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import AwareDatetime, Field, SecretStr
 from typing_extensions import TypedDict
 
+from octomate.base import Octomate
 from octomate.database import async_session
-from octomate.dependencies import auth_manager
+from octomate.dependencies import application, auth_manager, user_manager
 from octomate.managers.auth import AuthManager, InvalidCredentials, UsernameUnavailable
-from octomate.schemas.auth import SessionTokens, UserApiKey, UserSession
-from octomate.schemas.user import User
+from octomate.managers.user import (
+    InvalidLinkProfile,
+    ProfileAlreadyLinked,
+    ProfileNotLinked,
+    UserManager,
+)
+from octomate.schemas.auth import (
+    LinkProfileInfo,
+    SessionTokens,
+    UserApiKey,
+    UserSession,
+)
+from octomate.schemas.user import User, UserProfile
 from octomate.types.auth import ApiKeyScope, NewPassword
 
 
@@ -102,6 +114,16 @@ class ApiKeyResponse(TypedDict):
 
     key: UserApiKey
     token: str
+
+
+class LinkProfileBody(TypedDict):
+    token: Annotated[SecretStr, Field(min_length=1, max_length=200)]
+
+
+class LinkProfileConfirmationBody(LinkProfileBody):
+    expected_user_id: Annotated[
+        uuid.UUID, Field(description="The account displayed on the confirmation page.")
+    ]
 
 
 auth_router = APIRouter(
@@ -225,3 +247,64 @@ async def revoke_api_key(
         await manager.revoke_api_key(user.id, key_id)
     except InvalidCredentials as error:
         raise HTTPException(status_code=404, detail="API key not found") from error
+
+
+@auth_router.delete("/profiles/{profile_id}", status_code=204, response_model=None)
+async def unlink_profile(
+    profile_id: uuid.UUID,
+    app: Annotated[Octomate, Depends(application)],
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[UserManager, Depends(user_manager)],
+) -> None:
+    # Trunkline's routers import this auth module.
+    from octomate.tentacles.trunkline.base import TrunklineTentacle
+
+    profile = next(
+        (profile for profile in user.profiles if profile.id == profile_id), None
+    )
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    channel = app.channels.get(profile.channel_tentacle_id)
+    if isinstance(channel, TrunklineTentacle):
+        raise HTTPException(
+            status_code=409, detail="Trunkline uses your signed-in account directly"
+        )
+    try:
+        await manager.unlink_profile(user, profile_id)
+    except ProfileNotLinked as error:
+        raise HTTPException(status_code=404, detail="Profile not found") from error
+
+
+@auth_router.post("/link-profile/inspect")
+async def inspect_link_profile(
+    body: LinkProfileBody,
+    manager: Annotated[UserManager, Depends(user_manager)],
+) -> LinkProfileInfo:
+    try:
+        return await manager.inspect_link_profile(body["token"])
+    except InvalidLinkProfile as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ProfileAlreadyLinked as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@auth_router.post("/link-profile/confirm")
+async def confirm_link_profile(
+    body: LinkProfileConfirmationBody,
+    user: Annotated[User, Depends(current_user)],
+    manager: Annotated[UserManager, Depends(user_manager)],
+) -> UserProfile:
+    if body["expected_user_id"] != user.id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Your signed-in account changed. Reopen the profile link "
+                "and confirm your account again."
+            ),
+        )
+    try:
+        return await manager.confirm_link_profile(body["token"], user)
+    except InvalidLinkProfile as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ProfileAlreadyLinked as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error

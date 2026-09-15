@@ -205,6 +205,7 @@ class OAuthTokenExchange:
 
 class McpOAuthFlow(AuthorizationCodeOAuthFlow):
     url: HttpsUrl
+    authorization_lifetime: timedelta
     httpx_client_factory: McpHttpClientFactory
     client_metadata_url: HttpsUrl | None
     authorization_endpoint: HttpsUrl | None
@@ -215,12 +216,14 @@ class McpOAuthFlow(AuthorizationCodeOAuthFlow):
         *,
         url: HttpsUrl,
         httpx_client_factory: McpHttpClientFactory,
+        authorization_lifetime: timedelta,
         client_metadata_url: HttpsUrl | None = None,
         state: McpOAuthState | None = None,
         authorization_endpoint: HttpsUrl | None = None,
         tokens: OAuthTokenExchange | None = None,
     ) -> None:
         self.url = url
+        self.authorization_lifetime = authorization_lifetime
         self.httpx_client_factory = httpx_client_factory
         self.client_metadata_url = client_metadata_url
         self.authorization_endpoint = authorization_endpoint
@@ -398,7 +401,7 @@ class McpOAuthFlow(AuthorizationCodeOAuthFlow):
                 str(httpx2.URL(str(authorization_endpoint)).copy_merge_params(params))
             ),
             code_verifier=SecretStr(pkce.code_verifier),
-            expires_at=datetime.now(UTC) + timedelta(minutes=10),
+            expires_at=datetime.now(UTC) + self.authorization_lifetime,
             mcp_oauth=mcp_oauth,
         )
 

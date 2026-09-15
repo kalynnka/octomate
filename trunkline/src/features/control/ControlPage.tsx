@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { useConsole } from '@/state/console'
 import { useAgents, useMcpServers, useMcpTentacles, useProfile } from '@/lib/api/hooks'
 import { refusalText } from '@/lib/api/auth'
 import { enableMcp, uninstallMcp } from '@/lib/api/client'
-import { channelMeta } from '@/lib/api/live'
 import { queryClient } from '@/lib/queryClient'
 import type { ControlSection } from '@/state/console'
 import { Button } from '@/components/Button'
@@ -26,7 +25,6 @@ import type {
   ApiMcpServerSummary,
   ApiMcp,
   ApiMcpTentacle,
-  ApiUserProfile,
 } from '@/lib/api/events'
 import type { EffortStep } from '@/lib/api/types'
 import { SettingsPanel } from './SettingsPanel'
@@ -45,15 +43,14 @@ const pages: Record<Exclude<ControlSection, ''>, { title: string; desc: string }
   },
   profile: {
     title: 'Profile',
-    desc: 'Your account information and password.',
+    desc: 'Your Octomate account and linked channel profiles. Select a profile to bring its card to the front.',
   },
-  channels: { title: 'Channels', desc: 'Your identities on connected channel tentacles.' },
   keys: { title: 'API Keys', desc: 'Manage access for clients and native session hooks.' },
   dash: { title: 'Dashboard', desc: 'Agents, routes and your connected services at a glance.' },
   settings: { title: 'Settings', desc: 'Choose how Trunkline looks on this browser.' },
 }
 
-const order: Exclude<ControlSection, ''>[] = ['dash', 'agents', 'mcp', 'profile', 'channels', 'keys', 'settings']
+const order: Exclude<ControlSection, ''>[] = ['dash', 'agents', 'mcp', 'profile', 'keys', 'settings']
 
 const effortScale: EffortStep[] = ['minimal', 'low', 'medium', 'high', 'xhigh']
 
@@ -329,58 +326,6 @@ function McpRemoval({ mcp, onRemoved }: { mcp: ApiMcp; onRemoved: () => void }) 
   )
 }
 
-function ChannelProfilePanel({ profile, onClose }: { profile: ApiUserProfile; onClose: () => void }) {
-  const heading = useRef<HTMLHeadingElement>(null)
-  useEffect(() => {
-    heading.current?.focus()
-  }, [profile.id])
-
-  return (
-    <aside
-      id="trk-channel-profile"
-      className="trk-control-card trk-profile-detail"
-      aria-labelledby="trk-channel-profile-title"
-      onKeyDown={(event) => {
-        if (event.key === 'Escape') {
-          event.stopPropagation()
-          onClose()
-        }
-      }}
-    >
-      <header className="trk-profile-detail-header">
-        <h2 id="trk-channel-profile-title" ref={heading} tabIndex={-1} style={label(11)}>
-          Channel profile
-        </h2>
-        <Button variant="ghost" onClick={onClose} style={{ padding: '5px 8px', fontSize: 9 }}>
-          Close
-        </Button>
-      </header>
-      <div className="trk-control-scroll">
-        <dl className="trk-profile-info">
-          {[
-            ['Name', profile.name],
-            ['Nickname', profile.nickname],
-            ['Title', profile.title],
-            ['Gender', profile.gender],
-            ['Age', profile.age],
-            ['Channel', channelMeta(profile.channel_tentacle_id).label],
-            ['Account ID', profile.channel_user_id],
-            ['Profile ID', profile.id],
-            ['User ID', profile.user_id],
-          ].map(([name, value]) => (
-            <div key={name}>
-              <dt style={{ ...label(9), color: 'var(--fg-3)' }}>{name}</dt>
-              <dd style={{ ...mono(12), color: 'var(--fg-1)' }}>
-                {value === null || value === '' ? '—' : value}
-              </dd>
-            </div>
-          ))}
-        </dl>
-      </div>
-    </aside>
-  )
-}
-
 /** The comp's masthead: the section's number and title over an accent hairline, its
  *  standing on the right, and the rules that close the block. */
 function Masthead({
@@ -498,8 +443,6 @@ export function ControlPage() {
   const [installSource, setInstallSource] = useState<ApiMcpTentacle | 'custom' | null>(null)
   const [authorization, setAuthorization] = useState<ApiMcp | null>(null)
   const [installed, setInstalled] = useState<ApiMcp | null>(null)
-  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null)
-  const profileTrigger = useRef<HTMLButtonElement>(null)
   const agentsQuery = useAgents()
   const serversQuery = useMcpServers()
   const tentaclesQuery = useMcpTentacles()
@@ -508,9 +451,6 @@ export function ControlPage() {
   const servers = serversQuery.data
   const tentacles = tentaclesQuery.data
   const profile = profileQuery.data
-  const selectedProfile = mgmtSec === 'channels'
-    ? profile?.profiles.find((p) => p.id === selectedProfileId)
-    : undefined
 
   if (!mgmtSec) return null
   const page = pages[mgmtSec]
@@ -518,48 +458,6 @@ export function ControlPage() {
   const routeCount = agents?.reduce((n, a) => n + a.routes.length, 0)
   const enabledCount = servers?.filter((s) => s.enabled).length
   const grants = new Map(profile?.mcps.map((mcp) => [mcp.id, mcp]))
-  const profileColumns: TableColumn<ApiUserProfile>[] = [
-    {
-      key: 'channel',
-      label: 'Channel',
-      mono: true,
-      width: '34%',
-      render: (p) => {
-        const channel = channelMeta(p.channel_tentacle_id)
-        return (
-          <span style={{ display: 'flex', alignItems: 'center', gap: 6, color: 'var(--fg-1)', fontWeight: 700 }}>
-            <i aria-hidden="true" style={{ width: 5, height: 5, flexShrink: 0, background: channel.brand }} />
-            {channel.label}
-          </span>
-        )
-      },
-    },
-    {
-      key: 'profile',
-      label: 'Profile',
-      render: (p) => (
-        <button
-          type="button"
-          className="trk-profile-select"
-          aria-label={`View ${p.name || p.channel_user_id}'s ${channelMeta(p.channel_tentacle_id).label} profile`}
-          aria-expanded={selectedProfile?.id === p.id}
-          aria-controls={selectedProfile?.id === p.id ? 'trk-channel-profile' : undefined}
-          onClick={(event) => {
-            profileTrigger.current = event.currentTarget
-            setSelectedProfileId(p.id)
-          }}
-        >
-          <span>
-            <span style={{ ...mono(12, 700), display: 'block' }}>{p.name || p.channel_user_id}</span>
-            {p.nickname && (
-              <span style={{ ...mono(10), color: 'var(--fg-3)' }}>{p.nickname}</span>
-            )}
-          </span>
-          <span aria-hidden="true">→</span>
-        </button>
-      ),
-    },
-  ]
   const installedColumns: TableColumn<ApiMcp>[] = [
     ...serverColumns,
     {
@@ -618,7 +516,7 @@ export function ControlPage() {
   const count =
     mgmtSec === 'agents' ? agents?.length
       : mgmtSec === 'mcp' ? (mcpView === 'installed' ? servers?.length : tentacles?.length)
-        : mgmtSec === 'channels' ? profile?.profiles.length : undefined
+        : undefined
   const menu =
     mgmtSec === 'agents' ? `${routeCount ?? '—'} Routes`
       : mgmtSec === 'mcp' ? `${enabledCount ?? '—'} Enabled`
@@ -723,20 +621,8 @@ export function ControlPage() {
             </>
           )}
 
-          {mgmtSec === 'profile' && <AccountPanel />}
+          {mgmtSec === 'profile' && <AccountPanel profiles={profile?.profiles} profilesError={profileQuery.isError} />}
           {mgmtSec === 'keys' && <ApiKeysPanel />}
-          {mgmtSec === 'channels' && (profile ? (
-            <Table
-              className="trk-channel-table"
-              columns={profileColumns}
-              rows={profile.profiles}
-              rowKey={(p) => p.id}
-              dense
-              empty="No channel identities are linked to your account."
-            />
-          ) : (
-            <Awaiting note={profileQuery.isError ? 'Could not load channels.' : 'Loading channels…'} />
-          ))}
 
           {mgmtSec === 'dash' && (
             <div className="trk-control-scroll">
@@ -764,15 +650,6 @@ export function ControlPage() {
           <span>Trunkline</span>
         </footer>
       </div>
-      {selectedProfile && (
-        <ChannelProfilePanel
-          profile={selectedProfile}
-          onClose={() => {
-            setSelectedProfileId(null)
-            profileTrigger.current?.focus()
-          }}
-        />
-      )}
     </div>
   )
 }
