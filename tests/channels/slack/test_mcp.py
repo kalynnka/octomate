@@ -33,7 +33,7 @@ from octomate.config import OctomateConfig, SlackChannelConfig, SlackStreamConfi
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import CONVERSATION_HEADER
-from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     DISABLE_MCP,
@@ -61,7 +61,7 @@ ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
 BEARER = {"Authorization": "Bearer steve-token"}
 SLACK = {"provider": "personal/slack"}
 # What every caller is listed on a deployment with a Slack workspace: Octomate's
-# own families and the linking pair; Slack's tools only once they have linked.
+# own families and linking helpers; Slack's tools only once they have linked.
 LISTED_TO_ALL = [
     *OCTOMATE_TOOLS,
     LIST_MCP_TENTACLES,
@@ -74,6 +74,7 @@ LISTED_TO_ALL = [
     CALL_MCP_TOOL,
     CONNECT_TOOL,
     CONFIRM_TOOL,
+    LINK_PROFILE_TOOL,
 ]
 
 

@@ -67,15 +67,14 @@ def tail(
         url = stream_url_for(base.rstrip("/") + CODEX_HOOK_PATH)
     from octomate_cli.streaming.files import (  # watchfiles; only when tailing
         main,
-        spool_path,
     )
 
     main(
+        agent="codex",
         session_id=session,
         transcript_path=path,
         url=url,
         cwd=cwd,
-        spool=spool_path(session),
         agent_path=agent_path,
     )
 

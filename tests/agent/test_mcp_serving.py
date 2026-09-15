@@ -30,7 +30,7 @@ from octomate.config.base import OctomateConfig
 from octomate.config.channels import ChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
-from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
     DISABLE_MCP,
@@ -75,11 +75,11 @@ async def served(
     the task that entered it, and a fixture's teardown runs in another."""
     octomate = octomate or Octomate(config=OctomateConfig(auth=auth_config()))
     app = octomate
-    async with app.router.lifespan_context(app):
+    async with app.router.lifespan_context(app), octomate.run_tentacles():
         yield octomate, app
 
 
-async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
+async def test_tentacles_start_after_api_lifespan_and_agents_before_channels() -> None:
     started: list[str] = []
 
     class DiscoveringAgent(FakeAgent):
@@ -98,8 +98,10 @@ async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
     octomate.connect(ReadyChannel(octomate=octomate))
     octomate.connect(DiscoveringAgent(octomate=octomate, models={}))
 
-    async with served(octomate):
-        assert started == ["agent", "channel"]
+    async with octomate.lifespan(octomate):
+        assert started == []
+        async with octomate.run_tentacles():
+            assert started == ["agent", "channel"]
 
 
 def over(
@@ -226,6 +228,7 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
 
 
@@ -291,6 +294,7 @@ async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
 
 

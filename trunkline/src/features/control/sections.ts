@@ -5,7 +5,6 @@ export const controlHints: Record<Exclude<ControlSection, ''>, string> = {
   agents: 'models',
   mcp: 'tools',
   profile: 'accounts',
-  channels: 'accounts',
   keys: 'access',
   settings: 'appearance',
 }

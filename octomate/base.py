@@ -165,10 +165,17 @@ class Octomate(FastAPI):
             AuthManager(self.config.auth) if self.config.auth is not None else None
         )
         self.bearers = KnownBearers(self.auth)
+        self.users.authorization_base_uri = (
+            self.config.oauth.callback_base_uri
+            if self.config.auth is not None
+            else None
+        )
+        self.users.authorization_lifetime = self.config.oauth.authorization_lifetime
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=self.oauth_encryption_key,
             callback_base_uri=self.config.oauth.callback_base_uri,
+            authorization_lifetime=self.config.oauth.authorization_lifetime,
             client_metadata_url=self.config.oauth.client_metadata_url,
             token_refresh_leeway=self.config.oauth.token_refresh_leeway,
         )
@@ -319,7 +326,7 @@ class Octomate(FastAPI):
         task.add_done_callback(self.background.discard)
 
     @asynccontextmanager
-    async def lifespan(self, app: FastAPI) -> AsyncGenerator[None]:
+    async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before
@@ -329,12 +336,6 @@ class Octomate(FastAPI):
             # setting: probed here so the log says which mechanism this host
             # got, once, before anything asks for a workspace.
             await self.workspaces.detect()
-            # Each tentacle is an async context manager owning its own
-            # long-lived resources (agents: warm MCP sessions; channels:
-            # the inbound receive loop). Channels live on the inner stack so
-            # shutdown closes them first — nothing ingests into agents whose
-            # sessions are already torn down; every other tentacle is on
-            # the outer one.
             async with (
                 # Starlette runs no lifespan for a mounted app, and the MCP
                 # transport's task group lives in that lifespan; the endpoint
@@ -342,14 +343,41 @@ class Octomate(FastAPI):
                 # before any tentacle starts and down after the last stops.
                 self.fastmcp.lifespan(self.fastmcp),
                 self.mcp.lifespan(),
+            ):
+                # Mirrors in the background too: a first clone takes as long
+                # as the repository is big, and serving must not wait on it.
+                # `reconcile` isolates per-project failures itself.
+                mirroring = asyncio.create_task(
+                    self.mirrors.reconcile(self.projects.list())
+                )
+                # Reclaiming disk is maintenance: it runs for as long as
+                # the host does, and stops when the host stops.
+                sweeping = asyncio.create_task(self.workspaces.sweep())
+                try:
+                    # The server enters tentacles only after opening its listener.
+                    yield {"octomate": self}
+                finally:
+                    # Cancelled rather than awaited: a mirror sync is not
+                    # bounded the way `start` is, and creation cleans up
+                    # after a cancellation, so shutdown stays prompt.
+                    mirroring.cancel()
+                    sweeping.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await mirroring
+                        await sweeping
+
+    @asynccontextmanager
+    async def run_tentacles(self) -> AsyncGenerator[None]:
+        """Run integrations while the host API is accepting their callbacks."""
+        with sqlalchemy_materia():
+            # Stop channels before agents so nothing ingests into closed sessions.
+            async with (
                 AsyncExitStack() as outer_stack,
                 AsyncExitStack() as channel_stack,
             ):
 
                 async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
-                    # Isolate + time-bound each start so one slow or hung
-                    # tentacle can't stall the others' startup. A failed start
-                    # is logged and skipped, not fatal — the rest still serve.
+                    # One failed or hung integration must not stall the others.
                     try:
                         await asyncio.wait_for(
                             stack.enter_async_context(tentacle),
@@ -376,26 +404,7 @@ class Octomate(FastAPI):
                         if isinstance(tentacle, ChannelTentacle)
                     )
                 )
-                # Mirrors in the background too: a first clone takes as long
-                # as the repository is big, and serving must not wait on it.
-                # `reconcile` isolates per-project failures itself.
-                mirroring = asyncio.create_task(
-                    self.mirrors.reconcile(self.projects.list())
-                )
-                # Reclaiming disk is maintenance: it runs for as long as
-                # the host does, and stops when the host stops.
-                sweeping = asyncio.create_task(self.workspaces.sweep())
-                try:
-                    yield
-                finally:
-                    # Cancelled rather than awaited: a mirror sync is not
-                    # bounded the way `start` is, and creation cleans up
-                    # after a cancellation, so shutdown stays prompt.
-                    mirroring.cancel()
-                    sweeping.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await mirroring
-                        await sweeping
+                yield
 
     @cached_property
     def fastmcp(self) -> StarletteWithLifespan:

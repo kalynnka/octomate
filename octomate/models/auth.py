@@ -75,6 +75,44 @@ class UserSession(Base, TransmuterProxiedMixin):
     __mapper_args__: ClassVar[MapperArgs] = {"version_id_col": version}
 
 
+class LinkProfileSession(Base, TransmuterProxiedMixin):
+    """One channel profile's pending handoff to an authenticated browser user."""
+
+    __tablename__ = "profile_binding_sessions"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid,
+        ForeignKey("user_profiles.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        comment="The exact channel profile this session may bind.",
+    )
+    token_hash: Mapped[SecretStr] = mapped_column(
+        SecretString,
+        nullable=False,
+        unique=True,
+        comment="SHA-256 digest of the one-time URL ticket; never stores the ticket.",
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        UTCDateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    consumed_at: Mapped[datetime | None] = mapped_column(
+        UTCDateTime, nullable=True, index=True
+    )
+    version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        comment="Optimistic lock preventing the same profile ticket from binding twice.",
+    )
+
+    __mapper_args__: ClassVar[MapperArgs] = {"version_id_col": version}
+
+
 class UserApiKey(Base, TransmuterProxiedMixin):
     __tablename__ = "user_api_keys"
 

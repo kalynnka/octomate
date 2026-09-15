@@ -188,6 +188,7 @@ class SlackTentacle(
                     flows=[
                         McpOAuthFlow(
                             url=AnyHttpUrl(self.upstream),
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
                             authorization_endpoint=AnyHttpUrl(
                                 "https://slack.com/oauth/v2_user/authorize"
                             ),

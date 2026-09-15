@@ -38,20 +38,18 @@ it, with the generic/unserializable members replaced by their wire forms.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypeAlias, TypeVar
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
-from typing_extensions import TypeAliasType
 
+from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
-
-OutputT = TypeVar("OutputT")
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -170,7 +168,7 @@ class TodoDeletedEvent(DisplayEvent):
 
 
 # The granular todo events a capability emits as the agent mutates its todo list.
-TodoEvent: TypeAlias = (
+type TodoEvent = (
     TodoCreatedEvent
     | TodoUpdatedEvent
     | TodoStatusChangedEvent
@@ -237,6 +235,19 @@ class OAuthDeviceAuthorizationEvent(OAuthAuthorizationEvent):
     user_code: str = Field(description="The one-time code the user types on the page.")
 
 
+class LinkProfileAuthorizationEvent(DisplayEvent):
+    """A channel requests account authorization from the Octomate host.
+
+    Delivered directly through private feelers, not the agent's run stream. The
+    host keeps the request; browser consent links its profile without returning
+    an OAuth credential to the channel.
+    """
+
+    event_kind: Literal["link_profile_authorization"] = "link_profile_authorization"
+    host: str = Field(description="The Octomate host asking for browser consent.")
+    authorization: LinkProfileAuthorization
+
+
 class ActionBatchEvent(BaseModel):
     """A persisted batch of deferred actions presented as one unit; the run
     suspends until the user replies.
@@ -253,9 +264,7 @@ class ActionBatchEvent(BaseModel):
 
 
 # The stream a consumer matches on, generic over the run's output type.
-# (TypeAliasType backports PEP 695's generic alias to the project's 3.11 floor.)
-StreamEvents = TypeAliasType(
-    "StreamEvents",
+type StreamEvents[OutputT] = (
     AgentStreamEvent
     | ResultSegmentEvent
     | ResultTextDeltaEvent
@@ -263,16 +272,14 @@ StreamEvents = TypeAliasType(
     | TodoEvent
     | MessageSentEvent
     | OAuthAuthorizationEvent
-    | ActionBatchEvent,
-    type_params=(OutputT,),
+    | ActionBatchEvent
 )
 
 # The run stream as a wire consumer sees it: `StreamEvents` with the generic /
 # unserializable members replaced by their wire forms (`FinalResult` dropped for
 # `RunResultEvent`, the subagent timeline callbacks as events), every member
 # discriminated by `event_kind`.
-WireEvent = TypeAliasType(
-    "WireEvent",
+type WireEvent = (
     AgentStreamEvent
     | ResultSegmentEvent
     | ResultTextDeltaEvent
@@ -284,7 +291,7 @@ WireEvent = TypeAliasType(
     | SubagentStartedEvent
     | SubagentSettledEvent
     | RunResultEvent
-    | RunErrorEvent,
+    | RunErrorEvent
 )
 
 # Serialization-only: wire consumers never validate events back in, so the

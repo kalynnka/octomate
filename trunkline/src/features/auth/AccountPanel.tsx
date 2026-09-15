@@ -1,16 +1,20 @@
 /** Account details, password dialog, and the dedicated API keys panel. */
 import { useEffect, useRef, useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
+import { Brackets } from '@/components/Brackets'
 import { Table, type TableColumn } from '@/components/Table'
-import { chipLabel, fieldLabel, label, mono, serif } from '@/components/text'
+import { chipLabel, display, fieldLabel, label, mono, serif } from '@/components/text'
 import {
   createApiKey,
   revokeApiKey,
+  unlinkProfile,
   type ApiApiKey,
   type ApiIssuedKey,
   type ApiKeyScope,
 } from '@/lib/api/auth'
 import { useApiKeys } from '@/lib/api/hooks'
+import type { ApiProfileInfo, ApiUserProfile } from '@/lib/api/events'
+import { channelMeta } from '@/lib/api/live'
 import { closeDialog } from '@/lib/dialog'
 import { queryClient } from '@/lib/queryClient'
 import { useDialogDrag } from '@/lib/useDialogDrag'
@@ -454,28 +458,182 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
   )
 }
 
-export function AccountPanel() {
+export function AccountPanel({ profiles, profilesError }: { profiles: ApiUserProfile[] | undefined; profilesError: boolean }) {
   const user = useAuth((s) => s.user)
   const [passwordOpen, setPasswordOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [disconnectError, setDisconnectError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
+  const confirmationRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (confirmingId) confirmationRef.current?.querySelector('button')?.focus()
+    else if (notice) pickerRef.current?.querySelector<HTMLButtonElement>('button[data-channel="false"]')?.focus()
+  }, [confirmingId, notice])
+  if (!user) return null
+  const cards = [user, ...(profiles ?? [])]
+  const selected = profiles?.find((profile) => profile.id === selectedId) ?? user
+
+  const disconnect = async (profile: ApiUserProfile) => {
+    if (disconnecting) return
+    setDisconnecting(true)
+    setDisconnectError(null)
+    try {
+      await queryClient.cancelQueries({ queryKey: ['profile'] })
+      await unlinkProfile(profile.id)
+      queryClient.setQueryData<ApiProfileInfo>(['profile'], (current) => current?.user.id === user.id ? {
+        ...current, profiles: current.profiles.filter((linked) => linked.id !== profile.id),
+      } : current)
+      setSelectedId(null)
+      setConfirmingId(null)
+      setNotice(`${channelMeta(profile.channel_tentacle_id).label} profile disconnected.`)
+      void queryClient.invalidateQueries({ queryKey: ['profile'] })
+      void queryClient.invalidateQueries({ queryKey: ['threads'] })
+    } catch (error) {
+      setDisconnectError(refusalText(error) ?? 'Could not disconnect the profile. Try again.')
+    } finally {
+      setDisconnecting(false)
+    }
+  }
 
   return (
     <div className="trk-control-scroll">
-      <dl className="trk-profile-info">
-        {[
-          ['Name', user?.name],
-          ['Username', user?.username],
-          ['Nickname', user?.nickname],
-          ['User ID', user?.id],
-        ].map(([name, value]) => (
-          <div key={name}>
-            <dt style={{ ...label(10), color: 'var(--fg-3)' }}>{name}</dt>
-            <dd style={{ ...mono(13), color: 'var(--fg-1)' }}>{value || '—'}</dd>
+      {notice && <p className="trk-control-note" role="status">{notice}</p>}
+      <div className="trk-profile-workspace">
+        <div ref={pickerRef} className="trk-profile-picker" role="group" aria-label="Choose a profile">
+          <div className="trk-profile-picker-heading">
+            <span style={label(9)}>Channels</span>
+            <span style={mono(9)}>{profiles === undefined ? '—' : String(profiles.length).padStart(2, '0')}</span>
           </div>
-        ))}
-      </dl>
-      <Button onClick={() => setPasswordOpen(true)} style={{ padding: '5px 10px', fontSize: 9 }}>
-        Change password
-      </Button>
+          {cards.map((card, index) => {
+            const channel = 'channel_tentacle_id' in card ? channelMeta(card.channel_tentacle_id) : null
+            const id = 'username' in card ? 'account' : card.id
+            const name = card.name || ('username' in card ? card.username : 'Unnamed profile')
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-label={`Show ${channel?.label ?? 'Octomate'} profile for ${name}`}
+                aria-pressed={card === selected}
+                aria-controls={`trk-profile-card-${id}`}
+                data-channel={channel !== null}
+                style={{ color: channel?.brand ?? 'var(--color-accent)' }}
+                disabled={disconnecting}
+                onClick={() => {
+                  setSelectedId('username' in card ? null : card.id)
+                  setConfirmingId(null)
+                  setDisconnectError(null)
+                  setNotice(null)
+                }}
+              >
+                <span className="trk-profile-picker-index" aria-hidden="true" style={mono(9, 700)}>
+                  {`${channel ? 'C' : 'U'}${String(index + 1).padStart(2, '0')}`}
+                </span>
+                <span className="trk-profile-picker-copy">
+                  <span style={{ ...label(9, '.14em'), color: channel?.brand ?? 'var(--fg-1)' }}>{channel?.label ?? 'Octomate account'}</span>
+                  <span title={name} style={{ ...mono(10), color: 'var(--fg-2)' }}>{name}</span>
+                </span>
+                <span className="trk-profile-picker-status" aria-hidden="true" />
+              </button>
+            )
+          })}
+          {profiles === undefined ? (
+            <p className="trk-control-note" role="status">{profilesError ? 'Could not load channels.' : 'Loading channels…'}</p>
+          ) : profiles.length === 0 && (
+            <p className="trk-control-note">No channel identities are linked to your account.</p>
+          )}
+        </div>
+        <div className="trk-profile-stack" style={{ marginBottom: Math.min(cards.length - 1, 3) * 12, marginRight: Math.min(cards.length - 1, 3) * 12 }}>
+          {cards.slice(1, 4).map((card, index) => (
+            <div
+              key={`back-${card.id}`}
+              className="trk-profile-back"
+              aria-hidden="true"
+              style={{ zIndex: -index - 1, transform: `translate(${(index + 1) * 12}px, ${(index + 1) * 12}px)` }}
+            >
+              <Brackets />
+            </div>
+          ))}
+          {cards.map((card) => {
+            const channel = 'channel_tentacle_id' in card ? channelMeta(card.channel_tentacle_id) : null
+            const id = `trk-profile-card-${'username' in card ? 'account' : card.id}`
+            const name = card.name || ('username' in card ? card.username : 'Unnamed profile')
+            const details: [string, string | number | null][] = 'username' in card ? [['User ID', card.id]] : [
+              ['Title', card.title], ['Gender', card.gender], ['Age', card.age],
+              ['Account ID', card.channel_user_id], ['Profile ID', card.id],
+            ]
+            return (
+              <article
+                key={id}
+                id={id}
+                className="trk-account-card"
+                aria-labelledby={`${id}-name`}
+                aria-hidden={card !== selected}
+                inert={card !== selected}
+                data-front={card === selected}
+              >
+                <Brackets />
+                <div className="trk-account-masthead">
+                  <span style={{ ...display(15), letterSpacing: '-.02em' }}>Octomate<span style={{ color: 'var(--color-accent)' }}>.</span></span>
+                  <span style={{ ...label(8), color: 'var(--fg-3)' }}>{channel ? 'Channel identity' : 'Personal account'}</span>
+                </div>
+                <header className="trk-account-identity">
+                  <div className="trk-account-avatar" aria-hidden="true" style={{ color: channel?.brand }}>
+                    {name.trim().split(/\s+/).slice(0, 2).map(([initial]) => initial).join('').toUpperCase()}
+                  </div>
+                  <div className="trk-account-name">
+                    <span style={{ ...label(9), color: channel?.brand ?? 'var(--fg-3)' }}>{channel?.label ?? 'Octomate account'}</span>
+                    <h2 id={`${id}-name`}>{name}<span aria-hidden="true" style={{ color: channel?.brand ?? 'var(--color-accent)' }}>.</span></h2>
+                    {'username' in card && <p style={mono(12)}>@{card.username}</p>}
+                    {card.nickname && card.nickname !== name && <p style={serif(13)}>Also known as {card.nickname}</p>}
+                  </div>
+                </header>
+                <dl className="trk-account-facts">
+                  {details.map(([labelText, value]) => (
+                    <div key={labelText} data-technical={labelText.endsWith('ID')}>
+                      <dt style={{ ...label(9), color: 'var(--fg-3)' }}>{labelText}</dt>
+                      <dd style={{ ...mono(12), color: 'var(--fg-1)' }}>{value === null || value === '' ? '—' : value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {'username' in card && (
+                  <footer className="trk-account-actions">
+                    <Button onClick={() => setPasswordOpen(true)} style={{ padding: '7px 12px', fontSize: 9 }}>
+                      Change password
+                    </Button>
+                  </footer>
+                )}
+                {'channel_tentacle_id' in card && (
+                  <footer className="trk-account-actions">
+                    {card.channel_tentacle_id === 'trunkline' ? (
+                      <p className="trk-control-note">Uses your signed-in Octomate account directly.</p>
+                    ) : confirmingId === card.id ? (
+                      <div ref={confirmationRef} className="trk-profile-disconnect" role="group" aria-label="Confirm profile disconnect" aria-busy={disconnecting}>
+                        <p>Disconnect {name} on {channel?.label} from your Octomate account? This profile will no longer identify you on that channel. Its history will not be deleted.</p>
+                        {disconnectError && <div role="alert"><Refusal>{disconnectError}</Refusal></div>}
+                        <div>
+                          <Button disabled={disconnecting} onClick={() => {
+                            setConfirmingId(null)
+                            setDisconnectError(null)
+                            pickerRef.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus()
+                          }}>Cancel</Button>
+                          <Button disabled={disconnecting} onClick={() => { void disconnect(card) }} style={{ color: 'var(--color-red)', borderColor: 'var(--color-red)' }}>
+                            {disconnecting ? 'Disconnecting…' : 'Confirm disconnect'}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button onClick={() => setConfirmingId(card.id)} style={{ padding: '7px 12px', fontSize: 9 }}>Disconnect profile</Button>
+                    )}
+                  </footer>
+                )}
+              </article>
+            )
+          })}
+        </div>
+      </div>
       {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}
     </div>
   )
