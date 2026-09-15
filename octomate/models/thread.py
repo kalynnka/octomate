@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import JsonValue
 from sqlalchemy import (
     JSON,
+    Float,
     ForeignKey,
     Index,
     Integer,
+    MetaData,
     String,
+    Table,
     Uuid,
     text,
 )
@@ -426,3 +429,17 @@ class Handoff(Base, TransmuterProxiedMixin):
 
     def __gt__(self, other: Handoff) -> bool:
         return self.id > other.id
+
+
+class ThreadMessageFTS(Base, TransmuterProxiedMixin):
+    """The derived FTS5 index, with its schema managed by Alembic."""
+
+    __tablename__ = "thread_messages_fts"
+    __table__: ClassVar[Table]
+    # Alembic owns this virtual table, outside ordinary metadata.create_all().
+    metadata: ClassVar[MetaData] = MetaData()
+
+    rowid: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    message_text: Mapped[str] = mapped_column(String)
+    rank: Mapped[float | None] = mapped_column(Float)
