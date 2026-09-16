@@ -11,7 +11,6 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
-from octomate.managers.oauth import OAuthConnector
 from octomate.oauth.mcp import McpOAuthFlow
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
@@ -46,7 +45,7 @@ from octomate.tentacles.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
-from octomate.tentacles.slack.oauth import SlackTokenExchange
+from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackTokenExchange
 from octomate.tentacles.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
@@ -182,8 +181,9 @@ class SlackTentacle(
             # is belongs to this one. Registering a direct-HTTP transport is also
             # what makes Octomate serve the start and callback routes.
             octomate.oauth.register(
-                OAuthConnector(
+                SlackOAuthConnector(
                     id=id,
+                    ink=ink,
                     mcp_url=AnyHttpUrl(self.upstream),
                     flows=[
                         McpOAuthFlow(

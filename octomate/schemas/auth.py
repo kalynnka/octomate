@@ -100,7 +100,7 @@ class LinkProfileInfo(BaseModel):
 
 
 class LinkProfileAuthorization(LinkProfileInfo):
-    """The host authorization request delivered only to its channel profile."""
+    """The private host authorization request delivered through a channel or OAuth callback."""
 
     authorization_uri: AnyHttpUrl = Field(repr=False)
 
