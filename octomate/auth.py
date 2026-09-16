@@ -21,6 +21,7 @@ from octomate.schemas.auth import (
     UserApiKey,
     UserSession,
 )
+from octomate.schemas.oauth import AuthorizationCodeOAuthFlow, AuthorizationLink
 from octomate.schemas.user import User, UserProfile
 from octomate.types.auth import ApiKeyScope, NewPassword
 
@@ -118,6 +119,11 @@ class ApiKeyResponse(TypedDict):
 
 class LinkProfileBody(TypedDict):
     token: Annotated[SecretStr, Field(min_length=1, max_length=200)]
+
+
+class ChannelAuthorizationInfo(TypedDict):
+    id: str
+    type: str
 
 
 class LinkProfileConfirmationBody(LinkProfileBody):
@@ -286,6 +292,42 @@ async def inspect_link_profile(
         raise HTTPException(status_code=404, detail=str(error)) from error
     except ProfileAlreadyLinked as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+@auth_router.get("/profile-authorizations")
+async def profile_authorizations(
+    app: Annotated[Octomate, Depends(application)],
+    user: Annotated[User, Depends(current_user)],
+) -> list[ChannelAuthorizationInfo]:
+    if app.users.authorization_base_uri is None:
+        return []
+    return [
+        {"id": channel.id, "type": channel.config.type}
+        for channel in app.channels.values()
+        if channel.id in app.oauth.connectors
+        and any(
+            isinstance(flow, AuthorizationCodeOAuthFlow)
+            for flow in app.oauth.connectors[channel.id].flows
+        )
+    ]
+
+
+@auth_router.post("/profile-authorizations/{channel_id}")
+async def authorize_profile(
+    channel_id: str,
+    app: Annotated[Octomate, Depends(application)],
+    user: Annotated[User, Depends(current_user)],
+) -> AuthorizationLink:
+    if channel_id not in app.channels or channel_id not in app.oauth.connectors:
+        raise HTTPException(status_code=404, detail="Channel OAuth is not configured")
+    if app.users.authorization_base_uri is None:
+        raise HTTPException(
+            status_code=503, detail="Profile authorization is not configured"
+        )
+    authorization = await app.oauth.start(user, channel_id, flow="authorization_code")
+    if not isinstance(authorization, AuthorizationLink):
+        raise TypeError("Channel authorization did not return a browser link")
+    return authorization
 
 
 @auth_router.post("/link-profile/confirm")

@@ -11,6 +11,8 @@ let server: ViteDevServer
 let inspectLinkProfile: typeof import('../src/lib/api/auth.ts').inspectLinkProfile
 let confirmLinkProfile: typeof import('../src/lib/api/auth.ts').confirmLinkProfile
 let unlinkProfile: typeof import('../src/lib/api/auth.ts').unlinkProfile
+let fetchProfileAuthorizations: typeof import('../src/lib/api/auth.ts').fetchProfileAuthorizations
+let authorizeProfile: typeof import('../src/lib/api/auth.ts').authorizeProfile
 let LinkProfileDetails: typeof import('../src/features/auth/LinkProfilePage.tsx').LinkProfileDetails
 
 const profile: ApiUserProfile = {
@@ -24,11 +26,37 @@ before(async () => {
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ inspectLinkProfile, confirmLinkProfile, unlinkProfile } = await server.ssrLoadModule('/src/lib/api/auth.ts'))
+  ;({ inspectLinkProfile, confirmLinkProfile, unlinkProfile, fetchProfileAuthorizations, authorizeProfile } = await server.ssrLoadModule('/src/lib/api/auth.ts'))
   ;({ LinkProfileDetails } = await server.ssrLoadModule('/src/features/auth/LinkProfilePage.tsx'))
 })
 after(async () => { await server?.close() })
 afterEach(() => { mock.restoreAll() })
+
+test('the Profile entry discovers configured channels and starts cookie-authenticated OAuth', async () => {
+  const channels = [{ id: 'discord-dev', type: 'discord' }]
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json(channels))
+  assert.deepEqual(await fetchProfileAuthorizations(), channels)
+  assert.equal(fetch.mock.calls[0].arguments[0], '/api/auth/profile-authorizations')
+  const authorization = { authorization_uri: 'http://127.0.0.1:5173/oauth/discord-dev/start/operation' }
+  mock.method(globalThis, 'fetch', async () => Response.json(authorization))
+  assert.deepEqual(await authorizeProfile('discord-dev'), authorization)
+})
+
+test('starting channel OAuth uses a CSRF-protected POST without accepting a user identity', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ authorization_uri: '/oauth/start' }))
+  await authorizeProfile('discord/dev')
+  const [path, init] = fetch.mock.calls[0].arguments
+  assert.equal(path, '/api/auth/profile-authorizations/discord%2Fdev')
+  assert.equal(init?.method, 'POST')
+  assert.equal(new Headers(init?.headers).get('X-Octomate-Request'), '1')
+  assert.equal(init?.body, undefined)
+})
+
+test('OAuth launch failures are surfaced without retrying the request', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'Channel OAuth is not configured' }, { status: 404 }))
+  await assert.rejects(authorizeProfile('discord'), /not configured/)
+  assert.equal(fetch.mock.callCount(), 1)
+})
 
 test('profile confirmation shows the available human details and the signed-in account', () => {
   const markup = renderToStaticMarkup(createElement(LinkProfileDetails, {

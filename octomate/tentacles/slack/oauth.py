@@ -8,7 +8,7 @@ import httpx2
 from pydantic import BaseModel, Field, TypeAdapter
 
 from octomate.managers.oauth import OAuthConnector
-from octomate.oauth.mcp import OAuthTokenExchange
+from octomate.oauth.flows import OAuthTokenExchange
 from octomate.schemas.oauth import OAuthGrant
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackUserProfile

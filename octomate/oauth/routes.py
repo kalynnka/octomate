@@ -79,7 +79,7 @@ async def start(
     return RedirectResponse(str(staged.authorization_uri), status_code=307)
 
 
-@oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False)
+@oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False, response_model=None)
 async def callback(
     connector_id: str,
     manager: Annotated[OAuthManager, Depends(oauth_manager)],

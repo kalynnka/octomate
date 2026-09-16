@@ -24,12 +24,13 @@ from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import ProfileAlreadyLinked, UserManager
 from octomate.mcp.transport import mcp_http_client
-from octomate.oauth.mcp import (
+from octomate.oauth.flows import (
     HTTPS_URL,
-    McpDeviceOAuthFlow,
-    McpOAuthFlow,
+    OAuthCodeFlow,
+    OAuthDeviceFlow,
     OAuthRefreshRejected,
 )
+from octomate.oauth.mcp import McpOAuthFlow
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import (
@@ -966,7 +967,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                 connector_id, user_id=user.id, mcp_id=mcp_id, state=payload.mcp_oauth
             )
             flow = connector.select_flow(payload.flow)
-            if not isinstance(flow, (AuthorizationCodeOAuthFlow, McpDeviceOAuthFlow)):
+            if not isinstance(flow, (AuthorizationCodeOAuthFlow, OAuthDeviceFlow)):
                 raise ValueError(f"{connector_id!r} has no refreshable OAuth flow")
             try:
                 grant = await flow.refresh(payload.refresh_token)
@@ -976,7 +977,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                         "OAuth refresh returned invalid credentials"
                     ) from None
                 if isinstance(
-                    flow, (McpOAuthFlow, McpDeviceOAuthFlow)
+                    flow, (OAuthCodeFlow, McpOAuthFlow, OAuthDeviceFlow)
                 ) and not isinstance(error, OAuthRefreshRejected):
                     raise
                 connection.status = "invalid"

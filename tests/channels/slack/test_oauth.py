@@ -21,7 +21,7 @@ from octomate import Octomate
 from octomate.config import OAuthConfig, OctomateConfig, SlackChannelConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.database import async_session
-from octomate.oauth.mcp import McpOAuthFlow, OAuthRefreshRejected
+from octomate.oauth.flows import OAuthCodeFlow, OAuthRefreshRejected
 from octomate.schemas.oauth import (
     AuthorizationLink,
     DirectHttpOAuthCallbackTransport,
@@ -89,7 +89,7 @@ def slack_transport(
 
 def slack_flow(
     transport: httpx2.AsyncBaseTransport, *, host: Octomate | None = None
-) -> McpOAuthFlow:
+) -> OAuthCodeFlow:
     host = host or Octomate(
         config=OctomateConfig(
             oauth=OAuthConfig(authorization_lifetime=timedelta(minutes=3))
@@ -118,7 +118,7 @@ def slack_flow(
     )
     flow = host.oauth.connector("slack").select_flow()
     assert isinstance(host.oauth.connector("slack"), SlackOAuthConnector)
-    assert isinstance(flow, McpOAuthFlow)
+    assert isinstance(flow, OAuthCodeFlow)
     return flow
 
 

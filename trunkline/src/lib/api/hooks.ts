@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchApiKeys } from './auth'
+import { fetchApiKeys, fetchProfileAuthorizations } from './auth'
 import { api } from './index'
 
 export const useChannels = () =>
@@ -35,6 +35,9 @@ export const usePermissionModes = () =>
 
 /** The signed-in account's API keys, revoked ones included. */
 export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: fetchApiKeys })
+
+export const useProfileAuthorizations = () =>
+  useQuery({ queryKey: ['profile-authorizations'], queryFn: fetchProfileAuthorizations })
 
 // Session counts and MCP authorizations can change while the control page is open.
 export const useAgents = () =>

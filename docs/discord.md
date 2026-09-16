@@ -69,6 +69,33 @@ With `mention_only: true`, a new server-channel conversation must mention the bo
 reply to one of its messages. DMs do not require a mention. Once an agent owns a public
 thread, later messages in that thread continue it without another mention.
 
+## Optional OAuth profile linking
+
+To start from the UI, open **Control panel → Profile → Link a channel → Connect
+Discord**. This uses Discord's `identify` scope, verifies `/users/@me`, then opens
+Octomate's existing profile confirmation. Your browser session is reused. Already
+linked profiles skip confirmation; canceling does not link the profile.
+
+Enable the entry by adding `oauth.client_id` and `oauth.client_secret` to the
+Discord declaration in `.octomate/config/tentacles.yaml`. Prefer the environment
+for credentials (replace `DISCORD` with your tentacle key):
+
+```dotenv
+OCTOMATE__TENTACLES__DISCORD__OAUTH__CLIENT_ID=<application id>
+OCTOMATE__TENTACLES__DISCORD__OAUTH__CLIENT_SECRET=<OAuth2 client secret, not the bot token>
+```
+
+The shared `oauth.encryption_key` must be configured. Set
+`oauth.callback_base_uri` to the browser's Trunkline origin, for example
+`http://127.0.0.1:5173` during development. Vite proxies `/oauth` to the API.
+In **Discord Developer Portal → your app → OAuth2 → Redirects**, register
+`http://127.0.0.1:5173/oauth/discord/callback` exactly, using your actual origin
+and tentacle key. Restart the backend after configuring it. No MCP installation,
+bot installation, or additional bot permissions are needed for this flow.
+
+See Discord's [OAuth2 documentation](https://docs.discord.com/developers/topics/oauth2)
+and [current-user endpoint](https://docs.discord.com/developers/resources/user#get-current-user).
+
 ## Supported surfaces and limits
 
 Discord renders streamed and long text through message edits and 2,000-character
