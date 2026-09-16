@@ -53,6 +53,89 @@ test('control navigation has one Profile section for the account and linked chan
   assert.doesNotMatch(html, />Channels<\/span>/)
 })
 
+test('Profile offers native OAuth channels without requiring an installed MCP', () => {
+  useConsole.getInitialState().mgmtSec = 'profile'
+  useAuth.getInitialState().user = profile.user
+  queryClient.setQueryData(['profile'], { ...profile, profiles: [] })
+  queryClient.setQueryData(['profile-authorizations'], [{ id: 'discord-dev', type: 'discord' }])
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+  assert.ok(html.includes('Link a channel'))
+  assert.ok(html.includes('Connect Discord'))
+  assert.ok(html.includes('discord-dev'))
+  assert.ok(!html.includes('Connect Slack'))
+  assert.match(html, /<button[^>]*>[^]*?Connect Discord/)
+})
+
+for (const channelId of ['discord', 'discord-development-with-a-long-instance-name']) {
+  test(`channel authorization uses the indented wrapping layout for ${channelId}`, () => {
+    useConsole.getInitialState().mgmtSec = 'profile'
+    useAuth.getInitialState().user = profile.user
+    queryClient.setQueryData(['profile'], { ...profile, profiles: [] })
+    queryClient.setQueryData(['profile-authorizations'], [{ id: channelId, type: 'discord' }])
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+    const button = (html.match(/<button\b.*?<\/button>/g) ?? []).find((button) => button.includes('Connect Discord'))
+    assert.ok(button)
+    assert.match(button, /class="trk-profile-picker-connect"/)
+    assert.match(html, /<div style="margin-top:16px;margin-left:18px;padding-top:12px;border-top:1px solid var\(--line-divider\)"><p[^>]*margin:0 10px 8px[^>]*>Link a channel<\/p>/)
+    assert.match(button, /class="trk-profile-picker-index"[^>]*>\+<\/span>/)
+    assert.doesNotMatch(button, /Authorize, then confirm the profile/)
+    if (channelId !== 'discord') assert.ok(button.includes(channelId))
+  })
+}
+
+test('linked channels hide their Connect button and the empty linking section', () => {
+  useConsole.getInitialState().mgmtSec = 'profile'
+  useAuth.getInitialState().user = profile.user
+  queryClient.setQueryData(['profile'], profile)
+  queryClient.setQueryData(['profile-authorizations'], [{ id: 'discord', type: 'discord' }])
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+  assert.ok(html.includes('Show Discord profile for Alice on Discord'))
+  assert.doesNotMatch(html, /Connect Discord|Link a channel|trk-profile-picker-connect/)
+})
+
+test('unlinked channels remain available when another channel is linked', () => {
+  useConsole.getInitialState().mgmtSec = 'profile'
+  useAuth.getInitialState().user = profile.user
+  queryClient.setQueryData(['profile'], profile)
+  queryClient.setQueryData(['profile-authorizations'], [{ id: 'discord', type: 'discord' }, { id: 'slack', type: 'slack' }])
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+  assert.ok(html.includes('Link a channel'))
+  assert.ok(html.includes('Connect Slack'))
+  assert.doesNotMatch(html, /Connect Discord/)
+})
+
+test('link availability matches the channel instance rather than its platform', () => {
+  useConsole.getInitialState().mgmtSec = 'profile'
+  useAuth.getInitialState().user = profile.user
+  queryClient.setQueryData(['profile'], profile)
+  queryClient.setQueryData(['profile-authorizations'], [{ id: 'discord', type: 'discord' }, { id: 'discord-dev', type: 'discord' }])
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+  assert.equal((html.match(/Connect Discord/g) ?? []).length, 1)
+  assert.ok(html.includes('discord-dev'))
+})
+
+test('removing a linked profile makes its Connect button available again', () => {
+  useConsole.getInitialState().mgmtSec = 'profile'
+  useAuth.getInitialState().user = profile.user
+  queryClient.setQueryData(['profile'], profile)
+  queryClient.setQueryData(['profile-authorizations'], [{ id: 'discord', type: 'discord' }])
+  const page = createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage))
+  assert.doesNotMatch(renderToStaticMarkup(page), /Connect Discord/)
+  queryClient.setQueryData(['profile'], { ...profile, profiles: [] })
+  const html = renderToStaticMarkup(page)
+  assert.ok(html.includes('Connect Discord'))
+  assert.ok(html.includes('Link a channel'))
+})
+
+test('Profile explains when no channel OAuth is configured', () => {
+  useConsole.getInitialState().mgmtSec = 'profile'
+  useAuth.getInitialState().user = profile.user
+  queryClient.setQueryData(['profile-authorizations'], [])
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+  assert.ok(html.includes('No channel OAuth is configured.'))
+  assert.ok(!html.includes('Connect Discord'))
+})
+
 test('Profile starts with the account card in front and its technical ID always visible', () => {
   useConsole.getInitialState().mgmtSec = 'profile'
   useAuth.getInitialState().user = profile.user
