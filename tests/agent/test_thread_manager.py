@@ -9,10 +9,12 @@ from pydantic_ai.messages import ModelRequest as RawModelRequest
 from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.messages import TextPart, UserPromptPart
 from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
+from octomate.managers.thread import history_match_query
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -22,6 +24,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
     ThreadMessage,
+    ThreadMessageFTS,
 )
 from octomate.schemas.user import UserProfile
 from tests.support.managers import a_loaded_thread
@@ -311,7 +314,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
     before = await manager.chat_messages_before(thread.id, third.id, limit=1)
     after = await manager.chat_messages_after(thread.id, first.id, limit=1)
 
-    assert [message.id for message in hits] == [first.id, third.id]
+    assert [message.id for message in hits] == [third.id, first.id]
     assert [message.id for message in before] == [second.id]
     assert [message.id for message in after] == [second.id]
 
@@ -354,6 +357,186 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
 
     assert [binding.position for binding in bindings] == [0, 1]
     assert stored_message.model_messages[0].id == model_message.id
+
+
+async def test_chat_history_search_ranks_bm25_then_newest() -> None:
+    manager = ThreadManager(users=UserManager())
+    moment = datetime(2026, 1, 1, tzinfo=UTC)
+    older = await manager.record_inbound(
+        event("m1", "alice", "authentication bug"), happened_at=moment
+    )
+    verbose = await manager.record_inbound(
+        event(
+            "m2",
+            "alice",
+            "authentication bug " + "background detail " * 40,
+        ),
+        happened_at=moment.replace(hour=2),
+    )
+    newer = await manager.record_inbound(
+        event("m3", "alice", "authentication bug"),
+        happened_at=moment.replace(hour=1),
+    )
+    alice = await manager.users.profile("slack", "alice")
+    assert alice is not None
+
+    hits = await manager.search_chat_messages(alice, "authentication bug")
+
+    assert [message.id for message in hits] == [newer.id, older.id, verbose.id]
+
+
+async def test_chat_history_search_stems_and_requires_every_literal_term() -> None:
+    manager = ThreadManager(users=UserManager())
+    matching = await manager.record_inbound(
+        event("m1", "alice", "The corrected authentication settings are stable.")
+    )
+    await manager.record_inbound(
+        event("m2", "alice", "The corrected deployment is stable.")
+    )
+    literal = await manager.record_inbound(event("m3", "alice", "auth OR C++"))
+    alice = await manager.users.profile("slack", "alice")
+    assert alice is not None
+
+    stemmed = await manager.search_chat_messages(alice, "correcting setting")
+    operators = await manager.search_chat_messages(alice, "auth OR C++")
+
+    assert [message.id for message in stemmed] == [matching.id]
+    assert [message.id for message in operators] == [literal.id]
+    assert history_match_query('auth OR "bug"') == '"auth" AND "OR" AND """bug"""'
+    with pytest.raises(ValueError, match="at least one word"):
+        history_match_query(" \n ")
+
+
+async def test_chat_history_actor_filter_is_applied_before_limit() -> None:
+    manager = ThreadManager(users=UserManager())
+    human = await manager.record_inbound(event("m1", "alice", "alpha"))
+    await manager.record_outbound(
+        address(),
+        agent_tentacle_id="inkling",
+        segments=[TextSegment(data={"text": "alpha " * 20})],
+        sender=UserProfile(channel_user_id="inkling", name="Inkling"),
+    )
+    alice = await manager.users.profile("slack", "alice")
+    assert alice is not None
+
+    hits = await manager.search_chat_messages(
+        alice, "alpha", actor_kind="human", limit=1
+    )
+
+    assert [message.id for message in hits] == [human.id]
+
+
+async def test_message_and_fts_index_write_share_a_transaction(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ThreadManager(users=UserManager())
+    thread = await manager.ensure(address())
+    async with in_memory_engine.begin() as connection:
+        await connection.exec_driver_sql("DROP TABLE thread_messages_fts")
+
+    with pytest.raises(OperationalError, match="thread_messages_fts"):
+        await manager.record_inbound(event("m1", "alice", "never half stored"))
+
+    assert await manager.find_message(thread.id, "m1", "inbound") is None
+
+
+@pytest.mark.parametrize("initial_text", ["original marker", None, ""])
+async def test_history_index_follows_arcanus_message_writes(
+    initial_text: str | None, in_memory_engine: AsyncEngine
+) -> None:
+    manager = ThreadManager(users=UserManager())
+    thread = await manager.ensure(address())
+    sender = await manager.users.ensure_profile(
+        "slack", UserProfile(channel_user_id="alice", name="Alice")
+    )
+    message = ThreadMessage(
+        thread_id=thread.id,
+        sender_id=sender.id,
+        happened_at=datetime.now(UTC),
+        direction="inbound",
+        actor_kind="human",
+        segments=[],
+        message_text=initial_text,
+    )
+    # These writes bypass ThreadManager.store_message entirely.
+    async with async_session() as session:
+        session.add(message)
+        await session.commit()
+    assert [
+        row.id for row in await manager.search_chat_messages(sender, "original")
+    ] == ([message.id] if initial_text else [])
+
+    for replacement in ("replacement marker", "", "another marker", None):
+        async with async_session() as session:
+            stored = await session.get(ThreadMessage, message.id)
+            assert stored is not None
+            stored.message_text = replacement
+            await session.commit()
+        assert [
+            row.id for row in await manager.search_chat_messages(sender, "marker")
+        ] == ([message.id] if replacement else [])
+        assert await manager.search_chat_messages(sender, "original") == []
+
+    async with async_session() as session:
+        stored = await session.get(ThreadMessage, message.id)
+        assert stored is not None
+        stored.message_text = "deleted marker"
+        await session.commit()
+        await session.delete(stored)
+        await session.commit()
+    # Inspect the index itself: a join could hide orphaned index entries.
+    async with in_memory_engine.connect() as connection:
+        assert (
+            await connection.exec_driver_sql("SELECT count(*) FROM thread_messages_fts")
+        ).scalar_one() == 0
+
+
+async def test_history_index_is_mapped_through_arcanus() -> None:
+    manager = ThreadManager(users=UserManager())
+    message = await manager.record_inbound(event("m1", "alice", "mapped marker"))
+    async with async_session() as session:
+        hit = await session.one(
+            ThreadMessageFTS,
+            expressions=[ThreadMessageFTS["message_text"].match("marker")],
+        )
+    assert isinstance(hit, ThreadMessageFTS)
+    assert isinstance(hit.rowid, int)
+    assert hit.message_id == message.id
+    assert hit.message_text == "mapped marker"
+    assert hit.rank is not None
+    assert hit.rank < 0
+
+
+async def test_history_index_rolls_back_with_message_changes() -> None:
+    manager = ThreadManager(users=UserManager())
+    message = await manager.record_inbound(event("m1", "alice", "original marker"))
+    sender = await manager.users.profile("slack", "alice")
+    assert sender is not None
+    async with async_session() as session:
+        stored = await session.get(ThreadMessage, message.id)
+        assert stored is not None
+        stored.message_text = "replacement marker"
+        await session.flush()
+        await session.rollback()
+    assert [
+        row.id for row in await manager.search_chat_messages(sender, "original")
+    ] == [message.id]
+    assert await manager.search_chat_messages(sender, "replacement") == []
+
+
+async def test_history_index_follows_database_cascade(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ThreadManager(users=UserManager())
+    message = await manager.record_inbound(event("m1", "alice", "cascade marker"))
+    # Delete the parent in SQL so only the database can maintain the index.
+    async with in_memory_engine.begin() as connection:
+        await connection.exec_driver_sql(
+            "DELETE FROM threads WHERE id = ?", (message.thread_id.hex,)
+        )
+        assert (
+            await connection.exec_driver_sql("SELECT count(*) FROM thread_messages_fts")
+        ).scalar_one() == 0
 
 
 async def test_assistant_reply_binding_uses_persisted_response() -> None:
@@ -578,10 +761,10 @@ async def test_a_persons_history_is_every_thread_their_accounts_spoke_in() -> No
     hers = await manager.search_chat_messages(alice, "alpha")
     his = await manager.search_chat_messages(bob, "alpha")
 
-    assert [message.message_text for message in hers] == [
+    assert {message.message_text for message in hers} == {
         "alpha on slack",
         "alpha on lark",
-    ]
+    }
     assert [message.message_text for message in his] == ["alpha, bob alone"]
 
 
