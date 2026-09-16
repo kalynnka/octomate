@@ -4,7 +4,9 @@ retried only when *that* flag is the one this dsh refuses."""
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from pydantic import HttpUrl
@@ -19,7 +21,9 @@ PORT = 3080
 BASE_URL = HttpUrl(f"http://127.0.0.1:{PORT}")
 
 
-def fake_dsh(tmp_path: Path, refuses: str | None = None) -> tuple[Path, Path]:
+def fake_dsh(
+    tmp_path: Path, refuses: str | None = None, token: str | None = None
+) -> tuple[Path, Path]:
     """A stand-in `dsh` that appends each launch's argv to a file, prints the
     readiness banner and stays up. Given `refuses`, it instead answers that flag
     the way a `dsh web` too old for it does: commander's one refusal line on
@@ -39,9 +43,10 @@ done
 """
     )
     binary.write_text(
-        f'#!/bin/sh\necho "$@" >> {argv}\n'
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.1.6-alpha.1; exit; fi\n'
+        f'echo "$@" >> {argv}\n'
         f"{refusal}"
-        f'echo "dsh web: http://127.0.0.1:{PORT}"\n'
+        f'echo "dsh web: http://127.0.0.1:{PORT}{"/?token=" + token if token else ""}"\n'
         "exec sleep 30\n"
     )
     binary.chmod(0o755)
@@ -62,7 +67,7 @@ def process(binary: Path, tmp_path: Path, extra_args: list[str]) -> DeepseekProc
     )
 
 
-async def test_launches_on_loopback_with_no_open_before_extra_args(
+async def test_launches_with_patch_before_web_app_options(
     tmp_path: Path,
 ) -> None:
     binary, argv = fake_dsh(tmp_path)
@@ -76,13 +81,13 @@ async def test_launches_on_loopback_with_no_open_before_extra_args(
     assert launches(argv) == [
         [
             "web",
+            "--patch",
+            "overlay.yml",
             "--host",
             "127.0.0.1",
             "--port",
             str(PORT),
             NO_OPEN,
-            "--patch",
-            "overlay.yml",
         ]
     ]
 
@@ -128,3 +133,88 @@ async def test_a_dsh_that_dies_without_refusing_anything_fails_the_start(
 
     with pytest.raises(RuntimeError, match="exited before reporting a URL"):
         await dsh.start()
+
+
+@pytest.mark.parametrize("browser_url", [None, "https://dsh.example:8443"])
+async def test_launch_url_is_printed_once_without_writing_a_file(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    capsys: pytest.CaptureFixture[str],
+    browser_url: str | None,
+) -> None:
+    token = "private-launch-token"
+    binary, argv = fake_dsh(tmp_path, token=token)
+    dsh = process(binary, tmp_path, [])
+    dsh.browser_url = HttpUrl(browser_url) if browser_url is not None else None
+    caplog.set_level(logging.DEBUG, logger="octomate.tentacles.deepseek.process")
+
+    try:
+        assert await dsh.start() == BASE_URL
+        assert dsh.launch_token is not None
+        assert dsh.launch_token.get_secret_value() == token
+        assert token not in repr(dsh)
+        assert token not in caplog.text
+        output = capsys.readouterr().out
+        assert output.startswith("dsh web: ")
+        assert output.count(token) == 1
+        link = urlsplit(output.strip().removeprefix("dsh web: "))
+        assert link.netloc == urlsplit(browser_url or str(BASE_URL)).netloc
+        assert parse_qs(link.query) == {"token": [token]}
+        assert not dsh.dsh_home.exists()
+        dsh.capture_diagnostic(f"repeated launch URL: {output.strip()}")
+        assert token not in caplog.text
+        assert capsys.readouterr().out == ""
+        if browser_url is not None:
+            args = launches(argv)[0]
+            assert args[args.index("--trusted-host") + 1] == link.netloc
+    finally:
+        await dsh.stop()
+    assert not dsh.dsh_home.exists()
+    assert dsh.launch_token is None
+
+
+@pytest.mark.parametrize(
+    ("version", "expected"),
+    [
+        ("0.1.6-alpha.1", "matches Octomate's tested release"),
+        ("0.2.0", "differs from Octomate's tested version"),
+        ("unknown", "Could not determine dsh version"),
+    ],
+)
+async def test_version_matching_is_visible(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    version: str,
+    expected: str,
+) -> None:
+    binary = tmp_path / "dsh"
+    binary.write_text(f"#!/bin/sh\necho '{version}'\n")
+    binary.chmod(0o755)
+    caplog.set_level(logging.INFO)
+    await process(binary, tmp_path, []).check_version()
+    assert expected in caplog.text
+
+
+async def test_startup_failure_keeps_cause_without_flooding_logs(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    binary = tmp_path / "dsh"
+    binary.write_text(
+        '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 0.1.6-alpha.1; exit; fi\n'
+        'echo "Cannot find module required-plugin" >&2\n'
+        'echo "http://127.0.0.1/?token=private-token" >&2\n'
+        'i=0; while [ "$i" -lt 300 ]; do echo "    at frame-$i" >&2; i=$((i+1)); done\n'
+        "exit 1\n"
+    )
+    binary.chmod(0o755)
+    caplog.set_level(logging.INFO)
+    with pytest.raises(RuntimeError) as caught:
+        await process(binary, tmp_path, []).start()
+    message = str(caught.value)
+    assert "Cannot find module required-plugin" in message
+    assert "frame-299" in message
+    assert "omitted" in message
+    assert len(message.splitlines()) <= 31
+    assert "private-token" not in message + caplog.text
+    assert len(caplog.records) <= 2

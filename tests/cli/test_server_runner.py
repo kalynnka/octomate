@@ -23,16 +23,22 @@ def test_service_serve_help_is_available() -> None:
     assert "--reload" in unstyle(result.stdout)
 
 
+@pytest.mark.parametrize("reload", [True, False])
 def test_foreground_run_passes_bind_and_reload_options(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, reload: bool
 ) -> None:
     monkeypatch.setenv("OCTOMATE__PORT", "8000")
-    with patch("octomate.server.run") as run:
+    with (
+        patch("octomate.server.run") as run,
+        patch("uvicorn.config.logger.warning") as warning,
+    ):
         result = CliRunner().invoke(
             app,
-            ["service", "serve", "--host", "127.0.0.1", "--port", "9000", "--reload"],
+            ["service", "serve", "--host", "127.0.0.1", "--port", "9000"]
+            + (["--reload"] if reload else []),
         )
     assert result.exit_code == 0, result.output
+    warning.assert_not_called()
     run.assert_called_once()
     config = run.call_args.args[0]
     assert config.app == "octomate.app:create_app"
@@ -40,7 +46,7 @@ def test_foreground_run_passes_bind_and_reload_options(
     assert config.lifespan == "on"
     assert config.host == "127.0.0.1"
     assert config.port == 9000
-    assert config.reload is True
+    assert config.should_reload is reload
     assert os.environ["OCTOMATE__PORT"] == "9000"
 
 

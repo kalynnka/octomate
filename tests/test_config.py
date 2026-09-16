@@ -416,6 +416,20 @@ def test_deepseek_config_rejects_a_non_loopback_host() -> None:
         DeepseekConfig.model_validate({"host": "dsh.example"})
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:password@dsh.example",
+        "https://dsh.example/nested",
+        "https://dsh.example/?token=secret",
+        "https://dsh.example/#fragment",
+    ],
+)
+def test_deepseek_browser_url_requires_an_origin(url: str) -> None:
+    with pytest.raises(ValidationError, match="browser_url must be an origin"):
+        DeepseekConfig.model_validate({"browser_url": url})
+
+
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
     with pytest.raises(ValidationError) as exc_info:
         OctomateConfig.model_validate(

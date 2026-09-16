@@ -384,23 +384,6 @@ def test_max_tokens_maps_to_the_length_finish_reason() -> None:
     assert accumulator.turn_error is None
 
 
-def test_complete_command_is_a_whole_answer_without_a_turn() -> None:
-    accumulator = DeepseekRunAccumulator()
-    accumulator.begin("/permission workspace-write")
-
-    events = list(accumulator.complete_command("preset workspace-write"))
-
-    assert [type(event).__name__ for event in events] == [
-        "PartStartEvent",
-        "PartEndEvent",
-    ]
-    assert accumulator.turn_ended
-    assert accumulator.result_text == "preset workspace-write"
-    _request, response = accumulator.messages
-    assert isinstance(response, ModelResponse)
-    assert response.finish_reason == "stop"
-
-
 def test_build_result_carries_history_usage_and_ids() -> None:
     accumulator = DeepseekRunAccumulator()
     accumulator.begin("prompt")

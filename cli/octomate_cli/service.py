@@ -630,7 +630,9 @@ def serve(
             port=config.port if port is None else port,
             reload=reload,
             # Watch application code without watching the deployment's mutable data.
-            reload_dirs=[str(Path(inspect.getfile(OctomateConfig)).parent.parent)],
+            reload_dirs=[str(Path(inspect.getfile(OctomateConfig)).parent.parent)]
+            if reload
+            else None,
             log_level=config.logging.level.lower(),
         )
     )

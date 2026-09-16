@@ -5,7 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, ConfigDict, Field
+from pydantic import (
+    AfterValidator,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    SecretStr,
+    field_validator,
+)
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config.agents.common import AgentConfig, Claim
@@ -43,7 +50,7 @@ class DeepseekConfig(AgentConfig):
         default="127.0.0.1",
         description=(
             "Where a dsh serves `/api` — loopback only, enforced here: the "
-            "gateway has no TLS and no auth, and a started child binds loopback, "
+            "gateway uses HTTP, and a started child binds loopback, "
             "so a remote host could neither be trusted nor answered. A dsh "
             "already answering here is attached to as it stands."
         ),
@@ -58,6 +65,25 @@ class DeepseekConfig(AgentConfig):
             "attaches to it instead of starting a second writer of one DSH_HOME."
         ),
     )
+    launch_token: SecretStr | None = Field(
+        default=None,
+        description=(
+            "Token from an already-running dsh's launch URL, exchanged for an "
+            "authentication cookie. A harness started by Octomate supplies its "
+            "token through its readiness banner."
+        ),
+    )
+    browser_url: HttpUrl | None = Field(
+        default=None,
+        description=(
+            "Browser origin of a reverse proxy, e.g. https://dsh.example:8443. "
+            "A started child trusts this authority and prints its login link "
+            "to the console once. Without this setting the printed link uses "
+            "the child's loopback URL. "
+            "Configure the proxy separately; the child still binds loopback."
+        ),
+    )
+
     executable: str = Field(
         default="dsh",
         description=(
@@ -69,8 +95,8 @@ class DeepseekConfig(AgentConfig):
     extra_args: list[str] = Field(
         default_factory=list,
         description=(
-            "Extra arguments appended after "
-            "`web --host 127.0.0.1 --port <port> --no-open`, e.g. a `--patch` "
+            "Extra arguments placed after `web` and before the web app's "
+            "`--host`, `--port`, and `--no-open` flags, e.g. a `--patch` "
             "overlay. Only applies to a harness octomate starts. A dsh that "
             "refuses one of these exits and fails the start — only octomate's "
             "own `--no-open` is dropped and retried."
@@ -117,7 +143,7 @@ class DeepseekConfig(AgentConfig):
     agent_preset: str | None = Field(
         default=None,
         description=(
-            "Agent preset new sessions are composed from (`session.create`'s "
+            "Agent preset new sessions are composed from (`session/create`'s "
             "agentPreset). Null takes the deployment's default preset."
         ),
     )
@@ -139,3 +165,18 @@ class DeepseekConfig(AgentConfig):
             "spawn is declared failed."
         ),
     )
+
+    @field_validator("browser_url")
+    @classmethod
+    def browser_origin(cls, value: HttpUrl | None) -> HttpUrl | None:
+        if value is not None and (
+            value.username is not None
+            or value.password is not None
+            or value.path not in {None, "/"}
+            or value.query is not None
+            or value.fragment is not None
+        ):
+            raise ValueError(
+                "browser_url must be an origin without credentials, path, query, or fragment"
+            )
+        return value

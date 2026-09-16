@@ -61,7 +61,8 @@ def tail(
         str | None,
         typer.Option(
             help="This machine's dsh gateway; defaults to "
-            f"${DSH_URL_ENV} or {DEFAULT_DSH_URL}."
+            f"${DSH_URL_ENV} or {DEFAULT_DSH_URL}. Use a launch URL with its "
+            "token, or set DSH_LAUNCH_TOKEN in the tail process environment."
         ),
     ] = None,
 ) -> None:

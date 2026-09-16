@@ -76,18 +76,19 @@ from octomate.tentacles.deepseek.adapter import (
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
-from octomate.tentacles.deepseek.process import DeepseekProcess
+from octomate.tentacles.deepseek.process import TESTED_DSH_VERSION, DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
     ErrResult,
-    HostDescription,
     ModelCatalog,
     OkResult,
     QuestionRequestedFrame,
+    RemoteCancellation,
     RpcError,
     RpcResult,
+    SessionAssistantFrame,
     SessionCreateValue,
     SessionEventFrame,
     SessionPromptValue,
@@ -123,7 +124,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     harnesses over one `$DSH_HOME` interleave unlocked session-log appends and
     corrupt them. Only a child of our own is stopped on exit. Either way the
     tentacle drives the harness over the `/api` gateway — HTTP POSTs for unary
-    calls, the all-session mux WebSocket for events, `POST /api/respond` for
+    calls, the Remote mux WebSocket for events, `POST /api/$events/result` for
     answering the approvals and questions dsh pushes mid-turn. dsh owns its
     conversation state through sessions: octomate stores the dsh session id as
     the conversation `external_id` and prompts the same session for later
@@ -148,13 +149,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
     mux_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     closing: bool = field(default=False, init=False)
-    subscribers: dict[str, asyncio.Queue[SessionEventFrame | StreamErrorFrame]] = field(
-        default_factory=dict, init=False
-    )
+    subscribers: dict[
+        str, asyncio.Queue[SessionEventFrame | SessionAssistantFrame | StreamErrorFrame]
+    ] = field(default_factory=dict, init=False)
     bridge_contexts: dict[str, DeepseekBridgeContext] = field(
         default_factory=dict, init=False
     )
-    interaction_tasks: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    interaction_tasks: dict[str, asyncio.Task[None]] = field(
+        default_factory=dict, init=False
+    )
 
     # dsh approvals/questions are answered in-process through mux frames while
     # the turn stays live. `pending` parks the card response futures.
@@ -195,7 +198,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.closing = False
         self.subscribers = {}
         self.bridge_contexts = {}
-        self.interaction_tasks = set()
+        self.interaction_tasks = {}
         self.pending = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
@@ -375,8 +378,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         `$DSH_HOME`. The config keeps `host` loopback, so a started child
         answers the endpoint the client already points at; either way the
         client is verified before this returns."""
-        if await self.client.answering():
-            logger.info("attached to the dsh serving %s", self.client.base_url)
+        if await self.client.answering(self.config.launch_token):
+            logger.warning(
+                "Attached to dsh at %s; Remote API probe passed, but the server does not report its version. Octomate is tested with dsh %s.",
+                self.client.base_url,
+                TESTED_DSH_VERSION,
+            )
             return None
         process = DeepseekProcess(
             executable=self.config.executable,
@@ -384,6 +391,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             extra_args=list(self.config.extra_args),
             dsh_home=self.config.dsh_home,
             ready_timeout=self.config.ready_timeout,
+            browser_url=self.config.browser_url,
         )
         try:
             base_url = await process.start()
@@ -399,16 +407,17 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 )
                 return None
             raise
-        if not await self.client.answering():
+        try:
+            if process.launch_token is not None:
+                await self.client.authenticate(process.launch_token)
+            if not await self.client.answering():
+                raise RuntimeError(
+                    f"dsh reported {base_url} but does not answer at {self.client.base_url}"
+                )
+        except BaseException:
             await process.stop()
-            raise RuntimeError(
-                f"dsh reported {base_url} but does not answer at {self.client.base_url}"
-            )
-        logger.warning(
-            "started dsh at %s — dsh has no cross-process lock on session logs, "
-            "so another `dsh web` against the same DSH_HOME can corrupt them",
-            base_url,
-        )
+            raise
+        logger.info("Started dsh at %s; Remote API probe passed", base_url)
         return process
 
     @property
@@ -417,11 +426,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         return None
 
     async def discover_models(self) -> None:
-        host = HostDescription.model_validate(
-            self.unwrap(await self.client.call("host.describe", {}), "host.describe")
-        )
         catalog = ModelCatalog.model_validate(
-            self.unwrap(await self.client.call("llm.models", {}), "llm.models")
+            self.unwrap(
+                await self.client.remote("session/modelCatalog", {}),
+                "session/modelCatalog",
+            )
         )
         for failure in catalog.failures:
             logger.warning(
@@ -463,12 +472,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             raise ValueError("DeepSeek Harness advertised no available models")
         self.set_model_catalog(models, claims)
         self.effort_maps = effort_maps
-        self.default_provider = host.provider
+        self.default_provider = catalog.default.provider
 
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
         await self.client.__aenter__()
-        # attach_or_start leaves the client verified (host.describe answered);
+        # attach_or_start leaves the client verified (settings/describe answered);
         # the mux socket must then be open before anything prompts, so a run's
         # first frames cannot outrun the subscribed baseline. A failed
         # handshake is a broken harness, not weather: fail the start rather
@@ -514,7 +523,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await self.mux_socket.close()
                 self.mux_socket = None
-            for task in list(self.interaction_tasks):
+            for task in list(self.interaction_tasks.values()):
                 task.cancel()
             self.interaction_tasks.clear()
             for future in list(self.pending.values()):
@@ -539,19 +548,30 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         a dropped socket there is not weather."""
         try:
             async for rpc_id, frame in client.mux_frames(socket):
-                if isinstance(frame, SessionEventFrame):
+                if isinstance(frame, SessionEventFrame | SessionAssistantFrame):
                     queue = self.subscribers.get(frame.session_id)
                     if queue is not None:
                         queue.put_nowait(frame)
                 elif isinstance(frame, ApprovalRequestedFrame | QuestionRequestedFrame):
                     task = asyncio.create_task(self.answer_interaction(rpc_id, frame))
-                    self.interaction_tasks.add(task)
-                    task.add_done_callback(self.interaction_tasks.discard)
+                    self.interaction_tasks[rpc_id] = task
+                    task.add_done_callback(
+                        lambda done, event_id=rpc_id: self.interaction_tasks.pop(
+                            event_id, None
+                        )
+                    )
+                elif isinstance(frame, RemoteCancellation):
+                    pending = self.interaction_tasks.get(frame.event_id)
+                    if pending is not None:
+                        pending.cancel()
                 elif isinstance(frame, StreamErrorFrame):
-                    for queue in self.subscribers.values():
-                        queue.put_nowait(frame)
+                    for session_id, queue in self.subscribers.items():
+                        if frame.session_id is None or frame.session_id == session_id:
+                            queue.put_nowait(frame)
         except ConnectionClosed:
             pass
+        except Exception:
+            logger.exception("dsh Remote stream failed")
         finally:
             if not self.closing:
                 failure = StreamErrorFrame(
@@ -567,13 +587,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         client = self.client
         context = self.bridge_contexts.get(frame.session_id)
         if context is None:
-            # A request nobody is driving must not block dsh forever.
-            result: RpcResult = ErrResult(
-                error=RpcError(
-                    code="cancelled",
-                    message="Octomate has no live run for this session.",
-                )
-            )
+            result: RpcResult | None = None
         else:
             try:
                 if isinstance(frame, ApprovalRequestedFrame):
@@ -589,33 +603,30 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 result = ErrResult(error=RpcError(code="cancelled", message=str(error)))
         receipt = await client.respond(rpc_id, result)
         if not receipt.accepted:
-            # Normal race: another settlement (a cancel, usually) got there first.
-            logger.debug(
-                "session %s: dsh dropped the %s response (%s)",
-                frame.session_id,
-                frame.type,
-                receipt.reason,
-            )
+            message = f"dsh rejected the {frame.type} response: {receipt.reason}"
+            logger.error("session %s: %s", frame.session_id, message)
+            queue = self.subscribers.get(frame.session_id)
+            if queue is not None:
+                queue.put_nowait(
+                    StreamErrorFrame(
+                        type="stream/error",
+                        session_id=frame.session_id,
+                        error=RpcError(
+                            code="interaction-reply-failed", message=message
+                        ),
+                    )
+                )
 
     async def answer_approval(
         self, context: DeepseekBridgeContext, frame: ApprovalRequestedFrame
     ) -> RpcResult:
-        def outcome(decision: str) -> RpcResult:
-            return OkResult(
-                value={
-                    "sessionId": frame.session_id,
-                    "approvalId": frame.approval_id,
-                    "outcome": decision,
-                }
-            )
-
         if not context.interactive:
             # A commissioned run has no human, and dsh's ask-vs-never lives
             # inside the preset rather than in a swappable posture, so the
             # non-interactive contract is declining at the bridge.
-            return outcome("rejected")
+            return OkResult(value="rejected")
         if frame.tool_name in context.session_allowed:
-            return outcome("allowed-once")
+            return OkResult(value="allowed-once")
         args: JsonObject = {}
         if frame.reason:
             args["reason"] = frame.reason
@@ -641,7 +652,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 frame.tool_name,
             )
         if approved:
-            return outcome("allowed-once")
+            return OkResult(value="allowed-once")
         if response is None:
             return ErrResult(
                 error=RpcError(
@@ -650,7 +661,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     "without a response.",
                 )
             )
-        return outcome("rejected")
+        return OkResult(value="rejected")
 
     async def answer_questions(
         self, context: DeepseekBridgeContext, frame: QuestionRequestedFrame
@@ -703,11 +714,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             elif answer:
                 payload["custom"] = answer
             answers.append(payload)
-        value: JsonObject = {
-            "sessionId": frame.session_id,
-            "answer": {"answers": answers},
-        }
-        return OkResult(value=value)
+        return OkResult(value={"answers": answers})
 
     async def _await_human(
         self,
@@ -794,7 +801,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if output_type is not None:
             raise ValueError(
                 "DeepseekTentacle does not support structured output: dsh's "
-                "session.prompt has no output schema"
+                "session/prompt has no output schema"
             )
 
         if conversation_id is not None:
@@ -830,7 +837,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             prompt_text = ""
         if not prompt_text:
             raise ValueError("DeepseekTentacle requires a non-empty text prompt")
-        # dsh has no instructions channel on session.prompt, so run-level
+        # dsh has no instructions channel on session/prompt, so run-level
         # instructions (a spawner's framing, mostly) travel inside the prompt —
         # marked, because everything else in there is what somebody said.
         if isinstance(instructions, str) and instructions:
@@ -866,8 +873,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         create_payload["agentPreset"] = self.config.agent_preset
                     created = SessionCreateValue.model_validate(
                         self.unwrap(
-                            await client.call("session.create", create_payload),
-                            "session.create",
+                            await client.remote(
+                                "session/create", {"request": create_payload}
+                            ),
+                            "session/create",
                         )
                     )
                     session_id = created.session_id
@@ -894,8 +903,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         if reasoning_effort is not None:
                             select_payload["reasoningEffort"] = reasoning_effort
                         self.unwrap(
-                            await client.call("session.selectModel", select_payload),
-                            "session.selectModel",
+                            await client.remote(
+                                "session/selectModel", {"request": select_payload}
+                            ),
+                            "session/selectModel",
                         )
                     # No permission RPC exists: the preset switches through the
                     # remotes-plane command, which opens no turn.
@@ -905,6 +916,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             {
                                 "agentId": session_id,
                                 "line": f"/permission {permission_mode}",
+                                "submittedAttachments": [],
                             },
                         ),
                         "commands/execute",
@@ -926,9 +938,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
                     # Subscribe before prompting, so the turn's first frames cannot
                     # slip between the prompt and the queue.
-                    queue: asyncio.Queue[SessionEventFrame | StreamErrorFrame] = (
-                        asyncio.Queue()
-                    )
+                    queue: asyncio.Queue[
+                        SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
+                    ] = asyncio.Queue()
                     self.subscribers[session_id] = queue
                     self.bridge_contexts[session_id] = DeepseekBridgeContext(
                         conversation=conversation,
@@ -938,72 +950,68 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         interactive=interactive,
                     )
                     prompted = False
+                    socket = self.mux_socket
+                    if socket is None:
+                        raise AgentRunError("dsh Remote socket is not connected")
                     try:
-                        prompt_value = SessionPromptValue.model_validate(
+                        await client.follow(socket, session_id)
+                        SessionPromptValue.model_validate(
                             self.unwrap(
-                                await client.call(
-                                    "session.prompt",
+                                await client.remote(
+                                    "session/prompt",
                                     {
-                                        "sessionId": session_id,
-                                        "mode": "queue",
-                                        "content": [
-                                            {"type": "text", "text": prompt_text}
-                                        ],
+                                        "request": {
+                                            "sessionId": session_id,
+                                            "requestId": str(uuid4()),
+                                            "mode": "queue",
+                                            "content": [
+                                                {"type": "text", "text": prompt_text}
+                                            ],
+                                        }
                                     },
                                 ),
-                                "session.prompt",
+                                "session/prompt",
                             )
                         )
-                        if prompt_value.command is not None:
-                            # dsh intercepted the line as a slash command: no
-                            # turn opened, the command's answer is the whole
-                            # result.
-                            command_text = (
-                                prompt_value.command.text
-                                or f"{prompt_value.command.kind} command executed"
-                            )
-                            for event in accumulator.complete_command(command_text):
-                                yield event
-                        else:
-                            prompted = True
-                            while not accumulator.turn_ended:
-                                frame = await queue.get()
-                                if isinstance(frame, StreamErrorFrame):
-                                    accumulator.turn_error = (
-                                        "dsh event stream failed mid-turn: "
-                                        f"{frame.error.message}"
-                                    )
-                                    break
-                                if (
-                                    self.config.instrument
-                                    and frame.event.type != "assistant/chunk"
-                                    and (
-                                        accumulator.turn_started
-                                        or frame.event.type == "turn/start"
-                                    )
+                        prompted = True
+                        while not accumulator.turn_ended:
+                            frame = await queue.get()
+                            if isinstance(frame, StreamErrorFrame):
+                                accumulator.turn_error = f"dsh event stream failed mid-turn: {frame.error.message}"
+                                break
+                            if isinstance(frame, SessionAssistantFrame):
+                                for event in accumulator.consume_assistant_stream(
+                                    frame
                                 ):
-                                    # dsh's native OTel backend exports logs, with no
-                                    # span exporter or inbound parent context. Keep
-                                    # events under this kick, not the shared mux task;
-                                    # see docs/agent-telemetry.md for checked releases.
-                                    deepseek_logfire.info(
-                                        "deepseek.event {event_type}",
-                                        event_type=frame.event.type,
-                                        session_id=session_id,
-                                        event=frame.event.model_dump(mode="json"),
-                                    )
-                                for event in accumulator.consume(frame):
                                     yield event
+                                continue
+                            if (
+                                self.config.instrument
+                                and frame.event.type != "assistant/chunk"
+                                and (
+                                    accumulator.turn_started
+                                    or frame.event.type == "turn/start"
+                                )
+                            ):
+                                deepseek_logfire.info(
+                                    "deepseek.event {event_type}",
+                                    event_type=frame.event.type,
+                                    session_id=session_id,
+                                    event=frame.event.model_dump(mode="json"),
+                                )
+                            for event in accumulator.consume(frame):
+                                yield event
                     finally:
                         self.subscribers.pop(session_id, None)
                         self.bridge_contexts.pop(session_id, None)
                         if prompted and not accumulator.turn_ended:
-                            # The run is leaving mid-turn (cancelled, or its
-                            # stream died); don't leave dsh's turn burning.
                             with contextlib.suppress(Exception):
-                                await client.call(
-                                    "session.cancel", {"sessionId": session_id}
+                                await client.remote(
+                                    "session/cancel",
+                                    {"request": {"sessionId": session_id}},
                                 )
+                        with contextlib.suppress(Exception):
+                            await client.unfollow(socket, session_id)
 
                 run_id = str(uuid7())
                 recorded_run = await self.octomate.conversations.record_agent_run(
