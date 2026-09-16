@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     CommandExecutionOutputDeltaNotification,
@@ -222,6 +223,45 @@ def test_adapter_maps_prompt_and_text_delta_to_messages_and_events() -> None:
     assert response.metadata is not None
     assert response.metadata["source"] == "codex"
     assert acc.result_text == "found it"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        AgentMessageDeltaNotification(
+            delta="I", item_id="text", thread_id="thread", turn_id="turn"
+        ),
+        ReasoningTextDeltaNotification(
+            delta="I",
+            content_index=0,
+            item_id="thinking",
+            thread_id="thread",
+            turn_id="turn",
+        ),
+        PlanDeltaNotification(
+            delta="I", item_id="plan", thread_id="thread", turn_id="turn"
+        ),
+    ],
+)
+def test_buffered_stream_start_does_not_repeat_the_first_delta(
+    payload: AgentMessageDeltaNotification
+    | ReasoningTextDeltaNotification
+    | PlanDeltaNotification,
+) -> None:
+    acc = CodexRunAccumulator()
+    # A channel queues the events before serializing them, so earlier events
+    # must retain their contents after the accumulator consumes further deltas.
+    events = list(acc.consume(notification("delta", payload)))
+    events += list(
+        acc.consume(notification("delta", payload.model_copy(update={"delta": "'ll"})))
+    )
+    start, first, second = events
+    assert isinstance(start, PartStartEvent)
+    assert isinstance(start.part, (TextPart, ThinkingPart))
+    assert isinstance(first, PartDeltaEvent)
+    assert isinstance(second, PartDeltaEvent)
+    assert start.part.content == ""
+    assert acc.streaming_parts[payload.item_id].part.content == "I'll"
 
 
 def test_adapter_maps_reasoning_delta_to_thinking_part() -> None:

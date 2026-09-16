@@ -25,8 +25,22 @@ from octomate.schemas.thread import (
     ThreadKey,
     ThreadMessage,
     ThreadMessageDirection,
+    ThreadMessageFTS,
 )
 from octomate.schemas.user import UserProfile
+
+
+def history_match_query(query: str) -> str:
+    """An English plain-text query expressed safely in FTS5's query language.
+
+    Each whitespace-delimited term is its own quoted phrase, so every term must
+    match while operators and punctuation supplied by a caller stay literal.
+    """
+    terms = query.split()
+    if not terms:
+        raise ValueError("history search query must contain at least one word")
+    escaped = [term.replace('"', '""') for term in terms]
+    return " AND ".join(f'"{term}"' for term in escaped)
 
 
 def message_text_from_segments(segments: list[MessageSegment]) -> str | None:
@@ -749,30 +763,42 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         actor_kind: ChannelActorKind | None = None,
         limit: int = 10,
     ) -> list[ThreadMessage]:
-        """The messages containing `query` across this person's history — the
-        threads they have spoken in, on this account or any the registry links to
-        it — oldest first. A visitor's history is one account's."""
+        """The messages matching every English term in `query` across this person's
+        history — the threads they have spoken in, on this account or any the registry
+        links to it. Best lexical match first, newest first when scores tie. A
+        visitor's history is one account's."""
+        match_query = history_match_query(query)
         senders = [
             profile.id,
             *(linked.id for linked in await self.users.linked_profiles(profile)),
         ]
         expressions = [
+            ThreadMessageFTS["message_text"].match(match_query),
             ThreadMessage["thread_id"].in_(
                 select(ThreadMessage["thread_id"]).where(
                     ThreadMessage["sender_id"].in_(senders)
                 )
             ),
-            ThreadMessage["message_text"].ilike(f"%{query}%"),
         ]
         if actor_kind is not None:
             expressions.append(ThreadMessage["actor_kind"] == actor_kind)
         async with async_session() as session:
-            rows = await session.list(
-                ThreadMessage,
-                limit=limit,
-                order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
-                expressions=expressions,
+            statement = (
+                select(ThreadMessage)
+                .join(
+                    ThreadMessageFTS,
+                    ThreadMessage["id"] == ThreadMessageFTS["message_id"],
+                )
+                .where(*expressions)
+                .options(noload(ThreadMessage["model_messages"]))
+                .order_by(
+                    ThreadMessageFTS["rank"],
+                    ThreadMessage["happened_at"].desc(),
+                    ThreadMessage["id"].desc(),
+                )
+                .limit(limit)
             )
+            rows = (await session.execute(statement)).scalars().all()
         return list(rows)
 
     async def chat_messages_before(
