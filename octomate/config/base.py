@@ -45,7 +45,11 @@ from pydantic_settings import (
 
 from octomate.config.agents import AgentConfig
 from octomate.config.auth import AuthConfig
-from octomate.config.channels import ChannelConfig, SlackChannelConfig
+from octomate.config.channels import (
+    ChannelConfig,
+    DiscordChannelConfig,
+    SlackChannelConfig,
+)
 from octomate.config.mcp import OAuthMcpConfig
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig
 from octomate.config.mcp.pool import McpPoolConfig
@@ -159,7 +163,7 @@ class OctomateConfig(BaseSettings):
     @model_validator(mode="after")
     def validate_oauth_configuration(self) -> Self:
         """Every enabled linked-account MCP tentacle stores credentials, and so does
-        a Slack channel with an OAuth client: one of them needs the key."""
+        a channel with an OAuth client: one of them needs the key."""
         enabled = [
             f"tentacles.{name}"
             for name, server in self.tentacles.items()
@@ -167,7 +171,8 @@ class OctomateConfig(BaseSettings):
         ] + [
             f"tentacles.{name}.oauth"
             for name, channel in self.tentacles.items()
-            if isinstance(channel, SlackChannelConfig) and channel.oauth is not None
+            if isinstance(channel, (SlackChannelConfig, DiscordChannelConfig))
+            and channel.oauth is not None
         ]
         if enabled and self.oauth.encryption_key is None:
             raise ValueError(

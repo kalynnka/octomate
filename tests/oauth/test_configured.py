@@ -20,9 +20,9 @@ from octomate.config.oauth import OAuthConfig
 from octomate.database import async_session
 from octomate.managers.oauth import OAuthConnector, OAuthManager
 from octomate.managers.user import UserManager
-from octomate.oauth.mcp import (
-    McpDeviceOAuthFlow,
-    McpOAuthFlow,
+from octomate.oauth.flows import (
+    OAuthCodeFlow,
+    OAuthDeviceFlow,
     OAuthRefreshRejected,
     OAuthTokenExchange,
 )
@@ -41,10 +41,15 @@ from octomate.tentacles.mcp import build_mcp
 from tests.support.users import a_user
 
 
-def test_browser_flow_requires_an_explicit_authorization_lifetime() -> None:
-    assert (
-        signature(McpOAuthFlow).parameters["authorization_lifetime"].default
-        is Parameter.empty
+def test_configured_code_flow_requires_only_provider_oauth_inputs() -> None:
+    parameters = signature(OAuthCodeFlow).parameters
+    assert set(parameters) == {
+        "authorization_endpoint",
+        "authorization_lifetime",
+        "tokens",
+    }
+    assert all(
+        parameter.default is Parameter.empty for parameter in parameters.values()
     )
 
 
@@ -57,7 +62,7 @@ def context() -> OAuthFlowContext:
     )
 
 
-def device_flow(transport: httpx2.MockTransport) -> McpDeviceOAuthFlow:
+def device_flow(transport: httpx2.MockTransport) -> OAuthDeviceFlow:
     tokens = OAuthTokenExchange(
         token_endpoint=AnyUrl("https://auth.example/token"),
         client_id="test-app",
@@ -76,7 +81,7 @@ def device_flow(transport: httpx2.MockTransport) -> McpDeviceOAuthFlow:
             )
         ),
     )
-    return McpDeviceOAuthFlow(
+    return OAuthDeviceFlow(
         device_authorization_endpoint=AnyUrl("https://auth.example/device"),
         tokens=tokens,
     )
@@ -196,12 +201,10 @@ async def test_authorization_code_pkce_and_client_authentication(method: str) ->
             )
         ),
     )
-    flow = McpOAuthFlow(
-        url=AnyUrl("https://mcp.example/mcp"),
+    flow = OAuthCodeFlow(
         authorization_lifetime=timedelta(minutes=10),
         authorization_endpoint=AnyUrl("https://auth.example/authorize"),
         tokens=tokens,
-        httpx_client_factory=tokens.httpx_client_factory,
     )
     authorization = await flow.start(context(), callback, SecretStr("state-secret"))
     params = parse_qs(authorization.authorization_uri.query or "")
@@ -382,7 +385,7 @@ async def test_configured_callback_keeps_overlapping_users_separate(
             host,
         )
     )
-    assert type(host.oauth.connector("work").select_flow()) is McpOAuthFlow
+    assert type(host.oauth.connector("work").select_flow()) is OAuthCodeFlow
     alice, bob = await a_user("alice"), await a_user("bob")
     assert [entry.id for entry in host.mcp.available()] == ["work"]
     assert await host.mcp.list(alice.id) == []

@@ -22,6 +22,11 @@ export interface ApiLinkProfile {
   expires_at: string
 }
 
+export interface ApiChannelAuthorization {
+  id: string
+  type: string
+}
+
 /** One issued key, as the relay lists it — the token itself is never here. */
 export interface ApiApiKey {
   id: string
@@ -236,6 +241,18 @@ export async function revokeApiKey(id: string): Promise<void> {
 export async function unlinkProfile(id: string): Promise<void> {
   const res = await apiFetch(`/api/auth/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok) return refuse(res)
+}
+
+export async function fetchProfileAuthorizations(): Promise<ApiChannelAuthorization[]> {
+  const res = await apiFetch('/api/auth/profile-authorizations')
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiChannelAuthorization[]
+}
+
+export async function authorizeProfile(channelId: string): Promise<{ authorization_uri: string }> {
+  const res = await apiFetch(`/api/auth/profile-authorizations/${encodeURIComponent(channelId)}`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as { authorization_uri: string }
 }
 
 export async function inspectLinkProfile(token: string): Promise<ApiLinkProfile> {

@@ -6,10 +6,13 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import discord
+from pydantic import AnyHttpUrl
 from rich.style import Style
 
 from octomate.config import DiscordChannelConfig
+from octomate.oauth.flows import OAuthCodeFlow
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.tentacles.channel import (
     ChannelSurfaces,
     ChannelTentacle,
@@ -30,6 +33,7 @@ from octomate.tentacles.discord.feelers.questions import (
     DiscordQuestionNavButton,
 )
 from octomate.tentacles.discord.ink import DiscordInk
+from octomate.tentacles.discord.oauth import DiscordOAuthConnector, DiscordTokenExchange
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.tentacles.feelers.base import Feelers
 
@@ -105,6 +109,35 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
             DiscordQuestionNavButton,
         )
         self.client.event(self.on_message)
+        if config.oauth is not None:
+            if octomate.oauth.callback_base_uri is None:
+                raise ValueError("Discord OAuth requires oauth.callback_base_uri")
+            octomate.oauth.register(
+                DiscordOAuthConnector(
+                    id=id,
+                    flows=[
+                        OAuthCodeFlow(
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
+                            authorization_endpoint=AnyHttpUrl(
+                                "https://discord.com/oauth2/authorize"
+                            ),
+                            tokens=DiscordTokenExchange(
+                                token_endpoint=AnyHttpUrl(
+                                    "https://discord.com/api/oauth2/token"
+                                ),
+                                client_id=config.oauth.client_id,
+                                client_secret=config.oauth.client_secret,
+                                token_endpoint_auth_method="client_secret_basic",
+                                scopes=["identify"],
+                                httpx_client_factory=octomate.oauth.httpx_client_factory,
+                            ),
+                        )
+                    ],
+                    callback_transport=DirectHttpOAuthCallbackTransport(
+                        octomate.oauth.callback_base_uri
+                    ),
+                )
+            )
 
     async def __aenter__(self) -> Self:
         ready_task: asyncio.Task[None] | None = None

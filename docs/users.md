@@ -117,6 +117,22 @@ account, confirmation is refused; reopen the link to review the current account.
 Opening another profile link in the same tab clears the previous confirmation.
 An owned profile cannot be transferred through this flow.
 
+After a successful Slack or Discord OAuth connection, Octomate also offers this
+confirmation for the authorized account, even if OAuth started elsewhere.
+The Profile page's **Link a channel** section can start a configured channel's
+OAuth flow directly, without an MCP installation. Discord requests only `identify`
+and verifies the account through `/users/@me`.
+For Slack, it verifies the granted user and workspace and requires the workspace to
+match the configured Slack channel. Already-linked profiles skip the prompt and
+are never transferred. This applies to the built-in Slack and Discord connectors,
+not arbitrary MCP OAuth servers. Local auth and `oauth.callback_base_uri` must be
+configured to offer linking.
+
+The browser reuses its Octomate session and asks before linking the channel profile
+to the displayed account. Canceling leaves the completed OAuth connection intact.
+If profile verification or linking is unavailable after OAuth succeeds, the callback
+says the connection is ready and directs you to request a profile link in the chat.
+
 The ticket travels in the URL fragment, is removed from the address bar immediately,
 and reaches the API only in a same-origin POST body. The database stores its SHA-256
 digest, not the ticket. A new `oauth_link_profile` call invalidates the profile's previous

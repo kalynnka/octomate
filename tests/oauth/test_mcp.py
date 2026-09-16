@@ -211,6 +211,13 @@ async def authorize(
     payload = await host.oauth.staged_authorization("mcp", authorization.operation_id)
     assert "state=" not in str(authorization.authorization_uri)
     assert payload.mcp_oauth is not None
+    params = parse_qs(payload.authorization_uri.query or "")
+    assert params["resource"] == [str(payload.mcp_oauth.resource)]
+    assert params["client_id"] == [payload.mcp_oauth.client.client_id]
+    assert params["scope"] == [payload.mcp_oauth.scope]
+    assert params["code_challenge_method"] == ["S256"]
+    if payload.mcp_oauth.scope and "offline_access" in payload.mcp_oauth.scope.split():
+        assert params["prompt"] == ["consent"]
     return await host.oauth.complete_callback(
         "mcp", state=payload.state.get_secret_value(), code=code, issuer=ISSUER
     )

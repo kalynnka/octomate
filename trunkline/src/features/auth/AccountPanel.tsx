@@ -5,6 +5,7 @@ import { Brackets } from '@/components/Brackets'
 import { Table, type TableColumn } from '@/components/Table'
 import { chipLabel, display, fieldLabel, label, mono, serif } from '@/components/text'
 import {
+  authorizeProfile,
   createApiKey,
   revokeApiKey,
   unlinkProfile,
@@ -12,7 +13,7 @@ import {
   type ApiIssuedKey,
   type ApiKeyScope,
 } from '@/lib/api/auth'
-import { useApiKeys } from '@/lib/api/hooks'
+import { useApiKeys, useProfileAuthorizations } from '@/lib/api/hooks'
 import type { ApiProfileInfo, ApiUserProfile } from '@/lib/api/events'
 import { channelMeta } from '@/lib/api/live'
 import { closeDialog } from '@/lib/dialog'
@@ -460,6 +461,9 @@ function PasswordDialog({ onClose }: { onClose: () => void }) {
 
 export function AccountPanel({ profiles, profilesError }: { profiles: ApiUserProfile[] | undefined; profilesError: boolean }) {
   const user = useAuth((s) => s.user)
+  const authorizations = useProfileAuthorizations()
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [connectError, setConnectError] = useState<string | null>(null)
   const [passwordOpen, setPasswordOpen] = useState(false)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [confirmingId, setConfirmingId] = useState<string | null>(null)
@@ -475,6 +479,31 @@ export function AccountPanel({ profiles, profilesError }: { profiles: ApiUserPro
   if (!user) return null
   const cards = [user, ...(profiles ?? [])]
   const selected = profiles?.find((profile) => profile.id === selectedId) ?? user
+  const unlinkedChannels = authorizations.data?.filter((channel) =>
+    !profiles?.some((profile) => profile.channel_tentacle_id === channel.id))
+  const allChannelsLinked = authorizations.isSuccess && authorizations.data.length > 0 && unlinkedChannels?.length === 0
+
+  const connect = async (channelId: string) => {
+    if (connecting) return
+    // Open during the click so the authorization request cannot trigger popup blocking.
+    const authorizationTab = window.open('about:blank', '_blank')
+    if (!authorizationTab) {
+      setConnectError('Allow pop-ups for Octomate, then try again.')
+      return
+    }
+    authorizationTab.opener = null
+    setConnecting(channelId)
+    setConnectError(null)
+    try {
+      const authorization = await authorizeProfile(channelId)
+      if (!authorizationTab.closed) authorizationTab.location.replace(authorization.authorization_uri)
+    } catch (error) {
+      authorizationTab.close()
+      setConnectError(refusalText(error) ?? 'Could not start authorization. Try again.')
+    } finally {
+      setConnecting(null)
+    }
+  }
 
   const disconnect = async (profile: ApiUserProfile) => {
     if (disconnecting) return
@@ -544,6 +573,26 @@ export function AccountPanel({ profiles, profilesError }: { profiles: ApiUserPro
           ) : profiles.length === 0 && (
             <p className="trk-control-note">No channel identities are linked to your account.</p>
           )}
+          {!allChannelsLinked && <div style={{ marginTop: 16, marginLeft: 18, paddingTop: 12, borderTop: '1px solid var(--line-divider)' }}>
+            <p style={{ ...label(9), color: 'var(--fg-3)', margin: '0 10px 8px' }}>Link a channel</p>
+            {unlinkedChannels?.map((channel) => {
+              const meta = channelMeta(channel.type)
+              return (
+                <button key={channel.id} type="button" className="trk-profile-picker-connect" disabled={connecting !== null || disconnecting}
+                  onClick={() => { void connect(channel.id) }} style={{ color: meta.brand }}>
+                  <span className="trk-profile-picker-index" aria-hidden="true" style={mono(14)}>+</span>
+                  <span className="trk-profile-picker-copy">
+                    <span style={label(9)}>{connecting === channel.id ? 'Opening…' : `Connect ${meta.label}`}</span>
+                    {channel.id !== channel.type && <span style={{ ...mono(10), color: 'var(--fg-3)' }}>{channel.id}</span>}
+                  </span>
+                </button>
+              )
+            })}
+            {authorizations.isPending && <p className="trk-control-note" role="status">Loading sign-in options…</p>}
+            {authorizations.isError && <div role="alert"><Refusal>Could not load sign-in options. <button type="button" onClick={() => { void authorizations.refetch() }}>Retry</button></Refusal></div>}
+            {authorizations.data?.length === 0 && <p className="trk-control-note">No channel OAuth is configured. You can still ask the bot to link your profile in a DM.</p>}
+            {connectError && <div role="alert"><Refusal>{connectError}</Refusal></div>}
+          </div>}
         </div>
         <div className="trk-profile-stack" style={{ marginBottom: Math.min(cards.length - 1, 3) * 12, marginRight: Math.min(cards.length - 1, 3) * 12 }}>
           {cards.slice(1, 4).map((card, index) => (
