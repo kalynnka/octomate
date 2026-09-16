@@ -293,6 +293,7 @@ def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     url = f"sqlite+aiosqlite:///{path}"
     monkeypatch.setenv("OCTOMATE_DB_URL", url)
     monkeypatch.setattr(database_settings, "db_url", url)
+    assert deployment.database_path() == path.resolve()
     return path
 
 
@@ -409,6 +410,14 @@ def test_nonempty_unversioned_database_is_not_initialized(database: Path) -> Non
         deployment.migrate(snapshot)
 
 
+def test_history_search_follows_profile_linking_in_one_migration_chain() -> None:
+    script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
+    assert len(script.get_heads()) == 1
+    revision = script.get_revision("9c5cd2f0c70d")
+    assert revision is not None
+    assert revision.down_revision == "2dca6fab4aca"
+
+
 def test_actual_migrations_initialize_empty_database(database: Path) -> None:
     deployment.migrate(DatabaseBackup(database=database, backup=None))
     head = ScriptDirectory.from_config(
@@ -453,7 +462,9 @@ def test_failed_rehearsal_never_migrates_source(
     assert deployment.revisions(database) == ("old",)
 
 
-@pytest.mark.parametrize("previous", ["0d0112888c17", "f973cff9f077", "ebb904508e50"])
+@pytest.mark.parametrize(
+    "previous", ["0d0112888c17", "f973cff9f077", "ebb904508e50", "2dca6fab4aca"]
+)
 def test_actual_upgrade_rehearses_on_a_copy(database: Path, previous: str) -> None:
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
@@ -611,6 +622,17 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
             ).fetchone()
             is None
         )
+        assert connection.execute(
+            "SELECT name FROM sqlite_master WHERE name = 'profile_binding_sessions'"
+        ).fetchone() == ("profile_binding_sessions",)
+
+    deployment.migrate(deployment.backup_database(database))
+    assert deployment.revisions(database) == (head,)
+    with sqlite3.connect(database) as connection:
+        assert connection.execute(
+            "SELECT message_id FROM thread_messages_fts "
+            "WHERE thread_messages_fts MATCH 'migration'"
+        ).fetchall() == [(message_id,)]
 
 
 @pytest.mark.parametrize("auth_configured", [False, True])
