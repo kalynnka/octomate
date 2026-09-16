@@ -5,10 +5,13 @@ from __future__ import annotations
 from typing import Literal
 
 import httpx2
-from pydantic import BaseModel, TypeAdapter
+from pydantic import BaseModel, Field, TypeAdapter
 
-from octomate.oauth.mcp import OAuthTokenExchange
+from octomate.managers.oauth import OAuthConnector
+from octomate.oauth.flows import OAuthTokenExchange
 from octomate.schemas.oauth import OAuthGrant
+from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.slack.schema import SlackUserProfile
 
 
 class SlackAuthedUser(BaseModel):
@@ -29,9 +32,10 @@ class SlackErrorResponse(BaseModel):
 class SlackAuthTestResponse(BaseModel):
     ok: Literal[True]
     user: str
-    user_id: str
+    user_id: str = Field(min_length=1)
     team: str
-    team_id: str
+    team_id: str = Field(min_length=1)
+    bot_id: str | None = None
 
 
 SLACK_AUTH_TEST_ADAPTER: TypeAdapter[SlackAuthTestResponse | SlackErrorResponse] = (
@@ -39,8 +43,32 @@ SLACK_AUTH_TEST_ADAPTER: TypeAdapter[SlackAuthTestResponse | SlackErrorResponse]
 )
 
 
+class SlackOAuthGrant(OAuthGrant):
+    team_id: str = Field(
+        min_length=1,
+        description="Workspace verified by auth.test with the granted token.",
+    )
+
+
+class SlackOAuthConnector(OAuthConnector):
+    ink: SlackInk
+
+    async def resolve_profile(self, grant: OAuthGrant) -> SlackUserProfile:
+        if not isinstance(grant, SlackOAuthGrant) or not grant.subject:
+            raise ValueError("Slack profile linking requires a verified Slack grant")
+        response = await self.ink.client.auth_test()
+        bot = SLACK_AUTH_TEST_ADAPTER.validate_python(response.data)
+        if isinstance(bot, SlackErrorResponse):
+            raise ValueError("Slack could not verify this channel's workspace")
+        if bot.team_id != grant.team_id or bot.user_id == grant.subject:
+            raise ValueError(
+                "The Slack account does not belong to this channel's workspace"
+            )
+        return await self.ink.get_user_profile(grant.subject)
+
+
 class SlackTokenExchange(OAuthTokenExchange):
-    async def grant(self, response: httpx2.Response) -> OAuthGrant:
+    async def grant(self, response: httpx2.Response) -> SlackOAuthGrant:
         grant = await super().grant(response)
         token = SlackUserTokenResponse.model_validate_json(response.content)
         grant.scopes = (
@@ -69,6 +97,12 @@ class SlackTokenExchange(OAuthTokenExchange):
             raise ValueError(
                 f"Slack would not name the account its token is for: {identity.error}"
             )
+        if identity.bot_id is not None:
+            raise ValueError("Slack profile authorization requires a user token")
         grant.subject = identity.user_id
         grant.account_label = f"{identity.user} in {identity.team}"
-        return grant
+        return SlackOAuthGrant(
+            **grant.model_dump(),
+            mcp_oauth=grant.mcp_oauth,
+            team_id=identity.team_id,
+        )

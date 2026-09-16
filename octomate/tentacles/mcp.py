@@ -14,7 +14,7 @@ from octomate.config.mcp import (
 )
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig, DeviceFlowConfig
 from octomate.managers.oauth import OAuthConnector
-from octomate.oauth.mcp import McpDeviceOAuthFlow, McpOAuthFlow, OAuthTokenExchange
+from octomate.oauth.flows import OAuthCodeFlow, OAuthDeviceFlow, OAuthTokenExchange
 from octomate.schemas.mcp import McpTentacleInfo
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
@@ -101,7 +101,7 @@ def build_mcp(id: str, config: McpConfigVariant, octomate: Octomate) -> McpTenta
                 )
                 match flow_config:
                     case DeviceFlowConfig():
-                        flow = McpDeviceOAuthFlow(
+                        flow = OAuthDeviceFlow(
                             device_authorization_endpoint=flow_config.device_authorization_endpoint,
                             tokens=tokens,
                         )
@@ -110,12 +110,10 @@ def build_mcp(id: str, config: McpConfigVariant, octomate: Octomate) -> McpTenta
                             raise ValueError(
                                 "Configure oauth.callback_base_uri for authorization-code MCPs"
                             )
-                        flow = McpOAuthFlow(
-                            url=config.url,
+                        flow = OAuthCodeFlow(
                             authorization_lifetime=octomate.oauth.authorization_lifetime,
                             authorization_endpoint=flow_config.authorization_endpoint,
                             tokens=tokens,
-                            httpx_client_factory=octomate.oauth.httpx_client_factory,
                         )
                         callback = DirectHttpOAuthCallbackTransport(
                             octomate.oauth.callback_base_uri

@@ -11,8 +11,7 @@ from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
-from octomate.managers.oauth import OAuthConnector
-from octomate.oauth.mcp import McpOAuthFlow
+from octomate.oauth.flows import OAuthCodeFlow
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
@@ -46,7 +45,7 @@ from octomate.tentacles.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
-from octomate.tentacles.slack.oauth import SlackTokenExchange
+from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackTokenExchange
 from octomate.tentacles.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
@@ -182,17 +181,16 @@ class SlackTentacle(
             # is belongs to this one. Registering a direct-HTTP transport is also
             # what makes Octomate serve the start and callback routes.
             octomate.oauth.register(
-                OAuthConnector(
+                SlackOAuthConnector(
                     id=id,
+                    ink=ink,
                     mcp_url=AnyHttpUrl(self.upstream),
                     flows=[
-                        McpOAuthFlow(
-                            url=AnyHttpUrl(self.upstream),
+                        OAuthCodeFlow(
                             authorization_lifetime=octomate.oauth.authorization_lifetime,
                             authorization_endpoint=AnyHttpUrl(
                                 "https://slack.com/oauth/v2_user/authorize"
                             ),
-                            httpx_client_factory=octomate.oauth.httpx_client_factory,
                             tokens=SlackTokenExchange(
                                 token_endpoint=AnyHttpUrl(
                                     "https://slack.com/api/oauth.v2.user.access"

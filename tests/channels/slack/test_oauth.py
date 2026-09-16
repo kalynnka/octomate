@@ -7,20 +7,34 @@ import uuid
 from base64 import urlsafe_b64encode
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from urllib.parse import parse_qs
+from unittest.mock import AsyncMock
+from urllib.parse import parse_qs, urlsplit
 
+import httpx
 import httpx2
 import pytest
 from pydantic import AnyHttpUrl, SecretStr
+from slack_sdk.web.async_slack_response import AsyncSlackResponse
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import OAuthConfig, OctomateConfig, SlackChannelConfig
 from octomate.config.channels import SlackOAuthClientConfig
-from octomate.oauth.mcp import McpOAuthFlow, OAuthRefreshRejected
-from octomate.schemas.oauth import OAuthFlowContext
+from octomate.database import async_session
+from octomate.oauth.flows import OAuthCodeFlow, OAuthRefreshRejected
+from octomate.schemas.oauth import (
+    AuthorizationLink,
+    DirectHttpOAuthCallbackTransport,
+    OAuthFlowContext,
+    OAuthGrant,
+)
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.slack import SlackTentacle
+from octomate.tentacles.slack.ink import SlackInk
+from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackOAuthGrant
+from octomate.tentacles.slack.schema import SlackUserProfile
 from octomate.types.json import JsonObject
+from tests.support.users import auth_config
 
 CALLBACK = AnyHttpUrl("http://127.0.0.1:8000/oauth/slack/callback")
 
@@ -44,6 +58,7 @@ def slack_transport(
     token: JsonObject,
     *,
     posted: list[httpx2.Request] | None = None,
+    identity: JsonObject | None = None,
 ) -> httpx2.MockTransport:
     """Answer the token endpoint with `token`, then `auth.test` for whoever holds
     the token it granted."""
@@ -57,7 +72,9 @@ def slack_transport(
         assert request.headers["Authorization"] == f"Bearer {token['access_token']}"
         return httpx2.Response(
             200,
-            json={
+            json=identity
+            if identity is not None
+            else {
                 "ok": True,
                 "url": "https://ancher.slack.com/",
                 "team": "Ancher",
@@ -70,8 +87,10 @@ def slack_transport(
     return httpx2.MockTransport(respond)
 
 
-def slack_flow(transport: httpx2.AsyncBaseTransport) -> McpOAuthFlow:
-    host = Octomate(
+def slack_flow(
+    transport: httpx2.AsyncBaseTransport, *, host: Octomate | None = None
+) -> OAuthCodeFlow:
+    host = host or Octomate(
         config=OctomateConfig(
             oauth=OAuthConfig(authorization_lifetime=timedelta(minutes=3))
         )
@@ -98,7 +117,8 @@ def slack_flow(transport: httpx2.AsyncBaseTransport) -> McpOAuthFlow:
         ),
     )
     flow = host.oauth.connector("slack").select_flow()
-    assert isinstance(flow, McpOAuthFlow)
+    assert isinstance(host.oauth.connector("slack"), SlackOAuthConnector)
+    assert isinstance(flow, OAuthCodeFlow)
     return flow
 
 
@@ -176,6 +196,8 @@ async def test_exchange_posts_the_secret_and_names_the_account() -> None:
     # Named as Slack names the person: the id every other Slack surface uses.
     assert grant.subject == "U1"
     assert grant.account_label == "steve.li in Ancher"
+    assert isinstance(grant, SlackOAuthGrant)
+    assert grant.team_id == "T1"
 
 
 async def test_a_rotating_token_keeps_its_refresh_token_and_expiry() -> None:
@@ -251,3 +273,228 @@ async def test_transient_token_failure_is_not_a_credential_rejection() -> None:
         await flow.refresh(SecretStr("valid-token"))
 
     assert not isinstance(failure.value, OAuthRefreshRejected)
+
+
+@pytest.mark.parametrize(
+    "identity",
+    [
+        {"ok": False, "error": "invalid_auth"},
+        {"ok": True, "user": "steve", "user_id": "", "team": "Ancher", "team_id": "T1"},
+        {"ok": True, "user": "steve", "user_id": "U1", "team": "Ancher", "team_id": ""},
+        {
+            "ok": True,
+            "user": "bot",
+            "user_id": "U1",
+            "team": "Ancher",
+            "team_id": "T1",
+            "bot_id": "B1",
+        },
+    ],
+)
+async def test_slack_grant_requires_a_verified_human_and_workspace(
+    identity: JsonObject,
+) -> None:
+    flow = slack_flow(
+        slack_transport(
+            {"ok": True, "access_token": "xoxp-user", "token_type": "user"},
+            identity=identity,
+        )
+    )
+    with pytest.raises(ValueError, match=r"invalid_auth|user_id|team_id|user token"):
+        await flow.exchange(
+            flow_context(),
+            code="auth-code",
+            code_verifier=SecretStr("pkce-verifier"),
+            callback_uri=CALLBACK,
+        )
+
+
+@pytest.mark.parametrize("workspace", ["T1", "another-workspace"])
+async def test_slack_profile_comes_from_the_grant_in_this_channels_workspace(
+    workspace: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    flow = slack_flow(
+        slack_transport({"ok": True, "access_token": "xoxp-user", "token_type": "user"})
+    )
+    context = flow_context()
+    assert context.profile is not None
+    context.profile.channel_user_id = "initiating-chat-user"
+    grant = await flow.exchange(
+        context,
+        code="auth-code",
+        code_verifier=SecretStr("pkce-verifier"),
+        callback_uri=CALLBACK,
+    )
+    ink = SlackInk(SecretStr("xoxb-test"))
+    bot_identity = AsyncMock(
+        return_value=AsyncSlackResponse(
+            client=ink.client,
+            http_verb="POST",
+            api_url="https://slack.com/api/auth.test",
+            req_args={},
+            data={
+                "ok": True,
+                "user": "bot",
+                "user_id": "UBOT",
+                "team": "Ancher",
+                "team_id": workspace,
+                "bot_id": "B1",
+            },
+            headers={},
+            status_code=200,
+        )
+    )
+    monkeypatch.setattr(ink.client, "auth_test", bot_identity)
+    fetch = AsyncMock(
+        return_value=SlackUserProfile(
+            channel_user_id="U1", name="Steve Li", nickname="steve", title="Engineer"
+        )
+    )
+    monkeypatch.setattr(ink, "get_user_profile", fetch)
+    connector = SlackOAuthConnector(
+        id="slack-custom-alias",
+        ink=ink,
+        flows=[flow],
+        callback_transport=DirectHttpOAuthCallbackTransport(
+            AnyHttpUrl("https://octomate.example")
+        ),
+    )
+
+    if workspace != "T1":
+        with pytest.raises(ValueError, match="workspace"):
+            await connector.resolve_profile(grant)
+        fetch.assert_not_awaited()
+    else:
+        profile = await connector.resolve_profile(grant)
+        assert profile.channel_user_id == "U1"
+        assert profile.name == "Steve Li"
+        assert profile.nickname == "steve"
+        assert profile.title == "Engineer"
+        assert profile.user_id is None
+        fetch.assert_awaited_once_with("U1")
+    bot_identity.assert_awaited_once_with()
+
+
+async def test_slack_does_not_treat_a_generic_oauth_subject_as_a_verified_profile() -> (
+    None
+):
+    connector = SlackOAuthConnector(
+        id="slack",
+        ink=SlackInk(SecretStr("xoxb-test")),
+        flows=[slack_flow(httpx2.MockTransport(lambda request: httpx2.Response(500)))],
+        callback_transport=DirectHttpOAuthCallbackTransport(
+            AnyHttpUrl("https://octomate.example")
+        ),
+    )
+    with pytest.raises(ValueError, match="verified Slack grant"):
+        await connector.resolve_profile(
+            OAuthGrant(access_token=SecretStr("not-slack"), subject="U1")
+        )
+
+
+@pytest.mark.parametrize("approve", [False, True])
+async def test_slack_callback_reuses_browser_session_for_optional_profile_linking(
+    approve: bool,
+    in_memory_engine: AsyncEngine,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host = Octomate(
+        config=OctomateConfig(
+            auth=auth_config(),
+            oauth=OAuthConfig(
+                callback_base_uri=AnyHttpUrl("https://octomate.example"),
+            ),
+        ),
+        oauth_encryption_key=SecretStr(urlsafe_b64encode(b"x" * 32).decode()),
+    )
+    slack_flow(
+        slack_transport(
+            {"ok": True, "access_token": "xoxp-user", "token_type": "user"}
+        ),
+        host=host,
+    )
+    connector = host.oauth.connector("slack")
+    assert isinstance(connector, SlackOAuthConnector)
+    monkeypatch.setattr(
+        connector.ink.client,
+        "auth_test",
+        AsyncMock(
+            return_value=AsyncSlackResponse(
+                client=connector.ink.client,
+                http_verb="POST",
+                api_url="https://slack.com/api/auth.test",
+                req_args={},
+                headers={},
+                status_code=200,
+                data={
+                    "ok": True,
+                    "user": "bot",
+                    "user_id": "UBOT",
+                    "team": "Ancher",
+                    "team_id": "T1",
+                    "bot_id": "B1",
+                },
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        connector.ink,
+        "get_user_profile",
+        AsyncMock(
+            return_value=SlackUserProfile(
+                channel_user_id="U1", name="Steve Li", nickname="steve"
+            )
+        ),
+    )
+    assert host.auth is not None
+    password = SecretStr("Correct horse battery staple1!")
+    user = User(username="steve", password_hash=await host.auth.hash_password(password))
+    async with async_session() as session:
+        session.add(user)
+        await session.commit()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=host),
+        base_url="https://octomate.example",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        login = await client.post(
+            "/api/auth/login",
+            json={"username": user.username, "password": password.get_secret_value()},
+        )
+        assert login.status_code == 204
+        authorization = await host.oauth.start(user, "slack")
+        assert isinstance(authorization, AuthorizationLink)
+        start = await client.get(str(authorization.authorization_uri))
+        assert start.status_code == 307
+        [state] = parse_qs(urlsplit(start.headers["location"]).query)["state"]
+        callback = await client.get(
+            "/oauth/slack/callback", params={"state": state, "code": "auth-code"}
+        )
+        assert callback.status_code == 303
+        location = urlsplit(callback.headers["location"])
+        assert location.netloc == "octomate.example"
+        [ticket] = parse_qs(location.fragment)["link-profile"]
+        inspected = await client.post(
+            "/api/auth/link-profile/inspect", json={"token": ticket}
+        )
+        assert inspected.status_code == 200
+        profile = inspected.json()["profile"]
+        assert profile["channel_tentacle_id"] == "slack"
+        assert profile["channel_user_id"] == "U1"
+        assert profile["name"] == "Steve Li"
+        assert profile["user_id"] is None
+        if approve:
+            confirmation = await client.post(
+                "/api/auth/link-profile/confirm",
+                json={"token": ticket, "expected_user_id": str(user.id)},
+            )
+            assert confirmation.status_code == 200
+
+    stored = await host.users.profile("slack", "U1")
+    assert stored is not None
+    assert stored.user_id == (user.id if approve else None)
+    token = await host.oauth.access_token(user, "slack")
+    assert token is not None
+    assert token.get_secret_value() == "xoxp-user"

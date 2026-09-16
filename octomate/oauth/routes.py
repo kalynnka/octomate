@@ -79,7 +79,7 @@ async def start(
     return RedirectResponse(str(staged.authorization_uri), status_code=307)
 
 
-@oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False)
+@oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False, response_model=None)
 async def callback(
     connector_id: str,
     manager: Annotated[OAuthManager, Depends(oauth_manager)],
@@ -87,7 +87,7 @@ async def callback(
     code: Annotated[str, Query()] = "",
     error: Annotated[str, Query()] = "",
     iss: Annotated[str | None, Query()] = None,
-) -> HTMLResponse:
+) -> HTMLResponse | RedirectResponse:
     if not state:
         return page(
             "Something went wrong",
@@ -140,9 +140,29 @@ async def callback(
             "fresh link will arrive.",
             status_code=502,
         )
-    return page(
+    title = (
         f"Connected as {escape(grant.account_label)}"
         if grant.account_label
-        else "Connected",
+        else "Connected"
+    )
+    try:
+        authorization = await manager.link_profile(connector_id, grant)
+    except Exception as failure:
+        logger.warning(
+            "Failed to offer an OAuth profile link (%s)", type(failure).__name__
+        )
+        return page(
+            title,
+            "The connection is ready, but profile linking could not be started. "
+            "Ask to link your profile in the channel's chat.",
+        )
+    if authorization is not None:
+        return RedirectResponse(
+            str(authorization.authorization_uri),
+            status_code=303,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
+    return page(
+        title,
         "You can close this tab and go back to the chat.",
     )
