@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, TypeVar, cast
 
 from anthropic.types import Message as AnthropicMessage
@@ -362,7 +362,7 @@ class ClaudeRunAccumulator:
             self.streaming_active = True
             stream_index = self._take_index()
             self.streaming_blocks[index] = StreamingBlock(index=stream_index, part=part)
-            yield PartStartEvent(index=stream_index, part=part)
+            yield PartStartEvent(index=stream_index, part=replace(part))
             return
         if event_type == "content_block_delta":
             index = event.get("index")

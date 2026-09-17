@@ -61,13 +61,14 @@ from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject
 from octomate.types.permissions import CodexPermissionMode
-from tests.support.channels import FakeChannelTentacle
+from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakePresentedBatch,
     RecordingSuspender,
 )
+from tests.support.scenarios import play
 from tests.support.users import a_user, auth_config
 
 KEY = ChannelAddress(
@@ -469,6 +470,12 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert any(isinstance(event, PartStartEvent) for event in events)
     assert isinstance(events[-1], AgentRunResultEvent)
     assert events[-1].result.output == "done"
+    timeline = RecordingTimeline()
+    async with timeline.open(KEY):
+        await timeline.drive(play(events))
+    assert [text for method, text in timeline.calls if method == "answer_delta"] == [
+        "done"
+    ]
     assert trace_config.call_count == int(instrument)
     runtime = FakeCodex.last_config
     assert runtime is not None

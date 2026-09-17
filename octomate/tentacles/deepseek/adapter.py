@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 from pydantic import TypeAdapter, ValidationError
@@ -276,7 +276,7 @@ class DeepseekRunAccumulator:
             part = kind(content="", provider_name=DEEPSEEK_PROVIDER_NAME)
             current = StreamingPartState(index=self.take_part_index(), part=part)
             self.current = current
-            yield PartStartEvent(index=current.index, part=part)
+            yield PartStartEvent(index=current.index, part=replace(part))
         current.events.append(payload)
         current.part.content += text
         if isinstance(current.part, TextPart):

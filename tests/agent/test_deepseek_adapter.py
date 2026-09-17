@@ -5,6 +5,9 @@ are the documented turn flow: turn/start → assistant/chunk* → assistant/mess
 
 from __future__ import annotations
 
+from typing import Literal
+
+import pytest
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -22,6 +25,7 @@ from pydantic_ai.messages import (
 from octomate.capabilities.harness.events import StreamEvents
 from octomate.tentacles.deepseek.adapter import DeepseekRunAccumulator
 from octomate.tentacles.deepseek.wire import SessionEventFrame
+from octomate.tentacles.feelers.output import render_stream_event_delta
 from octomate.types.json import JsonValue
 
 
@@ -64,6 +68,23 @@ def consume_all(
     for one in frames:
         events.extend(accumulator.consume(one))
     return events
+
+
+@pytest.mark.parametrize("kind", ["text-delta", "reasoning-delta"])
+def test_buffered_opening_words_are_rendered_once(
+    kind: Literal["text-delta", "reasoning-delta"],
+) -> None:
+    buffered = consume_all(
+        DeepseekRunAccumulator(),
+        [frame("turn/start", {"turn": 1}), chunk(kind, text="Good push")],
+    )
+    rendered = "".join(
+        delta.text
+        for event in buffered
+        if isinstance(event, (PartStartEvent, PartDeltaEvent))
+        and (delta := render_stream_event_delta(event)) is not None
+    )
+    assert rendered == "Good push"
 
 
 def test_text_deltas_stream_and_the_commit_is_authoritative() -> None:

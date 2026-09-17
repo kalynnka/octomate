@@ -449,7 +449,9 @@ class CodexRunAccumulator:
                 part=part,
                 events=[event],
             )
-            yield PartStartEvent(index=self.streaming_parts[item.id].index, part=part)
+            yield PartStartEvent(
+                index=self.streaming_parts[item.id].index, part=replace(part)
+            )
             return
         if isinstance(item, TOOL_ITEM_TYPES):
             yield from self.start_native_tool(item, event)
