@@ -9,6 +9,7 @@ from octomate.config.agents import (
     CodexConfig,
     DeepseekConfig,
     InklingConfig,
+    ZcodeConfig,
 )
 from octomate.config.channels import ChannelConfigVariant
 from octomate.config.mcp import McpConfigVariant
@@ -18,6 +19,7 @@ type TentacleConfigVariant = Annotated[
     | CodexConfig
     | DeepseekConfig
     | InklingConfig
+    | ZcodeConfig
     | ChannelConfigVariant
     | McpConfigVariant,
     Field(discriminator="type"),

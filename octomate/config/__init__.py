@@ -12,6 +12,7 @@ from octomate.config.agents import (
     CodexConfig,
     DeepseekConfig,
     InklingConfig,
+    ZcodeConfig,
 )
 from octomate.config.auth import AuthConfig
 from octomate.config.base import (
@@ -80,6 +81,7 @@ __all__ = [  # noqa: RUF022
     "CodexConfig",
     "DeepseekConfig",
     "InklingConfig",
+    "ZcodeConfig",
     # models
     "AnthropicModelSettings",
     "BedrockModelSettings",

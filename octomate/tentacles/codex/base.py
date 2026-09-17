@@ -610,16 +610,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         return None
 
     async def discover_models(self) -> None:
-        runtime = replace(
-            self.config.runtime,
-            config_overrides=(
-                *self.config.runtime.config_overrides,
-                f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=false",
-            ),
-        )
         models: dict[str, Model | str] = {}
         claims: dict[str, Claim] = {}
-        async with AsyncCodexClient(config=runtime) as client:
+        # Catalog reads create no thread or MCP client. An enabled=false override
+        # alone creates an invalid transport when no native Octomate entry exists.
+        async with AsyncCodexClient(config=self.config.runtime) as client:
             await client.initialize()
             settings = await client.request(
                 "config/read",

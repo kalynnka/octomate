@@ -30,6 +30,7 @@ from octomate.config import (
     OAuthMcpConfig,
     OctomateConfig,
     SlackChannelConfig,
+    ZcodeConfig,
 )
 from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
 from octomate.config.channels import SLACK_MCP_SCOPES
@@ -140,10 +141,12 @@ def test_tentacles_preserve_types_ids_and_serialization() -> None:
             "coding": CodexConfig(),
             "review": ClaudeCodeConfig(enabled=False),
             "assistant": InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
+            "glm": ZcodeConfig(),
         }
     )
     serialized = config.model_dump(mode="json")
-    assert list(serialized["tentacles"]) == ["coding", "review", "assistant"]
+    assert list(serialized["tentacles"]) == ["coding", "review", "assistant", "glm"]
+    assert serialized["tentacles"]["glm"]["type"] == "zcode"
     assert serialized["tentacles"]["review"]["type"] == "claude"
     assert serialized["tentacles"]["review"]["enabled"] is False
     assert not {"agents", "channels", "mcp"} & serialized.keys()
@@ -152,13 +155,14 @@ def test_tentacles_preserve_types_ids_and_serialization() -> None:
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool) -> None:
-    with pytest.raises(ValidationError, match="duplicate agent runtime 'codex'"):
+@pytest.mark.parametrize("runtime", ["codex", "zcode"])
+def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool, runtime: str) -> None:
+    with pytest.raises(ValidationError, match=f"duplicate agent runtime '{runtime}'"):
         OctomateConfig.model_validate(
             {
                 "tentacles": {
-                    "coding": {"type": "codex"},
-                    "review": {"type": "codex", "enabled": enabled},
+                    "coding": {"type": runtime},
+                    "review": {"type": runtime, "enabled": enabled},
                 }
             }
         )
@@ -1145,15 +1149,17 @@ def test_authorization_code_mcp_requires_callback_configuration() -> None:
         )
 
 
+@pytest.mark.parametrize("runtime", ["codex", "zcode"])
 def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
     monkeypatch: pytest.MonkeyPatch,
+    runtime: str,
 ) -> None:
     application = importlib.import_module("octomate.app")
     config = OctomateConfig.model_validate(
         {
             "tentacles": {
                 "web": {"type": "trunkline", "agents": ["coding"]},
-                "coding": {"type": "codex"},
+                "coding": {"type": runtime},
                 "tools": {"type": "bare", "url": "https://mcp.example/mcp"},
                 "disabled": {
                     "type": "bare",

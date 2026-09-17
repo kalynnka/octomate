@@ -3,6 +3,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
+from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.generated.v2_all import (
     ConfigReadResponse,
     ModelListResponse,
@@ -20,6 +21,7 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.wire import OkResult
 from octomate.tentacles.inkling import InklingTentacle
@@ -211,6 +213,41 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
     with pytest.raises(ValueError, match="no available models"):
         await tentacle.discover_models()
     assert tentacle.models == {}
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        (),
+        ('mcp_servers.octomate={command="native-mcp",args=["--serve"]}',),
+        (
+            'mcp_servers.octomate={url="http://localhost:8123/mcp",http_headers={Authorization="Bearer native"}}',
+        ),
+    ],
+)
+async def test_codex_discovery_preserves_native_config_and_only_reads_catalog(
+    monkeypatch: pytest.MonkeyPatch,
+    codex_catalog: AsyncMock,
+    overrides: tuple[str, ...],
+) -> None:
+    transport = MagicMock()
+    transport.__aenter__.return_value = codex_catalog
+    factory = MagicMock(return_value=transport)
+    monkeypatch.setattr(codex_base, "AsyncCodexClient", factory)
+    original = CodexSdkConfig(
+        config_overrides=('model_reasoning_effort="high"', *overrides)
+    )
+    tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig(runtime=original))
+
+    await tentacle.discover_models()
+
+    launched = factory.call_args.kwargs["config"]
+    assert isinstance(launched, CodexSdkConfig)
+    assert launched == original
+    assert [call.args[0] for call in codex_catalog.request.call_args_list] == [
+        "config/read",
+        "model/list",
+    ]
 
 
 async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(

@@ -13,6 +13,7 @@ from octomate.config import (
     InklingConfig,
     OAuthMcpConfig,
     OctomateConfig,
+    ZcodeConfig,
 )
 from octomate.config.channels import (
     DiscordChannelConfig,
@@ -32,6 +33,7 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import build_inkling
 from octomate.tentacles.mcp import build_mcp
+from octomate.tentacles.zcode import ZcodeTentacle
 
 config = OctomateConfig()
 
@@ -147,6 +149,8 @@ def create_app() -> Octomate:
                 tentacle = CodexTentacle(id, octomate, config=tentacle_config)
             case DeepseekConfig():
                 tentacle = DeepseekTentacle(id, octomate, config=tentacle_config)
+            case ZcodeConfig():
+                tentacle = ZcodeTentacle(id, octomate, config=tentacle_config)
             case (
                 SlackChannelConfig()
                 | LarkChannelConfig()

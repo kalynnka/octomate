@@ -17,6 +17,7 @@ from octomate.tentacles.mcp import BareMcpTentacle, OAuthMcpTentacle
 from octomate.tentacles.napcat.base import NapcatTentacle
 from octomate.tentacles.slack.base import SlackTentacle
 from octomate.tentacles.trunkline.base import TrunklineTentacle
+from octomate.tentacles.zcode.base import ZcodeTentacle
 
 
 def test_tentacles_have_stable_brand_styles() -> None:
@@ -30,6 +31,7 @@ def test_tentacles_have_stable_brand_styles() -> None:
         NapcatTentacle.brand_color,
         SlackTentacle.brand_color,
         TrunklineTentacle.brand_color,
+        ZcodeTentacle.brand_color,
     ) == (
         Style(color="#D97757", bold=True),
         Style(color="#10A37F", bold=True),
@@ -40,6 +42,7 @@ def test_tentacles_have_stable_brand_styles() -> None:
         Style(color="#6A828B", bold=True),
         Style(color="#746576", bold=True),
         Style(color="#D4621A", bold=True),
+        Style(color="#3B6FF5", bold=True),
     )
 
 

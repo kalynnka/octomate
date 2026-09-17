@@ -33,7 +33,7 @@ export function batchFeelers(
     items.push({
       kind: 'ask',
       title: 'Question',
-      body: q.args.question,
+      body: [q.args.question, q.args.hint].filter(Boolean).join('\n\n'),
       options: (q.args.choices ?? []).map((choice) => ({
         label: choice,
         sum: choice,
@@ -555,4 +555,3 @@ export class TurnFold {
     this.sink.done()
   }
 }
-
