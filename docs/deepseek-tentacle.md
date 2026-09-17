@@ -123,8 +123,8 @@ limitations the first version accepts, and why.
 
 11. **Version checks are advisory; protocol checks are required.** The adapter
     is tested with dsh `0.1.6-alpha.1` (checkout `0d1f50007f`). Before spawning,
-    Octomate reads `dsh --version`, logs an exact match, and warns for a different
-    or unrecognized version. Development checkouts can change without a version
+    Octomate reads `dsh --version`, logs an exact match at INFO, and warns for a
+    different or unrecognized version. Development checkouts can change without a version
     bump, so authentication, `settings/describe`, `session/modelCatalog`, and the
     Remote event handshake also have to succeed. Existing servers do not publish
     their version: attachment logs that limitation rather than presenting the
@@ -138,11 +138,11 @@ limitations the first version accepts, and why.
     redact launch tokens. An authentication or protocol error fails startup
     without launching another harness on that endpoint.
 
-    For human browser access, Octomate prints `dsh web: <url>?token=...` once to
-    the console when the child reports readiness, following dsh's launch banner.
-    It writes no login-link file. The token stays in memory for Octomate's cookie
-    exchange. The launch banner bypasses logging integrations; later dsh
-    diagnostics redact the token.
+    For human browser access, Octomate logs `dsh web: <url>?token=...` once at
+    INFO when the child reports readiness, following dsh's launch banner. It
+    uses the normal logging handlers and formatting. No separate login-link
+    file is written. The token stays in memory for Octomate's cookie exchange;
+    later dsh diagnostics redact it.
     An attached, independently launched harness keeps its own launch-link workflow.
 
 13. **Subprocess diagnostics are bounded.** Normal dsh output goes to the
@@ -200,8 +200,8 @@ To check your own channel and model credentials after the isolated test:
 2. In the config home's `tentacles.yaml`, enable a `deepseek` tentacle with
    `type: deepseek` and list its id under the channel's `agents:`. The harness supplies
    the model/provider catalog and its default; no model list is needed.
-3. Boot Octomate and check the dsh version/attachment message and successful
-   Remote API probe. `extra_args` such as `--patch` are placed before the web
+3. Boot Octomate and check for `dsh Remote API connected` or a successful
+   attachment message. `extra_args` such as `--patch` are placed before the web
    app's `--host`, `--port`, and `--no-open` flags.
 4. Summon dsh from the channel: a turn should stream text (and thinking) live,
    and the run should appear in thread history with the dsh session id as the

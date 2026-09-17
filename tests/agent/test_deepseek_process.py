@@ -136,10 +136,9 @@ async def test_a_dsh_that_dies_without_refusing_anything_fails_the_start(
 
 
 @pytest.mark.parametrize("browser_url", [None, "https://dsh.example:8443"])
-async def test_launch_url_is_printed_once_without_writing_a_file(
+async def test_launch_url_is_logged_once_without_writing_a_file(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
-    capsys: pytest.CaptureFixture[str],
     browser_url: str | None,
 ) -> None:
     token = "private-launch-token"
@@ -153,17 +152,22 @@ async def test_launch_url_is_printed_once_without_writing_a_file(
         assert dsh.launch_token is not None
         assert dsh.launch_token.get_secret_value() == token
         assert token not in repr(dsh)
-        assert token not in caplog.text
-        output = capsys.readouterr().out
-        assert output.startswith("dsh web: ")
-        assert output.count(token) == 1
-        link = urlsplit(output.strip().removeprefix("dsh web: "))
+        banners = [
+            record
+            for record in caplog.records
+            if record.getMessage().startswith("dsh web: ")
+        ]
+        assert len(banners) == 1
+        assert banners[0].levelno == logging.INFO
+        banner = banners[0].getMessage()
+        assert caplog.text.count(token) == 1
+        link = urlsplit(banner.split("dsh web: ", 1)[1])
         assert link.netloc == urlsplit(browser_url or str(BASE_URL)).netloc
         assert parse_qs(link.query) == {"token": [token]}
         assert not dsh.dsh_home.exists()
-        dsh.capture_diagnostic(f"repeated launch URL: {output.strip()}")
+        caplog.clear()
+        dsh.capture_diagnostic(f"repeated launch URL: {banner}")
         assert token not in caplog.text
-        assert capsys.readouterr().out == ""
         if browser_url is not None:
             args = launches(argv)[0]
             assert args[args.index("--trusted-host") + 1] == link.netloc
@@ -174,11 +178,11 @@ async def test_launch_url_is_printed_once_without_writing_a_file(
 
 
 @pytest.mark.parametrize(
-    ("version", "expected"),
+    ("version", "expected", "level"),
     [
-        ("0.1.6-alpha.1", "matches Octomate's tested release"),
-        ("0.2.0", "differs from Octomate's tested version"),
-        ("unknown", "Could not determine dsh version"),
+        ("0.1.6-alpha.1", "matches Octomate's tested release", logging.INFO),
+        ("0.2.0", "differs from Octomate's tested version", logging.WARNING),
+        ("unknown", "Could not determine dsh version", logging.WARNING),
     ],
 )
 async def test_version_matching_is_visible(
@@ -186,13 +190,15 @@ async def test_version_matching_is_visible(
     caplog: pytest.LogCaptureFixture,
     version: str,
     expected: str,
+    level: int,
 ) -> None:
     binary = tmp_path / "dsh"
     binary.write_text(f"#!/bin/sh\necho '{version}'\n")
     binary.chmod(0o755)
-    caplog.set_level(logging.INFO)
+    caplog.set_level(logging.DEBUG, logger="octomate.tentacles.deepseek.process")
     await process(binary, tmp_path, []).check_version()
     assert expected in caplog.text
+    assert [record.levelno for record in caplog.records] == [level]
 
 
 async def test_startup_failure_keeps_cause_without_flooding_logs(

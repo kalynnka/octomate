@@ -417,7 +417,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         except BaseException:
             await process.stop()
             raise
-        logger.info("Started dsh at %s; Remote API probe passed", base_url)
+        logger.info("dsh Remote API connected")
         return process
 
     @property

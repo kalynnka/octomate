@@ -2,7 +2,7 @@
 
 The server is bound to loopback and owned by this process — the bind host is
 fixed at `127.0.0.1` and deliberately not configurable. Authenticated harnesses
-print their launch URL once to the console. The returned base URL and subsequent
+log their launch URL once at INFO. The returned base URL and subsequent
 diagnostics omit the token.
 The port is the configured one,
 fixed rather than ephemeral, and that is load-bearing: it is the address the
@@ -209,7 +209,6 @@ class DeepseekProcess:
                 self.diagnostic_count,
             )
         self.relays.append(asyncio.create_task(self.relay_stdout(stdout)))
-        logger.info("dsh ready at %s", base_url)
         return base_url
 
     async def read_banner(
@@ -228,8 +227,7 @@ class DeepseekProcess:
                     launch_url = HttpUrl(
                         urlunsplit(browser_parts._replace(query=parts.query))
                     )
-                # Write directly to stdout so logging integrations do not receive the token.
-                print(f"dsh web: {launch_url}", flush=True)
+                logger.info("dsh web: %s", launch_url)
                 return HttpUrl(urlunsplit(parts._replace(query="", fragment="")))
             if line:
                 self.capture_diagnostic(line)

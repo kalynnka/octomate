@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import socket
 import uuid
@@ -184,7 +185,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
 async def test_real_harness_browser_login_through_a_trusted_proxy(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
     executable = os.environ.get("DSH_TEST_EXECUTABLE")
     if executable is None:
@@ -204,11 +205,16 @@ async def test_real_harness_browser_login_through_a_trusted_proxy(
         ready_timeout=60,
         browser_url=HttpUrl(origin),
     )
+    caplog.set_level(logging.INFO, logger="octomate.tentacles.deepseek.process")
     try:
         base_url = await dsh.start()
-        output = capsys.readouterr().out
-        assert output.startswith("dsh web: ")
-        link = urlsplit(output.strip().removeprefix("dsh web: "))
+        banners = [
+            record.getMessage()
+            for record in caplog.records
+            if record.getMessage().startswith("dsh web: ")
+        ]
+        assert len(banners) == 1
+        link = urlsplit(banners[0].removeprefix("dsh web: "))
         assert link.netloc == authority
         # Model the proxy's loopback connection while preserving browser Host/Origin.
         async with httpx.AsyncClient(
