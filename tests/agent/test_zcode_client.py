@@ -273,6 +273,44 @@ if not {parent_exits!r}:
                 os.kill(child_pid, signal.SIGKILL)
 
 
+@pytest.mark.parametrize("group_state", ["gone", "exiting", "alive", "denied"])
+async def test_cleanup_confirms_group_exit_before_ignoring_permission_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    group_state: str,
+) -> None:
+    client = client_for("import sys; sys.stdin.read()", tmp_path)
+    await client.__aenter__()
+    real_killpg = os.killpg
+    signals: list[int] = []
+
+    def killpg(group: int, sig: int) -> None:
+        signals.append(sig)
+        if sig == signal.SIGKILL:
+            raise PermissionError("group is exiting")
+        if sig == 0:
+            if group_state == "denied" or (
+                group_state == "exiting" and signals.count(0) == 1
+            ):
+                raise PermissionError("group is inaccessible")
+            if group_state in {"gone", "exiting"}:
+                raise ProcessLookupError("group has exited")
+            return
+        real_killpg(group, sig)
+
+    monkeypatch.setattr(os, "killpg", killpg)
+    if group_state in {"gone", "exiting"}:
+        await client.__aexit__(None, None, None)
+    else:
+        with pytest.raises(PermissionError, match="group is"):
+            await client.__aexit__(None, None, None)
+    assert signals[:2] == [signal.SIGTERM, signal.SIGKILL]
+    assert signals[2:]
+    assert all(sig == 0 for sig in signals[2:])
+    assert client.process is not None
+    assert client.process.returncode is not None
+
+
 async def test_oversized_protocol_frame_is_reported_explicitly(tmp_path: Path) -> None:
     script = "import json,sys; q=json.loads(sys.stdin.readline()); print(json.dumps({'id':q['id'],'result':'x'*(17*1024*1024)}),flush=True); sys.stdin.read()"
     async with client_for(script, tmp_path) as client:

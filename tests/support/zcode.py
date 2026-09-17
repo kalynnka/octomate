@@ -76,6 +76,7 @@ session_id = None
 input_id = None
 prompt = None
 answered = False
+catalog = {}
 
 def send(frame):
     print(json.dumps(frame), flush=True)
@@ -90,6 +91,9 @@ def message(message_id, text, role):
     model = {"providerID": "builtin:bigmodel", "modelID": "GLM-5.3"}
     info = {"id": message_id, "role": role}
     info.update({"model": model} if role == "user" else model)
+    if role == "assistant":
+        info["semantics"] = {"origin": "agent_runtime", "kind": "assistant_response",
+                             "uiVisibility": "visible", "transcriptVisibility": "visible", "providerVisibility": "visible"}
     return {"info": info, "parts": [{"type": "text", "text": text}]}
 
 for line in sys.stdin:
@@ -98,10 +102,11 @@ for line in sys.stdin:
     params = frame.get("params", {})
     if method == "workspace/readState":
         provider = params["runtimeModel"]["provider"]
-        available = [{"ref": {"providerId": provider["providerId"], "modelId": model["modelId"]},
-                      "label": model["modelId"], **({"reasoning": model["reasoning"]} if "reasoning" in model else {})}
-                     for model in provider["models"]]
-        send({"id": frame["id"], "result": {"modelCatalog": {"available": available}}})
+        selected = params["runtimeModel"]["model"]
+        model = next(model for model in provider["models"] if model["modelId"] == selected["modelId"])
+        catalog[(selected["providerId"], selected["modelId"])] = {
+            "ref": selected, "label": model["modelId"], **({"reasoning": model["reasoning"]} if "reasoning" in model else {})}
+        send({"id": frame["id"], "result": {"modelCatalog": {"available": list(catalog.values())}}})
     elif method == "session/create":
         session_id = str(uuid.uuid4())
         sessions[session_id] = []
@@ -118,8 +123,9 @@ for line in sys.stdin:
             continue
         sessions[session_id].append(message(input_id, prompt, "user"))
         answered = False
-        event("turn.started", {"inputId": input_id, "messageId": input_id})
         send({"id": frame["id"], "result": {"accepted": True, "sessionId": session_id, "stateRevision": 1}})
+        send({"method": "state.updated", "params": {"type": "state.updated", "scope": "session", "sessionId": session_id, "revision": 2, "reason": "prompt_completed"}})
+        event("turn.started", {"inputId": input_id, "messageId": input_id})
         callback = {"requestId": input_id, "sessionId": session_id, "toolCallId": "tool-1"}
         if prompt == "ask":
             callback.update({"toolName": "AskUserQuestion", "questions": [{
@@ -189,7 +195,20 @@ def history_message(message_id: str, text: str, *, user: bool = False) -> JsonOb
         "info": {
             "id": message_id,
             "role": "user" if user else "assistant",
-            **({"model": model} if user else model),
+            **(
+                {"model": model}
+                if user
+                else {
+                    **model,
+                    "semantics": {
+                        "origin": "agent_runtime",
+                        "kind": "assistant_response",
+                        "uiVisibility": "visible",
+                        "transcriptVisibility": "visible",
+                        "providerVisibility": "visible",
+                    },
+                }
+            ),
         },
         "parts": [{"type": "text", "text": text}],
     }
@@ -219,11 +238,13 @@ class FakeZcodeClient(ZcodeClient):
     history: ClassVar[dict[str, list[JsonObject]]] = {}
     prompted: ClassVar[asyncio.Event | None] = None
     calls: list[tuple[str, JsonObject]]
+    catalog: dict[tuple[str, str], JsonObject]
     session_id: str
     closed: bool
 
     async def __aenter__(self) -> FakeZcodeClient:
         self.calls = []
+        self.catalog = {}
         self.closed = False
         self.instances.append(self)
         return self
@@ -240,27 +261,27 @@ class FakeZcodeClient(ZcodeClient):
         self.calls.append((method, params))
         if method == "workspace/readState":
             runtime = RuntimeConfig.model_validate(params["runtimeModel"])
+            model = next(
+                model
+                for model in runtime.provider.models
+                if model.model_id == runtime.model.model_id
+            )
+            self.catalog[(runtime.model.provider_id, runtime.model.model_id)] = {
+                "ref": runtime.model.model_dump(mode="json", by_alias=True),
+                "label": model.label or model.model_id,
+                **(
+                    {
+                        "reasoning": model.reasoning.model_dump(
+                            mode="json", by_alias=True, exclude_none=True
+                        )
+                    }
+                    if model.reasoning
+                    else {}
+                ),
+            }
             return {
                 "modelCatalog": {
-                    "available": [
-                        {
-                            "ref": {
-                                "providerId": runtime.provider.provider_id,
-                                "modelId": model.model_id,
-                            },
-                            "label": model.label or model.model_id,
-                            **(
-                                {
-                                    "reasoning": model.reasoning.model_dump(
-                                        mode="json", by_alias=True, exclude_none=True
-                                    )
-                                }
-                                if model.reasoning
-                                else {}
-                            ),
-                        }
-                        for model in runtime.provider.models
-                    ]
+                    "available": list(self.catalog.values()),
                 }
             }
         if method == "session/create":
@@ -296,8 +317,20 @@ class FakeZcodeClient(ZcodeClient):
             )
             delta.session_id = self.session_id
             self.events.put_nowait(delta)
+            timeline = history_message(input_id + "-timeline", "")
+            timeline_info = timeline["info"]
+            assert isinstance(timeline_info, dict)
+            timeline_info["semantics"] = {
+                "origin": "system",
+                "kind": "timeline_event",
+                "uiVisibility": "visible",
+                "transcriptVisibility": "visible",
+                "providerVisibility": "hidden",
+            }
+            timeline["parts"] = [{"type": "timeline"}]
             self.history[self.session_id].extend(
                 [
+                    timeline,
                     history_message(input_id, prompt, user=True),
                     history_message("answer-" + input_id, "canonical " + prompt),
                 ]

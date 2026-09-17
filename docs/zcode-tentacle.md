@@ -39,8 +39,10 @@ No standalone CLI installation or UI automation is required.
 
 `desktop_config` defaults to `~/.zcode/v2/config.json`. The provider identifier must
 match an enabled provider in that file. Octomate discovers all models configured
-for that provider through `workspace/readState` during startup and verifies the
-catalog before advertising routes. Model names are not restricted to a fixed list.
+for that provider through `workspace/readState` during startup. It selects each
+model in turn within one app-server process, since the runtime advertises models
+as they are selected, and verifies the complete catalog before advertising routes.
+Model names are not restricted to a fixed list.
 Octomate reads its API key, endpoint and model settings at each run without
 modifying the file. The API key travels only to the local child over stdin; it
 does not become a command argument or Octomate ledger metadata. Desktop-login
@@ -88,11 +90,16 @@ configuration, plugins and tool behavior.
 - Setup and rejected submissions do not record an unsent prompt or advance its
   source cursor. A confirmed preflight failure after acknowledgement ends the run
   without a generation timeout. Control commands and hook-blocked prompts can
-  complete without a native prompt message.
+  complete without a native prompt message. The legacy `prompt_completed` state
+  notice acknowledges admission; the runner waits for the actual terminal turn
+  event before reconciling and recording a completed response.
 - History retrieval starts after the pre-turn tail, retaining the entire current
   turn. Missing prompt boundaries fail explicitly. Hidden synthetic context and
-  discarded assistant attempts are excluded from canonical conversation history;
-  native errors and finish reasons are preserved. Individual protocol frames over
+  discarded assistant attempts are excluded from canonical conversation history.
+  Visible assistant responses retain their text, reasoning, tools and usage even
+  when their origin is `agent_runtime`; hidden/debug context and native timeline
+  markers remain excluded.
+  Native errors and finish reasons are preserved. Individual protocol frames over
   16 MiB fail with an explicit size error.
 - Correction of already displayed text after native stream recovery remains
   deferred.

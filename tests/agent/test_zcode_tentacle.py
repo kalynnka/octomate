@@ -23,7 +23,7 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.zcode import ZcodeTentacle
 from octomate.tentacles.zcode import base as zcode_base
-from octomate.tentacles.zcode.wire import DesktopConfig, StateUpdated
+from octomate.tentacles.zcode.wire import DesktopConfig, RuntimeConfig, StateUpdated
 from octomate.types.json import JsonObject, JsonValue
 from octomate.types.permissions import check_mode
 from tests.support.managers import FakeConversationManager, a_thread
@@ -304,6 +304,16 @@ async def test_records_with_real_managers_and_resumes_after_reload(
         FakeZcodeClient.instances[0].session_id
         == FakeZcodeClient.instances[1].session_id
     )
+    replies: set[str] = set()
+    for run in conversation.runs:
+        messages = await run.messages
+        assert len(messages) == 2
+        response = messages[1]
+        assert isinstance(response, ModelResponse)
+        [part] = response.parts
+        assert isinstance(part, TextPart)
+        replies.add(part.content)
+    assert replies == {"canonical first", "canonical second"}
 
 
 class LifecycleClient(FakeZcodeClient):
@@ -350,14 +360,19 @@ class LifecycleClient(FakeZcodeClient):
                     frame.session_id = self.session_id
                     self.events.put_nowait(frame)
             return {"accepted": True, "sessionId": self.session_id, "stateRevision": 10}
-        if method == "session/send" and self.scenario == "stale_failure":
+        if method == "session/send" and self.scenario in {
+            "stale_failure",
+            "early_completion",
+        }:
             self.events.put_nowait(
                 StateUpdated(
                     type="state.updated",
                     scope="session",
                     session_id=self.session_id,
-                    revision=1,
-                    reason="prompt_failed",
+                    revision=1 if self.scenario == "stale_failure" else 11,
+                    reason="prompt_failed"
+                    if self.scenario == "stale_failure"
+                    else "prompt_completed",
                 )
             )
         return await super().call(method, params)
@@ -405,7 +420,9 @@ async def test_rejected_input_does_not_record_or_consume_source_messages(
     assert LifecycleClient.instances[-1].closed
 
 
-@pytest.mark.parametrize("scenario", ["blocked", "control", "stale_failure"])
+@pytest.mark.parametrize(
+    "scenario", ["blocked", "control", "stale_failure", "early_completion"]
+)
 async def test_no_prompt_turns_and_old_failures_do_not_break_resumed_sessions(
     tentacle: ZcodeTentacle,
     monkeypatch: pytest.MonkeyPatch,
@@ -420,7 +437,9 @@ async def test_no_prompt_turns_and_old_failures_do_not_break_resumed_sessions(
             "next", conversation_address=ADDRESS, thread_id=thread_id
         )
     assert result.output == (
-        "canonical next" if scenario == "stale_failure" else scenario
+        "canonical next"
+        if scenario in {"stale_failure", "early_completion"}
+        else scenario
     )
     manager = tentacle.octomate.conversations
     assert isinstance(manager, FakeConversationManager)
@@ -493,13 +512,16 @@ async def test_discovery_exposes_all_desktop_models(
 ) -> None:
     config = tentacle.config
     raw = json.loads(config.desktop_config.read_text())
-    raw["provider"][config.provider]["models"]["another-model"] = {}
+    raw["provider"][config.provider]["models"]["GLM-5.3-Flash"] = {}
     config.desktop_config.write_text(json.dumps(raw))
-    config.claims = {"GLM-5.3": Claim("Coding")}
+    config.claims = {
+        "GLM-5.3": Claim("Coding"),
+        "builtin:bigmodel:GLM-5.3-Flash": Claim("Fast coding"),
+    }
     await tentacle.discover_models()
     assert list(tentacle.models) == [
         "builtin:bigmodel:GLM-5.3",
-        "builtin:bigmodel:another-model",
+        "builtin:bigmodel:GLM-5.3-Flash",
     ]
     assert tentacle.routes[0].claim.efforts == (
         "minimal",
@@ -509,6 +531,64 @@ async def test_discovery_exposes_all_desktop_models(
         "xhigh",
     )
     assert tentacle.routes[1].claim.efforts == ()
+    assert tentacle.routes[1].claim.ability == "Fast coding"
+    [client] = FakeZcodeClient.instances
+    assert client.closed
+    probes = [
+        RuntimeConfig.model_validate(params["runtimeModel"])
+        for method, params in client.calls
+        if method == "workspace/readState"
+    ]
+    assert [probe.model.model_id for probe in probes] == ["GLM-5.3", "GLM-5.3-Flash"]
+    assert len(tentacle.routes) == 2
+
+
+@pytest.mark.parametrize("failure", ["missing", "disabled", "rpc"])
+async def test_failed_later_probe_does_not_publish_a_partial_catalog(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    selected_models: list[str] = []
+
+    class FailedSecondProbe(FakeZcodeClient):
+        async def call(self, method: str, params: JsonObject) -> JsonValue:
+            if method == "workspace/readState":
+                runtime = RuntimeConfig.model_validate(params["runtimeModel"])
+                selected_models.append(runtime.model.model_id)
+                if runtime.model.model_id == "GLM-5.3-Flash":
+                    if failure == "rpc":
+                        raise AgentRunError("catalog failed")
+                    available: list[JsonValue] = list(self.catalog.values())
+                    if failure == "disabled":
+                        available.append(
+                            {
+                                "ref": runtime.model.model_dump(
+                                    mode="json", by_alias=True
+                                ),
+                                "label": "Flash",
+                                "disabledReason": "unavailable",
+                            }
+                        )
+                    return {"modelCatalog": {"available": available}}
+            return await super().call(method, params)
+
+    config = desktop_config(tmp_path)
+    raw = json.loads(config.desktop_config.read_text())
+    raw["provider"][config.provider]["models"]["GLM-5.3-Flash"] = {}
+    config.desktop_config.write_text(json.dumps(raw))
+    monkeypatch.setattr(zcode_base, "ZcodeClient", FailedSecondProbe)
+    agent = ZcodeTentacle("zcode", Octomate(), config=config)
+    with pytest.raises(
+        (ValueError, AgentRunError),
+        match=r"did not advertise|unavailable|catalog failed",
+    ):
+        await agent.__aenter__()
+    assert not agent.models
+    assert not agent.claims
+    assert not agent.routes
+    assert selected_models == ["GLM-5.3", "GLM-5.3-Flash"]
+    assert FailedSecondProbe.instances[-1].closed
 
 
 @pytest.mark.parametrize("catalog_failure", ["missing", "disabled"])

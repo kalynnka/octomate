@@ -524,7 +524,7 @@ class StoredModelRef(WireModel):
 class MessageSemantics(WireModel):
     origin: str
     kind: str
-    ui_visibility: Literal["visible", "hidden"]
+    ui_visibility: Literal["visible", "hidden", "debug"]
     transcript_visibility: Literal["visible", "hidden"]
     provider_visibility: Literal["visible", "hidden"]
 
@@ -545,7 +545,14 @@ class MessageInfo(WireModel):
                 or (
                     self.semantics.ui_visibility == "visible"
                     and self.semantics.transcript_visibility == "visible"
-                    and self.semantics.origin != "agent_runtime"
+                    and self.semantics.kind != "timeline_event"
+                    and (
+                        self.semantics.origin != "agent_runtime"
+                        or (
+                            isinstance(self, AssistantMessageInfo)
+                            and self.semantics.kind == "assistant_response"
+                        )
+                    )
                 )
             )
         )

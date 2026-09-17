@@ -123,11 +123,12 @@ class ZcodeTentacle(AgentTentacle[str, None]):
         desktop_models = sorted(provider.models)
         if not desktop_models:
             raise ValueError("ZCode desktop provider has no models")
-        runtime = desktop.runtime_model(self.config.provider, desktop_models[0], None)
-        runtime.provider.models = [
-            desktop.runtime_model(self.config.provider, model, None).provider.models[0]
+        runtimes = [
+            desktop.runtime_model(self.config.provider, model, None)
             for model in desktop_models
         ]
+        models: dict[str, Model | str] = {}
+        claims: dict[str, Claim] = {}
         async with ZcodeClient(
             self.config.command,
             cwd=Path.cwd(),
@@ -138,51 +139,53 @@ class ZcodeTentacle(AgentTentacle[str, None]):
                 *[SecretStr(value) for value in provider.options.headers.values()],
             ],
         ) as client:
-            state = WorkspaceState.model_validate(
-                await client.call(
-                    "workspace/readState",
-                    {
-                        "workspace": {
-                            "workspacePath": str(client.cwd),
-                            "workspaceKey": str(client.cwd),
+            for runtime in runtimes:
+                state = WorkspaceState.model_validate(
+                    await client.call(
+                        "workspace/readState",
+                        {
+                            "workspace": {
+                                "workspacePath": str(client.cwd),
+                                "workspaceKey": str(client.cwd),
+                            },
+                            "runtimeModel": runtime.model_dump(
+                                mode="json", by_alias=True, exclude_none=True
+                            ),
                         },
-                        "runtimeModel": runtime.model_dump(
-                            mode="json", by_alias=True, exclude_none=True
-                        ),
-                    },
+                    )
                 )
-            )
-        models: dict[str, Model | str] = {}
-        claims: dict[str, Claim] = {}
-        for model in state.model_catalog.available:
-            if (
-                model.ref.provider_id != self.config.provider
-                or model.ref.model_id not in provider.models
-            ):
-                continue
-            if model.disabled_reason is not None:
-                raise ValueError(
-                    f"ZCode model {model.ref.model_id!r} is unavailable: {model.disabled_reason}"
+                model = next(
+                    (
+                        model
+                        for model in state.model_catalog.available
+                        if model.ref == runtime.model
+                    ),
+                    None,
                 )
-            key = f"{model.ref.provider_id}:{model.ref.model_id}"
-            configured = self.config.claims.get(key) or self.config.claims.get(
-                model.ref.model_id
-            )
-            efforts = model.reasoning.efforts if model.reasoning is not None else ()
-            models[key] = model.ref.model_id
-            claims[key] = Claim(
-                configured.ability if configured else model.description or model.label,
-                tuple(
-                    effort
-                    for effort in efforts
-                    if configured is None or effort in configured.efforts
-                ),
-            )
-        missing = provider.models.keys() - models.values()
-        if missing:
-            raise ValueError(
-                f"ZCode did not advertise configured models: {', '.join(sorted(missing))}"
-            )
+                if model is None:
+                    raise ValueError(
+                        f"ZCode did not advertise configured model: {runtime.model.model_id}"
+                    )
+                if model.disabled_reason is not None:
+                    raise ValueError(
+                        f"ZCode model {model.ref.model_id!r} is unavailable: {model.disabled_reason}"
+                    )
+                key = f"{model.ref.provider_id}:{model.ref.model_id}"
+                configured = self.config.claims.get(key) or self.config.claims.get(
+                    model.ref.model_id
+                )
+                efforts = model.reasoning.efforts if model.reasoning is not None else ()
+                models[key] = model.ref.model_id
+                claims[key] = Claim(
+                    configured.ability
+                    if configured
+                    else model.description or model.label,
+                    tuple(
+                        effort
+                        for effort in efforts
+                        if configured is None or effort in configured.efforts
+                    ),
+                )
         self.set_model_catalog(models, claims)
 
     async def __aenter__(self) -> ZcodeTentacle:
@@ -455,12 +458,14 @@ class ZcodeTentacle(AgentTentacle[str, None]):
             if isinstance(event, StateUpdated):
                 if event.revision <= accepted.state_revision:
                     continue
-                if event.reason in {"prompt_failed", "prompt_completed"}:
+                if event.reason == "prompt_failed":
                     if accumulator.turn_id is None:
                         context.input_accepted = False
                     raise AgentRunError(
                         f"ZCode execution ended without a terminal turn event: {event.reason}"
                     )
+                # Legacy session/send reports prompt_completed after admission,
+                # before generation. Only turn events determine completion.
                 continue
             for translated in accumulator.consume(event):
                 yield translated

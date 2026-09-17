@@ -207,6 +207,42 @@ def test_reconciles_only_current_turn_and_requires_its_boundary() -> None:
         accumulator.reconcile(SessionMessages(messages=[]))
 
 
+def test_native_timeline_before_prompt_does_not_invalidate_history_cursor() -> None:
+    accumulator = ZcodeRunAccumulator("new", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event("turn.started", {"inputId": "input", "messageId": "prompt"})
+        )
+    )
+    timeline = history_message("timeline", "")
+    info = timeline["info"]
+    assert isinstance(info, dict)
+    info["semantics"] = {
+        "origin": "system",
+        "kind": "timeline_event",
+        "uiVisibility": "visible",
+        "transcriptVisibility": "visible",
+        "providerVisibility": "hidden",
+    }
+    timeline["parts"] = [{"type": "timeline"}]
+    accumulator.reconcile(
+        SessionMessages.model_validate(
+            {
+                "messages": [
+                    timeline,
+                    history_message("prompt", "new", user=True),
+                    history_message("answer", "reply"),
+                ],
+            }
+        ),
+        after_message_id="previous-answer",
+    )
+    assert len(accumulator.messages) == 2
+    response = accumulator.messages[1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts == [TextPart("reply")]
+
+
 def test_canonical_tool_errors_preserve_pairing() -> None:
     accumulator = ZcodeRunAccumulator("run", input_id="input", model="GLM-5.3")
     list(
@@ -239,6 +275,73 @@ def test_canonical_tool_errors_preserve_pairing() -> None:
     assert isinstance(result, NativeToolReturnPart)
     assert call.tool_call_id == result.tool_call_id == "t"
     assert result.outcome == "failed"
+
+
+def test_native_assistant_history_keeps_content_tools_and_usage() -> None:
+    accumulator = ZcodeRunAccumulator("run", input_id="input", model="GLM-5.3")
+    list(
+        accumulator.consume(
+            event("turn.started", {"inputId": "input", "messageId": "prompt"})
+        )
+    )
+    answer = history_message("answer", "done")
+    info = answer["info"]
+    assert isinstance(info, dict)
+    info.update(
+        {
+            "finish": "tool-calls",
+            "tokens": {
+                "input": 20,
+                "output": 7,
+                "reasoning": 3,
+                "cache": {"read": 10, "write": 4},
+            },
+        }
+    )
+    answer["parts"] = [
+        {"type": "reasoning", "text": "Inspect the workspace"},
+        {"type": "text", "text": "Workspace read"},
+        {"type": "text", "text": "synthetic context", "synthetic": True},
+        {"type": "text", "text": "ignored context", "ignored": True},
+        {
+            "type": "tool",
+            "callID": "read",
+            "tool": "Bash",
+            "state": {
+                "status": "completed",
+                "input": {"command": "pwd"},
+                "output": "/workspace",
+            },
+        },
+    ]
+    accumulator.reconcile(
+        SessionMessages.model_validate(
+            {
+                "messages": [history_message("prompt", "run", user=True), answer],
+            }
+        )
+    )
+    assert len(accumulator.messages) == 2
+    response = accumulator.messages[1]
+    assert isinstance(response, ModelResponse)
+    assert response.parts[:2] == [
+        ThinkingPart("Inspect the workspace", provider_name="zcode"),
+        TextPart("Workspace read"),
+    ]
+    call, result = response.parts[2:]
+    assert isinstance(call, NativeToolCallPart)
+    assert isinstance(result, NativeToolReturnPart)
+    assert call.tool_name == result.tool_name == "Bash"
+    assert call.tool_call_id == result.tool_call_id == "read"
+    assert call.args == {"command": "pwd"}
+    assert result.content == "/workspace"
+    assert result.outcome == "success"
+    assert response.usage.input_tokens == 20
+    assert response.usage.output_tokens == 7
+    assert response.usage.cache_read_tokens == 10
+    assert response.usage.cache_write_tokens == 4
+    assert response.usage.details == {"reasoning_tokens": 3}
+    assert response.finish_reason == "tool_call"
 
 
 @pytest.mark.parametrize("hidden", ["synthetic", "visibility", "semantics", "part"])

@@ -128,7 +128,22 @@ class ZcodeClient:
                     pass
                 # Waiting for the parent does not account for children that ignore SIGTERM.
                 with contextlib.suppress(ProcessLookupError):
-                    os.killpg(process.pid, signal.SIGKILL)
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except PermissionError:
+                        # An exiting group can report EPERM; ignore it only if a
+                        # liveness probe confirms that the group has disappeared.
+                        loop = asyncio.get_running_loop()
+                        deadline = loop.time() + 5
+                        while True:
+                            try:
+                                os.killpg(process.pid, 0)
+                            except PermissionError:
+                                if loop.time() >= deadline:
+                                    raise
+                                await asyncio.sleep(0.01)
+                            else:
+                                raise
                 await process.wait()
             if self.stderr_reader is not None:
                 self.stderr_reader.cancel()
