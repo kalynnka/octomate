@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from octomate.config.agents.base import AgentsConfig
 from octomate.config.agents.claude import (
     ClaudeCodeConfig,
     ClaudeSSHConfig,
@@ -38,7 +37,6 @@ from octomate.config.agents.zcode import ZcodeConfig
 __all__ = [
     "AgentConfig",
     "AgentRouteModelName",
-    "AgentsConfig",
     "Claim",
     "ClaudeCodeConfig",
     "ClaudeSSHConfig",

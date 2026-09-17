@@ -876,23 +876,25 @@ def test_a_second_turn_on_a_live_conversation_is_refused_not_queued() -> None:
     assert manager.get(first.conversation_id) is second
 
 
-def test_driving_registers_the_session_for_exactly_its_span() -> None:
+async def test_driving_registers_the_session_for_exactly_its_span() -> None:
     manager = GatewayManager()
     session = _registered_session()
     assert session.conversation_id is not None
 
-    with manager.driving(session):
+    async with manager.driving(session):
         assert manager.get(session.conversation_id) is session
     assert manager.get(session.conversation_id) is None
 
 
-def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
+async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
     # A disabled connection builds no session, and a run with no thread has no
     # conversation id — neither registers, and neither breaks the span.
     manager = GatewayManager()
-    with manager.driving(None):
+    async with manager.driving(None):
         assert manager.sessions == {}
-    with manager.driving(OctomateSession(channel_routes={}, current_agent_id="i")):
+    async with manager.driving(
+        OctomateSession(channel_routes={}, current_agent_id="i")
+    ):
         assert manager.sessions == {}
 
 

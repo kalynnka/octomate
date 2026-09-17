@@ -17,10 +17,12 @@ from __future__ import annotations
 
 import logging
 import uuid
+from html import escape
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
+from mcp.client.auth.exceptions import OAuthFlowError
 
 from octomate.dependencies import oauth_manager
 from octomate.managers.oauth import OAuthManager, UnusableOAuthOperation
@@ -77,14 +79,15 @@ async def start(
     return RedirectResponse(str(staged.authorization_uri), status_code=307)
 
 
-@oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False)
+@oauth_router.get(OAUTH_CALLBACK_PATH, include_in_schema=False, response_model=None)
 async def callback(
     connector_id: str,
     manager: Annotated[OAuthManager, Depends(oauth_manager)],
     state: Annotated[str, Query()] = "",
     code: Annotated[str, Query()] = "",
     error: Annotated[str, Query()] = "",
-) -> HTMLResponse:
+    iss: Annotated[str | None, Query()] = None,
+) -> HTMLResponse | RedirectResponse:
     if not state:
         return page(
             "Something went wrong",
@@ -96,15 +99,21 @@ async def callback(
         # about, so the operation is closed rather than left live until it ages out.
         # Failing to close it is not worth telling the user about.
         try:
-            await manager.abandon_callback(connector_id, state=state)
-        except UnusableOAuthOperation as unusable:
-            logger.info("Could not close a declined authorization: %s", unusable)
+            await manager.abandon_callback(connector_id, state=state, issuer=iss)
+        except (ValueError, OAuthFlowError):
+            return page(
+                "This link is invalid",
+                "The authorization response could not be verified.",
+                status_code=400,
+            )
         return page(
             "Not connected",
             "The authorization was declined. You can ask again in the chat any time.",
         )
     try:
-        grant = await manager.complete_callback(connector_id, state=state, code=code)
+        grant = await manager.complete_callback(
+            connector_id, state=state, code=code, issuer=iss
+        )
     except UnusableOAuthOperation as unusable:
         logger.info("Refused an OAuth callback: %s", unusable)
         return page(
@@ -112,18 +121,48 @@ async def callback(
             "Ask again in the chat where you requested it and a fresh one will arrive.",
             status_code=404,
         )
-    except Exception:
+    except OAuthFlowError:
+        return page(
+            "This link is invalid",
+            "The authorization response could not be verified.",
+            status_code=400,
+        )
+    except Exception as failure:
         # The provider refused the exchange, or never answered. The operation is
         # spent either way, so there is nothing to do but say so and let them ask
         # for another.
-        logger.exception("Failed to complete an OAuth callback")
+        logger.warning(
+            "Failed to complete an OAuth callback (%s)", type(failure).__name__
+        )
         return page(
             "Something went wrong",
             "The connection could not be completed. Ask again in the chat and a "
             "fresh link will arrive.",
             status_code=502,
         )
+    title = (
+        f"Connected as {escape(grant.account_label)}"
+        if grant.account_label
+        else "Connected"
+    )
+    try:
+        authorization = await manager.link_profile(connector_id, grant)
+    except Exception as failure:
+        logger.warning(
+            "Failed to offer an OAuth profile link (%s)", type(failure).__name__
+        )
+        return page(
+            title,
+            "The connection is ready, but profile linking could not be started. "
+            "Ask to link your profile in the channel's chat.",
+        )
+    if authorization is not None:
+        return RedirectResponse(
+            str(authorization.authorization_uri),
+            status_code=303,
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
+        )
     return page(
-        f"Connected as {grant.account_label}",
+        title,
         "You can close this tab and go back to the chat.",
     )

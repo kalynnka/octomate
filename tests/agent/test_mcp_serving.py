@@ -13,9 +13,10 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Self
+from typing import Literal, Self
 
 import httpx
+import httpx2
 import pytest
 from fastapi import FastAPI
 from fastmcp import Client
@@ -29,11 +30,17 @@ from octomate.config.base import OctomateConfig
 from octomate.config.channels import ChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
-from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
+from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
+    DISABLE_MCP,
+    ENABLE_MCP,
+    INSTALL_MCP,
+    LIST_MCP_TENTACLES,
     LIST_MCP_TOOLS,
+    LIST_MCPS,
     OCTOMATE_MCP_PATH,
+    UNINSTALL_MCP,
     gateway_tool,
     history_tool,
     octomate_instructions,
@@ -68,11 +75,11 @@ async def served(
     the task that entered it, and a fixture's teardown runs in another."""
     octomate = octomate or Octomate(config=OctomateConfig(auth=auth_config()))
     app = octomate
-    async with app.router.lifespan_context(app):
+    async with app.router.lifespan_context(app), octomate.run_tentacles():
         yield octomate, app
 
 
-async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
+async def test_tentacles_start_after_api_lifespan_and_agents_before_channels() -> None:
     started: list[str] = []
 
     class DiscoveringAgent(FakeAgent):
@@ -91,21 +98,29 @@ async def test_lifespan_prepares_agents_before_channels_and_serving() -> None:
     octomate.connect(ReadyChannel(octomate=octomate))
     octomate.connect(DiscoveringAgent(octomate=octomate, models={}))
 
-    async with served(octomate):
-        assert started == ["agent", "channel"]
+    async with octomate.lifespan(octomate):
+        assert started == []
+        async with octomate.run_tentacles():
+            assert started == ["agent", "channel"]
 
 
-def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
+def over(
+    octomate: Octomate,
+    app: FastAPI,
+    headers: dict[str, str],
+    *,
+    mode: Literal["auto", "legacy", "2026-07-28"] = "auto",
+) -> Client:
     """An MCP client speaking streamable HTTP into `app` without a socket."""
 
     def asgi(
         headers: dict[str, str] | None = None,
-        timeout: httpx.Timeout | None = None,
-        auth: httpx.Auth | None = None,
+        timeout: httpx2.Timeout | None = None,
+        auth: httpx2.Auth | None = None,
         follow_redirects: bool = True,
-    ) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app),
+    ) -> httpx2.AsyncClient:
+        return httpx2.AsyncClient(
+            transport=httpx2.ASGITransport(app=app),
             base_url="http://octomate",
             headers=headers,
             timeout=timeout,
@@ -118,7 +133,8 @@ def over(octomate: Octomate, app: FastAPI, headers: dict[str, str]) -> Client:
             f"http://octomate{OCTOMATE_MCP_PATH}",
             headers=headers,
             httpx_client_factory=asgi,
-        )
+        ),
+        mode=mode,
     )
 
 
@@ -162,7 +178,6 @@ class ToolsTentacle(FakeChannelTentacle, OAuthMcpTentacle):
     label = "Tools"
     upstream = "https://tools.example/mcp"
     instructions = "## Tools\n\nA fake provider's own contract.\n"
-    prefix = None
 
 
 def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once() -> (
@@ -172,24 +187,18 @@ def test_every_tentacle_composing_mcp_is_a_provider_and_its_type_is_proxied_once
     octomate.connect(ToolsTentacle(id="a", octomate=octomate))
     octomate.connect(ToolsTentacle(id="b", octomate=octomate))
 
-    tentacles = list(octomate.mcps.values())
-    instructions = octomate_instructions(tentacles)
+    instructions = octomate_instructions()
 
-    assert list(octomate.mcps) == ["a", "b"]
-    assert f"`{CONNECT_TOOL}` with the provider's id (`a`, `b`)" in instructions
+    assert [entry.id for entry in octomate.mcp.available()] == ["a", "b"]
+    assert "oauth_connect" in instructions
     assert "A fake provider's own contract." not in instructions
-    assert "`a` (Tools), `b` (Tools)" in instructions
-    assert instructions.count("## Linking accounts") == 1
+    assert "`a` (Tools)" not in instructions
 
 
-def test_the_instructions_carry_the_linking_contract_only_with_a_provider() -> None:
-    bare = octomate_instructions([])
-    with_tools = octomate_instructions([ToolsTentacle(id="a")])
-
-    assert "## Linking accounts" not in bare
-    assert "## Linking accounts" in with_tools
-    assert "Tools — act as the person" in with_tools
-    assert "A fake provider's own contract." not in with_tools
+def test_instructions_describe_only_user_scoped_discovery() -> None:
+    instructions = octomate_instructions()
+    assert "current user's installed MCPs" in instructions
+    assert "oauth_connect" in instructions
 
 
 async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> None:
@@ -204,15 +213,22 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
         ) as client:
             tools = await client.list_tools()
-            with pytest.raises(ToolError, match="No provider with id 'nope'"):
+            with pytest.raises(ToolError, match="unavailable"):
                 await client.call_tool(CONNECT_TOOL, {"provider": "nope"})
 
     assert [tool.name for tool in tools] == [
         *OCTOMATE_TOOLS,
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
         LIST_MCP_TOOLS,
         CALL_MCP_TOOL,
         CONNECT_TOOL,
         CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
     ]
 
 
@@ -258,21 +274,41 @@ async def test_the_server_refuses_an_unauthenticated_call(
     assert response.headers["www-authenticate"].startswith("Bearer")
 
 
-async def test_an_api_token_opens_the_six_spells_and_the_history_tools() -> None:
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_an_api_token_opens_the_six_spells_and_the_history_tools(
+    mode: Literal["legacy", "2026-07-28"],
+) -> None:
     async with served(await a_driven_deployment()) as (octomate, app):
-        async with over(octomate, app, DRIVEN_BEARER) as client:
+        async with over(octomate, app, DRIVEN_BEARER, mode=mode) as client:
             tools = await client.list_tools()
 
-    assert [tool.name for tool in tools] == OCTOMATE_TOOLS
+    assert [tool.name for tool in tools] == [
+        *OCTOMATE_TOOLS,
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        INSTALL_MCP,
+        ENABLE_MCP,
+        DISABLE_MCP,
+        UNINSTALL_MCP,
+        LIST_MCP_TOOLS,
+        CALL_MCP_TOOL,
+        CONNECT_TOOL,
+        CONFIRM_TOOL,
+        LINK_PROFILE_TOOL,
+    ]
 
 
-async def test_a_served_call_runs_against_the_turn_its_header_names() -> None:
+@pytest.mark.parametrize("mode", ["legacy", "2026-07-28"])
+async def test_a_served_call_runs_against_the_turn_its_header_names(
+    mode: Literal["legacy", "2026-07-28"],
+) -> None:
     async with served(await a_driven_deployment()) as (octomate, app):
         session = await a_driven_turn(octomate)
         async with over(
             octomate,
             app,
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
+            mode=mode,
         ) as client:
             result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
 

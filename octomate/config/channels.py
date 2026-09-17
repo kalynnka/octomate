@@ -99,8 +99,7 @@ class ChannelConfig(BaseModel):
 
 
 # Every user-token scope Slack's MCP server advertises in its authorization-server
-# metadata. A literal for the same reason `GitHubScope` is one: a misspelled scope
-# is otherwise only discovered at the consent screen.
+# metadata. A literal catches misspelled scopes before the consent screen.
 type SlackUserScope = Literal[
     "canvases:read",
     "canvases:write",
@@ -223,10 +222,24 @@ class LarkChannelConfig(ChannelConfig):
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
 
 
+class DiscordOAuthClientConfig(BaseModel):
+    client_id: str = Field(
+        min_length=1, description="The Discord application's OAuth2 client id."
+    )
+    client_secret: SecretStr = Field(
+        min_length=1,
+        description="The application's OAuth2 client secret, not its bot token.",
+    )
+
+
 class DiscordChannelConfig(ChannelConfig):
     type: Literal["discord"] = "discord"
     bot_token: SecretStr
     stream: DiscordStreamConfig = Field(default_factory=DiscordStreamConfig)
+    oauth: DiscordOAuthClientConfig | None = Field(
+        default=None,
+        description="Optional user authorization for profile linking; requests identify only.",
+    )
 
 
 class VercelStreamConfig(ChannelStreamConfig):

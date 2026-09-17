@@ -38,14 +38,14 @@ def napcat_run(
     trigger_targets: TriggerTargets,
 ) -> tuple[NapcatTentacle, ChannelAddress]:
     """One tentacle and one run notice, shared by the whole run (no threads)."""
-    config = live_config.channels.get("napcat")
+    config = live_config.tentacles.get("napcat")
     if (
         not isinstance(config, NapcatChannelConfig)
         or not config.enabled
         or trigger_targets.napcat is None
     ):
         pytest.skip(
-            "napcat channel/trigger target not configured in channels.yaml/trigger.yaml"
+            "napcat channel/trigger target not configured in tentacles.yaml/trigger.yaml"
         )
     target = trigger_targets.napcat
     channel = NapcatTentacle("napcat", Octomate(), config=config)

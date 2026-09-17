@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config import OctomateConfig, ZcodeConfig
+from octomate.config import OctomateConfig, SlackChannelConfig, ZcodeConfig
 from octomate.config.agents.common import Claim
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -92,24 +92,27 @@ def test_desktop_provider_translation_and_redaction(tmp_path: Path) -> None:
 def test_config_routes_and_permission_registration() -> None:
     config = OctomateConfig.model_validate(
         {
-            "agents": {"zcode": {}},
-            "channels": {
+            "tentacles": {
+                "glm": {"type": "zcode"},
                 "slack": {
                     "type": "slack",
                     "app_id": "A-test",
                     "bot_token": "test",
                     "app_token": "test",
-                    "agents": ["zcode"],
-                }
+                    "agents": ["glm"],
+                },
             },
         }
     )
-    assert [agent.id for agent in config.agents.configured_agents] == ["zcode"]
-    assert config.agents.zcode is not None
-    assert config.agents.zcode.permission_mode == "build"
-    assert config.agents.zcode.approval_timeout == 3600
+    zcode = config.tentacles["glm"]
+    assert isinstance(zcode, ZcodeConfig)
+    slack = config.tentacles["slack"]
+    assert isinstance(slack, SlackChannelConfig)
+    assert slack.agents == ["glm"]
+    assert zcode.permission_mode == "build"
+    assert zcode.approval_timeout == 3600
     assert ZcodeConfig(approval_timeout=None).approval_timeout is None
-    assert config.agents.zcode.gateway is False
+    assert zcode.gateway is False
     check_mode("zcode", "build")
     with pytest.raises(ValueError, match="not one"):
         check_mode("zcode", "user_review")
@@ -118,15 +121,15 @@ def test_config_routes_and_permission_registration() -> None:
     with pytest.raises(ValidationError):
         OctomateConfig.model_validate(
             {
-                "agents": {"zcode": {}},
-                "channels": {
+                "tentacles": {
+                    "glm": {"type": "zcode"},
                     "slack": {
                         "type": "slack",
                         "app_id": "A-test",
                         "bot_token": "test",
                         "app_token": "test",
                         "agents": ["missing"],
-                    }
+                    },
                 },
             }
         )

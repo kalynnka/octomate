@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import ClassVar, Literal
+from typing import Literal
 
 from pydantic import Field
 
@@ -15,7 +15,7 @@ from octomate.types.permissions import ZcodePermissionMode
 class ZcodeConfig(AgentConfig):
     """Driven ZCode sessions using the runtime bundled with the desktop app."""
 
-    id: ClassVar[str] = "zcode"
+    type: Literal["zcode"] = "zcode"
 
     gateway: Literal[False] = Field(
         default=False,

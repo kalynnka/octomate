@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
 import { ApiError, refusalText } from '@/lib/api/auth'
 import { useAuth } from '@/state/auth'
@@ -13,7 +13,7 @@ export function LoginPage() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy) return
     setBusy(true)

@@ -6,9 +6,13 @@
  * README.md's gap list.
  */
 import {
+  fetchAgents,
   fetchChannels,
   fetchHealth,
+  fetchMcpServers,
+  fetchMcpTentacles,
   fetchPermissionModes,
+  fetchProfile,
   fetchProjects,
   fetchRoutes,
   fetchThread,
@@ -66,6 +70,11 @@ export const api = {
   permissionModes(): Promise<ApiPermissionModes> {
     return fetchPermissionModes()
   },
+
+  agents: fetchAgents,
+  profile: fetchProfile,
+  mcpServers: fetchMcpServers,
+  mcpTentacles: fetchMcpTentacles,
 
   /** Switch one conversation's posture; the answer is the row as it now stands. */
   setPermissionMode(conversationId: string, mode: string | null): Promise<ApiConversation> {

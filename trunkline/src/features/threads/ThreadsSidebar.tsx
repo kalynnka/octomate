@@ -196,7 +196,7 @@ export function ThreadsSidebar() {
               top: 0,
               bottom: 0,
               width: 26,
-              zIndex: 20,
+              zIndex: 100,
               display: 'flex',
               flexDirection: 'column',
               gap: 2,

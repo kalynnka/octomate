@@ -336,53 +336,14 @@ export interface ThreadUsage {
 }
 
 /* ---------------------------------------------------------------------------
- * Control plane — agents, MCP, users, dashboard, settings.
+ * Control plane — dashboard and settings.
+ *
+ * The Agents, MCP and Profile pages read the relay directly and take the wire
+ * rows as they come (`ApiAgentInfo`, `ApiMcp`, `ApiProfileInfo` in events.ts).
+ * What is left here is the two pages whose endpoints do not exist yet.
  * ------------------------------------------------------------------------- */
 
 export type EffortStep = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
-
-export interface AgentModelInfo {
-  name: string
-  efforts: EffortStep[]
-}
-
-export interface AgentInfo {
-  name: string
-  tag: string
-  tagTone: 'accent' | 'teal'
-  state: string
-  stateTone: 'accent' | 'sage'
-  miniNote: string
-  models: AgentModelInfo[]
-}
-
-export interface AgentRouteDef {
-  name: string
-  code: string
-  models: string[]
-  desc: string
-}
-
-export interface McpServerRow {
-  key: string
-  url: string
-  prefix: string
-  status: string
-}
-
-export interface ConnectionRow {
-  user: string
-  connector: string
-  state: 'connected' | 'pending' | 'cold'
-  note: string
-}
-
-export interface UserRow {
-  username: string
-  kind: 'registered' | 'pseudo' | 'observed'
-  profileLine: string
-  oauth: string
-}
 
 export interface ProviderRow {
   name: string
@@ -415,11 +376,6 @@ export interface BarDatum {
 }
 
 export interface ControlData {
-  agents: AgentInfo[]
-  agentRoutes: AgentRouteDef[]
-  mcpRows: McpServerRow[]
-  connections: ConnectionRow[]
-  users: UserRow[]
   providers: ProviderRow[]
   hookRows: KvRow[]
   obsRows: KvRow[]

@@ -6,11 +6,19 @@ from typing import Annotated
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, SecretStr
+from pydantic import (
+    AnyHttpUrl,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SecretStr,
+)
 from uuid_utils.compat import uuid7
 
 from octomate.models import auth as auth_models
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.user import UserProfile
 from octomate.types.auth import ApiKeyScope
 
 
@@ -42,6 +50,21 @@ class UserSession(BaseTransmuter):
     version: int = Field(default=1, exclude=True, repr=False)
 
 
+@sqlalchemy_materia.bless(auth_models.LinkProfileSession)
+class LinkProfileSession(BaseTransmuter):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    profile_id: uuid.UUID = Field(
+        description="The exact channel profile this session may link."
+    )
+    token_hash: SecretStr = Field(exclude=True, repr=False)
+    expires_at: AwareDatetime
+    created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    consumed_at: AwareDatetime | None = None
+    version: int = Field(default=1, exclude=True, repr=False)
+
+
 @sqlalchemy_materia.bless(auth_models.UserApiKey)
 class UserApiKey(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
@@ -66,6 +89,20 @@ class SessionTokens(BaseModel):
     refresh_token: SecretStr = Field(repr=False)
     access_expires_at: AwareDatetime
     refresh_expires_at: AwareDatetime
+
+
+class LinkProfileInfo(BaseModel):
+    """The profile link an authenticated browser is being asked to confirm."""
+
+    profile: UserProfile
+    expires_at: AwareDatetime
+    # TODO: Model requested scopes and consent once per-profile permissions are enforced.
+
+
+class LinkProfileAuthorization(LinkProfileInfo):
+    """The private host authorization request delivered through a channel or OAuth callback."""
+
+    authorization_uri: AnyHttpUrl = Field(repr=False)
 
 
 class IssuedApiKey(BaseModel):

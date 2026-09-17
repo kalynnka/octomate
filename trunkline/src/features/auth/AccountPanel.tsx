@@ -1,21 +1,24 @@
-/**
- * The Account page's body: who is signed in, and the API keys the account
- * holds. A key is issued with a name, its scopes and an expiry, disclosed
- * exactly once, and revoked from its row; the list keeps revoked keys, as the
- * relay does, so a client that stopped authenticating can be traced to one.
- */
-import { useState, type FormEvent } from 'react'
+/** Account details, password dialog, and the dedicated API keys panel. */
+import { useEffect, useRef, useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
-import { chipLabel, ellipsis, fieldLabel, label, mono, sectionLabel, serif } from '@/components/text'
+import { Brackets } from '@/components/Brackets'
+import { Table, type TableColumn } from '@/components/Table'
+import { chipLabel, display, fieldLabel, label, mono, serif } from '@/components/text'
 import {
+  authorizeProfile,
   createApiKey,
   revokeApiKey,
+  unlinkProfile,
   type ApiApiKey,
   type ApiIssuedKey,
   type ApiKeyScope,
 } from '@/lib/api/auth'
-import { useApiKeys } from '@/lib/api/hooks'
+import { useApiKeys, useProfileAuthorizations } from '@/lib/api/hooks'
+import type { ApiProfileInfo, ApiUserProfile } from '@/lib/api/events'
+import { channelMeta } from '@/lib/api/live'
+import { closeDialog } from '@/lib/dialog'
 import { queryClient } from '@/lib/queryClient'
+import { useDialogDrag } from '@/lib/useDialogDrag'
 import { refusalText } from '@/lib/api/auth'
 import { useAuth } from '@/state/auth'
 import { Field, Refusal } from './parts'
@@ -39,23 +42,7 @@ const day = (iso: string) =>
 
 const refreshKeys = () => queryClient.invalidateQueries({ queryKey: ['api-keys'] })
 
-function Section({ first, children }: { first?: boolean; children: string }) {
-  return (
-    <div
-      style={{
-        borderTop: first ? undefined : '1px solid var(--line-color)',
-        margin: '6px 16px 0',
-        padding: '8px 0 4px',
-        ...sectionLabel,
-        color: 'var(--fg-3)',
-      }}
-    >
-      {children}
-    </div>
-  )
-}
-
-function PasswordForm() {
+function PasswordForm({ onCancel }: { onCancel: () => void }) {
   const { changePassword } = useAuth((s) => s.actions)
   const [current, setCurrent] = useState('')
   const [password, setPassword] = useState('')
@@ -64,7 +51,7 @@ function PasswordForm() {
   const [error, setError] = useState<string | null>(null)
   const matches = confirm === password
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !current || !password || !matches) return
     setBusy(true)
@@ -78,12 +65,14 @@ function PasswordForm() {
   }
 
   return (
-    <form onSubmit={submit} style={{ margin: '0 16px 12px', maxWidth: 400 }}>
+    <form onSubmit={submit}>
       <Field name="Current password">
         <input
           className="trk-input"
           type="password"
           name="current_password"
+          autoFocus
+          required
           autoComplete="current-password"
           value={current}
           onChange={(e) => setCurrent(e.target.value)}
@@ -94,6 +83,7 @@ function PasswordForm() {
           className="trk-input"
           type="password"
           name="password"
+          required
           autoComplete="new-password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
@@ -108,20 +98,19 @@ function PasswordForm() {
           className="trk-input"
           type="password"
           name="confirm"
+          required
           autoComplete="new-password"
           value={confirm}
           onChange={(e) => setConfirm(e.target.value)}
         />
       </Field>
       {error && <Refusal>{error}</Refusal>}
-      <Button
-        type="submit"
-        variant="accent"
-        disabled={busy || !current || !password || !matches}
-        style={{ marginTop: 14 }}
-      >
-        {busy ? 'Changing…' : 'Change password'}
-      </Button>
+      <div className="trk-dialog-actions">
+        <Button variant="ghost" onClick={onCancel}>Cancel</Button>
+        <Button type="submit" variant="accent" disabled={busy || !current || !password || !matches}>
+          {busy ? 'Changing…' : 'Change password'}
+        </Button>
+      </div>
     </form>
   )
 }
@@ -145,7 +134,7 @@ function NewKeyForm({
       held.includes(scope) ? held.filter((each) => each !== scope) : [...held, scope],
     )
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !ready) return
     setBusy(true)
@@ -340,19 +329,12 @@ function IssuedKey({ issued, onDone }: { issued: ApiIssuedKey; onDone: () => voi
   )
 }
 
-function KeyRow({ item }: { item: ApiApiKey }) {
+function KeyRevoke({ item }: { item: ApiApiKey }) {
   const [arming, setArming] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const expired = item.expires_at !== null && Date.parse(item.expires_at) <= Date.now()
-  const state = item.revoked_at
-    ? { text: `○ revoked · ${day(item.revoked_at)}`, color: 'var(--fg-3)' }
-    : item.expires_at === null
-      ? { text: '● no expiry', color: 'var(--color-sage)' }
-      : expired
-        ? { text: `○ expired · ${day(item.expires_at)}`, color: 'var(--fg-3)' }
-        : { text: `● until ${day(item.expires_at)}`, color: 'var(--color-sage)' }
-  const live = !item.revoked_at && !expired
+  if (item.revoked_at || expired) return null
 
   const revoke = async () => {
     if (!arming) {
@@ -373,143 +355,382 @@ function KeyRow({ item }: { item: ApiApiKey }) {
   }
 
   return (
-    <div style={{ padding: '5px 16px', opacity: live ? 1 : 0.7 }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ ...mono(9.5, 700), color: 'var(--fg-1)', width: 120, flexShrink: 0, ...ellipsis }}>
-          {item.name}
-        </span>
-        <span style={{ ...mono(8.5), color: 'var(--fg-2)', flexShrink: 0 }}>{item.key_prefix}…</span>
-        <span style={{ display: 'inline-flex', gap: 3, flexShrink: 0 }}>
-          {item.scopes.map((scope) => (
-            <span
-              key={scope}
-              style={{
-                ...chipLabel,
-                color: 'var(--color-accent)',
-                border: '1px solid var(--color-accent)',
-                padding: '1px 4px',
-              }}
-            >
-              {scope}
-            </span>
-          ))}
-        </span>
-        <span style={{ ...mono(8), color: 'var(--fg-3)', flex: 1, ...ellipsis }}>
-          issued {day(item.created_at)}
-        </span>
-        <span style={{ ...label(7.5, '.1em'), color: state.color, whiteSpace: 'nowrap', flexShrink: 0 }}>
-          {state.text}
-        </span>
-        {live && (
-          <span
-            onClick={busy ? undefined : () => void revoke()}
-            onMouseLeave={() => {
-              if (!busy) setArming(false)
-            }}
-            title={arming ? 'click again to revoke' : 'revoke this key'}
-            className={arming ? 'hov-accent-fill' : 'hov-red'}
-            style={{
-              ...label(7.5, '.12em'),
-              color: arming ? 'var(--trk-on-fill)' : 'var(--fg-3)',
-              background: arming ? 'var(--color-red)' : 'transparent',
-              border: `1px solid ${arming ? 'var(--color-red)' : 'var(--line-divider)'}`,
-              padding: '2px 7px',
-              cursor: busy ? 'default' : 'pointer',
-              flexShrink: 0,
-              transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
-            }}
-          >
-            {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
-          </span>
-        )}
-      </div>
+    <div>
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => void revoke()}
+        onMouseLeave={() => {
+          if (!busy) setArming(false)
+        }}
+        title={arming ? 'click again to revoke' : 'revoke this key'}
+        className={arming ? 'hov-accent-fill' : 'hov-red'}
+        style={{
+          color: arming ? 'var(--trk-on-fill)' : 'color-mix(in srgb, var(--color-red) 60%, var(--fg-1))',
+          background: arming ? 'var(--color-red)' : 'color-mix(in srgb, var(--color-red) 10%, transparent)',
+          border: '1px solid var(--color-red)',
+          cursor: busy ? 'default' : 'pointer',
+          flexShrink: 0,
+          transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
+        }}
+      >
+        {busy ? 'revoking…' : arming ? 'revoke — sure?' : 'revoke'}
+      </button>
       {error && <Refusal>{error}</Refusal>}
     </div>
   )
 }
 
-export function AccountPanel() {
+const keyColumns: TableColumn<ApiApiKey>[] = [
+  {
+    key: 'name', label: 'Name', mono: true,
+    render: (item) => <strong style={{ color: 'var(--fg-1)', overflowWrap: 'anywhere' }}>{item.name}</strong>,
+  },
+  { key: 'key_prefix', label: 'Key', mono: true, render: (item) => `${item.key_prefix}…` },
+  {
+    key: 'scopes', label: 'Scopes',
+    render: (item) => (
+      <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 3 }}>
+        {item.scopes.map((scope) => (
+          <span key={scope} style={{
+            ...chipLabel, color: 'var(--color-accent)',
+            border: '1px solid var(--color-accent)', padding: '1px 4px',
+          }}>{scope}</span>
+        ))}
+      </span>
+    ),
+  },
+  { key: 'created_at', label: 'Issued', mono: true, render: (item) => day(item.created_at) },
+  {
+    key: 'state', label: 'Status',
+    render: (item) => {
+      const expired = item.expires_at !== null && Date.parse(item.expires_at) <= Date.now()
+      const state = item.revoked_at
+        ? { text: `○ revoked · ${day(item.revoked_at)}`, color: 'var(--fg-3)' }
+        : item.expires_at === null
+          ? { text: '● no expiry', color: 'var(--color-sage)' }
+          : expired
+            ? { text: `○ expired · ${day(item.expires_at)}`, color: 'var(--fg-3)' }
+            : { text: `● until ${day(item.expires_at)}`, color: 'var(--color-sage)' }
+      return <span style={{ ...label(9, '.1em'), color: state.color, opacity: item.revoked_at || expired ? 0.7 : 1 }}>{state.text}</span>
+    },
+  },
+  { key: 'actions', label: '', ariaLabel: 'Actions', width: '1%', render: (item) => <KeyRevoke item={item} /> },
+]
+
+function PasswordDialog({ onClose }: { onClose: () => void }) {
+  const dialog = useRef<HTMLDialogElement>(null)
+  const drag = useDialogDrag(dialog)
+  const username = useAuth((s) => s.user?.username)
+  const close = () => void closeDialog(dialog.current, onClose)
+  useEffect(() => {
+    const element = dialog.current!
+    element.showModal()
+    return () => element.close()
+  }, [])
+
+  return (
+    <dialog ref={dialog} className="trk-dialog" aria-labelledby="password-title" aria-describedby="password-effect" onCancel={(event) => {
+      event.preventDefault()
+      close()
+    }}>
+      <div className="trk-dialog-layout" {...drag}>
+        <aside className="trk-dialog-panel">
+          <span className="trk-dialog-index" aria-hidden="true">04</span>
+          <span className="trk-dialog-eyebrow">Account security</span>
+          <h2 id="password-title">Change password</h2>
+          <dl className="trk-dialog-summary">
+            <div><dt>Account</dt><dd>@{username}</dd></div>
+            <div><dt>Access</dt><dd>Password</dd></div>
+          </dl>
+          <p id="password-effect" className="trk-dialog-caption">
+            Changing your password signs out all browser sessions. Sign in again with your new password.
+          </p>
+        </aside>
+        <div className="trk-dialog-main">
+          <header className="trk-dialog-header">
+            <span>Password details</span>
+            <button type="button" className="trk-dialog-close hov-wash" aria-label="Close password dialog" onClick={close}>×</button>
+          </header>
+          <PasswordForm onCancel={close} />
+        </div>
+      </div>
+    </dialog>
+  )
+}
+
+export function AccountPanel({ profiles, profilesError }: { profiles: ApiUserProfile[] | undefined; profilesError: boolean }) {
   const user = useAuth((s) => s.user)
+  const authorizations = useProfileAuthorizations()
+  const [connecting, setConnecting] = useState<string | null>(null)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [passwordOpen, setPasswordOpen] = useState(false)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [disconnecting, setDisconnecting] = useState(false)
+  const [disconnectError, setDisconnectError] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
+  const pickerRef = useRef<HTMLDivElement>(null)
+  const confirmationRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (confirmingId) confirmationRef.current?.querySelector('button')?.focus()
+    else if (notice) pickerRef.current?.querySelector<HTMLButtonElement>('button[data-channel="false"]')?.focus()
+  }, [confirmingId, notice])
+  if (!user) return null
+  const cards = [user, ...(profiles ?? [])]
+  const selected = profiles?.find((profile) => profile.id === selectedId) ?? user
+  const unlinkedChannels = authorizations.data?.filter((channel) =>
+    !profiles?.some((profile) => profile.channel_tentacle_id === channel.id))
+  const allChannelsLinked = authorizations.isSuccess && authorizations.data.length > 0 && unlinkedChannels?.length === 0
+
+  const connect = async (channelId: string) => {
+    if (connecting) return
+    // Open during the click so the authorization request cannot trigger popup blocking.
+    const authorizationTab = window.open('about:blank', '_blank')
+    if (!authorizationTab) {
+      setConnectError('Allow pop-ups for Octomate, then try again.')
+      return
+    }
+    authorizationTab.opener = null
+    setConnecting(channelId)
+    setConnectError(null)
+    try {
+      const authorization = await authorizeProfile(channelId)
+      if (!authorizationTab.closed) authorizationTab.location.replace(authorization.authorization_uri)
+    } catch (error) {
+      authorizationTab.close()
+      setConnectError(refusalText(error) ?? 'Could not start authorization. Try again.')
+    } finally {
+      setConnecting(null)
+    }
+  }
+
+  const disconnect = async (profile: ApiUserProfile) => {
+    if (disconnecting) return
+    setDisconnecting(true)
+    setDisconnectError(null)
+    try {
+      await queryClient.cancelQueries({ queryKey: ['profile'] })
+      await unlinkProfile(profile.id)
+      queryClient.setQueryData<ApiProfileInfo>(['profile'], (current) => current?.user.id === user.id ? {
+        ...current, profiles: current.profiles.filter((linked) => linked.id !== profile.id),
+      } : current)
+      setSelectedId(null)
+      setConfirmingId(null)
+      setNotice(`${channelMeta(profile.channel_tentacle_id).label} profile disconnected.`)
+      void queryClient.invalidateQueries({ queryKey: ['profile'] })
+      void queryClient.invalidateQueries({ queryKey: ['threads'] })
+    } catch (error) {
+      setDisconnectError(refusalText(error) ?? 'Could not disconnect the profile. Try again.')
+    } finally {
+      setDisconnecting(false)
+    }
+  }
+
+  return (
+    <div className="trk-control-scroll">
+      {notice && <p className="trk-control-note" role="status">{notice}</p>}
+      <div className="trk-profile-workspace">
+        <div ref={pickerRef} className="trk-profile-picker" role="group" aria-label="Choose a profile">
+          <div className="trk-profile-picker-heading">
+            <span style={label(9)}>Channels</span>
+            <span style={mono(9)}>{profiles === undefined ? '—' : String(profiles.length).padStart(2, '0')}</span>
+          </div>
+          {cards.map((card, index) => {
+            const channel = 'channel_tentacle_id' in card ? channelMeta(card.channel_tentacle_id) : null
+            const id = 'username' in card ? 'account' : card.id
+            const name = card.name || ('username' in card ? card.username : 'Unnamed profile')
+            return (
+              <button
+                key={id}
+                type="button"
+                aria-label={`Show ${channel?.label ?? 'Octomate'} profile for ${name}`}
+                aria-pressed={card === selected}
+                aria-controls={`trk-profile-card-${id}`}
+                data-channel={channel !== null}
+                style={{ color: channel?.brand ?? 'var(--color-accent)' }}
+                disabled={disconnecting}
+                onClick={() => {
+                  setSelectedId('username' in card ? null : card.id)
+                  setConfirmingId(null)
+                  setDisconnectError(null)
+                  setNotice(null)
+                }}
+              >
+                <span className="trk-profile-picker-index" aria-hidden="true" style={mono(9, 700)}>
+                  {`${channel ? 'C' : 'U'}${String(index + 1).padStart(2, '0')}`}
+                </span>
+                <span className="trk-profile-picker-copy">
+                  <span style={{ ...label(9, '.14em'), color: channel?.brand ?? 'var(--fg-1)' }}>{channel?.label ?? 'Octomate account'}</span>
+                  <span title={name} style={{ ...mono(10), color: 'var(--fg-2)' }}>{name}</span>
+                </span>
+                <span className="trk-profile-picker-status" aria-hidden="true" />
+              </button>
+            )
+          })}
+          {profiles === undefined ? (
+            <p className="trk-control-note" role="status">{profilesError ? 'Could not load channels.' : 'Loading channels…'}</p>
+          ) : profiles.length === 0 && (
+            <p className="trk-control-note">No channel identities are linked to your account.</p>
+          )}
+          {!allChannelsLinked && <div style={{ marginTop: 16, marginLeft: 18, paddingTop: 12, borderTop: '1px solid var(--line-divider)' }}>
+            <p style={{ ...label(9), color: 'var(--fg-3)', margin: '0 10px 8px' }}>Link a channel</p>
+            {unlinkedChannels?.map((channel) => {
+              const meta = channelMeta(channel.type)
+              return (
+                <button key={channel.id} type="button" className="trk-profile-picker-connect" disabled={connecting !== null || disconnecting}
+                  onClick={() => { void connect(channel.id) }} style={{ color: meta.brand }}>
+                  <span className="trk-profile-picker-index" aria-hidden="true" style={mono(14)}>+</span>
+                  <span className="trk-profile-picker-copy">
+                    <span style={label(9)}>{connecting === channel.id ? 'Opening…' : `Connect ${meta.label}`}</span>
+                    {channel.id !== channel.type && <span style={{ ...mono(10), color: 'var(--fg-3)' }}>{channel.id}</span>}
+                  </span>
+                </button>
+              )
+            })}
+            {authorizations.isPending && <p className="trk-control-note" role="status">Loading sign-in options…</p>}
+            {authorizations.isError && <div role="alert"><Refusal>Could not load sign-in options. <button type="button" onClick={() => { void authorizations.refetch() }}>Retry</button></Refusal></div>}
+            {authorizations.data?.length === 0 && <p className="trk-control-note">No channel OAuth is configured. You can still ask the bot to link your profile in a DM.</p>}
+            {connectError && <div role="alert"><Refusal>{connectError}</Refusal></div>}
+          </div>}
+        </div>
+        <div className="trk-profile-stack" style={{ marginBottom: Math.min(cards.length - 1, 3) * 12, marginRight: Math.min(cards.length - 1, 3) * 12 }}>
+          {cards.slice(1, 4).map((card, index) => (
+            <div
+              key={`back-${card.id}`}
+              className="trk-profile-back"
+              aria-hidden="true"
+              style={{ zIndex: -index - 1, transform: `translate(${(index + 1) * 12}px, ${(index + 1) * 12}px)` }}
+            >
+              <Brackets />
+            </div>
+          ))}
+          {cards.map((card) => {
+            const channel = 'channel_tentacle_id' in card ? channelMeta(card.channel_tentacle_id) : null
+            const id = `trk-profile-card-${'username' in card ? 'account' : card.id}`
+            const name = card.name || ('username' in card ? card.username : 'Unnamed profile')
+            const details: [string, string | number | null][] = 'username' in card ? [['User ID', card.id]] : [
+              ['Title', card.title], ['Gender', card.gender], ['Age', card.age],
+              ['Account ID', card.channel_user_id], ['Profile ID', card.id],
+            ]
+            return (
+              <article
+                key={id}
+                id={id}
+                className="trk-account-card"
+                aria-labelledby={`${id}-name`}
+                aria-hidden={card !== selected}
+                inert={card !== selected}
+                data-front={card === selected}
+              >
+                <Brackets />
+                <div className="trk-account-masthead">
+                  <span style={{ ...display(15), letterSpacing: '-.02em' }}>Octomate<span style={{ color: 'var(--color-accent)' }}>.</span></span>
+                  <span style={{ ...label(8), color: 'var(--fg-3)' }}>{channel ? 'Channel identity' : 'Personal account'}</span>
+                </div>
+                <header className="trk-account-identity">
+                  <div className="trk-account-avatar" aria-hidden="true" style={{ color: channel?.brand }}>
+                    {name.trim().split(/\s+/).slice(0, 2).map(([initial]) => initial).join('').toUpperCase()}
+                  </div>
+                  <div className="trk-account-name">
+                    <span style={{ ...label(9), color: channel?.brand ?? 'var(--fg-3)' }}>{channel?.label ?? 'Octomate account'}</span>
+                    <h2 id={`${id}-name`}>{name}<span aria-hidden="true" style={{ color: channel?.brand ?? 'var(--color-accent)' }}>.</span></h2>
+                    {'username' in card && <p style={mono(12)}>@{card.username}</p>}
+                    {card.nickname && card.nickname !== name && <p style={serif(13)}>Also known as {card.nickname}</p>}
+                  </div>
+                </header>
+                <dl className="trk-account-facts">
+                  {details.map(([labelText, value]) => (
+                    <div key={labelText} data-technical={labelText.endsWith('ID')}>
+                      <dt style={{ ...label(9), color: 'var(--fg-3)' }}>{labelText}</dt>
+                      <dd style={{ ...mono(12), color: 'var(--fg-1)' }}>{value === null || value === '' ? '—' : value}</dd>
+                    </div>
+                  ))}
+                </dl>
+                {'username' in card && (
+                  <footer className="trk-account-actions">
+                    <Button onClick={() => setPasswordOpen(true)} style={{ padding: '7px 12px', fontSize: 9 }}>
+                      Change password
+                    </Button>
+                  </footer>
+                )}
+                {'channel_tentacle_id' in card && (
+                  <footer className="trk-account-actions">
+                    {card.channel_tentacle_id === 'trunkline' ? (
+                      <p className="trk-control-note">Uses your signed-in Octomate account directly.</p>
+                    ) : confirmingId === card.id ? (
+                      <div ref={confirmationRef} className="trk-profile-disconnect" role="group" aria-label="Confirm profile disconnect" aria-busy={disconnecting}>
+                        <p>Disconnect {name} on {channel?.label} from your Octomate account? This profile will no longer identify you on that channel. Its history will not be deleted.</p>
+                        {disconnectError && <div role="alert"><Refusal>{disconnectError}</Refusal></div>}
+                        <div>
+                          <Button disabled={disconnecting} onClick={() => {
+                            setConfirmingId(null)
+                            setDisconnectError(null)
+                            pickerRef.current?.querySelector<HTMLButtonElement>('button[aria-pressed="true"]')?.focus()
+                          }}>Cancel</Button>
+                          <Button disabled={disconnecting} onClick={() => { void disconnect(card) }} style={{ color: 'var(--color-red)', borderColor: 'var(--color-red)' }}>
+                            {disconnecting ? 'Disconnecting…' : 'Confirm disconnect'}
+                          </Button>
+                        </div>
+                      </div>
+                    ) : (
+                      <Button onClick={() => setConfirmingId(card.id)} style={{ padding: '7px 12px', fontSize: 9 }}>Disconnect profile</Button>
+                    )}
+                  </footer>
+                )}
+              </article>
+            )
+          })}
+        </div>
+      </div>
+      {passwordOpen && <PasswordDialog onClose={() => setPasswordOpen(false)} />}
+    </div>
+  )
+}
+
+export function ApiKeysPanel() {
   const { data: keys, error: loadError } = useApiKeys()
   const [issuing, setIssuing] = useState(false)
   const [issued, setIssued] = useState<ApiIssuedKey | null>(null)
 
   return (
-    <div
-      className="lt-entry"
-      style={{
-        borderTop: '1px solid var(--line-color)',
-        borderBottom: '1px solid var(--line-divider)',
-        background: 'var(--surface-sunken)',
-        padding: '2px 0 8px',
-      }}
-    >
-      <Section first>Signed in as</Section>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '2px 16px 6px' }}>
-        <span style={{ ...mono(12, 700), color: 'var(--fg-1)' }}>{user?.name}</span>
-        <span style={{ ...mono(9.5, 700), color: 'var(--color-accent)' }}>@{user?.username}</span>
-        <span style={{ flex: 1 }} />
-        <span style={{ ...mono(8), color: 'var(--fg-3)' }} title="account id">
-          {user?.id}
-        </span>
+    <>
+      <div className="trk-control-scroll" style={{ flexShrink: 0, maxHeight: '60%' }}>
+        <p style={{ margin: '0 0 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
+          A key lets a client machine speak for this account: <b>hooks</b> for native session
+          hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
+          hash and shows the token once, when it is issued.
+        </p>
+        {issued && (
+          <IssuedKey
+            issued={issued}
+            onDone={() => setIssued(null)}
+          />
+        )}
+        {issuing ? (
+          <NewKeyForm
+            onIssued={(key) => {
+              setIssued(key)
+              setIssuing(false)
+            }}
+            onCancel={() => setIssuing(false)}
+          />
+        ) : (
+          <button
+            type="button"
+            onClick={() => setIssuing(true)}
+            className="trk-create-button hov-accent-border-wash"
+          >
+            + new key
+          </button>
+        )}
+        {loadError && (
+          <div style={{ padding: '0 16px' }}>
+            <Refusal>{refusalText(loadError) ?? 'The key list could not be read.'}</Refusal>
+          </div>
+        )}
       </div>
-
-      <Section>Password</Section>
-      <PasswordForm />
-
-      <Section>API keys</Section>
-      <p style={{ margin: '0 16px 8px', ...serif(12), lineHeight: 1.6, color: 'var(--fg-2)' }}>
-        A key lets a client machine speak for this account: <b>hooks</b> for native session
-        hooks and transcript streams, <b>mcp</b> for installed MCP clients. The relay keeps a
-        hash and shows the token once, when it is issued.
-      </p>
-      {issued && (
-        <IssuedKey
-          issued={issued}
-          onDone={() => setIssued(null)}
-        />
-      )}
-      {issuing ? (
-        <NewKeyForm
-          onIssued={(key) => {
-            setIssued(key)
-            setIssuing(false)
-          }}
-          onCancel={() => setIssuing(false)}
-        />
-      ) : (
-        <span
-          onClick={() => setIssuing(true)}
-          className="hov-accent-border-wash"
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            margin: '2px 16px 8px',
-            height: 22,
-            boxSizing: 'border-box',
-            border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
-            color: 'var(--color-accent)',
-            ...label(8, '.14em'),
-            cursor: 'pointer',
-          }}
-        >
-          + new key
-        </span>
-      )}
-      {loadError && (
-        <div style={{ padding: '0 16px' }}>
-          <Refusal>{refusalText(loadError) ?? 'The key list could not be read.'}</Refusal>
-        </div>
-      )}
-      {keys && keys.length === 0 && (
-        <div style={{ padding: '8px 16px 4px', ...mono(8.5), color: 'var(--fg-3)' }}>
-          no keys issued yet
-        </div>
-      )}
-      {(keys ?? []).map((item) => (
-        <KeyRow key={item.id} item={item} />
-      ))}
-    </div>
+      {keys && <Table columns={keyColumns} rows={keys} rowKey={(item) => item.id} dense empty="No keys issued yet." />}
+    </>
   )
 }

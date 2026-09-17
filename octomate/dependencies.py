@@ -8,6 +8,7 @@ from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
+from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
@@ -37,6 +38,10 @@ def thread_manager(app: Annotated[Octomate, Depends(application)]) -> ThreadMana
 
 def oauth_manager(app: Annotated[Octomate, Depends(application)]) -> OAuthManager:
     return app.oauth
+
+
+def mcp_manager(app: Annotated[Octomate, Depends(application)]) -> McpManager:
+    return app.mcp
 
 
 def workspace_manager(

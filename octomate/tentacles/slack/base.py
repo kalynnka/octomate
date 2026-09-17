@@ -5,13 +5,13 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 from rich.style import Style
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
-from octomate.managers.oauth import OAuthConnector
+from octomate.oauth.flows import OAuthCodeFlow
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
@@ -45,7 +45,7 @@ from octomate.tentacles.slack.feelers.questions import (
     submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
-from octomate.tentacles.slack.oauth import SlackAuthorizationCodeOAuthFlow
+from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackTokenExchange
 from octomate.tentacles.slack.schema import (
     SlackApprovalActionBody,
     SlackAssistantThreadEvent,
@@ -99,14 +99,9 @@ class SlackTentacle(
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True
     )
-    # Slack serves its tools itself and takes nothing but a user token — every
-    # call acts as the human who authorized it, never as the bot — which is
-    # exactly what `OAuthMcpTentacle` proxies. Slack names its own tools
-    # `slack_…`, so nothing is prefixed.
     label = "Slack"
     upstream = "https://mcp.slack.com/mcp"
     instructions = SLACK_MCP_INSTRUCTIONS
-    prefix = None
     feelers: Feelers
     ink: SlackInk
     chromo: SlackChromo
@@ -186,13 +181,35 @@ class SlackTentacle(
             # is belongs to this one. Registering a direct-HTTP transport is also
             # what makes Octomate serve the start and callback routes.
             octomate.oauth.register(
-                OAuthConnector(
+                SlackOAuthConnector(
                     id=id,
-                    flow=SlackAuthorizationCodeOAuthFlow(
-                        client_id=config.oauth.client_id,
-                        client_secret=config.oauth.client_secret,
-                        scopes=config.oauth.scopes,
-                    ),
+                    ink=ink,
+                    mcp_url=AnyHttpUrl(self.upstream),
+                    flows=[
+                        OAuthCodeFlow(
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
+                            authorization_endpoint=AnyHttpUrl(
+                                "https://slack.com/oauth/v2_user/authorize"
+                            ),
+                            tokens=SlackTokenExchange(
+                                token_endpoint=AnyHttpUrl(
+                                    "https://slack.com/api/oauth.v2.user.access"
+                                ),
+                                client_id=config.oauth.client_id,
+                                client_secret=config.oauth.client_secret,
+                                token_endpoint_auth_method="client_secret_post",
+                                scopes=list(config.oauth.scopes),
+                                invalid_credentials_errors=[
+                                    "invalid_grant",
+                                    "invalid_client",
+                                    "invalid_refresh_token",
+                                    "invalid_client_id",
+                                    "bad_client_secret",
+                                ],
+                                httpx_client_factory=octomate.oauth.httpx_client_factory,
+                            ),
+                        )
+                    ],
                     callback_transport=DirectHttpOAuthCallbackTransport(
                         config.oauth.callback_base_uri
                     ),

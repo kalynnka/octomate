@@ -27,6 +27,23 @@ Session refresh rotates both credentials without extending the session deadline.
 Keep the salts stable across restarts and shared by every process serving this
 instance. Without auth configuration, Trunkline's API refuses access with 503.
 
+Profile linking shares OAuth's public Octomate origin and browser authorization
+lifetime. Add these settings in `oauth.yaml` in the same config home:
+
+```yaml
+oauth:
+  callback_base_uri: "https://octomate.example.com"
+  authorization_lifetime: PT10M
+```
+
+`callback_base_uri` is the browser-reachable origin serving Trunkline, without a
+path, credentials, query, or fragment. It is optional for local accounts, but
+channel profile linking requires both it and auth configuration. Browser OAuth
+authorizations and profile links last 10 minutes by default; `authorization_lifetime`
+accepts an ISO 8601 duration or a number of seconds. Provider-issued device codes
+retain the provider's expiry. Profile linking alone does not require an OAuth
+encryption key.
+
 Browser cookies are HttpOnly, SameSite=Strict, and Secure. Serve through HTTPS. For
 local HTTP development only, add `cookie_secure: false` under `auth:`. The console
 uses the same origin as the API and supplies `X-Octomate-Request: 1` on writes;
@@ -63,7 +80,7 @@ A rejected username leaves the invitation usable.
 
 Existing usernames, including passwordless accounts, cannot be claimed with an
 invitation. Accounts and profile ownership live in the database. Startup does not
-seed users or change profile bindings. User records hold no plaintext bearer.
+seed users or change profile links. User records hold no plaintext bearer.
 Hooks and MCP authenticate separate, named API keys stored only as salted hashes.
 
 Trunkline shows threads in which one of the signed-in user's bound profiles has
@@ -71,12 +88,55 @@ spoken, including linked IM and native client history. The same access check cov
 messages, conversations, projects, pending actions, permission changes, and action
 responses. Console chat identities use the user's stable ID. Old console history
 under the former `dev` profile remains stored and hidden until it is bound to an
-owner. The channel account connection and binding flow will be designed separately.
+owner. Channel profile linking is described below.
 
 Account endpoints are `/api/auth/register`, `/login`, `/refresh`, `/logout`, and
 `/me` under the same `/api/auth` prefix. They use browser cookies; passwords and
-session tokens are excluded from response bodies. Channel-initiated binding and
-MCP OAuth are separate follow-up work.
+session tokens are excluded from response bodies. Channel-profile linking and MCP
+OAuth are separate authorization flows.
+
+## Link a channel profile
+
+Ask the agent to link the channel profile driving the current conversation. The agent
+calls `oauth_link_profile`, an Octomate MCP tool with no identity arguments. Octomate takes
+the stable platform user ID from the authenticated inbound event and persists the
+profile as an ownerless visitor if necessary. The tool returns only delivery status
+to the model; the single-use Trunkline URL is sent directly to the user by the channel
+presentation layer. From a shared conversation, that layer opens the same user's
+direct messages and sends the link there. If the channel has no private surface, the
+tool refuses instead of disclosing the link in the shared room. A failed private
+delivery is reported as a tool error.
+
+Opening the URL restores the browser's existing Octomate session, including through
+normal refresh-token rotation. If no session remains, sign in normally; the link
+ticket stays in browser memory while the login form is shown. Trunkline then displays
+the exact channel, profile name, platform ID, and signed-in account for explicit
+confirmation. Confirmation consumes the ticket and assigns that profile to the
+signed-in user in one transaction. If another browser tab changes the signed-in
+account, confirmation is refused; reopen the link to review the current account.
+Opening another profile link in the same tab clears the previous confirmation.
+An owned profile cannot be transferred through this flow.
+
+After a successful Slack or Discord OAuth connection, Octomate also offers this
+confirmation for the authorized account, even if OAuth started elsewhere.
+The Profile page's **Link a channel** section can start a configured channel's
+OAuth flow directly, without an MCP installation. Discord requests only `identify`
+and verifies the account through `/users/@me`.
+For Slack, it verifies the granted user and workspace and requires the workspace to
+match the configured Slack channel. Already-linked profiles skip the prompt and
+are never transferred. This applies to the built-in Slack and Discord connectors,
+not arbitrary MCP OAuth servers. Local auth and `oauth.callback_base_uri` must be
+configured to offer linking.
+
+The browser reuses its Octomate session and asks before linking the channel profile
+to the displayed account. Canceling leaves the completed OAuth connection intact.
+If profile verification or linking is unavailable after OAuth succeeds, the callback
+says the connection is ready and directs you to request a profile link in the chat.
+
+The ticket travels in the URL fragment, is removed from the address bar immediately,
+and reaches the API only in a same-origin POST body. The database stores its SHA-256
+digest, not the ticket. A new `oauth_link_profile` call invalidates the profile's previous
+unused ticket. Text such as `/bind` has no special channel behavior.
 
 Change your password in Trunkline's Account panel. `POST /api/auth/password` accepts
 `current_password` and `password`, applying the same requirements as registration.

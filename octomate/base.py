@@ -26,6 +26,7 @@ from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
+from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
@@ -47,7 +48,9 @@ from octomate.schemas.awakes import (
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.schemas.user import ProfileInfo, User
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
@@ -124,6 +127,7 @@ class Octomate(FastAPI):
 
     auth: AuthManager | None = field(init=False)
     oauth: OAuthManager = field(init=False)
+    mcp: McpManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
 
     # Scoped API tokens, shared by MCP verification and hook guards.
@@ -161,9 +165,25 @@ class Octomate(FastAPI):
             AuthManager(self.config.auth) if self.config.auth is not None else None
         )
         self.bearers = KnownBearers(self.auth)
+        self.users.authorization_base_uri = (
+            self.config.oauth.callback_base_uri
+            if self.config.auth is not None
+            else None
+        )
+        self.users.authorization_lifetime = self.config.oauth.authorization_lifetime
         self.oauth = OAuthManager(
             users=self.users,
             encryption_key=self.oauth_encryption_key,
+            callback_base_uri=self.config.oauth.callback_base_uri,
+            authorization_lifetime=self.config.oauth.authorization_lifetime,
+            client_metadata_url=self.config.oauth.client_metadata_url,
+            token_refresh_leeway=self.config.oauth.token_refresh_leeway,
+        )
+        self.mcp = McpManager(
+            users=self.users,
+            cipher=self.oauth.cipher,
+            idle_timeout=self.config.mcp_pool.idle_timeout,
+            oauth=self.oauth,
         )
 
         @self.exception_handler(RequestValidationError)
@@ -216,16 +236,15 @@ class Octomate(FastAPI):
             if isinstance(tentacle, ChannelTentacle)
         }
 
-    @property
-    def mcps(self) -> dict[str, McpTentacle]:
-        """The tentacles that proxy a provider's MCP server, by id — every one the
-        served server offers, each listing and calling as the person a turn is
-        for, whichever channel the turn is on."""
-        return {
-            id: tentacle
-            for id, tentacle in self.tentacles.items()
-            if isinstance(tentacle, McpTentacle) and tentacle.serving
-        }
+    async def profile(self, user: User) -> ProfileInfo:
+        return ProfileInfo(
+            user=user,
+            profiles=list(user.profiles),
+            mcps=[
+                await self.mcp.summary(user, mcp)
+                for mcp in await self.mcp.list(user_id=user.id, mcp_type=OAuthMcp)
+            ],
+        )
 
     def connect(self, tentacle: TentacleT) -> TentacleT:
         if tentacle.id in self.tentacles:
@@ -233,6 +252,8 @@ class Octomate(FastAPI):
         tentacle.octomate = self
         tentacle.log_color = tentacle.brand_color or next(self.log_styles)
         self.tentacles[tentacle.id] = tentacle
+        if isinstance(tentacle, McpTentacle):
+            self.mcp.tentacles[tentacle.id] = tentacle
         # Mount the tentacle's HTTP surface now that it is bound and registered — a
         # router builder like the Vercel one looks itself up in `self.channels`.
         for router in tentacle.routers():
@@ -305,7 +326,7 @@ class Octomate(FastAPI):
         task.add_done_callback(self.background.discard)
 
     @asynccontextmanager
-    async def lifespan(self, app: FastAPI) -> AsyncGenerator[None]:
+    async def lifespan(self, app: FastAPI) -> AsyncGenerator[dict[str, Octomate]]:
         with sqlalchemy_materia():
             # The project registry: reconciling here is what builds
             # the resolution index, so a declared project resolves before
@@ -315,26 +336,48 @@ class Octomate(FastAPI):
             # setting: probed here so the log says which mechanism this host
             # got, once, before anything asks for a workspace.
             await self.workspaces.detect()
-            # Each tentacle is an async context manager owning its own
-            # long-lived resources (agents: warm MCP sessions; channels:
-            # the inbound receive loop). Channels live on the inner stack so
-            # shutdown closes them first — nothing ingests into agents whose
-            # sessions are already torn down; every other tentacle is on
-            # the outer one.
             async with (
                 # Starlette runs no lifespan for a mounted app, and the MCP
                 # transport's task group lives in that lifespan; the endpoint
                 # answers only inside it. Outermost, so the server is up
                 # before any tentacle starts and down after the last stops.
-                self.mcp.lifespan(self.mcp),
+                self.fastmcp.lifespan(self.fastmcp),
+                self.mcp.lifespan(),
+            ):
+                # Mirrors in the background too: a first clone takes as long
+                # as the repository is big, and serving must not wait on it.
+                # `reconcile` isolates per-project failures itself.
+                mirroring = asyncio.create_task(
+                    self.mirrors.reconcile(self.projects.list())
+                )
+                # Reclaiming disk is maintenance: it runs for as long as
+                # the host does, and stops when the host stops.
+                sweeping = asyncio.create_task(self.workspaces.sweep())
+                try:
+                    # The server enters tentacles only after opening its listener.
+                    yield {"octomate": self}
+                finally:
+                    # Cancelled rather than awaited: a mirror sync is not
+                    # bounded the way `start` is, and creation cleans up
+                    # after a cancellation, so shutdown stays prompt.
+                    mirroring.cancel()
+                    sweeping.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await mirroring
+                        await sweeping
+
+    @asynccontextmanager
+    async def run_tentacles(self) -> AsyncGenerator[None]:
+        """Run integrations while the host API is accepting their callbacks."""
+        with sqlalchemy_materia():
+            # Stop channels before agents so nothing ingests into closed sessions.
+            async with (
                 AsyncExitStack() as outer_stack,
                 AsyncExitStack() as channel_stack,
             ):
 
                 async def start(stack: AsyncExitStack, tentacle: Tentacle) -> None:
-                    # Isolate + time-bound each start so one slow or hung
-                    # tentacle can't stall the others' startup. A failed start
-                    # is logged and skipped, not fatal — the rest still serve.
+                    # One failed or hung integration must not stall the others.
                     try:
                         await asyncio.wait_for(
                             stack.enter_async_context(tentacle),
@@ -361,29 +404,10 @@ class Octomate(FastAPI):
                         if isinstance(tentacle, ChannelTentacle)
                     )
                 )
-                # Mirrors in the background too: a first clone takes as long
-                # as the repository is big, and serving must not wait on it.
-                # `reconcile` isolates per-project failures itself.
-                mirroring = asyncio.create_task(
-                    self.mirrors.reconcile(self.projects.list())
-                )
-                # Reclaiming disk is maintenance: it runs for as long as
-                # the host does, and stops when the host stops.
-                sweeping = asyncio.create_task(self.workspaces.sweep())
-                try:
-                    yield
-                finally:
-                    # Cancelled rather than awaited: a mirror sync is not
-                    # bounded the way `start` is, and creation cleans up
-                    # after a cancellation, so shutdown stays prompt.
-                    mirroring.cancel()
-                    sweeping.cancel()
-                    with suppress(asyncio.CancelledError):
-                        await mirroring
-                        await sweeping
+                yield
 
     @cached_property
-    def mcp(self) -> StarletteWithLifespan:
+    def fastmcp(self) -> StarletteWithLifespan:
         # A mounted app rather than a router: the MCP transport speaks all three
         # methods on one path, reads and writes the stream itself, and carries
         # its own bearer check — the deployment's known bearers, the same
@@ -394,7 +418,7 @@ class Octomate(FastAPI):
             self.thread_manager,
             kick=self.kick_soon,
             bearers=self.bearers,
-            tentacles=list(self.mcps.values()),
+            manager=self.mcp,
         )
         # Stateless: identity is per call, from the request, so there is nothing
         # for the transport to keep between calls. Mounted under the server's name
@@ -404,22 +428,24 @@ class Octomate(FastAPI):
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
         from octomate.auth import auth_router
+        from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import TrunklineTentacle
 
         self.include_router(auth_router)
+        self.include_router(mcp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted
         # only when a registered connector actually points a browser at it — the two
         # routes are the deployment's public surface, and a deployment with no
         # authorization-code integration should not be serving them at all.
-        if any(
+        if self.oauth.callback_base_uri is not None or any(
             isinstance(connector.callback_transport, DirectHttpOAuthCallbackTransport)
             for connector in self.oauth.connectors.values()
         ):
             self.include_router(oauth_router)
 
-        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.mcp, name=OCTOMATE_SERVER_NAME)
+        self.mount(f"/{OCTOMATE_SERVER_NAME}", self.fastmcp, name=OCTOMATE_SERVER_NAME)
 
         for channel in self.channels.values():
             if (

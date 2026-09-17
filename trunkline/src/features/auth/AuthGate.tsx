@@ -10,6 +10,7 @@ import { queryClient } from '@/lib/queryClient'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { LoginPage } from './LoginPage'
+import { LinkProfilePage } from './LinkProfilePage'
 import { RegisterPage } from './RegisterPage'
 
 function Booting() {
@@ -39,13 +40,14 @@ function Booting() {
 export function AuthGate({ children }: { children: ReactNode }) {
   const status = useAuth((s) => s.status)
   const page = useAuth((s) => s.page)
-  const { boot, takeInvitation } = useAuth((s) => s.actions)
+  const linkProfile = useAuth((s) => s.linkProfile)
+  const { boot, takeEntryLink } = useAuth((s) => s.actions)
   const { signedOut } = useConsole((s) => s.actions)
   useEffect(() => {
     void boot()
-    window.addEventListener('hashchange', takeInvitation)
-    return () => window.removeEventListener('hashchange', takeInvitation)
-  }, [boot, takeInvitation])
+    window.addEventListener('hashchange', takeEntryLink)
+    return () => window.removeEventListener('hashchange', takeEntryLink)
+  }, [boot, takeEntryLink])
   // After the shell has unmounted, not before: a query still mounted would
   // refetch into a cache just cleared, and hand the next operator its rows.
   useEffect(() => {
@@ -55,5 +57,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
   }, [status, signedOut])
   if (status === 'booting') return <Booting />
   if (status === 'signed-out') return page === 'register' ? <RegisterPage /> : <LoginPage />
+  if (linkProfile) return <LinkProfilePage key={linkProfile} token={linkProfile} />
   return children
 }

@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { fetchApiKeys } from './auth'
+import { fetchApiKeys, fetchProfileAuthorizations } from './auth'
 import { api } from './index'
 
 export const useChannels = () =>
@@ -35,3 +35,21 @@ export const usePermissionModes = () =>
 
 /** The signed-in account's API keys, revoked ones included. */
 export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: fetchApiKeys })
+
+export const useProfileAuthorizations = () =>
+  useQuery({ queryKey: ['profile-authorizations'], queryFn: fetchProfileAuthorizations })
+
+// Session counts and MCP authorizations can change while the control page is open.
+export const useAgents = () =>
+  useQuery({ queryKey: ['agents'], queryFn: api.agents, refetchInterval: 15_000 })
+
+export const useProfile = () =>
+  useQuery({ queryKey: ['profile'], queryFn: api.profile, refetchInterval: 15_000 })
+
+// The agent's own management tools install, enable
+// and disable them mid-session, so this page can go stale behind its own console.
+export const useMcpServers = () =>
+  useQuery({ queryKey: ['mcp-servers'], queryFn: api.mcpServers, refetchInterval: 15_000 })
+
+export const useMcpTentacles = () =>
+  useQuery({ queryKey: ['mcp-tentacles'], queryFn: api.mcpTentacles, staleTime: 60_000 })

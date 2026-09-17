@@ -1,4 +1,9 @@
-from octomate.models.auth import UserApiKey, UserInvitation, UserSession
+from octomate.models.auth import (
+    LinkProfileSession,
+    UserApiKey,
+    UserInvitation,
+    UserSession,
+)
 from octomate.models.base import Base
 from octomate.models.conversation import Conversation
 from octomate.models.deferred import (
@@ -6,6 +11,12 @@ from octomate.models.deferred import (
     DeferredActionBatch,
     DeferredApprovalAction,
     DeferredQuestionAction,
+)
+from octomate.models.mcp import (
+    BearerMcp,
+    Mcp,
+    NoAuthMcp,
+    OAuthMcp,
 )
 from octomate.models.messages import (
     ModelMessage,
@@ -28,6 +39,7 @@ from octomate.models.user import User, UserProfile
 __all__ = [
     "AgentRun",
     "Base",
+    "BearerMcp",
     "Conversation",
     "DeferredAction",
     "DeferredActionBatch",
@@ -35,11 +47,15 @@ __all__ = [
     "DeferredQuestionAction",
     "ExternalAgentRun",
     "Handoff",
+    "LinkProfileSession",
+    "Mcp",
     "MessageBinding",
     "ModelMessage",
     "ModelRequest",
     "ModelResponse",
+    "NoAuthMcp",
     "OAuthConnection",
+    "OAuthMcp",
     "OAuthOperation",
     "Project",
     "Thread",

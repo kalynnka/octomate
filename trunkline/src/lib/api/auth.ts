@@ -6,6 +6,8 @@
  * same-origin header the relay demands of cookie-authenticated requests.
  */
 
+import type { ApiUserProfile } from './events'
+
 export type ApiKeyScope = 'hooks' | 'mcp'
 
 export interface ApiUser {
@@ -13,6 +15,16 @@ export interface ApiUser {
   username: string
   name: string
   nickname: string | null
+}
+
+export interface ApiLinkProfile {
+  profile: ApiUserProfile
+  expires_at: string
+}
+
+export interface ApiChannelAuthorization {
+  id: string
+  type: string
 }
 
 /** One issued key, as the relay lists it — the token itself is never here. */
@@ -170,7 +182,7 @@ export async function apiFetch(path: string, request: ApiRequest = {}): Promise<
 }
 
 /** Turn a refused response into the error the forms render. */
-async function refuse(res: Response): Promise<never> {
+export async function refuse(res: Response): Promise<never> {
   let detail: ApiError['detail'] = null
   try {
     detail = ((await res.json()) as { detail?: ApiError['detail'] }).detail ?? null
@@ -224,4 +236,40 @@ export async function createApiKey(body: ApiKeyBody): Promise<ApiIssuedKey> {
 export async function revokeApiKey(id: string): Promise<void> {
   const res = await apiFetch(`/api/auth/api-keys/${encodeURIComponent(id)}`, { method: 'DELETE' })
   if (!res.ok) return refuse(res)
+}
+
+export async function unlinkProfile(id: string): Promise<void> {
+  const res = await apiFetch(`/api/auth/profiles/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) return refuse(res)
+}
+
+export async function fetchProfileAuthorizations(): Promise<ApiChannelAuthorization[]> {
+  const res = await apiFetch('/api/auth/profile-authorizations')
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiChannelAuthorization[]
+}
+
+export async function authorizeProfile(channelId: string): Promise<{ authorization_uri: string }> {
+  const res = await apiFetch(`/api/auth/profile-authorizations/${encodeURIComponent(channelId)}`, { method: 'POST' })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as { authorization_uri: string }
+}
+
+export async function inspectLinkProfile(token: string): Promise<ApiLinkProfile> {
+  const res = await apiFetch('/api/auth/link-profile/inspect', {
+    method: 'POST',
+    json: { token },
+    retry: false,
+  })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiLinkProfile
+}
+
+export async function confirmLinkProfile(token: string, expectedUserId: string): Promise<ApiUserProfile> {
+  const res = await apiFetch('/api/auth/link-profile/confirm', {
+    method: 'POST',
+    json: { token, expected_user_id: expectedUserId },
+  })
+  if (!res.ok) return refuse(res)
+  return (await res.json()) as ApiUserProfile
 }

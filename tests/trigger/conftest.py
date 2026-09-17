@@ -3,7 +3,7 @@
 Trigger tests replay the canonical scenario scripts through a REAL channel
 tentacle into a real chat, so a human can inspect the rendering in the IM
 client. They need two things from the gitignored config home: the channel's
-credentials (the regular `channels.yaml`) and a `trigger.yaml` naming the target
+credentials (the regular `tentacles.yaml`) and a `trigger.yaml` naming the target
 chat per channel:
 
     trigger:

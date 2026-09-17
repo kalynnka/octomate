@@ -746,10 +746,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             ),
             None,
         )
-        if octomate_session is not None and self.octomate.mcps:
+        if octomate_session is not None:
             capabilities.append(
                 tentacles_capability(
-                    octomate_session, list(self.octomate.mcps.values())
+                    octomate_session,
+                    manager=self.octomate.mcp,
                 )
             )
         # The react graph carries only the thread/agent identity; each node fetches

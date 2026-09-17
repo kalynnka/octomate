@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import ClassVar
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -28,9 +28,9 @@ class ClaudeSSHConfig(BaseModel):
 
 
 class ClaudeCodeConfig(AgentConfig):
-    """Claude Agent SDK runner, registered as the `claude` agent tentacle.
+    """Claude Agent SDK runner, selected by `type: claude`.
 
-    Opt-in: `agents.claude` is null by default, so the agent is absent unless a
+    Opt-in: the agent is absent unless a
     block is supplied. The CLI supplies the model catalog. `ssh` selects where
     `claude` runs — null is a local subprocess; a block would run it on that
     remote host over SSH, and is
@@ -39,7 +39,7 @@ class ClaudeCodeConfig(AgentConfig):
 
     model_config = ConfigDict(extra="ignore")
 
-    id: ClassVar[str] = "claude"
+    type: Literal["claude"] = "claude"
 
     enabled: bool = Field(
         default=True,
@@ -103,7 +103,7 @@ class ClaudeCodeConfig(AgentConfig):
         """
         if ssh is not None:
             logger.warning(
-                "agents.claude.ssh is not honoured and the run stays local: a run "
+                "tentacles.claude.ssh is not honoured and the run stays local: a run "
                 "happens in its thread's workspace, and nothing makes one on %s",
                 ssh.host,
             )

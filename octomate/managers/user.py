@@ -1,41 +1,79 @@
 from __future__ import annotations
 
+import hashlib
+import secrets
 import uuid
+from datetime import UTC, datetime, timedelta
+
+from pydantic import AnyHttpUrl, SecretStr
+from sqlalchemy.orm.exc import StaleDataError
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
+from octomate.schemas.auth import (
+    LinkProfileAuthorization,
+    LinkProfileInfo,
+    LinkProfileSession,
+)
 from octomate.schemas.user import User, UserProfile
 
 PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
 
-class UserManager(Manager, Locks[tuple[str, str]]):
-    """The persisted cross-channel user registry.
+class LinkProfileUnavailable(RuntimeError):
+    pass
 
-    Profiles are queried by their indexed channel identity. Owners are loaded
-    and cached when a profile needs them.
-    """
 
+class InvalidLinkProfile(ValueError):
     def __init__(self) -> None:
-        self.users: dict[uuid.UUID, User] = {}
+        super().__init__("This profile link is invalid, expired, or already used")
 
-    def cache_user(self, user: User) -> None:
-        self.users[user.id] = user
+
+class ProfileAlreadyLinked(ValueError):
+    def __init__(self) -> None:
+        super().__init__("This channel profile is already linked")
+
+
+class ProfileNotLinked(ValueError):
+    def __init__(self) -> None:
+        super().__init__("This profile is not linked to your account")
+
+
+class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
+    """The persisted cross-channel user registry and verified profile links."""
+
+    def __init__(
+        self,
+        *,
+        authorization_base_uri: AnyHttpUrl | None = None,
+        authorization_lifetime: timedelta = timedelta(minutes=10),
+    ) -> None:
+        self.authorization_base_uri = authorization_base_uri
+        self.authorization_lifetime = authorization_lifetime
+
+    async def unlink_profile(self, user: User, profile_id: uuid.UUID) -> None:
+        async with self.lock(profile_id), async_session() as session:
+            profile = await session.get(UserProfile, profile_id)
+            if profile is None or profile.user_id != user.id:
+                raise ProfileNotLinked
+            profile.user_id = None
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["profile_id"] == profile_id],
+            )
+            if pending is not None:
+                pending.consumed_at = datetime.now(UTC)
+            await session.commit()
 
     async def owner(self, profile: UserProfile) -> User | None:
         """Return the registered owner of ``profile``, or ``None`` for a visitor."""
-        if (user_id := profile.user_id) is None:
+        user_id = profile.user_id
+        if user_id is None:
             return None
-        if (cached := self.users.get(user_id)) is not None:
-            return cached
-        if (related := profile.user.peek()) is not None:
-            self.cache_user(related)
-            return related
         async with async_session() as session:
             user = await session.get(User, user_id)
         if user is None:
             raise ValueError(f"unknown user {user_id}")
-        self.cache_user(user)
         return user
 
     async def linked_profiles(
@@ -52,28 +90,18 @@ class UserManager(Manager, Locks[tuple[str, str]]):
         user = await self.owner(profile)
         if user is None:
             return []
-        # Sessions do not expire on commit, so a user cached with its profiles still
-        # has them and `peek` answers without IO. It returns None only when the
-        # relation was never loaded — touching it then would lazy-load a detached
-        # instance into a DetachedInstanceError, so query instead.
-        if user.profiles.peek() is None:
-            async with async_session() as session:
-                return list(
-                    await session.list(
-                        UserProfile,
-                        limit=None,
-                        expressions=[
-                            UserProfile["user_id"] == user.id,
-                            UserProfile["channel_tentacle_id"]
-                            != profile.channel_tentacle_id,
-                        ],
-                    )
+        async with async_session() as session:
+            return list(
+                await session.list(
+                    UserProfile,
+                    limit=None,
+                    expressions=[
+                        UserProfile["user_id"] == user.id,
+                        UserProfile["channel_tentacle_id"]
+                        != profile.channel_tentacle_id,
+                    ],
                 )
-        return [
-            other
-            for other in user.profiles
-            if other.channel_tentacle_id != profile.channel_tentacle_id
-        ]
+            )
 
     async def native_profile(self, runtime: str, username: str) -> UserProfile | None:
         """A transient anchor for `username`'s native session on `runtime`'s
@@ -84,21 +112,12 @@ class UserManager(Manager, Locks[tuple[str, str]]):
         linked-profile walk its starting point — owned like a stored profile,
         and standing on a channel id no channel ever resolves.
         """
-        user = next(
-            (cached for cached in self.users.values() if cached.username == username),
-            None,
-        )
+        async with async_session() as session:
+            user = await session.one_or_none(
+                User, expressions=[User["username"] == username]
+            )
         if user is None:
-            async with async_session() as session:
-                user = await session.one_or_none(
-                    User, expressions=[User["username"] == username]
-                )
-            if user is None:
-                return None
-            self.cache_user(user)
-        # `user_id` alone carries the ownership: `owner()` resolves it through the
-        # cache, and assigning the relation itself would backpopulate
-        # `user.profiles` — a lazy load the detached cached instance cannot do.
+            return None
         return UserProfile(
             channel_tentacle_id=runtime,
             channel_user_id=username,
@@ -158,9 +177,109 @@ class UserManager(Manager, Locks[tuple[str, str]]):
                 if observed.user_id is not None:
                     profile.user_id = observed.user_id
 
-            owner = await profile.user
             await session.commit()
 
-        if owner is not None:
-            self.cache_user(owner)
         return profile
+
+    @staticmethod
+    def hash_link_token(token: SecretStr) -> SecretStr:
+        return SecretStr(hashlib.sha256(token.get_secret_value().encode()).hexdigest())
+
+    async def start_link_profile(
+        self, profile: UserProfile
+    ) -> LinkProfileAuthorization:
+        """Replace this ownerless profile's pending ticket and return its private URL."""
+        if self.authorization_base_uri is None:
+            raise LinkProfileUnavailable(
+                "Configure local auth and oauth.callback_base_uri before linking channel profiles"
+            )
+        token = SecretStr(secrets.token_urlsafe(32))
+        now = datetime.now(UTC)
+        async with self.lock(profile.id), async_session() as session:
+            stored = await session.get(UserProfile, profile.id)
+            if stored is None:
+                raise InvalidLinkProfile
+            if stored.user_id is not None:
+                raise ProfileAlreadyLinked
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["profile_id"] == stored.id],
+            )
+            if pending is None:
+                pending = LinkProfileSession(
+                    profile_id=stored.id,
+                    token_hash=self.hash_link_token(token),
+                    expires_at=now + self.authorization_lifetime,
+                )
+                session.add(pending)
+            else:
+                pending.token_hash = self.hash_link_token(token)
+                pending.expires_at = now + self.authorization_lifetime
+                pending.created_at = now
+                pending.consumed_at = None
+            await session.commit()
+
+        root = str(self.authorization_base_uri).rstrip("/")
+        return LinkProfileAuthorization(
+            profile=stored,
+            authorization_uri=AnyHttpUrl(
+                f"{root}/#link-profile={token.get_secret_value()}"
+            ),
+            expires_at=now + self.authorization_lifetime,
+        )
+
+    async def inspect_link_profile(self, token: SecretStr) -> LinkProfileInfo:
+        token_hash = self.hash_link_token(token)
+        async with async_session() as session:
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[
+                    LinkProfileSession["token_hash"] == token_hash,
+                    LinkProfileSession["consumed_at"].is_(None),
+                    LinkProfileSession["expires_at"] > datetime.now(UTC),
+                ],
+            )
+            if pending is None:
+                raise InvalidLinkProfile
+            profile = await session.get(UserProfile, pending.profile_id)
+            if profile is None:
+                raise InvalidLinkProfile
+            if profile.user_id is not None:
+                raise ProfileAlreadyLinked
+            return LinkProfileInfo(profile=profile, expires_at=pending.expires_at)
+
+    async def confirm_link_profile(self, token: SecretStr, user: User) -> UserProfile:
+        """Consume a valid ticket and link its exact profile to ``user`` once."""
+        token_hash = self.hash_link_token(token)
+        async with async_session() as session:
+            found = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["token_hash"] == token_hash],
+            )
+        if found is None:
+            raise InvalidLinkProfile
+
+        async with self.lock(found.profile_id), async_session() as session:
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[
+                    LinkProfileSession["token_hash"] == token_hash,
+                    LinkProfileSession["consumed_at"].is_(None),
+                    LinkProfileSession["expires_at"] > datetime.now(UTC),
+                ],
+            )
+            if pending is None:
+                raise InvalidLinkProfile
+            profile = await session.get(UserProfile, pending.profile_id)
+            if profile is None or await session.get(User, user.id) is None:
+                raise InvalidLinkProfile
+            if profile.user_id is not None:
+                raise ProfileAlreadyLinked
+            profile.user_id = user.id
+            pending.consumed_at = datetime.now(UTC)
+            try:
+                await session.flush()
+            except StaleDataError as error:
+                raise InvalidLinkProfile from error
+            await session.commit()
+            return profile

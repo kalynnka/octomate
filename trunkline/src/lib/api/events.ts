@@ -2,6 +2,8 @@
 // (WireEvent in octomate/capabilities/harness/events.py). Every event carries an
 // `event_kind` discriminator; the pydantic-ai members serialize with their own
 // native field names, so these types follow the Python schema exactly.
+import type { ApiUser } from './auth'
+import type { EffortStep } from './types'
 
 // ---- pydantic-ai response parts -------------------------------------------
 
@@ -359,6 +361,111 @@ export interface ApiRoute {
   model: string | null
 }
 
+/** One model an agent can be routed to, with what that route claims to be for.
+ *  `efforts` empty means the route takes no effort levels — not that it takes
+ *  every one of them. */
+export interface ApiAgentRoute {
+  agent_id: string
+  model: string
+  claim: {
+    ability: string
+    efforts: EffortStep[]
+  }
+}
+
+/** One registered agent, as the Agents page reads it. `/routes` answers the
+ *  composer's narrower question and keeps only the entry agent's default; this
+ *  keeps every model, and adds what no route id carries. */
+export interface ApiAgentInfo {
+  id: string
+  description: string
+  gateway: boolean
+  default_model: string | null
+  routes: ApiAgentRoute[]
+  /** live runs this instance is driving on the agent's runtime */
+  driven_sessions: number
+  /** native transcript streams attached to it — read, not driven */
+  native_sessions: number
+}
+
+export type McpAuthKind = 'none' | 'bearer' | 'oauth'
+export type OAuthFlowKind = 'device' | 'authorization_code'
+
+/** OAuthStartResult, returned only to the user starting authorization. */
+export type ApiMcpAuthorization = { operation_id: string; expires_at: string } & (
+  | { authorization_uri: string }
+  | { verification_uri: string; verification_uri_complete: string | null; user_code: string; interval_seconds: number }
+)
+
+/** McpAuthorizationResult from the confirmation endpoint. */
+export type ApiMcpAuthorizationResult =
+  | { status: 'active' | 'invalid' | null }
+  | { status: 'pending_browser' }
+  | { status: 'pending_device'; retry_after_seconds: number }
+
+/** One MCP server this user installed (`GET /api/mcp`). */
+export interface ApiMcp {
+  id: string
+  name: string
+  namespace: string
+  url: string
+  instructions: string
+  /** the configured tentacle supplying it and its auth, or null for a plain endpoint */
+  tentacle_id: string | null
+  enabled: boolean
+  auth_kind: McpAuthKind
+  created_at: string
+  updated_at: string
+}
+
+/** McpInstallRequest: a custom endpoint or a configured tentacle. */
+export type McpInstallBody = Pick<ApiMcp, 'name' | 'namespace' | 'url'> & (
+  | { auth: { kind: 'none' | 'oauth' } | { kind: 'bearer'; token: string }; tentacle_id?: never }
+  | { tentacle_id: string; auth?: never }
+)
+
+/** A configured tentacle that can supply an MCP (`GET /api/mcp/tentacles`). */
+export interface ApiMcpTentacle {
+  id: string
+  name: string
+  url: string
+  auth_kind: McpAuthKind
+}
+
+/** One channel identity bound to an account. */
+export interface ApiUserProfile {
+  id: string
+  channel_tentacle_id: string
+  channel_user_id: string
+  name: string
+  nickname: string | null
+  gender: string | null
+  age: number | null
+  title: string | null
+  user_id: string | null
+}
+
+/** McpServerSummary from octomate/schemas/mcp.py. */
+export interface ApiMcpServerSummary {
+  id: string
+  namespace: string
+  name: string
+  enabled: boolean
+  auth_kind: McpAuthKind
+  oauth: {
+    flows: OAuthFlowKind[]
+    status: ApiMcpAuthorizationResult['status']
+  } | null
+}
+
+/** `GET /api/trunkline/profile` — who the console is signed in as, where else
+ *  they are, and what they have connected. */
+export interface ApiProfileInfo {
+  user: ApiUser
+  profiles: ApiUserProfile[]
+  mcps: ApiMcpServerSummary[]
+}
+
 /*
  * The REST reads are the backend transmuters themselves (octomate/schemas/),
  * not a console-shaped copy — so these mirror the rows field for field. One
@@ -490,7 +597,7 @@ export interface ApiDeferredBatch {
 }
 
 /**
- * GET /permission-modes — each registered agent's approval vocabulary, in the
+ * GET /permissions — each registered agent's approval vocabulary, in the
  * order a picker steps through it, keyed by agent tentacle id. The vocabularies
  * do not overlap: a posture only means something under the agent that reads it,
  * and an agent absent here is one the console cannot switch — either it answers
@@ -512,7 +619,7 @@ export interface DirectiveBody {
   /** a project name from /projects; honored on a thread's first directive only,
    *  and omitted for a thread that is in no project at all */
   project?: string
-  /** a posture from /permission-modes, in the picked agent's own vocabulary —
+  /** a posture from /permissions, in the picked agent's own vocabulary —
    *  how a thread with no row yet gets one; an owned thread's is PATCHed */
   permission_mode?: string
 }

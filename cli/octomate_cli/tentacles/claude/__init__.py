@@ -62,7 +62,7 @@ def tail(
         main,  # watchfiles/websockets; only when tailing
     )
 
-    main(session_id=session, transcript_path=path, url=url, cwd=cwd)
+    main(agent="claude", session_id=session, transcript_path=path, url=url, cwd=cwd)
 
 
 __all__ = ["CLAUDE_HOOK_PATH", "CLAUDE_STREAM_PATH", "claude_typer"]

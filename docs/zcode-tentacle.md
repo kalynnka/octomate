@@ -10,11 +10,12 @@ runtime; this tentacle uses the desktop app-server protocol.
 ## Setup
 
 Install ZCode Desktop and Node.js. Configure an API-key provider in the desktop
-app, then add this to your Octomate config home's `agents.yaml`:
+app, then add this to your Octomate config home's `tentacles.yaml`:
 
 ```yaml
-agents:
+tentacles:
   zcode:
+    type: zcode
     provider: builtin:bigmodel
     claims:
       GLM-5.3:
@@ -23,7 +24,7 @@ agents:
     approval_timeout: 3600
 ```
 
-Add `zcode` to the desired channel's `agents` list in `channels.yaml`, following
+Add `zcode` to the desired channel's `agents` list in `tentacles.yaml`, following
 its existing agent entries. Select a discovered ZCode model in the web UI. Routes
 use provider-qualified identifiers such as `builtin:bigmodel:GLM-5.3`. Existing unqualified model names
 remain accepted for direct runs and claim overrides.

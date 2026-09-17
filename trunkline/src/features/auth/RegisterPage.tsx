@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type SubmitEvent } from 'react'
 import { Button } from '@/components/Button'
 import { label, mono } from '@/components/text'
 import { ApiError, issueField, issueText, refusalText } from '@/lib/api/auth'
@@ -68,7 +68,7 @@ export function RegisterPage() {
   const nameOk = name.length > 0 && name.length <= 100
   const ready = invitation.trim() !== '' && usernameOk && nameOk && rulesMet && matches
 
-  const submit = async (event: FormEvent) => {
+  const submit = async (event: SubmitEvent<HTMLFormElement>) => {
     event.preventDefault()
     if (busy || !ready) return
     setBusy(true)

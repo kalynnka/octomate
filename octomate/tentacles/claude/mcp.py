@@ -14,17 +14,16 @@ does for every MCP server.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-
 from claude_agent_sdk import McpSdkServerConfig, SdkMcpTool, create_sdk_mcp_server
 from fastmcp.exceptions import ToolError
+from fastmcp.exceptions import ValidationError as McpValidationError
 from fastmcp.tools import Tool
 from pydantic import JsonValue, ValidationError
 
 from octomate.managers.gateway import OctomateSession
+from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
-from octomate.tentacles.mcp import McpTentacle
 
 
 def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
@@ -35,7 +34,7 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
     async def handler(arguments: dict[str, JsonValue]) -> dict[str, JsonValue]:
         try:
             result = await tool.run(arguments)
-        except (ToolError, ValidationError) as refusal:
+        except (ToolError, McpValidationError, ValidationError) as refusal:
             # The same corrective sentence Inkling's ModelRetry carries, as a tool
             # error Claude retries from natively.
             return {
@@ -44,7 +43,7 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
             }
         response: dict[str, JsonValue] = {
             "content": [
-                block.model_dump(mode="json", exclude_none=True)
+                block.model_dump(mode="json", by_alias=True, exclude_none=True)
                 for block in result.content
             ]
         }
@@ -63,17 +62,15 @@ def sdk_tool(tool: Tool) -> SdkMcpTool[dict[str, JsonValue]]:
 async def octomate_mcp_server(
     session: OctomateSession,
     thread_manager: ThreadManager,
-    tentacles: Sequence[McpTentacle] = (),
+    *,
+    manager: McpManager,
 ) -> McpSdkServerConfig:
-    """The served server, mounted in process for this turn: every call runs
-    against `session`, a delivering spell writes through `thread_manager`, which
-    the history tools read, and `tentacles` the MCP tentacles the turn may
-    reach through namespace discovery as the person the turn is for."""
+    """Mount the gateway, history, and the user's MCP tools in process for this turn."""
 
     async def fixed() -> OctomateSession:
         return session
 
-    server = octomate_mcp(fixed, thread_manager, tentacles=tentacles)
+    server = octomate_mcp(fixed, thread_manager, manager=manager)
     return create_sdk_mcp_server(
         OCTOMATE_SERVER_NAME,
         tools=[sdk_tool(tool) for tool in await server.list_tools()],
