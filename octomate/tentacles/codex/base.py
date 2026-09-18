@@ -87,7 +87,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
 from octomate.managers.auth import AuthManager
 from octomate.mcp.gateway import CONVERSATION_HEADER
-from octomate.mcp.server import OCTOMATE_MCP_PATH, OCTOMATE_SERVER_NAME
+from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
@@ -190,6 +190,14 @@ NETWORK_ACCESS = "sandbox_workspace_write.network_access=true"
 # A temporary MCP API token represents the kicking user for this client.
 MCP_TOKEN_ENV = "OCTOMATE_MCP_TOKEN"
 MCP_CONVERSATION_ENV = "OCTOMATE_MCP_CONVERSATION"
+
+DRIVEN_MCP_SERVER_NAME = "octomate_driven"
+DRIVEN_CONFIG_OVERRIDES = (
+    "features.hooks=false",
+    "features.plugins=false",
+    "features.apps=false",
+    "notify=[]",
+)
 
 
 @dataclass
@@ -459,8 +467,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             # fine with `str`), so the rule bends rather than the checked type.
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
-            if self.should_ingest_session(event.session_id):
-                await self.session_ingest.handle(event, sender)
+            # Driven sessions no longer load native hooks; keep the exclusion parked.
+            # if self.should_ingest_session(event.session_id):
+            await self.session_ingest.handle(event, sender)
             return JSONResponse({})
 
         @router.websocket("/hooks/codex/stream")
@@ -496,9 +505,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        if not self.should_ingest_session(hello.session_id):
-            await websocket.close(code=1008, reason="octomate drives this session")
-            return
+        # if not self.should_ingest_session(hello.session_id):
+        #     await websocket.close(code=1008, reason="octomate drives this session")
+        #     return
         async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
 
@@ -614,7 +623,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             self.config.runtime,
             config_overrides=(
                 *self.config.runtime.config_overrides,
-                f"mcp_servers.{OCTOMATE_SERVER_NAME}.enabled=false",
+                *DRIVEN_CONFIG_OVERRIDES,
             ),
         )
         models: dict[str, Model | str] = {}
@@ -671,7 +680,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             env = dict(self.config.runtime.env or {})
             # First, so an operator who sets the key themselves still wins: later
             # `--config` arguments are the ones Codex keeps.
-            overrides = (NETWORK_ACCESS, *self.config.runtime.config_overrides)
+            overrides = (
+                NETWORK_ACCESS,
+                *self.config.runtime.config_overrides,
+                *DRIVEN_CONFIG_OVERRIDES,
+            )
             if self.config.instrument:
                 trace_environment = octomate_trace_environment()
                 if trace_environment is not None:
@@ -713,19 +726,25 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         return await super().__aenter__()
 
-    def thread_config(self, mcp_bearer: SecretStr | None) -> JsonObject:
-        # Thread config is the app-server's in-place overlay for a driven run. It
-        # supplies the complete transport instead of relying on a process-level
-        # dotted override to merge with the operator's native MCP entry.
+    async def thread_config(
+        self, client: AsyncCodex, cwd: str, mcp_bearer: SecretStr | None
+    ) -> JsonObject:
+        settings = await client._client.request(
+            "config/read",
+            {"cwd": cwd, "includeLayers": False},
+            response_model=ConfigReadResponse,
+        )
+        local_servers = TypeAdapter(dict[str, JsonObject]).validate_python(
+            (settings.config.model_extra or {}).get("mcp_servers", {})
+        )
+        # Codex merges tables recursively; an empty map does not clear local servers.
+        servers: JsonObject = {name: {"enabled": False} for name in local_servers}
         if mcp_bearer is None:
-            return {
-                "mcp_servers": {
-                    OCTOMATE_SERVER_NAME: {
-                        "enabled": False,
-                        "url": f"http://127.0.0.1{OCTOMATE_MCP_PATH}",
-                    }
-                }
-            }
+            return {"mcp_servers": servers}
+        if DRIVEN_MCP_SERVER_NAME in local_servers:
+            raise ValueError(
+                f"MCP server name {DRIVEN_MCP_SERVER_NAME!r} is reserved for driven sessions"
+            )
         deployment = self.octomate.config
         url = URL(
             scheme="http",
@@ -735,17 +754,14 @@ class CodexTentacle(AgentTentacle[str, None]):
             port=deployment.port,
             path=OCTOMATE_MCP_PATH,
         )
-        return {
-            "mcp_servers": {
-                OCTOMATE_SERVER_NAME: {
-                    "enabled": True,
-                    "url": str(url),
-                    "bearer_token_env_var": MCP_TOKEN_ENV,
-                    "http_headers": {},
-                    "env_http_headers": {CONVERSATION_HEADER: MCP_CONVERSATION_ENV},
-                }
-            }
+        # Keep the caller connection separate so no local transport or auth merges in.
+        servers[DRIVEN_MCP_SERVER_NAME] = {
+            "enabled": True,
+            "url": str(url),
+            "bearer_token_env_var": MCP_TOKEN_ENV,
+            "env_http_headers": {CONVERSATION_HEADER: MCP_CONVERSATION_ENV},
         }
+        return {"mcp_servers": servers}
 
     async def __aexit__(
         self,
@@ -1317,15 +1333,19 @@ class CodexTentacle(AgentTentacle[str, None]):
                     else None
                 )
                 pooled = await self.pool.acquire(conversation.id, user_id=user_id)
-                thread_config = self.thread_config(
-                    pooled.api_key.token if pooled.api_key is not None else None
-                )
                 try:
                     codex_thread = pooled.thread
                     if codex_thread is None:
                         # SDK startup can wait on network I/O. Enter after acquiring
                         # the lease so it cannot hold up other conversations' clients.
                         await pooled.client.__aenter__()
+                        thread_config = await self.thread_config(
+                            pooled.client,
+                            run_cwd,
+                            pooled.api_key.token
+                            if pooled.api_key is not None
+                            else None,
+                        )
                         if conversation.external_id:
                             codex_thread = await self.resume_codex_thread(
                                 pooled.client,

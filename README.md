@@ -399,7 +399,10 @@ octomate codex mcp install     # [mcp_servers.octomate] in ~/.codex/config.toml
 octomate deepseek mcp install  # a dsh-mcp-client row in $DSH_HOME/cordis.patch.yml
 ```
 
-Unlike the hooks — whose scripts resolve the address and credential each time one fires — a static entry is read by the runtime itself, so `mcp install` resolves both once and writes them into the file. All three embed the literal credential, and rotating it means re-running install. None of them names an environment variable: a driven Codex app-server is a child of the host and reads `~/.codex/config.toml` itself, so an entry resolving a variable would hand every driven turn whichever credential that host's environment happened to carry. A driven turn pins `mcp_servers.octomate` for the length of its process instead — wired to its kicker, or switched off.
+MCP installs embed the server URL and token; reinstall after changing either.
+Driven Claude and Codex sessions disable local hooks, plugins and MCPs; configure
+tools through Octomate. Claude also skips local instructions and skills; Codex
+disables account apps.
 
 ---
 

@@ -253,6 +253,8 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
         assert tentacle.driven_sessions == {session_id: 1}
         assert options.settings is None
         assert options.setting_sources is None
+        assert options.extra_args == {"safe-mode": None}
+        assert options.strict_mcp_config is True
         lifecycle.append("enter")
         if connect_fails:
             raise RuntimeError("SDK connect failed")

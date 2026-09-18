@@ -78,15 +78,17 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
         instructions.append(
             "- [ ] Review `config/tentacles.yaml`: `tentacles.claude`, including `permission_mode`. "
             "Use the desktop account's native Claude login and Keychain credentials. "
-            "Keep its existing settings, plugins and Claude.ai connectors; do not replace "
-            "that login with a setup token. Verify these through Octomate after activation.\n"
+            "Do not replace that login with a setup token. Driven sessions use safe mode: "
+            "local instructions, skills, plugins, hooks and MCP connections are disabled. "
+            "Configure tools in Octomate and verify them after activation.\n"
         )
     if "codex" in agents:
         instructions.append(
             "- [ ] Review `config/tentacles.yaml`: `tentacles.codex.runtime`, "
             "`tentacles.codex.permission_mode` and `tentacles.codex.sandbox`. Confirm the desktop "
-            "account's native Codex login and settings, then verify an actual request "
-            "through Octomate after activation.\n"
+            "account's native Codex login. Driven sessions disable inherited plugins, "
+            "hooks, apps and MCP connections. Configure tools in Octomate, then verify "
+            "an actual request through Octomate after activation.\n"
         )
     if "deepseek" in agents:
         instructions.append(
@@ -141,7 +143,7 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
             "are separate deployment steps. The desktop account must be logged in; "
             "logging out stops the service, and reboot requires another desktop login.\n",
             "- [ ] After activation, send an actual agent request through Octomate, verify "
-            "a connector tool call and the required plugins, then restart the GUI service "
+            "a connector tool call configured in Octomate, then restart the GUI service "
             "and repeat verification. These checks have not run during preparation.\n",
         ]
     )

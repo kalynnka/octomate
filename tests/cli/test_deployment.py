@@ -216,8 +216,11 @@ def test_claude_checklist_preserves_native_login(preparation: Path) -> None:
     deployment.prepare(8123, [], ["claude"])
     checklist = (preparation / "CONFIGURATION.md").read_text()
     assert "Keychain credentials" in checklist
-    assert "plugins and Claude.ai connectors" in checklist
-    assert "do not replace that login with a setup token" in checklist
+    assert (
+        "local instructions, skills, plugins, hooks and MCP connections are disabled"
+        in checklist
+    )
+    assert "Do not replace that login with a setup token" in checklist
     assert "tentacles.codex" not in checklist
 
 

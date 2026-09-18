@@ -7,14 +7,14 @@ from octomate_cli.wizard.base import TentacleSetup
 
 def claude(console: Console) -> str:
     console.print(
-        "Claude uses this desktop account's existing login, settings and plugins. No setup token is requested."
+        "Claude uses this desktop account's existing login. Driven sessions disable local customizations; configure tools in Octomate. No setup token is requested."
     )
     return "claude"
 
 
 def codex(console: Console) -> str:
     console.print(
-        "Codex uses this desktop account's existing Codex login and configuration."
+        "Codex uses this desktop account's existing login. Driven sessions disable local plugins, hooks, apps and MCPs; configure tools in Octomate."
     )
     return "codex"
 
