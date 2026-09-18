@@ -1,14 +1,8 @@
-"""The dsh `/api` wire contract, as much of it as the tentacle consumes.
+"""The consumed dsh Remote API contracts and Octomate's normalized stream frames.
 
-Hand-mirrored from dsh's own `api/` layer (via the VS Code extension's
-`src/dsh/wire.ts`, the reference port) rather than generated or imported: the
-tentacle drives *the operator's* dsh, whose version octomate does not choose
-and cannot pin, so every type here is permissive — unknown frame types,
-unknown event types and unknown fields are carried, not rejected. Strict
-parsing would turn every version skew into a dead agent.
-
-The upstream source of truth, for anyone re-syncing this file:
-`packages/host/apiproxy/src/api/{rpc,events,sessions}.ts` in the dsh monorepo.
+Upstream sources: packages/api/gateway/src/stream-protocol.ts and
+packages/api/session-controller/src/types.ts. Transport envelopes are validated;
+merge-extensible session events preserve unknown fields in replay metadata.
 """
 
 from __future__ import annotations
@@ -90,30 +84,8 @@ class ServerResponse(BaseModel):
     result: RpcResult
 
 
-class ServerRequest(BaseModel):
-    """One downstream WebSocket frame; `payload` is a mux (or host) frame."""
-
-    model_config = PERMISSIVE
-
-    type: Literal["server-request"] = "server-request"
-    rpc_id: str
-    method: str
-    payload: JsonValue = None
-
-
-class ClientResponse(BaseModel):
-    """POST /api/respond body — answers an answerable frame by echoing its rpcId."""
-
-    model_config = PERMISSIVE
-
-    type: Literal["client-response"] = "client-response"
-    rpc_id: str
-    result: RpcResult
-
-
 class RpcReceipt(BaseModel):
-    """What /api/respond answers with. `not-pending` in `reason` is a normal
-    race (another client answered, or the turn was cancelled), not an error."""
+    """Local receipt for a Remote event-result call."""
 
     model_config = PERMISSIVE
 
@@ -148,14 +120,6 @@ class SessionEventFrame(BaseModel):
     view: JsonValue = None
 
 
-class SessionSubscribedFrame(BaseModel):
-    model_config = PERMISSIVE
-
-    type: Literal["session/subscribed"]
-    session_id: str
-    last_seq: int
-
-
 class ApprovalRequestedFrame(BaseModel):
     model_config = PERMISSIVE
 
@@ -165,15 +129,6 @@ class ApprovalRequestedFrame(BaseModel):
     tool_name: str
     call_id: str | None = None
     reason: str | None = None
-
-
-class ApprovalResolvedFrame(BaseModel):
-    model_config = PERMISSIVE
-
-    type: Literal["approval/resolved"]
-    session_id: str
-    approval_id: str
-    outcome: str
 
 
 class AskQuestionOption(BaseModel):
@@ -205,56 +160,133 @@ class QuestionRequestedFrame(BaseModel):
     questions: list[AskQuestionItem]
 
 
-class QuestionResolvedFrame(BaseModel):
-    model_config = PERMISSIVE
-
-    type: Literal["question/resolved"]
-    session_id: str
-    question_rpc_id: str
-    outcome: str
-
-
 class StreamErrorFrame(BaseModel):
     model_config = PERMISSIVE
 
     type: Literal["stream/error"]
     error: RpcError
-
-
-class UnknownFrame(BaseModel):
-    """A frame this build has never heard of: data, not a parse failure."""
-
-    model_config = PERMISSIVE
-
-    type: str
     session_id: str | None = None
 
 
-type KnownMuxFrame = Annotated[
+class RemoteItem(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["item"]
+    stream_id: str
+    value: JsonValue = None
+
+
+class RemoteError(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["error"]
+    stream_id: str
+    error: RpcError
+
+
+class RemoteEnd(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["end"]
+    stream_id: str
+
+
+remote_message_adapter = TypeAdapter(
+    Annotated[RemoteItem | RemoteError | RemoteEnd, Field(discriminator="type")]
+)
+
+
+class RemoteReady(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["ready"]
+    client_id: str
+
+
+class RemoteInvocation(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["waterfall"]
+    event: str
+    event_id: str
+    agent_id: str
+    request: dict[str, JsonValue]
+
+
+class RemoteCancellation(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["cancel"]
+    event_id: str
+
+
+class RemoteNotification(BaseModel):
+    type: Literal["emit"]
+    event: str
+    args: list[JsonValue]
+
+
+remote_event_adapter = TypeAdapter(
+    Annotated[
+        RemoteInvocation | RemoteCancellation | RemoteNotification,
+        Field(discriminator="type"),
+    ]
+)
+
+
+class SessionSnapshot(BaseModel):
+    type: Literal["snapshot"]
+    cursor: int
+
+
+class SessionRecord(BaseModel):
+    type: Literal["event"]
+    event: SessionEvent
+
+
+class AssistantStreamChunk(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["chunk"]
+    attempt_id: str
+    revision: int
+    index: int
+    time: float
+    chunk: JsonValue
+
+
+class AssistantStreamBoundary(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["start", "end"]
+    attempt_id: str
+    revision: int
+
+
+class SessionAssistantFrame(BaseModel):
+    type: Literal["assistant-stream"]
+    frame: Annotated[
+        AssistantStreamChunk | AssistantStreamBoundary, Field(discriminator="type")
+    ]
+    session_id: str = ""
+
+
+session_follow_adapter = TypeAdapter(
+    Annotated[
+        SessionSnapshot | SessionRecord | SessionAssistantFrame,
+        Field(discriminator="type"),
+    ]
+)
+
+
+type MuxFrame = (
     SessionEventFrame
-    | SessionSubscribedFrame
+    | SessionAssistantFrame
     | ApprovalRequestedFrame
-    | ApprovalResolvedFrame
     | QuestionRequestedFrame
-    | QuestionResolvedFrame
-    | StreamErrorFrame,
-    Field(discriminator="type"),
-]
-type MuxFrame = KnownMuxFrame | UnknownFrame
-
-known_mux_frame_adapter: TypeAdapter[KnownMuxFrame] = TypeAdapter(KnownMuxFrame)
-unknown_frame_adapter: TypeAdapter[UnknownFrame] = TypeAdapter(UnknownFrame)
-
-
-def parse_mux_frame(payload: JsonValue) -> MuxFrame:
-    """The pydantic rendering of the wire's open union: a frame the known
-    adapter refuses — an unknown `type`, or a known one whose shape moved —
-    falls back to `UnknownFrame` rather than failing the stream. Raises
-    `ValidationError` only for a payload that is not a typed frame at all."""
-    try:
-        return known_mux_frame_adapter.validate_python(payload)
-    except ValidationError:
-        return unknown_frame_adapter.validate_python(payload)
+    | StreamErrorFrame
+    | RemoteCancellation
+)
 
 
 class DeepseekUsage(BaseModel):
@@ -350,10 +382,6 @@ class ModelRoute(BaseModel):
     model: str
 
 
-class HostDescription(BaseModel):
-    provider: str | None = None
-
-
 class ModelEffort(BaseModel):
     id: str
 
@@ -382,6 +410,7 @@ class ModelCatalogFailure(BaseModel):
 
 
 class ModelCatalog(BaseModel):
+    default: ModelRoute
     groups: list[ModelProviderGroup]
     failures: list[ModelCatalogFailure]
 
@@ -595,7 +624,7 @@ def permission_preset_of(event: SessionEvent) -> str | None:
 
 
 class HistoryEntry(BaseModel):
-    """One `session.history` row — and the line shape `octomate deepseek tail`
+    """One `session/page` record — and the line shape `octomate deepseek tail`
     streams in: the raw persisted event plus the host-computed render `view`
     when a presenter produced one (pagination-time, never stored)."""
 
@@ -615,19 +644,8 @@ class SessionCreateValue(BaseModel):
     agent_preset: str | None = None
 
 
-class PromptCommand(BaseModel):
-    model_config = PERMISSIVE
-
-    kind: str
-    text: str | None = None
-
-
 class SessionPromptValue(BaseModel):
-    model_config = PERMISSIVE
-
-    accepted: bool
-    # Set when dsh intercepted the prompt as a slash command: no turn opened.
-    command: PromptCommand | None = None
+    accepted: Literal[True]
 
 
 class CommandResult(BaseModel):

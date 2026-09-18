@@ -2,20 +2,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, ClassVar, Generic, Self, TypeVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 from fastapi import APIRouter
+from rich.logging import RichHandler
 from rich.style import Style
+from rich.text import Text
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
 
-TentaclePrimaryT = TypeVar("TentaclePrimaryT")
-TentacleSecondaryT = TypeVar("TentacleSecondaryT")
-
 
 @dataclass
-class Tentacle(Generic[TentaclePrimaryT, TentacleSecondaryT]):
+class Tentacle[TentaclePrimaryT, TentacleSecondaryT]:
     """Base for external integrations managed by the Octomate host.
 
     A tentacle is a lifecycle component, not a message dispatcher. Channel
@@ -80,7 +79,7 @@ class TentacleLogFormatter(logging.Formatter):
         self.host = host
         self.colorize = colorize
 
-    def format(self, record: logging.LogRecord) -> str:
+    def formatMessage(self, record: logging.LogRecord) -> str:
         tag, style = self.host.log_tag(record.name)
         level = f"{record.levelname:<8}"
         header = f"[{tag}]"
@@ -89,10 +88,11 @@ class TentacleLogFormatter(logging.Formatter):
             if style is not None:
                 header = style.render(header)
         line = f"{level} {self.formatTime(record)} {header} {record.getMessage()}"
-        if record.exc_info and not record.exc_text:
-            record.exc_text = self.formatException(record.exc_info)
-        if record.exc_text:
-            line = f"{line}\n{record.exc_text}"
-        if record.stack_info:
-            line = f"{line}\n{self.formatStack(record.stack_info)}"
         return line
+
+
+class TentacleLogHandler(RichHandler):
+    """Preserve tentacle ANSI colors while Rich renders each exception once."""
+
+    def render_message(self, record: logging.LogRecord, message: str) -> Text:
+        return Text.from_ansi(message)

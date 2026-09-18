@@ -10,36 +10,34 @@ from pydantic import ValidationError
 
 from octomate.tentacles.deepseek.process import BANNER
 from octomate.tentacles.deepseek.wire import (
-    ApprovalRequestedFrame,
     ClientRequest,
-    ClientResponse,
     ErrResult,
     OkResult,
-    QuestionRequestedFrame,
     ReasoningDeltaChunk,
-    RpcError,
+    RemoteInvocation,
+    RemoteItem,
     ServerResponse,
     SessionEvent,
-    SessionEventFrame,
-    SessionSubscribedFrame,
-    StreamErrorFrame,
+    SessionRecord,
     TextDeltaChunk,
     ToolCallDeltaChunk,
-    UnknownFrame,
     UsageChunk,
     assistant_message_of,
     chunk_delta,
     history_entry_adapter,
-    parse_mux_frame,
     permission_preset_of,
     provenance_of,
+    remote_event_adapter,
+    remote_message_adapter,
     request_route_of,
+    session_follow_adapter,
     text_of,
     tool_call_of,
     tool_result_of,
     turn_end_of,
     user_message_of,
 )
+from octomate.types.json import JsonValue
 
 
 def event(event_type: str, data: object = None, **extra: object) -> SessionEvent:
@@ -48,71 +46,45 @@ def event(event_type: str, data: object = None, **extra: object) -> SessionEvent
     )
 
 
-def test_parse_mux_frame_dispatches_every_known_frame() -> None:
-    frames = [
-        (
-            {
-                "type": "session/event",
-                "sessionId": "s1",
-                "event": {"type": "turn/start", "seq": 1, "time": 1.0, "data": None},
+def test_remote_stream_parses_durable_events_and_waterfalls() -> None:
+    item = remote_message_adapter.validate_python(
+        {
+            "type": "item",
+            "streamId": "s1",
+            "value": {
+                "type": "event",
+                "event": {
+                    "type": "turn/start",
+                    "seq": 1,
+                    "time": 1,
+                    "data": {"turn": 1},
+                },
             },
-            SessionEventFrame,
-        ),
-        (
-            {"type": "session/subscribed", "sessionId": "s1", "lastSeq": 41},
-            SessionSubscribedFrame,
-        ),
-        (
-            {
-                "type": "approval/requested",
-                "sessionId": "s1",
-                "approvalId": "a1",
-                "toolName": "bash",
-                "callId": "c1",
-                "reason": "writes outside the workspace",
-            },
-            ApprovalRequestedFrame,
-        ),
-        (
-            {
-                "type": "question/requested",
-                "sessionId": "s1",
-                "questions": [{"id": "q1", "question": "Which branch?"}],
-            },
-            QuestionRequestedFrame,
-        ),
-        (
-            {
-                "type": "stream/error",
-                "error": {"code": "internal", "message": "boom"},
-            },
-            StreamErrorFrame,
-        ),
-    ]
-    for payload, expected in frames:
-        assert isinstance(parse_mux_frame(payload), expected)
-
-
-def test_an_unknown_frame_is_data_not_a_parse_failure() -> None:
-    frame = parse_mux_frame(
-        {"type": "session/projection", "sessionId": "s1", "key": "title", "seq": 7}
+        }
     )
+    assert isinstance(item, RemoteItem)
+    entry = session_follow_adapter.validate_python(item.value)
+    assert isinstance(entry, SessionRecord)
+    assert entry.event.seq == 1
+    invocation = remote_event_adapter.validate_python(
+        {
+            "type": "waterfall",
+            "event": "approval/request",
+            "eventId": "event-1",
+            "agentId": "s1",
+            "request": {"toolName": "bash"},
+        }
+    )
+    assert isinstance(invocation, RemoteInvocation)
+    assert invocation.agent_id == "s1"
 
-    assert isinstance(frame, UnknownFrame)
-    assert frame.session_id == "s1"
-    assert frame.model_dump()["key"] == "title"
 
-
-def test_a_known_frame_whose_shape_moved_degrades_to_unknown() -> None:
-    # A future dsh renames lastSeq: the variant refuses, the frame still flows.
-    frame = parse_mux_frame({"type": "session/subscribed", "sessionId": "s1"})
-
-    assert isinstance(frame, UnknownFrame)
-
-
-def test_a_payload_that_is_not_a_frame_at_all_raises() -> None:
+@pytest.mark.parametrize(
+    "payload", ["not a frame", {"type": "item"}, {"type": "old-protocol"}]
+)
+def test_incompatible_transport_frames_fail_explicitly(payload: JsonValue) -> None:
     with pytest.raises(ValidationError):
-        parse_mux_frame("not a frame")
+        remote_message_adapter.validate_python(payload)
 
 
 def test_session_event_carries_unknown_types_and_fields() -> None:
@@ -130,14 +102,11 @@ def test_session_event_carries_unknown_types_and_fields() -> None:
 
 
 def test_client_messages_serialize_with_wire_names() -> None:
-    request = ClientRequest(rpc_id="r1", method="session.prompt", payload={"a": 1})
-    response = ClientResponse(
-        rpc_id="r2", result=ErrResult(error=RpcError(code="cancelled", message="no"))
+    request = ClientRequest(
+        rpc_id="r1", method="session/prompt", payload={"args": {"request": {"a": 1}}}
     )
-
     assert '"rpcId":"r1"' in request.model_dump_json(by_alias=True)
     assert '"type":"client-request"' in request.model_dump_json(by_alias=True)
-    assert '"ok":false' in response.model_dump_json(by_alias=True)
 
 
 def test_server_response_parses_both_result_branches() -> None:

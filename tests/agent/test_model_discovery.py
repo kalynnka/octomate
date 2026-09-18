@@ -96,6 +96,8 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         options = factory.call_args.kwargs["options"]
         assert isinstance(options, ClaudeAgentOptions)
         assert options.session_id is not None
+        assert options.extra_args == {"safe-mode": None}
+        assert options.strict_mcp_config is True
         assert tentacle.driven_sessions == {options.session_id: 1}
         return client
 
@@ -218,11 +220,9 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events())
-    FakeDeepseekApi.results["host.describe"] = OkResult(
-        value={"provider": "second", "model": "future-model"}
-    )
-    FakeDeepseekApi.results["llm.models"] = OkResult(
+    FakeDeepseekApi.results["session/modelCatalog"] = OkResult(
         value={
+            "default": {"provider": "second", "model": "future-model"},
             "groups": [
                 {
                     "id": provider,
@@ -264,7 +264,7 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
     [selected] = [
         payload
         for method, payload in FakeDeepseekApi.calls
-        if method == "session.selectModel"
+        if method == "session/selectModel"
     ]
     assert selected == {
         "sessionId": "sess-1",
@@ -280,8 +280,9 @@ async def test_deepseek_reports_catalog_failure_without_inventing_models(
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
-    FakeDeepseekApi.results["llm.models"] = OkResult(
+    FakeDeepseekApi.results["session/modelCatalog"] = OkResult(
         value={
+            "default": {"provider": "broken", "model": "unavailable"},
             "groups": [],
             "failures": [
                 {"id": "broken", "name": "Broken", "message": "Credentials missing"}
@@ -332,11 +333,9 @@ def harness(
         return CodexTentacle("codex", octomate, config=CodexConfig())
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
-    FakeDeepseekApi.results["host.describe"] = OkResult(
-        value={"provider": "source", "model": "excluded"}
-    )
-    FakeDeepseekApi.results["llm.models"] = OkResult(
+    FakeDeepseekApi.results["session/modelCatalog"] = OkResult(
         value={
+            "default": {"provider": "source", "model": "excluded"},
             "groups": [
                 {
                     "id": "source",

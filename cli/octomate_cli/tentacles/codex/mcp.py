@@ -58,12 +58,9 @@ def mcp_install(
 
     Writes the `mcp_servers.octomate` table — the server's URL, the bearer, and
     the runtime attribution header — preserving the operator's comments and every
-    other table. The credential is embedded, as it is for the other runtimes:
-    naming an environment variable instead would put one person's bearer in every
-    process launched from that shell, this deployment's Codex app-servers
-    included, where each turn's own kicker is the only identity a spell may run
-    as. Rotating means re-running install. A driven turn pins this entry by name
-    for the length of its process, so nothing here reaches it.
+    other table. The credential is embedded, as it is for the other runtimes;
+    rotating means re-running install. Driven sessions disable inherited MCP
+    servers and supply their caller's connection separately.
     """
     target = octomate_url(url)
     secret = octomate_secret()

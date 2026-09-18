@@ -25,7 +25,7 @@ from octomate.database import engine as db_engine
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
-from octomate.tentacles.base import TentacleLogFormatter
+from octomate.tentacles.base import TentacleLogFormatter, TentacleLogHandler
 from octomate.tentacles.channel import build_channel
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
@@ -95,11 +95,19 @@ def create_app() -> Octomate:
         oauth_encryption_key=config.oauth.encryption_key,
     )
 
-    console_handler = logging.StreamHandler()
+    console_handler = TentacleLogHandler(
+        show_time=False,
+        show_level=False,
+        show_path=False,
+        rich_tracebacks=True,
+        tracebacks_show_locals=False,
+        tracebacks_extra_lines=1,
+        tracebacks_max_frames=12,
+    )
     # Tint the level + each tentacle's header, but only on a real terminal so the
     # ANSI codes don't leak into piped/redirected logs.
     console_handler.setFormatter(
-        TentacleLogFormatter(octomate, colorize=console_handler.stream.isatty())
+        TentacleLogFormatter(octomate, colorize=console_handler.console.is_terminal)
     )
     logging.basicConfig(
         level=config.logging.level,

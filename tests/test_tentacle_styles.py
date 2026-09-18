@@ -1,12 +1,16 @@
+import io
 import logging
+import sys
+import uuid
 
 import pytest
 from pydantic import SecretStr
+from rich.console import Console
 from rich.style import Style
 
 from octomate import Octomate
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.tentacles.base import TentacleLogFormatter
+from octomate.tentacles.base import TentacleLogFormatter, TentacleLogHandler
 from octomate.tentacles.claude.base import ClaudeCodeTentacle
 from octomate.tentacles.codex.base import CodexTentacle
 from octomate.tentacles.deepseek.base import DeepseekTentacle
@@ -86,3 +90,36 @@ async def test_mcp_logs_do_not_claim_channel_logs(
     )
     assert channel.log_color is not None
     assert channel.log_color.render("[trunkline]") in colored.format(record)
+
+
+def test_rich_handler_renders_one_traceback_without_locals() -> None:
+    output = io.StringIO()
+    handler = TentacleLogHandler(
+        console=Console(file=output, width=120),
+        show_time=False,
+        show_level=False,
+        show_path=False,
+        rich_tracebacks=True,
+        tracebacks_show_locals=False,
+        tracebacks_max_frames=4,
+    )
+    handler.setFormatter(TentacleLogFormatter(Octomate(), colorize=False))
+    secret = str(uuid.uuid4())
+    try:
+        raise RuntimeError("dsh startup failed")
+    except RuntimeError:
+        record = logging.LogRecord(
+            "octomate.tentacles.deepseek.process",
+            logging.ERROR,
+            __file__,
+            1,
+            "Could not start dsh",
+            (),
+            sys.exc_info(),
+        )
+    handler.emit(record)
+    rendered = output.getvalue()
+    assert rendered.count("Traceback (most recent call last)") == 1
+    assert rendered.count("RuntimeError: dsh startup failed") == 1
+    assert "[deepseek] Could not start dsh" in rendered
+    assert secret not in rendered

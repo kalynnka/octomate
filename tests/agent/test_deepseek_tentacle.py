@@ -1,6 +1,6 @@
 """`DeepseekTentacle` drives one fake `/api` gateway: the process and client are
 monkeypatched fakes, the mux stream is an in-memory queue the fake feeds when
-`session.prompt` (or `respond`) is called — mirroring the real gateway, where
+`session/prompt` (or `respond`) is called — mirroring the real gateway, where
 prompting is what makes a turn's events flow."""
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ import pytest
 from logfire.testing import CaptureLogfire
 from logfire.testing import capfire as capfire
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
-from pydantic import HttpUrl
+from pydantic import HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
@@ -46,6 +46,7 @@ from octomate.tentacles.deepseek.wire import (
     RpcError,
     RpcReceipt,
     RpcResult,
+    SessionAssistantFrame,
     SessionEventFrame,
     StreamErrorFrame,
 )
@@ -107,8 +108,8 @@ class FakeSocket:
 class FakeDeepseekProcess:
     started: ClassVar[list[FakeDeepseekProcess]] = []
     stopped: ClassVar[int] = 0
-    # When True, the spawn loses the bind race: the endpoint port comes up
-    # serving (the winner's harness) and the start itself dies on the address.
+    launch_token: ClassVar[SecretStr | None] = None
+    # Model an occupied port: startup fails while another runtime keeps serving.
     fail_start: ClassVar[bool] = False
 
     def __init__(
@@ -119,12 +120,14 @@ class FakeDeepseekProcess:
         extra_args: list[str],
         dsh_home: Path,
         ready_timeout: float,
+        browser_url: HttpUrl | None,
     ) -> None:
         self.executable = executable
         self.port = port
         self.extra_args = extra_args
         self.dsh_home = dsh_home
         self.ready_timeout = ready_timeout
+        self.browser_url = browser_url
 
     async def start(self) -> HttpUrl:
         FakeDeepseekProcess.started.append(self)
@@ -139,21 +142,21 @@ class FakeDeepseekProcess:
 
 class FakeDeepseekApi:
     """Scripted `/api` carrier. `serving` holds the base URLs where a dsh
-    answers `host.describe` — empty until a fake process starts one, so the
-    attach probe finds nothing and the tentacle takes the launch path unless a
-    test adds the endpoint. `turn_script` frames flow when `session.prompt`
-    is called; `after_respond` frames flow when `respond` is — how the real
+    answers `settings/describe` — empty until a fake process starts one.
+    `turn_script` frames flow when `session/prompt` is called; `after_respond`
+    frames flow when `respond` is — how the real
     gateway behaves around a blocking approval."""
 
     serving: ClassVar[set[str]] = set()
     results: ClassVar[dict[str, RpcResult]] = {}
     calls: ClassVar[list[tuple[str, JsonValue]]] = []
-    responds: ClassVar[list[tuple[str, RpcResult]]] = []
+    responds: ClassVar[list[tuple[str, RpcResult | None]]] = []
     turn_script: ClassVar[list[TurnEntry]] = []
     after_respond: ClassVar[list[TurnEntry]] = []
     outbox: ClassVar[asyncio.Queue[tuple[str, MuxFrame]] | None] = None
     last_session: ClassVar[str | None] = None
     frame_serial: ClassVar[int] = 0
+    tokens: ClassVar[list[SecretStr]] = []
 
     def __init__(self, base_url: HttpUrl, http_client: object) -> None:
         self.base_url = base_url
@@ -166,17 +169,24 @@ class FakeDeepseekApi:
         return None
 
     async def answering(self) -> bool:
-        return not isinstance(await self.call("host.describe", {}), ErrResult)
+        return not isinstance(await self.call("settings/describe", {}), ErrResult)
+
+    async def authenticate(self, token: SecretStr) -> None:
+        self.tokens.append(token)
 
     @classmethod
     def reset(cls, turn_script: list[TurnEntry] | None = None) -> None:
         cls.serving = set()
         cls.results = {
-            "host.describe": OkResult(
+            "settings/describe": OkResult(
                 value={"provider": "deepseek-official", "model": "deepseek-v4-pro"}
             ),
-            "llm.models": OkResult(
+            "session/modelCatalog": OkResult(
                 value={
+                    "default": {
+                        "provider": "deepseek-official",
+                        "model": "deepseek-v4-pro",
+                    },
                     "groups": [
                         {
                             "id": "deepseek-official",
@@ -200,10 +210,10 @@ class FakeDeepseekApi:
                     "failures": [],
                 }
             ),
-            "session.create": OkResult(value={"sessionId": "sess-1"}),
-            "session.selectModel": OkResult(value={"selected": {}}),
-            "session.prompt": OkResult(value={"accepted": True}),
-            "session.cancel": OkResult(value={"accepted": True}),
+            "session/create": OkResult(value={"sessionId": "sess-1"}),
+            "session/selectModel": OkResult(value={"selected": {}}),
+            "session/prompt": OkResult(value={"accepted": True}),
+            "session/cancel": OkResult(value={"accepted": True}),
             "commands/execute": OkResult(
                 value={"commandId": "cmd-1", "result": {"kind": "success"}}
             ),
@@ -215,6 +225,7 @@ class FakeDeepseekApi:
         cls.outbox = asyncio.Queue()
         cls.last_session = None
         cls.frame_serial = 0
+        cls.tokens = []
 
     @classmethod
     def push(cls, session_id: str, entries: list[TurnEntry]) -> None:
@@ -230,23 +241,24 @@ class FakeDeepseekApi:
     async def call(self, method: str, payload: JsonValue) -> RpcResult:
         FakeDeepseekApi.calls.append((method, payload))
         if (
-            method == "host.describe"
+            method == "settings/describe"
             and str(self.base_url).rstrip("/") not in FakeDeepseekApi.serving
         ):
             return ErrResult(
                 error=RpcError(code="internal", message=f"nothing at {self.base_url}")
             )
-        if method == "session.prompt" and isinstance(payload, dict):
+        if method == "session/prompt" and isinstance(payload, dict):
             session_id = cast(str, payload["sessionId"])
             FakeDeepseekApi.last_session = session_id
             FakeDeepseekApi.push(session_id, FakeDeepseekApi.turn_script)
         return FakeDeepseekApi.results[method]
 
     async def remote(self, endpoint: str, args: JsonObject) -> RpcResult:
-        FakeDeepseekApi.calls.append((endpoint, {"args": args}))
-        return FakeDeepseekApi.results[endpoint]
+        return await self.call(
+            endpoint, args["request"] if "request" in args else {"args": args}
+        )
 
-    async def respond(self, rpc_id: str, result: RpcResult) -> RpcReceipt:
+    async def respond(self, rpc_id: str, result: RpcResult | None) -> RpcReceipt:
         FakeDeepseekApi.responds.append((rpc_id, result))
         if FakeDeepseekApi.after_respond and FakeDeepseekApi.last_session is not None:
             FakeDeepseekApi.push(
@@ -254,6 +266,12 @@ class FakeDeepseekApi:
             )
             FakeDeepseekApi.after_respond = []
         return RpcReceipt(accepted=True)
+
+    async def follow(self, socket: FakeSocket, session_id: str) -> None:
+        return None
+
+    async def unfollow(self, socket: FakeSocket, session_id: str) -> None:
+        return None
 
     async def open_mux(self) -> FakeSocket:
         return FakeSocket()
@@ -310,6 +328,7 @@ def patch_gateway(monkeypatch: pytest.MonkeyPatch) -> None:
     FakeDeepseekProcess.started = []
     FakeDeepseekProcess.stopped = 0
     FakeDeepseekProcess.fail_start = False
+    FakeDeepseekProcess.launch_token = None
 
 
 def _tentacle(
@@ -408,13 +427,13 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
         assert record.context.trace_id == 91
         assert record.parent == driving_span.context
 
-    [create_payload] = calls_of("session.create")
+    [create_payload] = calls_of("session/create")
     # A thread in no project runs in a workspace forked for the run, not at the
     # configured `cwd` — which defaults to `"."`, Octomate's own directory.
     assert create_payload == {
         "cwd": str(tentacle.octomate.workspaces.open(_THREAD, None).path)
     }
-    [select_payload] = calls_of("session.selectModel")
+    [select_payload] = calls_of("session/selectModel")
     assert select_payload == {
         "sessionId": "sess-1",
         "provider": "deepseek-official",
@@ -423,9 +442,15 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     }
     [permission_payload] = calls_of("commands/execute")
     assert permission_payload == {
-        "args": {"agentId": "sess-1", "line": "/permission workspace-write"}
+        "args": {
+            "agentId": "sess-1",
+            "line": "/permission workspace-write",
+            "submittedAttachments": [],
+        }
     }
-    [prompt_payload] = calls_of("session.prompt")
+    [prompt_payload] = calls_of("session/prompt")
+    assert isinstance(prompt_payload, dict)
+    assert uuid.UUID(str(prompt_payload.pop("requestId")))
     assert prompt_payload == {
         "sessionId": "sess-1",
         "mode": "queue",
@@ -453,8 +478,8 @@ async def test_run_reuses_the_stored_session_and_skips_create(
         result = await tentacle.run("more", conversation_address=KEY, thread_id=_THREAD)
 
     assert result.output == "again"
-    assert not calls_of("session.create")
-    [prompt_payload] = calls_of("session.prompt")
+    assert not calls_of("session/create")
+    [prompt_payload] = calls_of("session/prompt")
     assert isinstance(prompt_payload, dict)
     assert prompt_payload["sessionId"] == "sess-old"
 
@@ -472,7 +497,7 @@ async def test_agent_preset_and_the_chat_cwd_reach_session_create(
     async with tentacle:
         await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
-    [create_payload] = calls_of("session.create")
+    [create_payload] = calls_of("session/create")
     assert create_payload == {
         "cwd": str(tentacle.octomate.workspaces.open(_THREAD, None).path),
         "agentPreset": "octopus",
@@ -491,7 +516,7 @@ async def test_without_a_model_the_session_selection_is_left_alone(
     async with tentacle:
         await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
-    assert not calls_of("session.selectModel")
+    assert not calls_of("session/selectModel")
 
 
 async def test_the_conversations_posture_overrides_the_configured_one(
@@ -513,6 +538,7 @@ async def test_the_conversations_posture_overrides_the_configured_one(
     assert permission_payload["args"] == {
         "agentId": "sess-1",
         "line": "/permission danger-full-access",
+        "submittedAttachments": [],
     }
 
 
@@ -535,6 +561,7 @@ async def test_a_wrong_provider_posture_falls_back_to_config(
     assert permission_payload["args"] == {
         "agentId": "sess-1",
         "line": "/permission workspace-write",
+        "submittedAttachments": [],
     }
 
 
@@ -553,7 +580,7 @@ async def test_instructions_frame_the_prompt(
             instructions="You are an accomplice.",
         )
 
-    [prompt_payload] = calls_of("session.prompt")
+    [prompt_payload] = calls_of("session/prompt")
     assert isinstance(prompt_payload, dict)
     # Marked, because dsh has no instructions channel and everything else in the
     # prompt is what somebody said — the brief stays the body.
@@ -585,32 +612,18 @@ async def test_output_type_is_refused(
             )
 
 
-async def test_a_slash_intercepted_prompt_is_the_whole_answer(
+async def test_slash_text_is_a_normal_prompt_on_the_remote_api(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
-    FakeDeepseekApi.reset()
-    FakeDeepseekApi.results["session.prompt"] = OkResult(
-        value={
-            "accepted": True,
-            "command": {"kind": "success", "text": "preset workspace-write"},
-        }
-    )
-    conversations = FakeConversationManager()
-    tentacle = _tentacle(conversations)
-
+    FakeDeepseekApi.reset(turn_events("normal model response"))
+    tentacle = _tentacle(FakeConversationManager())
     async with tentacle:
         result = await tentacle.run(
-            "/permission workspace-write",
-            conversation_address=KEY,
-            thread_id=_THREAD,
+            "/permission workspace-write", conversation_address=KEY, thread_id=_THREAD
         )
-
-    assert result.output == "preset workspace-write"
-    assert not calls_of("session.cancel")
-    [recorded] = conversations.runs
-    _fake, _label, messages = recorded
-    assert messages
+    assert result.output == "normal model response"
+    assert not calls_of("session/cancel")
 
 
 async def test_a_refused_rpc_becomes_the_runs_failure(
@@ -618,7 +631,7 @@ async def test_a_refused_rpc_becomes_the_runs_failure(
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events())
-    FakeDeepseekApi.results["session.create"] = ErrResult(
+    FakeDeepseekApi.results["session/create"] = ErrResult(
         error=RpcError(code="internal", message="no adapters")
     )
     tentacle = _tentacle(FakeConversationManager())
@@ -677,7 +690,7 @@ async def test_a_mid_turn_stream_error_persists_cancels_and_raises(
     [recorded] = conversations.runs
     _fake, _label, messages = recorded
     assert messages
-    [cancel_payload] = calls_of("session.cancel")
+    [cancel_payload] = calls_of("session/cancel")
     assert cancel_payload == {"sessionId": "sess-1"}
 
 
@@ -737,17 +750,16 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
     async def call(
         client: FakeDeepseekApi, method: str, payload: JsonValue
     ) -> RpcResult:
-        if method == "session.create":
+        if method == "session/create":
             assert tentacle.driven_sessions == {}
             observed.append(method)
-        if method in {"session.prompt", "session.cancel"}:
+        if method in {"session/prompt", "session/cancel"}:
             assert isinstance(payload, dict)
             session_id = payload["sessionId"]
             assert isinstance(session_id, str)
             assert tentacle.driven_sessions == {session_id: 1}
-            assert not tentacle.should_ingest_session(session_id)
             observed.append(method)
-            if method == "session.cancel" and cancel_fails:
+            if method == "session/cancel" and cancel_fails:
                 raise RuntimeError("cancel failed")
         return await original_call(client, method, payload)
 
@@ -761,13 +773,12 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         assert tentacle.subscribers == {}
         assert tentacle.bridge_contexts == {}
         assert tentacle.driven_sessions == {}
-        assert tentacle.should_ingest_session("sess-1")
 
     assert observed == [
         "workspace.enter",
-        "session.create",
-        "session.prompt",
-        "session.cancel",
+        "session/create",
+        "session/prompt",
+        "session/cancel",
         "record",
         "workspace.exit",
     ]
@@ -799,7 +810,7 @@ async def test_an_error_turn_raises_dshs_own_message(
             await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
     assert conversations.runs
-    assert not calls_of("session.cancel")
+    assert not calls_of("session/cancel")
 
 
 async def test_an_approval_mid_run_bridges_to_a_card_and_back(
@@ -848,11 +859,7 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
     [(rpc_id, response)] = FakeDeepseekApi.responds
     assert rpc_id == "rpc-2"
     assert isinstance(response, OkResult)
-    assert response.value == {
-        "sessionId": "sess-1",
-        "approvalId": "ap-1",
-        "outcome": "allowed-once",
-    }
+    assert response.value == "allowed-once"
 
 
 async def test_a_declined_approval_answers_rejected() -> None:
@@ -887,8 +894,7 @@ async def test_a_declined_approval_answers_rejected() -> None:
     [(rpc_id, response)] = FakeDeepseekApi.responds
     assert rpc_id == "rpc-9"
     assert isinstance(response, OkResult)
-    assert isinstance(response.value, dict)
-    assert response.value["outcome"] == "rejected"
+    assert response.value == "rejected"
 
 
 async def test_an_expired_approval_answers_cancelled() -> None:
@@ -969,7 +975,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     assert conversation.allowed_tools == ["bash"]
     assert len(feelers.requests) == 1
     outcomes = [
-        cast(dict[str, JsonValue], response.value)["outcome"]
+        response.value
         for _rpc, response in FakeDeepseekApi.responds
         if isinstance(response, OkResult)
     ]
@@ -1002,11 +1008,10 @@ async def test_a_non_interactive_run_declines_without_a_card() -> None:
     assert not feelers.requests
     [(_rpc, response)] = FakeDeepseekApi.responds
     assert isinstance(response, OkResult)
-    assert isinstance(response.value, dict)
-    assert response.value["outcome"] == "rejected"
+    assert response.value == "rejected"
 
 
-async def test_a_request_nobody_drives_is_cancelled_not_left_hanging() -> None:
+async def test_a_request_nobody_drives_is_delegated_to_other_clients() -> None:
     FakeDeepseekApi.reset()
     tentacle = _tentacle(FakeConversationManager())
     tentacle.client = cast(
@@ -1024,8 +1029,7 @@ async def test_a_request_nobody_drives_is_cancelled_not_left_hanging() -> None:
     )
 
     [(_rpc, response)] = FakeDeepseekApi.responds
-    assert isinstance(response, ErrResult)
-    assert response.error.code == "cancelled"
+    assert response is None
 
 
 async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
@@ -1081,17 +1085,14 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     [(_rpc, response)] = FakeDeepseekApi.responds
     assert isinstance(response, OkResult)
     assert response.value == {
-        "sessionId": "sess-1",
-        "answer": {
-            "answers": [
-                {"id": "q1", "selected": ["main"]},
-                {"id": "q2", "selected": [], "custom": "ship it"},
-            ]
-        },
+        "answers": [
+            {"id": "q1", "selected": ["main"]},
+            {"id": "q2", "selected": [], "custom": "ship it"},
+        ],
     }
 
 
-async def test_attaches_to_a_dsh_already_serving_the_endpoint(
+async def test_starts_its_own_runtime_beside_native_dsh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
@@ -1100,15 +1101,14 @@ async def test_attaches_to_a_dsh_already_serving_the_endpoint(
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
-        assert tentacle.process is None
+        assert tentacle.process is not None
         assert tentacle.client is not None
-        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3080")
+        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3081")
         result = await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
     assert result.output == "shared"
-    assert not FakeDeepseekProcess.started
-    # The attached harness is not ours to stop.
-    assert FakeDeepseekProcess.stopped == 0
+    assert len(FakeDeepseekProcess.started) == 1
+    assert FakeDeepseekProcess.stopped == 1
 
 
 async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
@@ -1118,7 +1118,9 @@ async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
     FakeDeepseekApi.reset()
     tentacle = _tentacle(
         FakeConversationManager(),
-        config=DeepseekConfig(port=4090),
+        config=DeepseekConfig(
+            port=4090, browser_url=HttpUrl("https://dsh.example:8443")
+        ),
     )
 
     async with tentacle:
@@ -1126,10 +1128,45 @@ async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
 
     [process] = FakeDeepseekProcess.started
     assert process.port == 4090
+    assert process.browser_url == HttpUrl("https://dsh.example:8443")
     assert FakeDeepseekProcess.stopped == 1
 
 
-async def test_losing_the_start_race_attaches_to_the_winner(
+async def test_authenticates_with_the_spawned_launch_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset()
+    token = SecretStr("private-launch-token")
+    FakeDeepseekProcess.launch_token = token
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        assert FakeDeepseekApi.tokens == [token]
+
+    assert FakeDeepseekProcess.stopped == 1
+
+
+async def test_authentication_failure_stops_the_started_harness(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset()
+    FakeDeepseekProcess.launch_token = SecretStr("rejected-token")
+
+    async def reject(self: FakeDeepseekApi, token: SecretStr) -> None:
+        raise RuntimeError("launch token rejected")
+
+    monkeypatch.setattr(FakeDeepseekApi, "authenticate", reject)
+    tentacle = _tentacle(FakeConversationManager())
+
+    with pytest.raises(RuntimeError, match="launch token rejected"):
+        await tentacle.__aenter__()
+
+    assert FakeDeepseekProcess.stopped == 1
+
+
+async def test_start_failure_never_attaches_to_another_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
@@ -1137,11 +1174,11 @@ async def test_losing_the_start_race_attaches_to_the_winner(
     FakeDeepseekProcess.fail_start = True
     tentacle = _tentacle(FakeConversationManager())
 
-    async with tentacle:
-        assert tentacle.process is None
-        assert tentacle.client is not None
-        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3080")
+    with pytest.raises(RuntimeError, match="exited before reporting a URL"):
+        await tentacle.__aenter__()
 
+    assert tentacle.process is None
+    assert not calls_of("settings/describe")
     assert FakeDeepseekProcess.stopped == 0
 
 
@@ -1167,7 +1204,7 @@ async def test_detached_run_collects_through_turn_end(
         client: FakeDeepseekApi, method: str, payload: JsonValue
     ) -> RpcResult:
         result = await original_call(client, method, payload)
-        if method == "session.prompt":
+        if method == "session/prompt":
             prompted.set()
             if detach == "prompt":
                 await accept.wait()
@@ -1214,13 +1251,12 @@ async def test_detached_run_collects_through_turn_end(
 
             assert not task.done()
             assert tentacle.driven_sessions == {"sess-1": 1}
-            assert not tentacle.should_ingest_session("sess-1")
             assert "sess-1" in tentacle.subscribers
             assert "sess-1" in tentacle.bridge_contexts
             assert len(tentacle.run_tasks) == 1
             assert tentacle.mux_task is not None
             assert not tentacle.mux_task.done()
-            assert not calls_of("session.cancel")
+            assert not calls_of("session/cancel")
             assert discarded == []
             assert conversations.runs == []
         finally:
@@ -1239,7 +1275,7 @@ async def test_detached_run_collects_through_turn_end(
         assert tentacle.bridge_contexts == {}
         assert tentacle.run_tasks == set()
         assert len(discarded) == 1
-        assert not calls_of("session.cancel")
+        assert not calls_of("session/cancel")
         [recorded] = conversations.runs
         assert any(
             isinstance(part, TextPart) and part.content == "finished"
@@ -1295,8 +1331,8 @@ async def test_concurrent_run_waits_before_claiming_the_workspace(
             async with asyncio.timeout(2):
                 await second_waiting.wait()
             assert len(claimed) == 1
-            assert len(calls_of("session.prompt")) == 1
-            assert not calls_of("session.cancel")
+            assert len(calls_of("session/prompt")) == 1
+            assert not calls_of("session/cancel")
         finally:
             FakeDeepseekApi.push("sess-1", script[2:])
             async with asyncio.timeout(2):
@@ -1307,18 +1343,14 @@ async def test_concurrent_run_waits_before_claiming_the_workspace(
         assert len(conversations.runs) == 2
 
 
-@pytest.mark.parametrize("attached", [False, True])
 @pytest.mark.parametrize("cancel_shutdown", [False, True])
 async def test_aexit_drains_live_sessions_before_closing_the_mux(
     monkeypatch: pytest.MonkeyPatch,
-    attached: bool,
     cancel_shutdown: bool,
 ) -> None:
     patch_gateway(monkeypatch)
     script = turn_events()
     FakeDeepseekApi.reset(script[:2])
-    if attached:
-        FakeDeepseekApi.serving.add("http://127.0.0.1:3080")
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     observed = asyncio.Event()
@@ -1347,7 +1379,7 @@ async def test_aexit_drains_live_sessions_before_closing_the_mux(
         assert "sess-1" in tentacle.bridge_contexts
         assert tentacle.mux_task is not None
         assert not tentacle.mux_task.done()
-        assert not calls_of("session.cancel")
+        assert not calls_of("session/cancel")
         assert FakeDeepseekProcess.stopped == 0
     finally:
         FakeDeepseekApi.push("sess-1", script[2:])
@@ -1360,8 +1392,39 @@ async def test_aexit_drains_live_sessions_before_closing_the_mux(
                 await shutdown
 
     assert len(conversations.runs) == 1
-    assert not calls_of("session.cancel")
-    assert FakeDeepseekProcess.stopped == (0 if attached else 1)
+    assert not calls_of("session/cancel")
+    assert FakeDeepseekProcess.stopped == 1
     assert tentacle.mux_task is None
     assert tentacle.process is None
     assert tentacle.driven_sessions == {}
+
+
+async def test_rejected_interaction_reply_fails_its_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    FakeDeepseekApi.reset()
+    tentacle = _tentacle(FakeConversationManager())
+    api = FakeDeepseekApi(HttpUrl("http://t"), None)
+    tentacle.client = cast(DeepseekApiClient, api)
+    queue: asyncio.Queue[
+        SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
+    ] = asyncio.Queue()
+    tentacle.subscribers["sess-1"] = queue
+
+    async def refuse(event_id: str, result: RpcResult | None) -> RpcReceipt:
+        return RpcReceipt(accepted=False, reason="HTTP 500")
+
+    monkeypatch.setattr(api, "respond", refuse)
+    await tentacle.answer_interaction(
+        "event-1",
+        ApprovalRequestedFrame(
+            type="approval/requested",
+            session_id="sess-1",
+            approval_id="approval-1",
+            tool_name="bash",
+        ),
+    )
+    frame = queue.get_nowait()
+    assert isinstance(frame, StreamErrorFrame)
+    assert frame.error.code == "interaction-reply-failed"
+    assert "HTTP 500" in frame.error.message

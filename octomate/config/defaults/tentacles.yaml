@@ -92,18 +92,17 @@
   #   max_clients: 8             # warm app-server processes pooled; ~ = unbounded
   #   client_idle_ttl: 600       # seconds an idle pooled client lives; ~ = forever
 
-  # WIP DeepSeek Harness agent. Attaches to a dsh already serving host:port and starts a
-  # `dsh web` child there only when nothing answers — two harnesses over one DSH_HOME
-  # corrupt session logs. Drives it over its /api gateway.
+  # WIP DeepSeek Harness agent. Owns a `dsh web` child with private extension
+  # configuration, sharing native settings, credentials, sessions and attachments.
   #
   # deepseek:
   #   type: deepseek
   #   enabled: true
-  #   host: 127.0.0.1            # loopback only; the gateway has no auth
-  #   port: 3080                 # dsh's default bind, and what a started child takes
+  #   host: 127.0.0.1            # authenticated loopback gateway
+  #   port: 3081                 # separate from native dsh's 3080; must be free
   #   executable: dsh            # on PATH, or an absolute path to a built dsh
-  #   extra_args: []             # appended after `web --host ... --port ... --no-open`
-  #   dsh_home: ~/.dsh           # DSH_HOME for a started child
+  #   extra_args: []             # Octomate-managed overlays, e.g. --patch <path>
+  #   dsh_home: ~/.dsh           # shared data source; local extension config is ignored
   #
   #   # dsh's shipped presets, each bundling sandbox mode and approval policy:
   #   # workspace-write | danger-full-access

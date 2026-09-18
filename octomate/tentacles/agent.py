@@ -181,15 +181,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> AsyncGenerator[None]:
         """Count a driven runtime session or an accepted native stream.
 
-        Driven runs prepare their workspace before claiming a known runtime
-        session id. Claim before activity that Octomate's native endpoints ingest,
-        and hold through the run's cleanup, including interruption or cancellation;
-        release it before recording the run and before leaving the workspace.
-        Session creation may precede the claim only if native ingest ignores it.
-
-        Native streams claim after their handshake is accepted and keep the claim
-        through stream cleanup. Probes without a workspace, such as model
-        discovery, still claim before connecting to a hook-emitting runtime.
+        Driven runs hold the count through cleanup, including interruption or
+        cancellation. Native streams hold it from their accepted handshake
+        through stream cleanup.
         """
         sessions = self.native_sessions if native else self.driven_sessions
         sessions[session_id] += 1
@@ -199,15 +193,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             sessions[session_id] -= 1
             if sessions[session_id] == 0:
                 del sessions[session_id]
-
-    def should_ingest_session(self, session_id: str) -> bool:
-        """Native endpoints are shared by all configured agents for a runtime."""
-        if session_id in self.driven_sessions:
-            return False
-        return self.native_id is None or not any(
-            agent.native_id == self.native_id and session_id in agent.driven_sessions
-            for agent in self.octomate.agents.values()
-        )
 
     def build_routes(self) -> list[AgentRoute]:
         return [
