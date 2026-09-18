@@ -3,12 +3,17 @@
 The `deepseek` agent tentacle drives DeepSeek Harness the way dsh's own web client
 does: it speaks the `/api` gateway — HTTP for unary calls, the mux WebSocket
 at `/api/remote.mux` for session streams and approval/question events, and
-`POST /api/$events/result` for answers. It attaches to a
-dsh already serving the configured `host:port` and starts a `dsh web` child on
-that same fixed port only when nothing answers, because dsh has no
-cross-process lock on session logs and two harnesses over one `$DSH_HOME`
-corrupt them; only a child of its own is stopped on shutdown. These are the
-limitations the first version accepts, and why.
+`POST /api/$events/result` for answers. Octomate always starts and owns a
+`dsh web` child on a separate port (3081 by default). Each child gets a fresh
+private `DSH_HOME`; native home and profile patches, plugins, hooks and MCPs are
+not loaded. Configure additional plugins through Octomate's `extra_args` overlays.
+
+`dsh_home` remains the shared data source (default `~/.dsh`): explicit plugin paths
+reuse `settings.yaml`, `.credentials.yaml`, `sessions/` and `attachments/` without
+copying them. Runtime configuration and caches are temporary and removed on stop.
+DSH's cross-process write leases permit shared history reads but only one writer
+per session; transferring a session requires releasing its write handle first.
+Custom presets must be registered through Octomate before resuming their sessions.
 
 ## Accepted limitations
 
@@ -53,9 +58,8 @@ limitations the first version accepts, and why.
      The ledger row joins every `source.kind == "user"` message of the turn —
      steered prompts included — and leaves the harness's own injections
      (`agent-instructions`, `plugin` context) to the replay metadata.
-   - All hook and stream traffic is ingested as external sessions, including
-     sessions started by Octomate. Their native threads remain separate from
-     the SDK conversations, as with Claude and Codex.
+   - Native hook and stream traffic is ingested as external sessions. Driven
+     sessions do not load those hooks.
    - The hooks bridge mounts via `$DSH_HOME/cordis.patch.yml`, which every dsh
      process sharing that home loads — but the bridge package ships outside
      dsh's bundled dependency closure, so the first install must link it
@@ -94,19 +98,13 @@ limitations the first version accepts, and why.
    `output_type` is refused with a `ValueError`.
 
 7. **No mux reconnect.** The event socket dropping fails in-flight runs fast
-   (after persisting what accumulated) instead of resuming — a deliberate
-   departure from the VS Code extension's backoff loop. A started child on
-   loopback dropping its socket is a broken harness, not weather; an attached
-   harness going away (the operator stopped their `dsh web`) fails the same
-   way. Neither is restarted or re-attached mid-flight; re-entering the
-   tentacle (restarting octomate) is the recovery.
+   (after persisting what accumulated) instead of resuming. The child is not
+   restarted mid-flight; restarting Octomate is the recovery.
 
 8. **A hard-killed octomate orphans a `dsh web` child it started.**
-   `__aexit__` tearing down sends SIGTERM (escalating to SIGKILL) to a child
-   of its own — an attached harness is deliberately never stopped — but dsh
-   has no parent-liveness flag, so nothing protects against octomate itself
-   being SIGKILLed. The orphan holds ~40–140 MB until killed by hand, though
-   a later octomate boot will attach to it rather than double up.
+   Normal shutdown sends SIGTERM, escalating to SIGKILL. If Octomate itself
+   is SIGKILLed, stop the orphan manually before restarting: an occupied port
+   fails startup, and Octomate never attaches to the existing process.
 
 9. **Non-interactive runs auto-reject approvals.** A commissioned (subagent)
    run has no human to ask, and dsh's ask-vs-never policy lives inside the
@@ -126,24 +124,20 @@ limitations the first version accepts, and why.
     Octomate reads `dsh --version`, logs an exact match at INFO, and warns for a
     different or unrecognized version. Development checkouts can change without a version
     bump, so authentication, `settings/describe`, `session/modelCatalog`, and the
-    Remote event handshake also have to succeed. Existing servers do not publish
-    their version: attachment logs that limitation rather than presenting the
-    local executable's version as the running server's version.
+    Remote event handshake also have to succeed. The build must include
+    cross-process session write leases when sharing native session storage.
 
 12. **Octomate connects over loopback with authentication.** A started
     harness's launch token is exchanged automatically for a cookie used by HTTP
-    and WebSocket requests. To attach to an existing harness, set
-    `tentacles.deepseek.launch_token` from its launch URL. This is a local dsh
-    credential, separate from the model provider's API key. Captured diagnostics
-    redact launch tokens. An authentication or protocol error fails startup
-    without launching another harness on that endpoint.
+    and WebSocket requests. This is a local dsh credential, separate from the
+    model provider's API key. Captured diagnostics redact launch tokens. An
+    authentication or protocol error stops the child and fails startup.
 
     For human browser access, Octomate logs `dsh web: <url>?token=...` once at
     INFO when the child reports readiness, following dsh's launch banner. It
     uses the normal logging handlers and formatting. No separate login-link
     file is written. The token stays in memory for Octomate's cookie exchange;
     later dsh diagnostics redact it.
-    An attached, independently launched harness keeps its own launch-link workflow.
 
 13. **Subprocess diagnostics are bounded.** Normal dsh output goes to the
     `octomate.tentacles.deepseek.process` logger at DEBUG. Startup failures include
@@ -186,22 +180,22 @@ DSH_TEST_EXECUTABLE=/absolute/path/to/deepseek-harness/apps/cli/lib/bin.js \
 
 The opt-in test uses temporary dsh settings, sessions and workspaces, in-memory
 Octomate managers, and a keyless mock model. It checks authentication, discovery,
-streaming, tools, resumed sessions, approvals, questions, cancellation and native
-history reads. It does not use a real model API or the operator's database.
+streaming, tools, approvals, questions, cancellation, native-extension exclusion,
+shared credentials/history, write-lock contention and resuming after restart.
+It does not use a real model API or the operator's database.
 
 ## Verifying against a real dsh (manual smoke)
 
 To check your own channel and model credentials after the isolated test:
 
-1. Either run `dsh web` yourself (octomate attaches to it at
-   `127.0.0.1:3080`), or let octomate start one: put `dsh` on `PATH`, or set
-   `tentacles.deepseek.executable` to `<checkout>/apps/cli/lib/bin.js`. When
-   attaching, configure `launch_token` from the existing harness's launch URL.
+1. Put `dsh` on `PATH`, or set `tentacles.deepseek.executable` to
+   `<checkout>/apps/cli/lib/bin.js`. Leave port 3081 free for Octomate's child;
+   native DSH can continue using 3080. Set `dsh_home` to the native data home.
 2. In the config home's `tentacles.yaml`, enable a `deepseek` tentacle with
    `type: deepseek` and list its id under the channel's `agents:`. The harness supplies
    the model/provider catalog and its default; no model list is needed.
-3. Boot Octomate and check for `dsh Remote API connected` or a successful
-   attachment message. `extra_args` such as `--patch` are placed before the web
+3. Boot Octomate and check for `dsh Remote API connected`.
+   `extra_args` such as `--patch` are placed before the web
    app's `--host`, `--port`, and `--no-open` flags.
 4. Summon dsh from the channel: a turn should stream text (and thinking) live,
    and the run should appear in thread history with the dsh session id as the

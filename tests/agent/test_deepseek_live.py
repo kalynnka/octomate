@@ -29,9 +29,11 @@ from octomate.config.agents import DeepseekConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.base import DeepseekBridgeContext
+from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
+    ErrResult,
     OkResult,
     QuestionRequestedFrame,
 )
@@ -57,6 +59,14 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     (home / "settings.yaml").write_text(
         "agent-default-model:\n  provider: octomate-test\n  model: mock\n"
     )
+    credentials = home / ".credentials.yaml"
+    credentials.write_text("version: 1\nrefs:\n  OCTOMATE_DSH_TEST_TOKEN: synthetic\n")
+    credentials.chmod(0o600)
+    native_patch = "- insert:\n    - name: native-extension-must-not-load\n"
+    (home / "cordis.patch.yml").write_text(native_patch)
+    native_profile = home / "profiles" / "web"
+    native_profile.mkdir(parents=True)
+    (native_profile / "cordis.patch.yml").write_text(native_patch)
     plugin = tmp_path / "mock.mjs"
     plugin.write_text(
         (Path(__file__).parent / "fixtures/dsh_remote_mock.mjs")
@@ -151,6 +161,46 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         ]
         assert kinds.count("turn/end") == 2
         assert "tool/result" in kinds
+        reader = DeepseekProcess(
+            executable=executable,
+            port=0,
+            extra_args=["--patch", str(patch)],
+            dsh_home=home,
+            ready_timeout=60,
+        )
+        try:
+            reader_url = await reader.start()
+            assert reader.launch_token is not None
+            async with DeepseekApiClient(
+                reader_url, httpx.AsyncClient(base_url=str(reader_url), trust_env=False)
+            ) as reader_client:
+                await reader_client.authenticate(reader.launch_token)
+                with monkeypatch.context() as reader_env:
+                    reader_env.setenv(
+                        "DSH_LAUNCH_TOKEN", reader.launch_token.get_secret_value()
+                    )
+                    shared_history = await asyncio.to_thread(
+                        DshHistoryClient, str(reader_url)
+                    )
+                    shared_records = await asyncio.to_thread(
+                        new_entries, shared_history, first_session, 0
+                    )
+                    assert shared_records == records
+                busy = await reader_client.remote(
+                    "session/create",
+                    {
+                        "request": {
+                            "sessionId": first_session,
+                            "cwd": str(
+                                tentacle.octomate.workspaces.open(thread, None).path
+                            ),
+                        }
+                    },
+                )
+                assert isinstance(busy, ErrResult)
+                assert "already owned" in busy.error.message
+        finally:
+            await reader.stop()
         waiting = asyncio.Event()
         cancelled = asyncio.Event()
 
@@ -180,6 +230,18 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         assert not tentacle.subscribers
         assert not tentacle.bridge_contexts
     assert tentacle.process is None
+    assert (home / "cordis.patch.yml").read_text() == native_patch
+    assert (native_profile / "cordis.patch.yml").read_text() == native_patch
+    assert "OCTOMATE_DSH_TEST_TOKEN: synthetic\n" in credentials.read_text()
+    restarted = DeepseekTentacle("deepseek", tentacle.octomate, config=tentacle.config)
+    monkeypatch.setattr(restarted, "answer_approval", approve)
+    monkeypatch.setattr(restarted, "answer_questions", answer)
+    async with asyncio.timeout(90), restarted:
+        result = await restarted.run(
+            "Continue after restart", conversation_address=address, thread_id=thread
+        )
+        assert result.output == "Octomate Remote API works"
+        assert conversations.runs[-1][0].external_id == first_session
 
 
 async def test_real_harness_browser_login_through_a_trusted_proxy(

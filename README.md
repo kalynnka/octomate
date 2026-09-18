@@ -400,7 +400,7 @@ octomate deepseek mcp install  # a dsh-mcp-client row in $DSH_HOME/cordis.patch.
 ```
 
 MCP installs embed the server URL and token; reinstall after changing either.
-Driven Claude and Codex sessions disable local hooks, plugins and MCPs; configure
+Driven Claude, Codex and DSH sessions disable local hooks, plugins and MCPs; configure
 tools through Octomate. Claude also skips local instructions and skills; Codex
 disables account apps.
 

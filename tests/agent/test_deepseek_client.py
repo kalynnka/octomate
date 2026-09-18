@@ -226,7 +226,7 @@ async def test_session_stream_waits_for_snapshot_and_keeps_chunks_cursorless() -
         await client.http_client.aclose()
 
 
-async def test_configured_token_does_not_prevent_starting_an_absent_harness() -> None:
+async def test_connection_refused_reports_an_absent_harness() -> None:
     def refused(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("Connection refused")
 
@@ -234,4 +234,4 @@ async def test_configured_token_does_not_prevent_starting_an_absent_harness() ->
         HttpUrl(BASE_URL),
         httpx.AsyncClient(base_url=BASE_URL, transport=httpx.MockTransport(refused)),
     ) as client:
-        assert not await client.answering(SecretStr("stale-token"))
+        assert not await client.answering()

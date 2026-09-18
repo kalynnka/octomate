@@ -21,7 +21,7 @@ def codex(console: Console) -> str:
 
 def deepseek(console: Console) -> str:
     console.print(
-        "DSH is experimental; review agents.deepseek and its harness settings before activation.",
+        "DSH is experimental. Octomate owns a separate runtime and shares native settings and sessions; local plugins, hooks and MCPs are disabled. Review tentacles.deepseek before activation.",
         style="yellow",
     )
     return "deepseek"

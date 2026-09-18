@@ -1,7 +1,7 @@
 import { LlmAdapter } from "__DSH_LLM_MODULE__";
 
 export const name = "octomate-smoke";
-export const inject = ["llm", "approval", "userQuestions"];
+export const inject = ["llm", "approval", "userQuestions", "credentials"];
 
 class Mock extends LlmAdapter {
   async listModels() {
@@ -42,7 +42,11 @@ class Mock extends LlmAdapter {
   }
 }
 
-export function apply(ctx) {
+export async function apply(ctx) {
+  const credential = await ctx.credentials.resolve("OCTOMATE_DSH_TEST_TOKEN");
+  if (credential?.value !== "synthetic") {
+    throw new Error("Shared test credentials are unavailable");
+  }
   ctx.llm.registerAdapter(["octomate-test"], new Mock());
   ctx.on("agent/request", async ({ agent, step, signal }, next) => {
     if (step === 1) {

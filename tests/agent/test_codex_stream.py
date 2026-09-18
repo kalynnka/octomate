@@ -473,7 +473,7 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
 
 
 @pytest.mark.parametrize("other_tentacle", [False, True])
-async def test_driven_session_exclusion_is_parked_for_both_ingest_endpoints(
+async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     other_tentacle: bool,
 ) -> None:
     client, tentacle = stream_client()

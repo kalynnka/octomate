@@ -993,7 +993,6 @@ async def test_detached_run_drains_before_releasing_resources(
 
             assert not task.done()
             assert tentacle.driven_sessions == {"thread-new": 1}
-            assert not tentacle.should_ingest_session("thread-new")
             assert len(tentacle.live_turns) == 1
             assert len(tentacle.bridge_contexts) == 1
             assert len(tentacle.run_tasks) == 1
@@ -1239,8 +1238,6 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
         assert thread_id == session_id
         assert tentacle.driven_sessions == {session_id: 1}
         assert tentacle.native_sessions == {}
-        assert not tentacle.should_ingest_session(session_id)
-        assert tentacle.should_ingest_session("native-other")
         dispatched.append(thread_id)
         lifecycle.append("turn")
 
@@ -1258,7 +1255,6 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
             else:
                 await tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
             assert tentacle.driven_sessions == {}
-            assert tentacle.should_ingest_session(session_id)
         assert FakeCodex.builds == 1
         [thread_call] = FakeCodex.thread_calls
         assert thread_call.kind == ("resume" if external_id else "start")

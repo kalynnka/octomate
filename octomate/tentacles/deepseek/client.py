@@ -89,7 +89,7 @@ class DeepseekApiClient:
                 f"(HTTP {response.status_code})"
             )
 
-    async def answering(self, launch_token: SecretStr | None = None) -> bool:
+    async def answering(self) -> bool:
         """Only a refused connection means no harness is listening."""
         result = await self.remote("settings/describe", {})
         if isinstance(result, OkResult):
@@ -97,12 +97,8 @@ class DeepseekApiClient:
         if result.error.code == "connection-refused":
             return False
         if result.error.code == "http-401":
-            if launch_token is not None:
-                await self.authenticate(launch_token)
-                return await self.answering()
             raise RuntimeError(
-                f"dsh at {self.base_url} requires authentication; configure "
-                "launch_token from that harness's launch URL to attach"
+                f"dsh at {self.base_url} requires authentication after startup"
             )
         raise RuntimeError(
             f"dsh at {self.base_url} cannot serve the required Remote API "

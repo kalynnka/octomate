@@ -10,7 +10,6 @@ from pydantic import (
     ConfigDict,
     Field,
     HttpUrl,
-    SecretStr,
     field_validator,
 )
 from pydantic_ai.settings import ThinkingEffort
@@ -28,11 +27,10 @@ type ConfigPath = Annotated[Path, AfterValidator(Path.expanduser)]
 class DeepseekConfig(AgentConfig):
     """WIP DeepSeek Harness runner, registered as the `deepseek` agent tentacle.
 
-    Opt-in: `agents.deepseek` is null by default, so the agent is absent unless a
-    block is supplied. The tentacle attaches to a dsh already serving
-    `host:port` — one the operator runs — and starts its own `dsh web` child
-    only when nothing answers there. Either way it drives the harness over the
-    `/api` gateway — HTTP for unary calls, the mux WebSocket for events — the
+    The tentacle owns a `dsh web` child with a private configuration home,
+    sharing settings and session data with the configured native home.
+    It drives the harness over the `/api` gateway — HTTP for unary calls,
+    the mux WebSocket for events — the
     same integration surface dsh's own web client uses. Sessions are
     per-conversation: the dsh session id is stored as the conversation
     `external_id` and prompted again for later turns.
@@ -51,26 +49,16 @@ class DeepseekConfig(AgentConfig):
         description=(
             "Where a dsh serves `/api` — loopback only, enforced here: the "
             "gateway uses HTTP, and a started child binds loopback, "
-            "so a remote host could neither be trusted nor answered. A dsh "
-            "already answering here is attached to as it stands."
+            "so a remote host could neither be trusted nor answered."
         ),
     )
     port: int = Field(
-        default=3080,
+        default=3081,
         ge=1,
         le=65535,
         description=(
-            "The `/api` port — dsh's own default bind. A started `dsh web` binds "
-            "this same port, fixed rather than ephemeral, so the next probe "
-            "attaches to it instead of starting a second writer of one DSH_HOME."
-        ),
-    )
-    launch_token: SecretStr | None = Field(
-        default=None,
-        description=(
-            "Token from an already-running dsh's launch URL, exchanged for an "
-            "authentication cookie. A harness started by Octomate supplies its "
-            "token through its readiness banner."
+            "Port for Octomate's own DSH child, separate from native DSH's 3080. "
+            "An occupied port fails startup; existing runtimes are never attached."
         ),
     )
     browser_url: HttpUrl | None = Field(
@@ -87,9 +75,8 @@ class DeepseekConfig(AgentConfig):
     executable: str = Field(
         default="dsh",
         description=(
-            "The dsh command to spawn `dsh web` with when nothing serves "
-            "`host:port` — a name resolved on PATH or an absolute path to a "
-            "built dsh."
+            "The dsh command to spawn `dsh web` — a name resolved on PATH or "
+            "an absolute path to a built dsh."
         ),
     )
     extra_args: list[str] = Field(
@@ -97,7 +84,7 @@ class DeepseekConfig(AgentConfig):
         description=(
             "Extra arguments placed after `web` and before the web app's "
             "`--host`, `--port`, and `--no-open` flags, e.g. a `--patch` "
-            "overlay. Only applies to a harness octomate starts. A dsh that "
+            "overlay managed by Octomate. A dsh that "
             "refuses one of these exits and fails the start — only octomate's "
             "own `--no-open` is dropped and retried."
         ),
@@ -107,10 +94,10 @@ class DeepseekConfig(AgentConfig):
         # The default rides through ConfigPath's expanduser like any set value.
         validate_default=True,
         description=(
-            "DSH_HOME for a harness octomate starts — where dsh keeps its "
-            "sessions and settings. Defaults to dsh's own ~/.dsh; the child "
-            "always receives this value verbatim. An attached harness keeps "
-            "whatever home it was started with."
+            "Native DSH home whose settings.yaml, .credentials.yaml, sessions "
+            "and attachments are shared with Octomate's child. Its plugins, "
+            "hooks, MCPs and profile patches are not loaded. The child receives "
+            "a separate temporary DSH_HOME."
         ),
     )
     claims: dict[str, Claim] = Field(

@@ -4,6 +4,8 @@ retried only when *that* flag is the one this dsh refuses."""
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
@@ -75,12 +77,25 @@ async def test_launches_with_patch_before_web_app_options(
 
     try:
         assert await dsh.start() == BASE_URL
+        assert dsh.runtime_home is not None
+        owned_home = Path(dsh.runtime_home.name)
+        assert owned_home != dsh.dsh_home
+        patches = json.loads((owned_home / "shared-data.json").read_text())
+        assert {patch["id"]: patch["config"] for patch in patches} == {
+            "settings": {"path": str(dsh.dsh_home / "settings.yaml")},
+            "credentials": {"path": str(dsh.dsh_home / ".credentials.yaml")},
+            "session-persistence-jsonl": {"root": str(dsh.dsh_home / "sessions")},
+            "attachment-local": {"dshHome": str(dsh.dsh_home)},
+        }
     finally:
         await dsh.stop()
 
+    assert not await asyncio.to_thread(owned_home.exists)
     assert launches(argv) == [
         [
             "web",
+            "--patch",
+            str(owned_home / "shared-data.json"),
             "--patch",
             "overlay.yml",
             "--host",
@@ -104,8 +119,11 @@ async def test_a_dsh_refusing_no_open_is_started_again_without_it(
         await dsh.stop()
 
     first, second = launches(argv)
-    assert first == ["web", "--host", "127.0.0.1", "--port", str(PORT), NO_OPEN]
-    assert second == ["web", "--host", "127.0.0.1", "--port", str(PORT)]
+    assert first[:2] == second[:2] == ["web", "--patch"]
+    assert first[3:] == ["--host", "127.0.0.1", "--port", str(PORT), NO_OPEN]
+    assert second[3:] == ["--host", "127.0.0.1", "--port", str(PORT)]
+    assert not Path(first[2]).parent.exists()
+    assert not Path(second[2]).parent.exists()
 
 
 async def test_a_refused_extra_arg_fails_the_start_without_a_retry(
@@ -121,6 +139,7 @@ async def test_a_refused_extra_arg_fails_the_start_without_a_retry(
     # reported rather than hidden behind a second identical failure.
     assert caught.value.option == "--patch"
     assert len(launches(argv)) == 1
+    assert dsh.runtime_home is None
 
 
 async def test_a_dsh_that_dies_without_refusing_anything_fails_the_start(
@@ -133,6 +152,7 @@ async def test_a_dsh_that_dies_without_refusing_anything_fails_the_start(
 
     with pytest.raises(RuntimeError, match="exited before reporting a URL"):
         await dsh.start()
+    assert dsh.runtime_home is None
 
 
 @pytest.mark.parametrize("browser_url", [None, "https://dsh.example:8443"])

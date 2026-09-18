@@ -4,12 +4,9 @@ The server is bound to loopback and owned by this process — the bind host is
 fixed at `127.0.0.1` and deliberately not configurable. Authenticated harnesses
 log their launch URL once at INFO. The returned base URL and subsequent
 diagnostics omit the token.
-The port is the configured one,
-fixed rather than ephemeral, and that is load-bearing: it is the address the
-tentacle probes before starting anything, so a fixed port is what lets the
-next octomate — or any other dsh client — attach to this harness instead of
-starting a second writer of the same `$DSH_HOME`, which dsh does not lock and
-which corrupts session logs.
+Extension configuration lives in a fresh private home. Settings, credentials,
+sessions and attachments use explicit paths under the native DSH home. DSH's
+session write leases prevent concurrent writers to a shared session.
 
 Compatibility is checked against the tested CLI release before starting; the
 Remote API handshake remains authoritative because development checkouts can
@@ -20,12 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import HttpUrl, SecretStr
@@ -82,6 +81,8 @@ class DeepseekProcess:
     relays: list[asyncio.Task[None]] = field(default_factory=list, init=False)
     unknown_option: str | None = field(default=None, init=False)
     launch_token: SecretStr | None = field(default=None, init=False, repr=False)
+    # Fresh extension configuration; durable settings and sessions use dsh_home.
+    runtime_home: TemporaryDirectory[str] | None = field(default=None, init=False)
 
     diagnostics: deque[str] = field(
         default_factory=lambda: deque(maxlen=DIAGNOSTIC_LINES), init=False, repr=False
@@ -136,24 +137,28 @@ class DeepseekProcess:
         the retry would only hide the real error behind a second identical
         failure.
         """
-        await self.check_version()
         try:
-            return await self.launch(suppress_browser=True)
-        except HarnessOptionUnsupportedError as error:
-            if error.option != NO_OPEN:
-                raise
-        logger.warning(
-            "this dsh does not know %s; starting it again without it, so a browser tab will be opened",
-            NO_OPEN,
-        )
-        return await self.launch(suppress_browser=False)
+            await self.check_version()
+            try:
+                return await self.launch(suppress_browser=True)
+            except HarnessOptionUnsupportedError as error:
+                if error.option != NO_OPEN:
+                    raise
+            logger.warning(
+                "this dsh does not know %s; starting it again without it, so a browser tab will be opened",
+                NO_OPEN,
+            )
+            return await self.launch(suppress_browser=False)
+        except BaseException:
+            await self.stop()
+            raise
 
     async def launch(self, *, suppress_browser: bool) -> HttpUrl:
         """One spawn attempt, up to the banner.
 
-        DSH_HOME is always the config's `dsh_home` — the config collects it,
-        from the environment or dsh's own default, so nothing is decided or
-        overridden here. A dsh that exits or stays silent past `ready_timeout`
+        A private home excludes native profile and home-level plugin patches.
+        Explicit paths share only settings, credentials, sessions and attachments.
+        A dsh that exits or stays silent past `ready_timeout`
         fails the attempt rather than being retried: a broken install is a
         broken install, and the one retry `start` does make is for a refused
         option, not for a dsh that cannot run.
@@ -165,9 +170,36 @@ class DeepseekProcess:
         self.stderr_reported = False
         self.unknown_option = None
         self.launch_token = None
+        self.runtime_home = await asyncio.to_thread(
+            TemporaryDirectory, prefix="octomate-dsh-"
+        )
+        shared_home = await asyncio.to_thread(self.dsh_home.resolve)
+        patch = Path(self.runtime_home.name) / "shared-data.json"
+        await asyncio.to_thread(
+            patch.write_text,
+            json.dumps(
+                [
+                    {
+                        "id": "settings",
+                        "config": {"path": str(shared_home / "settings.yaml")},
+                    },
+                    {
+                        "id": "credentials",
+                        "config": {"path": str(shared_home / ".credentials.yaml")},
+                    },
+                    {
+                        "id": "session-persistence-jsonl",
+                        "config": {"root": str(shared_home / "sessions")},
+                    },
+                    {"id": "attachment-local", "config": {"dshHome": str(shared_home)}},
+                ]
+            ),
+        )
         process = await asyncio.create_subprocess_exec(
             self.executable,
             "web",
+            "--patch",
+            str(patch),
             *self.extra_args,
             "--host",
             "127.0.0.1",
@@ -181,7 +213,7 @@ class DeepseekProcess:
             *([NO_OPEN] if suppress_browser else []),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "DSH_HOME": str(self.dsh_home)},
+            env={**os.environ, "DSH_HOME": self.runtime_home.name},
         )
         self.process = process
         stdout, stderr = process.stdout, process.stderr
@@ -308,11 +340,13 @@ class DeepseekProcess:
         self.launch_token = None
         process = self.process
         self.process = None
-        if process is None or process.returncode is not None:
-            return
-        process.terminate()
-        try:
-            await asyncio.wait_for(process.wait(), STOP_ESCALATE_SECONDS)
-        except TimeoutError:
-            process.kill()
-            await process.wait()
+        if process is not None and process.returncode is None:
+            process.terminate()
+            try:
+                await asyncio.wait_for(process.wait(), STOP_ESCALATE_SECONDS)
+            except TimeoutError:
+                process.kill()
+                await process.wait()
+        if self.runtime_home is not None:
+            await asyncio.to_thread(self.runtime_home.cleanup)
+            self.runtime_home = None

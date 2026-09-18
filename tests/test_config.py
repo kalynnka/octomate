@@ -391,7 +391,7 @@ def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
     assert config.permission_mode == "workspace-write"
     assert config.executable == "dsh"
     # dsh's own default bind, so an ordinary `dsh web` is attached to as-is.
-    assert (config.host, config.port) == ("127.0.0.1", 3080)
+    assert (config.host, config.port) == ("127.0.0.1", 3081)
     # dsh's own default home, expanded like any configured value.
     assert config.dsh_home == Path("~/.dsh").expanduser()
     # Octomate's one effort scale lands on the llm-deepseek adapter's ids.

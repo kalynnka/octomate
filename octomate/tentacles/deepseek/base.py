@@ -76,7 +76,7 @@ from octomate.tentacles.deepseek.adapter import (
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
-from octomate.tentacles.deepseek.process import TESTED_DSH_VERSION, DeepseekProcess
+from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
@@ -118,11 +118,8 @@ class DeepseekBridgeContext:
 class DeepseekTentacle(AgentTentacle[str, None]):
     """WIP DeepSeek Harness (dsh) exposed as an Octomate agent tentacle.
 
-    Attach first, start second: a dsh already serving the configured
-    `host:port` is used as it stands — the one the operator runs — and a
-    `dsh web` child is started there only when nothing answers, because two
-    harnesses over one `$DSH_HOME` interleave unlocked session-log appends and
-    corrupt them. Only a child of our own is stopped on exit. Either way the
+    Owns a `dsh web` child with private extension configuration and shared
+    native settings and session data. Existing runtimes are never attached. The
     tentacle drives the harness over the `/api` gateway — HTTP POSTs for unary
     calls, the Remote mux WebSocket for events, `POST /api/$events/result` for
     answering the approvals and questions dsh pushes mid-turn. dsh owns its
@@ -188,7 +185,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.description = description or self.description
         self.process = None
         # The endpoint is fixed by config, so the client lives as long as the
-        # tentacle — attach, launch, runs and teardown all speak through it.
+        # tentacle — launch, runs and teardown all speak through it.
         endpoint = HttpUrl(f"http://{config.host}:{config.port}")
         self.client = DeepseekApiClient(
             base_url=endpoint, http_client=httpx.AsyncClient(base_url=str(endpoint))
@@ -242,8 +239,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         async def receive_hook(event: DeepseekHookInput) -> JSONResponse:
             # No principal needed: dsh's hook dialect writes no ledger rows —
             # every durable row is the stream's, attributed at its handshake.
-            if self.should_ingest_session(event.session_id):
-                await self.session_ingest.handle(event)
+            await self.session_ingest.handle(event)
             return JSONResponse({})
 
         @router.websocket("/hooks/deepseek/stream")
@@ -281,9 +277,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if not self.should_ingest_session(hello.session_id):
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
@@ -370,21 +363,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await websocket.close()
 
-    async def attach_or_start(self) -> DeepseekProcess | None:
-        """The harness behind the client's endpoint, attach-first: a dsh
-        already serving there is used as it stands, and one is started only
-        when nothing answers — bound to that same fixed port, so the next
-        octomate finds it rather than starting a second writer of one
-        `$DSH_HOME`. The config keeps `host` loopback, so a started child
-        answers the endpoint the client already points at; either way the
-        client is verified before this returns."""
-        if await self.client.answering(self.config.launch_token):
-            logger.warning(
-                "Attached to dsh at %s; Remote API probe passed, but the server does not report its version. Octomate is tested with dsh %s.",
-                self.client.base_url,
-                TESTED_DSH_VERSION,
-            )
-            return None
+    async def start_process(self) -> DeepseekProcess:
+        """Start our isolated child and verify its authenticated Remote API."""
         process = DeepseekProcess(
             executable=self.config.executable,
             port=self.config.port,
@@ -393,20 +373,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             ready_timeout=self.config.ready_timeout,
             browser_url=self.config.browser_url,
         )
-        try:
-            base_url = await process.start()
-        except Exception:
-            # Two starters waking together both find the port silent; one binds
-            # it and the other dies on the address. Losing that race means a
-            # dsh is serving after all — attach to the winner rather than
-            # reporting a failure that has already fixed itself.
-            if await self.client.answering():
-                logger.info(
-                    "lost the start race; attached to the dsh serving %s",
-                    self.client.base_url,
-                )
-                return None
-            raise
+        base_url = await process.start()
         try:
             if process.launch_token is not None:
                 await self.client.authenticate(process.launch_token)
@@ -477,13 +444,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
         await self.client.__aenter__()
-        # attach_or_start leaves the client verified (settings/describe answered);
+        # start_process leaves the client verified (settings/describe answered);
         # the mux socket must then be open before anything prompts, so a run's
         # first frames cannot outrun the subscribed baseline. A failed
         # handshake is a broken harness, not weather: fail the start rather
         # than retrying.
         try:
-            self.process = await self.attach_or_start()
+            self.process = await self.start_process()
             await self.discover_models()
             socket = await self.client.open_mux()
         except BaseException:

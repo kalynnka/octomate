@@ -109,8 +109,7 @@ class FakeDeepseekProcess:
     started: ClassVar[list[FakeDeepseekProcess]] = []
     stopped: ClassVar[int] = 0
     launch_token: ClassVar[SecretStr | None] = None
-    # When True, the spawn loses the bind race: the endpoint port comes up
-    # serving (the winner's harness) and the start itself dies on the address.
+    # Model an occupied port: startup fails while another runtime keeps serving.
     fail_start: ClassVar[bool] = False
 
     def __init__(
@@ -143,10 +142,9 @@ class FakeDeepseekProcess:
 
 class FakeDeepseekApi:
     """Scripted `/api` carrier. `serving` holds the base URLs where a dsh
-    answers `settings/describe` — empty until a fake process starts one, so the
-    attach probe finds nothing and the tentacle takes the launch path unless a
-    test adds the endpoint. `turn_script` frames flow when `session/prompt`
-    is called; `after_respond` frames flow when `respond` is — how the real
+    answers `settings/describe` — empty until a fake process starts one.
+    `turn_script` frames flow when `session/prompt` is called; `after_respond`
+    frames flow when `respond` is — how the real
     gateway behaves around a blocking approval."""
 
     serving: ClassVar[set[str]] = set()
@@ -170,11 +168,8 @@ class FakeDeepseekApi:
     async def __aexit__(self, *exc: object) -> None:
         return None
 
-    async def answering(self, launch_token: SecretStr | None = None) -> bool:
-        answering = not isinstance(await self.call("settings/describe", {}), ErrResult)
-        if answering and launch_token is not None:
-            await self.authenticate(launch_token)
-        return answering
+    async def answering(self) -> bool:
+        return not isinstance(await self.call("settings/describe", {}), ErrResult)
 
     async def authenticate(self, token: SecretStr) -> None:
         self.tokens.append(token)
@@ -763,7 +758,6 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
             session_id = payload["sessionId"]
             assert isinstance(session_id, str)
             assert tentacle.driven_sessions == {session_id: 1}
-            assert not tentacle.should_ingest_session(session_id)
             observed.append(method)
             if method == "session/cancel" and cancel_fails:
                 raise RuntimeError("cancel failed")
@@ -779,7 +773,6 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         assert tentacle.subscribers == {}
         assert tentacle.bridge_contexts == {}
         assert tentacle.driven_sessions == {}
-        assert tentacle.should_ingest_session("sess-1")
 
     assert observed == [
         "workspace.enter",
@@ -1099,7 +1092,7 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     }
 
 
-async def test_attaches_to_a_dsh_already_serving_the_endpoint(
+async def test_starts_its_own_runtime_beside_native_dsh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
@@ -1108,15 +1101,14 @@ async def test_attaches_to_a_dsh_already_serving_the_endpoint(
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
-        assert tentacle.process is None
+        assert tentacle.process is not None
         assert tentacle.client is not None
-        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3080")
+        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3081")
         result = await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
     assert result.output == "shared"
-    assert not FakeDeepseekProcess.started
-    # The attached harness is not ours to stop.
-    assert FakeDeepseekProcess.stopped == 0
+    assert len(FakeDeepseekProcess.started) == 1
+    assert FakeDeepseekProcess.stopped == 1
 
 
 async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
@@ -1140,26 +1132,19 @@ async def test_nothing_serving_starts_a_dsh_on_the_configured_port(
     assert FakeDeepseekProcess.stopped == 1
 
 
-@pytest.mark.parametrize("attached", [False, True])
-async def test_authenticates_with_the_configured_or_spawned_launch_token(
-    monkeypatch: pytest.MonkeyPatch, attached: bool
+async def test_authenticates_with_the_spawned_launch_token(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
     token = SecretStr("private-launch-token")
-    if attached:
-        FakeDeepseekApi.serving.add("http://127.0.0.1:3080")
-    else:
-        FakeDeepseekProcess.launch_token = token
-    tentacle = _tentacle(
-        FakeConversationManager(),
-        config=DeepseekConfig(launch_token=token if attached else None),
-    )
+    FakeDeepseekProcess.launch_token = token
+    tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
         assert FakeDeepseekApi.tokens == [token]
 
-    assert FakeDeepseekProcess.stopped == (0 if attached else 1)
+    assert FakeDeepseekProcess.stopped == 1
 
 
 async def test_authentication_failure_stops_the_started_harness(
@@ -1181,7 +1166,7 @@ async def test_authentication_failure_stops_the_started_harness(
     assert FakeDeepseekProcess.stopped == 1
 
 
-async def test_losing_the_start_race_attaches_to_the_winner(
+async def test_start_failure_never_attaches_to_another_runtime(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
@@ -1189,11 +1174,11 @@ async def test_losing_the_start_race_attaches_to_the_winner(
     FakeDeepseekProcess.fail_start = True
     tentacle = _tentacle(FakeConversationManager())
 
-    async with tentacle:
-        assert tentacle.process is None
-        assert tentacle.client is not None
-        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3080")
+    with pytest.raises(RuntimeError, match="exited before reporting a URL"):
+        await tentacle.__aenter__()
 
+    assert tentacle.process is None
+    assert not calls_of("settings/describe")
     assert FakeDeepseekProcess.stopped == 0
 
 
@@ -1266,7 +1251,6 @@ async def test_detached_run_collects_through_turn_end(
 
             assert not task.done()
             assert tentacle.driven_sessions == {"sess-1": 1}
-            assert not tentacle.should_ingest_session("sess-1")
             assert "sess-1" in tentacle.subscribers
             assert "sess-1" in tentacle.bridge_contexts
             assert len(tentacle.run_tasks) == 1
@@ -1359,18 +1343,14 @@ async def test_concurrent_run_waits_before_claiming_the_workspace(
         assert len(conversations.runs) == 2
 
 
-@pytest.mark.parametrize("attached", [False, True])
 @pytest.mark.parametrize("cancel_shutdown", [False, True])
 async def test_aexit_drains_live_sessions_before_closing_the_mux(
     monkeypatch: pytest.MonkeyPatch,
-    attached: bool,
     cancel_shutdown: bool,
 ) -> None:
     patch_gateway(monkeypatch)
     script = turn_events()
     FakeDeepseekApi.reset(script[:2])
-    if attached:
-        FakeDeepseekApi.serving.add("http://127.0.0.1:3080")
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     observed = asyncio.Event()
@@ -1413,7 +1393,7 @@ async def test_aexit_drains_live_sessions_before_closing_the_mux(
 
     assert len(conversations.runs) == 1
     assert not calls_of("session/cancel")
-    assert FakeDeepseekProcess.stopped == (0 if attached else 1)
+    assert FakeDeepseekProcess.stopped == 1
     assert tentacle.mux_task is None
     assert tentacle.process is None
     assert tentacle.driven_sessions == {}

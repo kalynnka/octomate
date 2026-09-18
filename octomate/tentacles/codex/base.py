@@ -467,8 +467,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             # fine with `str`), so the rule bends rather than the checked type.
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
-            # Driven sessions no longer load native hooks; keep the exclusion parked.
-            # if self.should_ingest_session(event.session_id):
             await self.session_ingest.handle(event, sender)
             return JSONResponse({})
 
@@ -505,9 +503,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        # if not self.should_ingest_session(hello.session_id):
-        #     await websocket.close(code=1008, reason="octomate drives this session")
-        #     return
         async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
 

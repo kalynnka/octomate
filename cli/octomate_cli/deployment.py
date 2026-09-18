@@ -95,8 +95,10 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
             "- [ ] DSH (experimental): review `config/tentacles.yaml`: "
             "`tentacles.deepseek.executable`, `host`, `port`, `dsh_home` and "
             "`permission_mode`. Configure the harness's provider credentials yourself. "
-            "Octomate attaches to an existing local harness or starts `dsh web` using "
-            "these settings. Verify an actual request through Octomate after activation.\n"
+            "Octomate owns a separate `dsh web` runtime (port 3081 by default), "
+            "sharing settings, credentials, sessions and attachments from `dsh_home`. "
+            "Local plugins, hooks and MCPs are not loaded. "
+            "Verify an actual request through Octomate after activation.\n"
         )
     instructions.append("\n## Selected channels\n")
     for channel in channels:

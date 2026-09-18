@@ -110,9 +110,11 @@ def test_prepare_enables_selected_agents_and_routes_console(
     if "deepseek" in agents:
         assert isinstance(config.tentacles["deepseek"], DeepseekConfig)
         assert config.tentacles["deepseek"].executable == "dsh"
+        assert config.tentacles["deepseek"].port == 3081
         checklist = (preparation / "CONFIGURATION.md").read_text()
         assert "DSH (experimental)" in checklist
         assert "tentacles.deepseek.executable" in checklist
+        assert "Local plugins, hooks and MCPs are not loaded" in checklist
     assert not (preparation / "octomate.db").exists()
 
 
