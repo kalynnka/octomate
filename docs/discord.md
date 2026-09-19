@@ -72,9 +72,9 @@ thread, later messages in that thread continue it without another mention.
 ## Optional OAuth profile linking
 
 To start from the UI, open **Control panel → Profile → Link a channel → Connect
-Discord**. This uses Discord's `identify` scope, verifies `/users/@me`, then opens
-Octomate's existing profile confirmation. Your browser session is reused. Already
-linked profiles skip confirmation; canceling does not link the profile.
+Discord**. This uses Discord's `identify` scope, verifies `/users/@me`, then links
+the profile to the Octomate account that started OAuth. No second Octomate login
+or confirmation is required. Profiles belonging to another account are never transferred.
 
 Enable the entry by adding `oauth.client_id` and `oauth.client_secret` to the
 Discord declaration in `.octomate/config/tentacles.yaml`. Prefer the environment

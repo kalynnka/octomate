@@ -218,9 +218,10 @@ async def authorize(
     assert params["code_challenge_method"] == ["S256"]
     if payload.mcp_oauth.scope and "offline_access" in payload.mcp_oauth.scope.split():
         assert params["prompt"] == ["consent"]
-    return await host.oauth.complete_callback(
+    completed = await host.oauth.complete_callback(
         "mcp", state=payload.state.get_secret_value(), code=code, issuer=ISSUER
     )
+    return completed.grant
 
 
 async def connection(instance: OAuthMcp) -> OAuthConnection:

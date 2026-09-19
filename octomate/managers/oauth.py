@@ -22,7 +22,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
-from octomate.managers.user import ProfileAlreadyLinked, UserManager
+from octomate.managers.user import UserManager
 from octomate.mcp.transport import mcp_http_client
 from octomate.oauth.flows import (
     HTTPS_URL,
@@ -31,7 +31,6 @@ from octomate.oauth.flows import (
     OAuthRefreshRejected,
 )
 from octomate.oauth.mcp import McpOAuthFlow
-from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import (
     AuthorizationCodeOAuthFlow,
@@ -115,6 +114,11 @@ class OAuthConnector(BaseModel):
     async def resolve_profile(self, grant: OAuthGrant) -> UserProfile | None:
         """An ownerless snapshot verified by this channel's OAuth provider, if supported."""
         return None
+
+
+class OAuthCallback(NamedTuple):
+    grant: OAuthGrant
+    user: User  # The authenticated account bound to the completed operation.
 
 
 class OAuthLockKey(NamedTuple):
@@ -608,7 +612,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         state: str,
         code: str,
         issuer: str | None = None,
-    ) -> OAuthGrant:
+    ) -> OAuthCallback:
         """Finish an authorization-code operation from the provider's callback.
 
         Nothing about this request proves who sent it — it is an ordinary browser GET
@@ -692,27 +696,25 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
                 )
             )
             await session.commit()
-        return grant
+        return OAuthCallback(grant=grant, user=user)
 
     async def link_profile(
-        self, connector_id: str, grant: OAuthGrant
-    ) -> LinkProfileAuthorization | None:
-        """Offer consent for a verified channel account without changing its owner."""
+        self, connector_id: str, grant: OAuthGrant, user: User
+    ) -> bool:
+        """Link the verified channel account to the user who started OAuth."""
         connector = self.connectors.get(connector_id)
         if connector is None or self.users.authorization_base_uri is None:
-            return None
+            return False
         observed = await connector.resolve_profile(grant)
         if observed is None:
-            return None
+            return False
         if observed.user_id is not None:
             raise ValueError(
                 "OAuth profile resolution must not assign an Octomate owner"
             )
         profile = await self.users.ensure_profile(connector.id, observed)
-        try:
-            return await self.users.start_link_profile(profile)
-        except ProfileAlreadyLinked:
-            return None
+        await self.users.link_verified_profile(profile, user)
+        return True
 
     async def abandon_callback(
         self, connector_id: str, *, state: str, issuer: str | None = None

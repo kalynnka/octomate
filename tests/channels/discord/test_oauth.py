@@ -57,8 +57,8 @@ def discord_host(transport: httpx2.AsyncBaseTransport) -> Octomate:
     return host
 
 
-@pytest.mark.parametrize("outcome", ["approve", "cancel", "owned", "owned-by-other"])
-async def test_profile_page_to_callback_to_profile_consent(
+@pytest.mark.parametrize("outcome", ["unlinked", "owned", "owned-by-other"])
+async def test_profile_page_to_callback_links_the_verified_profile(
     in_memory_engine: AsyncEngine, outcome: str
 ) -> None:
     requests: list[httpx2.Request] = []
@@ -166,31 +166,12 @@ async def test_profile_page_to_callback_to_profile_consent(
         callback = await browser.get(
             "/oauth/discord-dev/callback", params=callback_params
         )
-        assert callback.status_code == (200 if owner else 303)
-        if owner is None:
-            target = urlsplit(callback.headers["location"])
-            assert target.netloc == "127.0.0.1:5173"
-            [ticket] = parse_qs(target.fragment)["link-profile"]
-            inspected = await browser.post(
-                "/api/auth/link-profile/inspect", json={"token": ticket}
-            )
-            assert inspected.status_code == 200
-            profile = inspected.json()["profile"]
-            assert profile["channel_user_id"] == "987654321"
-            assert profile["name"] == "Alice"
-            assert profile["nickname"] == "alice"
-            assert profile["user_id"] is None
-            if outcome == "approve":
-                confirmed = await browser.post(
-                    "/api/auth/link-profile/confirm",
-                    json={
-                        "token": ticket,
-                        "expected_user_id": str(user.id),
-                    },
-                )
-                assert confirmed.status_code == 200
+        assert callback.status_code == 200
+        assert "location" not in callback.headers
+        if outcome == "owned-by-other":
+            assert "profile linking could not be completed" in callback.text
         else:
-            assert "location" not in callback.headers
+            assert "Your channel profile is linked" in callback.text
         replay = await browser.get(
             "/oauth/discord-dev/callback", params=callback_params
         )
@@ -199,9 +180,9 @@ async def test_profile_page_to_callback_to_profile_consent(
 
     stored = await host.users.profile("discord-dev", "987654321")
     assert stored is not None
-    assert stored.user_id == (
-        owner.id if owner else user.id if outcome == "approve" else None
-    )
+    assert stored.user_id == (owner.id if owner else user.id)
+    assert stored.name == "Alice"
+    assert stored.nickname == "alice"
     assert len(requests) == 2
     async with async_session() as db:
         assert await db.list(Mcp) == []

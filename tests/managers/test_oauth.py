@@ -27,6 +27,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.oauth import (
+    OAuthCallback,
     OAuthConnector,
     OAuthLockKey,
     OAuthManager,
@@ -451,11 +452,12 @@ async def test_the_callback_stores_an_owner_bound_encrypted_token() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
 
-    grant = await manager.complete_callback(
+    completed = await manager.complete_callback(
         LINEAR_CONNECTOR_ID, state=state, code="auth-code"
     )
 
-    assert grant.account_label == "Alice"
+    assert completed.grant.account_label == "Alice"
+    assert completed.user.id == profile.user_id
     # The verifier the operation was holding is what the exchange spent.
     assert flow.exchanges == [("auth-code", "pkce-verifier")]
     owner = await manager.users.owner(profile)
@@ -496,7 +498,7 @@ async def test_concurrent_callbacks_exchange_an_operation_once() -> None:
         return_exceptions=True,
     )
 
-    assert sum(isinstance(result, OAuthGrant) for result in results) == 1
+    assert sum(isinstance(result, OAuthCallback) for result in results) == 1
     assert sum(isinstance(result, UnusableOAuthOperation) for result in results) == 3
     assert flow.exchanges == [("auth-code", "pkce-verifier")]
 

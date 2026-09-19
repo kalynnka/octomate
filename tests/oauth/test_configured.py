@@ -421,9 +421,11 @@ async def test_configured_callback_keeps_overlapping_users_separate(
     assert first_payload.code_verifier != second_payload.code_verifier
     for owner, payload in [(bob, second_payload), (alice, first_payload)]:
         assert payload.mcp_oauth is None
-        grant = await host.oauth.complete_callback(
+        completed = await host.oauth.complete_callback(
             "work", state=payload.state.get_secret_value(), code=owner.username
         )
+        grant = completed.grant
+        assert completed.user.id == owner.id
         assert grant.access_token == SecretStr(owner.username + "-access")
         assert grant.mcp_oauth is None
         assert payload.code_verifier is not None

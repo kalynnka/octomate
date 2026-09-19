@@ -8,12 +8,11 @@ is to give nothing away when they refuse.
 from __future__ import annotations
 
 from unittest.mock import AsyncMock
-from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 from fastapi import FastAPI
-from pydantic import AnyHttpUrl, SecretStr
+from pydantic import AnyHttpUrl
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
@@ -189,7 +188,7 @@ async def test_a_failed_exchange_does_not_leak_the_provider_error() -> None:
 
 
 @pytest.mark.parametrize("existing", [False, True])
-async def test_callback_offers_the_authorized_profile_without_linking_it(
+async def test_callback_links_the_authorized_profile_to_the_initiating_account(
     existing: bool,
 ) -> None:
     manager, source, flow, client = await channel_browser()
@@ -200,6 +199,8 @@ async def test_callback_offers_the_authorized_profile_without_linking_it(
         if existing
         else None
     )
+    if previous is not None:
+        await manager.users.start_link_profile(previous)
     _, state = await started(manager, source, flow)
 
     async with client:
@@ -212,41 +213,32 @@ async def test_callback_offers_the_authorized_profile_without_linking_it(
             params={"state": state, "code": "auth-code"},
         )
 
-    assert response.status_code == 303
-    assert response.headers["cache-control"] == "no-store"
-    assert response.headers["referrer-policy"] == "no-referrer"
-    location = urlsplit(response.headers["location"])
-    assert (location.scheme, location.netloc, location.path, location.query) == (
-        "https",
-        "octomate.example",
-        "/",
-        "",
-    )
-    [ticket] = parse_qs(location.fragment)["link-profile"]
-    pending = await manager.users.inspect_link_profile(SecretStr(ticket))
-    assert pending.profile.channel_tentacle_id == LINEAR_CONNECTOR_ID
-    assert pending.profile.channel_user_id == flow.grant.subject == "usr_42"
-    assert pending.profile.id != source.id
-    assert pending.profile.name == "Alice"
-    assert pending.profile.user_id is None
-    if previous is not None:
-        assert pending.profile.id == previous.id
+    assert response.status_code == 200
+    assert "Your channel profile is linked" in response.text
+    assert "location" not in response.headers
     owner = await manager.users.owner(source)
     assert owner is not None
+    stored = await manager.users.profile(LINEAR_CONNECTOR_ID, "usr_42")
+    assert stored is not None
+    assert stored.channel_user_id == flow.grant.subject
+    assert stored.id != source.id
+    assert stored.name == "Alice"
+    assert stored.user_id == owner.id
+    if previous is not None:
+        assert stored.id == previous.id
     assert await manager.access_token(owner, LINEAR_CONNECTOR_ID) is not None
     assert replay.status_code == 404
     async with async_session() as session:
-        [stored] = await session.list(LinkProfileSession)
-    assert stored.consumed_at is None
-    assert ticket not in stored.token_hash.get_secret_value()
-    assert ticket not in response.text
-    assert "linear-token" not in response.headers["location"]
-    linked = await manager.users.confirm_link_profile(SecretStr(ticket), owner)
-    assert linked.user_id == owner.id
+        tickets = await session.list(LinkProfileSession)
+    if previous is not None:
+        [ticket] = tickets
+        assert ticket.consumed_at is not None
+    else:
+        assert tickets == []
 
 
 @pytest.mark.parametrize("other_owner", [False, True])
-async def test_callback_skips_owned_profiles_without_transferring_them(
+async def test_callback_preserves_existing_profile_ownership(
     other_owner: bool,
 ) -> None:
     manager, source, flow, client = await channel_browser()
@@ -267,6 +259,10 @@ async def test_callback_skips_owned_profiles_without_transferring_them(
 
     assert response.status_code == 200
     assert "Connected as Alice" in response.text
+    if other_owner:
+        assert "profile linking could not be completed" in response.text
+    else:
+        assert "Your channel profile is linked" in response.text
     assert "location" not in response.headers
     stored = await manager.users.profile(LINEAR_CONNECTOR_ID, "usr_42")
     assert stored is not None
@@ -275,7 +271,7 @@ async def test_callback_skips_owned_profiles_without_transferring_them(
         assert await session.list(LinkProfileSession) == []
 
 
-@pytest.mark.parametrize("stage", ["resolve_profile", "start_link_profile"])
+@pytest.mark.parametrize("stage", ["resolve_profile", "link_verified_profile"])
 async def test_optional_linking_failure_preserves_the_completed_connection(
     stage: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -296,7 +292,7 @@ async def test_optional_linking_failure_preserves_the_completed_connection(
         )
     assert response.status_code == 200
     assert "Connected as Alice" in response.text
-    assert "profile linking could not be started" in response.text
+    assert "profile linking could not be completed" in response.text
     assert "private-provider-detail" not in response.text
     owner = await manager.users.owner(source)
     assert owner is not None
@@ -335,7 +331,7 @@ async def test_oauth_profile_resolution_cannot_assign_ownership(
             params={"state": state, "code": "auth-code"},
         )
     assert response.status_code == 200
-    assert "profile linking could not be started" in response.text
+    assert "profile linking could not be completed" in response.text
     assert (
         await manager.users.profile(LINEAR_CONNECTOR_ID, source.channel_user_id) is None
     )
