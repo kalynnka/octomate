@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
+from typing import Literal
 
+import pytest
 from claude_agent_sdk import (
     AssistantMessage,
     ResultMessage,
@@ -40,6 +42,7 @@ from octomate.tentacles.claude.adapter import (
     map_usage,
     normalize_tool_result_content,
 )
+from octomate.tentacles.feelers.output import render_stream_event_delta
 
 
 def test_adapter_maps_a_full_turn_to_messages_and_events() -> None:
@@ -400,6 +403,42 @@ def stream_event(event: dict[str, object]) -> StreamEvent:
     return StreamEvent(uuid="u", session_id="s", event=event)
 
 
+@pytest.mark.parametrize("kind", ["text", "thinking"])
+def test_buffered_opening_words_are_rendered_once(
+    kind: Literal["text", "thinking"],
+) -> None:
+    acc = ClaudeRunAccumulator()
+    buffered = list(
+        acc.consume(
+            stream_event(
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {"type": kind},
+                }
+            )
+        )
+    )
+    buffered += list(
+        acc.consume(
+            stream_event(
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {"type": f"{kind}_delta", kind: "Good push"},
+                }
+            )
+        )
+    )
+    rendered = "".join(
+        delta.text
+        for event in buffered
+        if isinstance(event, (PartStartEvent, PartDeltaEvent))
+        and (delta := render_stream_event_delta(event)) is not None
+    )
+    assert rendered == "Good push"
+
+
 def test_adapter_streams_partial_text_as_token_deltas() -> None:
     acc = ClaudeRunAccumulator()
     acc.begin("say hi")
@@ -446,10 +485,9 @@ def test_adapter_streams_partial_text_as_token_deltas() -> None:
     ]
     start = events[0]
     assert isinstance(start, PartStartEvent)
-    # The started part is mutated in place as deltas arrive, so it accumulates the
-    # full text (the channel consumes the empty PartStart before the deltas land).
+    # Buffered start events retain their original content after later deltas arrive.
     assert isinstance(start.part, TextPart)
-    assert start.part.content == "Hello world"
+    assert start.part.content == ""
     first_delta = events[1]
     assert isinstance(first_delta, PartDeltaEvent)
     assert isinstance(first_delta.delta, TextPartDelta)

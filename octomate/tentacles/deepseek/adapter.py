@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
-from typing import Literal, TypeAlias
+from dataclasses import dataclass, field, replace
+from typing import Literal
 
 from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import AgentRunResult
@@ -36,9 +36,12 @@ from pydantic_ai.usage import RequestUsage, RunUsage
 
 from octomate.capabilities.harness.events import StreamEvents
 from octomate.tentacles.deepseek.wire import (
+    AssistantStreamChunk,
+    ChunkEnvelope,
     DeepseekUsage,
     ModelRoute,
     ReasoningDeltaChunk,
+    SessionAssistantFrame,
     SessionEvent,
     SessionEventFrame,
     TextDeltaChunk,
@@ -55,7 +58,7 @@ from octomate.tentacles.deepseek.wire import (
 )
 from octomate.types.json import JsonObject, JsonValue
 
-ToolOutcome: TypeAlias = Literal["success", "failed"]
+type ToolOutcome = Literal["success", "failed"]
 
 DEEPSEEK_PROVIDER_NAME = "deepseek"
 DEEPSEEK_METADATA_SOURCE = "deepseek"
@@ -218,7 +221,35 @@ class DeepseekRunAccumulator:
     def consume_chunk(
         self, event: SessionEvent, payload: JsonObject
     ) -> Iterator[StreamEvents[str]]:
-        delta = chunk_delta(event)
+        yield from self.consume_delta(chunk_delta(event), payload)
+
+    def consume_assistant_stream(
+        self, frame: SessionAssistantFrame
+    ) -> Iterator[StreamEvents[str]]:
+        if (
+            not self.turn_started
+            or self.turn_ended
+            or not isinstance(frame.frame, AssistantStreamChunk)
+        ):
+            return
+        payload = json_object_adapter.validate_python(
+            frame.model_dump(mode="json", by_alias=True)
+        )
+        try:
+            delta = ChunkEnvelope.model_validate({"chunk": frame.frame.chunk}).chunk
+        except ValidationError:
+            return
+        yield from self.consume_delta(delta, payload)
+
+    def consume_delta(
+        self,
+        delta: TextDeltaChunk
+        | ReasoningDeltaChunk
+        | ToolCallDeltaChunk
+        | UsageChunk
+        | None,
+        payload: JsonObject,
+    ) -> Iterator[StreamEvents[str]]:
         if isinstance(delta, TextDeltaChunk):
             yield from self.stream_delta(TextPart, delta.text, payload)
         elif isinstance(delta, ReasoningDeltaChunk):
@@ -245,7 +276,7 @@ class DeepseekRunAccumulator:
             part = kind(content="", provider_name=DEEPSEEK_PROVIDER_NAME)
             current = StreamingPartState(index=self.take_part_index(), part=part)
             self.current = current
-            yield PartStartEvent(index=current.index, part=part)
+            yield PartStartEvent(index=current.index, part=replace(part))
         current.events.append(payload)
         current.part.content += text
         if isinstance(current.part, TextPart):
@@ -476,25 +507,6 @@ class DeepseekRunAccumulator:
                         metadata=deepseek_metadata(self.take_message_events([])),
                     )
                 )
-
-    def complete_command(self, text: str) -> Iterator[StreamEvents[str]]:
-        """A slash-intercepted prompt produced a command result instead of a
-        turn: the command's text is the whole answer."""
-        part = TextPart(content=text, provider_name=DEEPSEEK_PROVIDER_NAME)
-        index = self.take_part_index()
-        yield PartStartEvent(index=index, part=part)
-        yield PartEndEvent(index=index, part=part)
-        self.result_text = text
-        self.turn_started = True
-        self.turn_ended = True
-        self.messages.append(
-            ModelResponse(
-                parts=[part],
-                provider_name=DEEPSEEK_PROVIDER_NAME,
-                finish_reason="stop",
-                metadata=deepseek_metadata(self.take_message_events([])),
-            )
-        )
 
     def take_message_events(self, events: list[JsonValue]) -> list[JsonValue]:
         message_events = [*self.pending_events, *events]

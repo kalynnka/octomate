@@ -45,6 +45,7 @@ from pydantic_ai.messages import (
 )
 
 from octomate.tentacles.codex.adapter import CodexRunAccumulator, map_usage
+from octomate.tentacles.feelers.output import render_stream_event_delta
 
 
 def notification(method: str, payload: NotificationPayload) -> Notification:
@@ -262,6 +263,13 @@ def test_buffered_stream_start_does_not_repeat_the_first_delta(
     assert isinstance(second, PartDeltaEvent)
     assert start.part.content == ""
     assert acc.streaming_parts[payload.item_id].part.content == "I'll"
+    rendered = "".join(
+        delta.text
+        for event in events
+        if isinstance(event, (PartStartEvent, PartDeltaEvent))
+        and (delta := render_stream_event_delta(event)) is not None
+    )
+    assert rendered == "I'll"
 
 
 def test_adapter_maps_reasoning_delta_to_thinking_part() -> None:
@@ -648,6 +656,44 @@ def test_adapter_maps_plan_delta_to_thinking_part() -> None:
     thinking = response.parts[0]
     assert isinstance(thinking, ThinkingPart)
     assert thinking.content == "1. inspect\n2. patch"
+
+
+@pytest.mark.parametrize("initial", ["", "1. "])
+def test_buffered_plan_item_start_does_not_repeat_deltas(initial: str) -> None:
+    acc = CodexRunAccumulator()
+    events = list(
+        acc.consume(
+            notification(
+                "item/started",
+                ItemStartedNotification(
+                    item=plan_item(initial),
+                    started_at_ms=1,
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                ),
+            )
+        )
+    )
+    events += list(
+        acc.consume(
+            notification(
+                "item/plan/delta",
+                PlanDeltaNotification(
+                    delta="Check again",
+                    item_id="plan-1",
+                    thread_id="thread-1",
+                    turn_id="turn-1",
+                ),
+            )
+        )
+    )
+    rendered = "".join(
+        delta.text
+        for event in events
+        if isinstance(event, (PartStartEvent, PartDeltaEvent))
+        and (delta := render_stream_event_delta(event)) is not None
+    )
+    assert rendered == initial + "Check again"
 
 
 def test_adapter_does_not_render_message_items_as_tools() -> None:

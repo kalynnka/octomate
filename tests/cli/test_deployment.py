@@ -110,9 +110,11 @@ def test_prepare_enables_selected_agents_and_routes_console(
     if "deepseek" in agents:
         assert isinstance(config.tentacles["deepseek"], DeepseekConfig)
         assert config.tentacles["deepseek"].executable == "dsh"
+        assert config.tentacles["deepseek"].port == 3081
         checklist = (preparation / "CONFIGURATION.md").read_text()
         assert "DSH (experimental)" in checklist
         assert "tentacles.deepseek.executable" in checklist
+        assert "Local plugins, hooks and MCPs are not loaded" in checklist
     assert not (preparation / "octomate.db").exists()
 
 
@@ -216,8 +218,11 @@ def test_claude_checklist_preserves_native_login(preparation: Path) -> None:
     deployment.prepare(8123, [], ["claude"])
     checklist = (preparation / "CONFIGURATION.md").read_text()
     assert "Keychain credentials" in checklist
-    assert "plugins and Claude.ai connectors" in checklist
-    assert "do not replace that login with a setup token" in checklist
+    assert (
+        "local instructions, skills, plugins, hooks and MCP connections are disabled"
+        in checklist
+    )
+    assert "Do not replace that login with a setup token" in checklist
     assert "tentacles.codex" not in checklist
 
 

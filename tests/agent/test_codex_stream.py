@@ -473,7 +473,7 @@ def test_a_session_already_used_by_the_sdk_streams_as_external() -> None:
 
 
 @pytest.mark.parametrize("other_tentacle", [False, True])
-async def test_a_driven_session_is_skipped_until_its_claim_is_released(
+async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     other_tentacle: bool,
 ) -> None:
     client, tentacle = stream_client()
@@ -507,13 +507,13 @@ async def test_a_driven_session_is_skipped_until_its_claim_is_released(
             assert posted.json() == {}
             with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
                 websocket.send_text(hello_json())
-                with pytest.raises(WebSocketDisconnect) as disconnect:
+                welcome = server_message_adapter.validate_json(websocket.receive_text())
+                assert isinstance(welcome, StreamWelcome)
+                websocket.send_text(StreamEof().model_dump_json())
+                with pytest.raises(WebSocketDisconnect):
                     websocket.receive_text()
-            assert disconnect.value.code == 1008
-            assert "drives" in (disconnect.value.reason or "")
-            assert tentacle.session_tailer.sessions == {}
             assert tentacle.native_sessions == {}
-            assert client.portal.call(native_threads) == []
+            assert len(client.portal.call(native_threads)) == 1
 
         assert driver.driven_sessions == {}
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:

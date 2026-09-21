@@ -226,8 +226,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # fine with `str`), so the rule bends rather than the checked type.
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
-            if self.should_ingest_session(event.session_id):
-                await self.session_ingest.handle(event, sender)
+            await self.session_ingest.handle(event, sender)
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
@@ -264,9 +263,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 reason=f"protocol {hello.protocol} unsupported; server speaks "
                 f"{STREAM_PROTOCOL}",
             )
-            return
-        if not self.should_ingest_session(hello.session_id):
-            await websocket.close(code=1008, reason="octomate drives this session")
             return
         async with self.driving(hello.session_id, native=True):
             await self.stream_attached(websocket, hello, sender)
@@ -438,7 +434,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         async with (
             self.driving(session_id),
             ClaudeSDKClient(
-                options=ClaudeAgentOptions(session_id=session_id)
+                options=ClaudeAgentOptions(
+                    session_id=session_id,
+                    extra_args={"safe-mode": None},
+                    strict_mcp_config=True,
+                )
             ) as client,
         ):
             info = ClaudeServerInfo.model_validate(await client.get_server_info())
@@ -697,11 +697,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # have to name the directory before the process that will run there exists.
         workspace = self.octomate.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
-        # `setting_sources` is left unset on purpose: verified against the CLI, the
-        # unset default loads every source, so the bound directory arrives with its
-        # own CLAUDE.md and .claude/settings.json — the useful half of "work on this
-        # project". Setting it to ["project"] would be the same behavior spelled
-        # loudly; setting it to [] would silently drop a repo's instructions.
         octomate_session = next(
             (
                 capability.session
@@ -764,6 +759,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ]
             },
             mcp_servers=mcp_servers,
+            extra_args={"safe-mode": None},
+            strict_mcp_config=True,
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token
             # deltas (typewriter) instead of whole blocks; see ClaudeRunAccumulator.

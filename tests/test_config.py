@@ -390,8 +390,8 @@ def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
 
     assert config.permission_mode == "workspace-write"
     assert config.executable == "dsh"
-    # dsh's own default bind, so an ordinary `dsh web` is attached to as-is.
-    assert (config.host, config.port) == ("127.0.0.1", 3080)
+    # Octomate's runtime uses a separate port from native dsh's 3080.
+    assert (config.host, config.port) == ("127.0.0.1", 3081)
     # dsh's own default home, expanded like any configured value.
     assert config.dsh_home == Path("~/.dsh").expanduser()
     # Octomate's one effort scale lands on the llm-deepseek adapter's ids.
@@ -414,6 +414,20 @@ def test_deepseek_config_rejects_a_non_loopback_host() -> None:
     # remote host is refused at load rather than failing at attach time.
     with pytest.raises(ValidationError, match="Input should be"):
         DeepseekConfig.model_validate({"host": "dsh.example"})
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://user:password@dsh.example",
+        "https://dsh.example/nested",
+        "https://dsh.example/?token=secret",
+        "https://dsh.example/#fragment",
+    ],
+)
+def test_deepseek_browser_url_requires_an_origin(url: str) -> None:
+    with pytest.raises(ValidationError, match="browser_url must be an origin"):
+        DeepseekConfig.model_validate({"browser_url": url})
 
 
 def test_channel_agent_routes_must_reference_configured_agent() -> None:
