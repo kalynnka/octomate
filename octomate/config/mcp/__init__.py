@@ -1,13 +1,25 @@
-"""Named MCP tentacles using operator tokens or configured OAuth applications."""
+"""Named MCP tentacles using operator tokens or per-user OAuth."""
 
 from typing import Annotated
 
 from pydantic import Field
 
-from octomate.config.mcp.base import BareMcpConfig, McpConfig, OAuthMcpConfig
+from octomate.config.mcp.base import (
+    BareMcpConfig,
+    DiscoveredOAuthMcpConfig,
+    McpConfig,
+    OAuthMcpConfig,
+)
 
 type McpConfigVariant = Annotated[
-    BareMcpConfig | OAuthMcpConfig, Field(discriminator="type")
+    BareMcpConfig | OAuthMcpConfig | DiscoveredOAuthMcpConfig,
+    Field(discriminator="type"),
 ]
 
-__all__ = ["BareMcpConfig", "McpConfig", "McpConfigVariant", "OAuthMcpConfig"]
+__all__ = [
+    "BareMcpConfig",
+    "DiscoveredOAuthMcpConfig",
+    "McpConfig",
+    "McpConfigVariant",
+    "OAuthMcpConfig",
+]

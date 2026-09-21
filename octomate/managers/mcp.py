@@ -22,6 +22,7 @@ from octomate.managers.oauth import NoPendingAuthorization, OAuthLockKey, OAuthM
 from octomate.managers.user import UserManager
 from octomate.mcp.transport import mcp_http_client
 from octomate.oauth.base import McpBearerAuth
+from octomate.oauth.flows import DeviceAuthorizationFlow
 from octomate.schemas.mcp import (
     BearerAuth,
     BearerMcp,
@@ -41,7 +42,6 @@ from octomate.schemas.mcp import (
     OAuthMcp,
 )
 from octomate.schemas.oauth import (
-    DeviceOAuthFlow,
     OAuthCipher,
     OAuthOperation,
     OAuthPending,
@@ -395,7 +395,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
         connector = await self.oauth.resolve_connector(
             connector_id, user_id=user.id, mcp_id=mcp_id
         )
-        if any(isinstance(flow, DeviceOAuthFlow) for flow in connector.flows):
+        if any(isinstance(flow, DeviceAuthorizationFlow) for flow in connector.flows):
             try:
                 result = await self.oauth.complete_latest(
                     user, connector_id, mcp_id=mcp_id, profile=profile

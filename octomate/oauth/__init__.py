@@ -1,9 +1,6 @@
-"""Provider OAuth: configured flows in `flows`, MCP discovery in `mcp`.
+"""Provider OAuth: standard flows in `flows`, MCP client discovery in `mcp`.
 
-A flow owns only what its provider does differently — endpoints, token exchange,
-scope and account discovery — and is composed into an `OAuthConnector` by whoever
-builds the application. What every integration shares stays in its own central home:
-`managers.oauth` registers connectors and owns the user authorization boundary,
-`schemas.oauth` holds the flow protocols, transports and persisted connection, and
-`models.oauth` their tables.
+Connectors compose a flow, client settings and callback transport. The OAuth
+manager owns authorization, identity and persistence; schemas hold the transport
+contracts and persisted payloads, and models define their tables.
 """

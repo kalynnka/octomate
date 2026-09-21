@@ -6,11 +6,12 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import discord
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl
 from rich.style import Style
 
 from octomate.config import DiscordChannelConfig
-from octomate.oauth.flows import OAuthCodeFlow
+from octomate.oauth.flows import AuthorizationCodeFlow
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.tentacles.channel import (
@@ -116,21 +117,23 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
                 DiscordOAuthConnector(
                     id=id,
                     flows=[
-                        OAuthCodeFlow(
-                            authorization_lifetime=octomate.oauth.authorization_lifetime,
-                            authorization_endpoint=AnyHttpUrl(
-                                "https://discord.com/oauth2/authorize"
-                            ),
+                        AuthorizationCodeFlow(
                             tokens=DiscordTokenExchange(
+                                authorization_endpoint=AnyHttpUrl(
+                                    "https://discord.com/oauth2/authorize"
+                                ),
                                 token_endpoint=AnyHttpUrl(
                                     "https://discord.com/api/oauth2/token"
                                 ),
-                                client_id=config.oauth.client_id,
-                                client_secret=config.oauth.client_secret,
-                                token_endpoint_auth_method="client_secret_basic",
+                                client=OAuthClientInformationFull(
+                                    client_id=config.oauth.client_id,
+                                    client_secret=config.oauth.client_secret.get_secret_value(),
+                                    token_endpoint_auth_method="client_secret_basic",
+                                ),
                                 scopes=["identify"],
                                 httpx_client_factory=octomate.oauth.httpx_client_factory,
                             ),
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
                         )
                     ],
                     callback_transport=DirectHttpOAuthCallbackTransport(

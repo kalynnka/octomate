@@ -179,10 +179,16 @@
 #     http_url: http://127.0.0.1:3000
 
 # MCP tentacles offer connection settings that users explicitly install.
-# The configured key identifies the tentacle and its OAuth application.
+# The configured key identifies the template users install.
 #
-# Enabling an `oauth` block requires `oauth.encryption_key`; boot
-# refuses without it.
+# OAuth templates require `oauth.encryption_key`. The `oauth_discovery` type also
+# requires `oauth.callback_base_uri`. It discovers endpoints and uses Dynamic Client
+# Registration (DCR) or Client ID Metadata Documents (CIMD) when users connect.
+# Use `oauth` for a pre-registered application instead.
+
+#   linear:
+#     type: oauth_discovery
+#     url: https://mcp.linear.app/mcp
 
 #   notion:                       # one operator token for every caller
 #     type: bare

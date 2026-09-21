@@ -14,7 +14,7 @@ from octomate import Octomate
 from octomate.config import DiscordChannelConfig, OAuthConfig, OctomateConfig
 from octomate.config.channels import DiscordOAuthClientConfig
 from octomate.database import async_session
-from octomate.oauth.flows import OAuthCodeFlow
+from octomate.oauth.flows import AuthorizationCodeFlow
 from octomate.schemas.mcp import Mcp
 from octomate.schemas.oauth import OAuthGrant
 from octomate.schemas.user import UserProfile
@@ -203,10 +203,11 @@ async def test_identity_must_be_a_real_user(identity: JsonObject) -> None:
         httpx2.MockTransport(lambda request: httpx2.Response(200, json=identity))
     )
     flow = host.oauth.connector("discord-dev").select_flow()
-    assert isinstance(flow, OAuthCodeFlow)
-    assert isinstance(flow.tokens, DiscordTokenExchange)
+    assert isinstance(flow, AuthorizationCodeFlow)
+    tokens = await flow.resolve_tokens()
+    assert isinstance(tokens, DiscordTokenExchange)
     with pytest.raises(ValidationError):
-        await flow.tokens.grant(
+        await tokens.grant(
             httpx2.Response(
                 200,
                 request=httpx2.Request("POST", "https://discord.com/api/oauth2/token"),

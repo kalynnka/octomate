@@ -50,7 +50,7 @@ from octomate.config.channels import (
     DiscordChannelConfig,
     SlackChannelConfig,
 )
-from octomate.config.mcp import OAuthMcpConfig
+from octomate.config.mcp import DiscoveredOAuthMcpConfig, OAuthMcpConfig
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig
 from octomate.config.mcp.pool import McpPoolConfig
 from octomate.config.mirrors import MirrorsConfig
@@ -167,7 +167,8 @@ class OctomateConfig(BaseSettings):
         enabled = [
             f"tentacles.{name}"
             for name, server in self.tentacles.items()
-            if isinstance(server, OAuthMcpConfig) and server.enabled
+            if isinstance(server, (OAuthMcpConfig, DiscoveredOAuthMcpConfig))
+            and server.enabled
         ] + [
             f"tentacles.{name}.oauth"
             for name, channel in self.tentacles.items()
@@ -179,12 +180,13 @@ class OctomateConfig(BaseSettings):
                 f"oauth.encryption_key is required when {', '.join(enabled)} is enabled"
             )
         if self.oauth.callback_base_uri is None and any(
-            isinstance(server, OAuthMcpConfig)
-            and server.enabled
-            and any(
+            isinstance(server, DiscoveredOAuthMcpConfig)
+            or any(
                 isinstance(flow, AuthorizationCodeFlowConfig) for flow in server.flows
             )
             for server in self.tentacles.values()
+            if isinstance(server, (OAuthMcpConfig, DiscoveredOAuthMcpConfig))
+            and server.enabled
         ):
             raise ValueError(
                 "oauth.callback_base_uri is required for authorization-code MCPs"

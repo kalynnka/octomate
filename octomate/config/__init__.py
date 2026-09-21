@@ -39,6 +39,7 @@ from octomate.config.channels import (
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.mcp import (
     BareMcpConfig,
+    DiscoveredOAuthMcpConfig,
     McpConfig,
     McpConfigVariant,
     OAuthMcpConfig,
@@ -105,6 +106,7 @@ __all__ = [  # noqa: RUF022
     "config_files",
     "config_home",
     # mcp
+    "DiscoveredOAuthMcpConfig",
     "BareMcpConfig",
     "McpConfig",
     "McpConfigVariant",

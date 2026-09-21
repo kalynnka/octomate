@@ -6,13 +6,14 @@ from base64 import b64decode
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from os import urandom
-from typing import Annotated, ClassVar, Literal
+from typing import Annotated, Literal
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
 from pydantic import (
+    AliasChoices,
     AnyHttpUrl,
     AwareDatetime,
     BaseModel,
@@ -71,8 +72,13 @@ class OAuthFlowContext:
     interval_seconds: int | None = None  # Current device polling interval.
 
 
-class McpOAuthState(BaseModel):
-    resource: HttpsUrl
+class OAuthDiscoveryState(BaseModel):
+    """Discovered OAuth server metadata and client registration retained for reuse."""
+
+    resource: HttpsUrl | None = Field(
+        default=None,
+        description="OAuth resource indicator, when the server requires one.",
+    )
     metadata: OAuthMetadata
     client: OAuthClientInformationFull = Field(repr=False)
     scope: str | None = None
@@ -81,7 +87,7 @@ class McpOAuthState(BaseModel):
 class DeviceAuthorizationResponse(BaseModel):
     """The authorization server's response when a device flow starts.
 
-    A ``DeviceOAuthFlow`` returns this internal value to the manager. The manager
+    A ``DeviceAuthorizationFlow`` returns this internal value to the manager. The manager
     adds its operation id before the verification instructions leave the OAuth
     boundary; the future completion step polls with server-side operation state.
     """
@@ -97,7 +103,7 @@ class DeviceAuthorizationResponse(BaseModel):
 class AuthorizationRequest(BaseModel):
     """The provider-facing request that starts authorization-code OAuth.
 
-    An ``AuthorizationCodeOAuthFlow`` builds this after receiving the callback URI.
+    An ``AuthorizationCodeFlow`` builds this after receiving the callback URI.
     Its URI may contain OAuth state and must not be sent to a channel directly. The
     selected callback transport stages it and returns an ``AuthorizationLink``.
     """
@@ -111,7 +117,7 @@ class AuthorizationRequest(BaseModel):
         "token exchange. None for a provider that does not offer PKCE.",
     )
     expires_at: AwareDatetime
-    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False)
+    discovery_state: OAuthDiscoveryState | None = Field(default=None, repr=False)
 
 
 class DeviceAuthorization(BaseModel):
@@ -154,7 +160,9 @@ class OAuthGrant(BaseModel):
     subject: str | None = None
     account_label: str | None = None
     expires_at: AwareDatetime | None = None
-    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False, exclude=True)
+    discovery_state: OAuthDiscoveryState | None = Field(
+        default=None, repr=False, exclude=True
+    )
 
 
 class AuthorizationLink(BaseModel):
@@ -168,67 +176,6 @@ class AuthorizationLink(BaseModel):
     operation_id: uuid.UUID
     authorization_uri: AnyHttpUrl
     expires_at: AwareDatetime
-
-
-class DeviceOAuthFlow(ABC):
-    """Starts the device branch after the manager has established its owner."""
-
-    kind: ClassVar[Literal["device"]] = "device"
-
-    @abstractmethod
-    async def start(self, context: OAuthFlowContext) -> DeviceAuthorizationResponse:
-        """Start a device authorization with the upstream authorization server."""
-
-    @abstractmethod
-    async def complete(
-        self,
-        context: OAuthFlowContext,
-        device_code: SecretStr,
-    ) -> OAuthGrant | OAuthPending:
-        """Poll the provider and return either a completed grant or pending state."""
-
-
-class AuthorizationCodeOAuthFlow(ABC):
-    """Builds the provider request used by the browser authorization branch."""
-
-    kind: ClassVar[Literal["authorization_code"]] = "authorization_code"
-
-    @abstractmethod
-    async def start(
-        self,
-        context: OAuthFlowContext,
-        callback_uri: AnyHttpUrl,
-        state: SecretStr,
-    ) -> AuthorizationRequest:
-        """Create the upstream authorization request for this operation.
-
-        The manager mints ``state`` rather than the provider half, because matching
-        it is what finds the operation a callback belongs to — a concern of the
-        boundary the callback arrives at, not of any one upstream.
-        """
-
-    @abstractmethod
-    async def exchange(
-        self,
-        context: OAuthFlowContext,
-        *,
-        code: str,
-        code_verifier: SecretStr | None,
-        callback_uri: AnyHttpUrl,
-    ) -> OAuthGrant:
-        """Trade an authorization code for this user's credentials.
-
-        ``callback_uri`` is replayed from the operation rather than rebuilt: the
-        provider compares it against the one that started the authorization.
-        """
-
-    @abstractmethod
-    async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
-        """Trade a refresh token for a fresh grant.
-
-        Reached only when the provider issued a refresh token in the first place; a
-        provider that issues none can raise here, since nothing will call it.
-        """
 
 
 class OAuthCallbackTransport(ABC):
@@ -329,7 +276,12 @@ class OAuthTokenPayload(BaseModel):
     access_token: SecretStr = Field(repr=False)
     refresh_token: SecretStr | None = Field(default=None, repr=False)
     token_type: str = "bearer"
-    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False)
+    # Existing encrypted payloads used the MCP-specific field name.
+    discovery_state: OAuthDiscoveryState | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("discovery_state", "mcp_oauth"),
+    )
 
     @field_serializer("access_token", "refresh_token", when_used="json")
     def serialize_secret(self, value: SecretStr | None) -> str | None:
@@ -368,7 +320,12 @@ class AuthorizationCodeOperationPayload(BaseModel):
     code_verifier: SecretStr | None = Field(default=None, repr=False)
     callback_uri: AnyHttpUrl
     authorization_uri: AnyHttpUrl = Field(repr=False)
-    mcp_oauth: McpOAuthState | None = Field(default=None, repr=False)
+    # Existing encrypted payloads used the MCP-specific field name.
+    discovery_state: OAuthDiscoveryState | None = Field(
+        default=None,
+        repr=False,
+        validation_alias=AliasChoices("discovery_state", "mcp_oauth"),
+    )
 
     @field_serializer("state", "code_verifier", when_used="json")
     def serialize_secret(self, value: SecretStr | None) -> str | None:

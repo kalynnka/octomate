@@ -21,7 +21,7 @@ from octomate import Octomate
 from octomate.config import OAuthConfig, OctomateConfig, SlackChannelConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.database import async_session
-from octomate.oauth.flows import OAuthCodeFlow, OAuthRefreshRejected
+from octomate.oauth.flows import AuthorizationCodeFlow, OAuthRefreshRejected
 from octomate.schemas.oauth import (
     AuthorizationLink,
     DirectHttpOAuthCallbackTransport,
@@ -89,7 +89,7 @@ def slack_transport(
 
 def slack_flow(
     transport: httpx2.AsyncBaseTransport, *, host: Octomate | None = None
-) -> OAuthCodeFlow:
+) -> AuthorizationCodeFlow:
     host = host or Octomate(
         config=OctomateConfig(
             oauth=OAuthConfig(authorization_lifetime=timedelta(minutes=3))
@@ -119,7 +119,7 @@ def slack_flow(
     host.connect(tentacle)
     flow = host.oauth.connector("slack").select_flow()
     assert isinstance(host.oauth.connector("slack"), SlackOAuthConnector)
-    assert isinstance(flow, OAuthCodeFlow)
+    assert isinstance(flow, AuthorizationCodeFlow)
     return flow
 
 
@@ -191,6 +191,7 @@ async def test_exchange_posts_the_secret_and_names_the_account() -> None:
         "code_verifier": ["pkce-verifier"],
     }
     assert grant.access_token.get_secret_value() == "xoxp-user"
+    assert grant.token_type == "Bearer"
     assert grant.refresh_token is None
     assert grant.expires_at is None
     assert grant.scopes == ["search:read.public"]

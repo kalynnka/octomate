@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal, Self
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, model_validator
 
 from octomate.types.oauth import HttpsUrl
 
@@ -26,6 +26,15 @@ class BareMcpConfig(McpConfig):
     type: Literal["bare"] = "bare"
     url: str
     token: SecretStr | None = None
+
+
+class DiscoveredOAuthMcpConfig(McpConfig):
+    """OAuth settings discovered from the resource server, using DCR or CIMD."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["oauth_discovery"] = "oauth_discovery"
+    url: HttpsUrl
 
 
 class DeviceFlowConfig(BaseModel):

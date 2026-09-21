@@ -13,6 +13,7 @@ import httpx2
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -36,16 +37,21 @@ from octomate.managers.oauth import (
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
+from octomate.mcp.transport import mcp_http_client
 from octomate.oauth.base import McpBearerAuth
+from octomate.oauth.flows import (
+    AuthorizationCodeFlow,
+    DeviceAuthorizationFlow,
+    OAuthRefreshRejected,
+    OAuthTokenExchange,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.mcp import Mcp
 from octomate.schemas.oauth import (
-    AuthorizationCodeOAuthFlow,
     AuthorizationLink,
     AuthorizationRequest,
     DeviceAuthorization,
     DeviceAuthorizationResponse,
-    DeviceOAuthFlow,
     DirectHttpOAuthCallbackTransport,
     OAuthConnection,
     OAuthFlowContext,
@@ -75,7 +81,7 @@ async def database(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-class FakeDeviceFlow(DeviceOAuthFlow):
+class FakeDeviceFlow(DeviceAuthorizationFlow):
     def __init__(self) -> None:
         self.context: OAuthFlowContext | None = None
         self.starts = 0
@@ -112,8 +118,20 @@ class FakeDeviceFlow(DeviceOAuthFlow):
         return self.completion
 
 
-class FakeAuthorizationCodeFlow(AuthorizationCodeOAuthFlow):
+class FakeAuthorizationCodeFlow(AuthorizationCodeFlow):
     def __init__(self) -> None:
+        super().__init__(
+            tokens=OAuthTokenExchange(
+                authorization_endpoint=AnyHttpUrl("https://example.com/authorize"),
+                token_endpoint=AnyHttpUrl("https://example.com/token"),
+                client=OAuthClientInformationFull(
+                    client_id="test-client", token_endpoint_auth_method="none"
+                ),
+                scopes=[],
+                httpx_client_factory=mcp_http_client,
+            ),
+            authorization_lifetime=timedelta(minutes=10),
+        )
         self.context: OAuthFlowContext | None = None
         self.callback: AnyHttpUrl | None = None
         self.state: SecretStr | None = None
@@ -175,7 +193,9 @@ class FakeAuthorizationCodeFlow(AuthorizationCodeOAuthFlow):
 
     async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
         if self.refresh_refused:
-            raise ValueError("Linear authorization failed: refresh token is spent")
+            raise OAuthRefreshRejected(
+                "Linear authorization failed: refresh token is spent"
+            )
         assert refresh_token.get_secret_value() == "linear-refresh"
         return self.refreshed
 

@@ -10,6 +10,7 @@ from urllib.parse import parse_qs
 
 import httpx2
 import pytest
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, AnyUrl, SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -21,16 +22,18 @@ from octomate.database import async_session
 from octomate.managers.oauth import OAuthConnector, OAuthManager
 from octomate.managers.user import UserManager
 from octomate.oauth.flows import (
-    OAuthCodeFlow,
-    OAuthDeviceFlow,
+    AuthorizationCodeFlow,
+    DeviceAuthorizationFlow,
     OAuthRefreshRejected,
     OAuthTokenExchange,
 )
 from octomate.schemas.mcp import McpInstallRequest, OAuthMcp
 from octomate.schemas.oauth import (
+    AuthorizationCodeOperationPayload,
     AuthorizationLink,
     DeviceAuthorization,
     OAuthConnection,
+    OAuthDiscoveryState,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
@@ -42,11 +45,10 @@ from tests.support.users import a_user
 
 
 def test_configured_code_flow_requires_only_provider_oauth_inputs() -> None:
-    parameters = signature(OAuthCodeFlow).parameters
+    parameters = signature(AuthorizationCodeFlow).parameters
     assert set(parameters) == {
-        "authorization_endpoint",
-        "authorization_lifetime",
         "tokens",
+        "authorization_lifetime",
     }
     assert all(
         parameter.default is Parameter.empty for parameter in parameters.values()
@@ -62,12 +64,12 @@ def context() -> OAuthFlowContext:
     )
 
 
-def device_flow(transport: httpx2.MockTransport) -> OAuthDeviceFlow:
+def device_flow(transport: httpx2.MockTransport) -> DeviceAuthorizationFlow:
     tokens = OAuthTokenExchange(
         token_endpoint=AnyUrl("https://auth.example/token"),
-        client_id="test-app",
-        client_secret=None,
-        token_endpoint_auth_method="none",
+        client=OAuthClientInformationFull(
+            client_id="test-app", token_endpoint_auth_method="none"
+        ),
         scopes=["repo", "read:org"],
         scope_separator=",",
         invalid_credentials_errors=[
@@ -81,7 +83,7 @@ def device_flow(transport: httpx2.MockTransport) -> OAuthDeviceFlow:
             )
         ),
     )
-    return OAuthDeviceFlow(
+    return DeviceAuthorizationFlow(
         device_authorization_endpoint=AnyUrl("https://auth.example/device"),
         tokens=tokens,
     )
@@ -160,9 +162,12 @@ async def test_device_pending_preserves_or_increases_poll_interval(
 
 
 @pytest.mark.parametrize(
-    "method", ["none", "client_secret_post", "client_secret_basic"]
+    "method", [None, "none", "client_secret_post", "client_secret_basic"]
 )
-async def test_authorization_code_pkce_and_client_authentication(method: str) -> None:
+@pytest.mark.parametrize("discovered", [False, True])
+async def test_authorization_code_pkce_and_client_authentication(
+    method: str | None, discovered: bool
+) -> None:
     callback = AnyHttpUrl("http://localhost/oauth/work/callback")
     forms: list[dict[str, list[str]]] = []
 
@@ -184,11 +189,29 @@ async def test_authorization_code_pkce_and_client_authentication(method: str) ->
             assert "Authorization" not in request.headers
         return httpx2.Response(200, json={"access_token": "token", "expires_in": 3600})
 
+    client = OAuthClientInformationFull(
+        client_id="test-app",
+        client_secret="s:ecret" if method not in (None, "none") else None,
+        token_endpoint_auth_method=method,
+    )
     tokens = OAuthTokenExchange(
         token_endpoint=AnyUrl("https://auth.example/token"),
-        client_id="test-app",
-        client_secret=SecretStr("s:ecret") if method != "none" else None,
-        token_endpoint_auth_method=method,
+        client=client,
+        authorization_endpoint=AnyUrl("https://auth.example/authorize"),
+        discovery_state=OAuthDiscoveryState.model_validate(
+            {
+                "metadata": {
+                    "issuer": "https://auth.example",
+                    "authorization_endpoint": "https://auth.example/authorize",
+                    "token_endpoint": "https://auth.example/token",
+                    "response_types_supported": ["code"],
+                },
+                "client": client,
+                "scope": "read write",
+            }
+        )
+        if discovered
+        else None,
         scopes=["read", "write"],
         scope_separator=" ",
         invalid_credentials_errors=["invalid_grant", "invalid_client"],
@@ -201,14 +224,13 @@ async def test_authorization_code_pkce_and_client_authentication(method: str) ->
             )
         ),
     )
-    flow = OAuthCodeFlow(
-        authorization_lifetime=timedelta(minutes=10),
-        authorization_endpoint=AnyUrl("https://auth.example/authorize"),
+    flow = AuthorizationCodeFlow(
         tokens=tokens,
+        authorization_lifetime=timedelta(minutes=10),
     )
     authorization = await flow.start(context(), callback, SecretStr("state-secret"))
     params = parse_qs(authorization.authorization_uri.query or "")
-    assert authorization.mcp_oauth is None
+    assert authorization.discovery_state == tokens.discovery_state
     assert "resource" not in params
     assert params["state"] == ["state-secret"]
     assert params["redirect_uri"] == [str(callback)]
@@ -233,11 +255,69 @@ async def test_authorization_code_pkce_and_client_authentication(method: str) ->
     assert forms[0]["code_verifier"] == [authorization.code_verifier.get_secret_value()]
     assert forms[0]["redirect_uri"] == [str(callback)]
     assert "resource" not in forms[0]
-    assert grant.mcp_oauth is None
+    assert grant.discovery_state == tokens.discovery_state
     assert grant.scopes == ["read", "write"]
     refreshed = await flow.refresh(SecretStr("refresh-secret"))
     assert forms[1]["grant_type"] == ["refresh_token"]
     assert refreshed.refresh_token == SecretStr("refresh-secret")
+    assert refreshed.discovery_state == tokens.discovery_state
+    assert "resource" not in forms[1]
+
+
+@pytest.mark.parametrize(
+    "payload_type", [OAuthTokenPayload, AuthorizationCodeOperationPayload]
+)
+def test_existing_oauth_payloads_preserve_discovery_state(
+    payload_type: type[OAuthTokenPayload] | type[AuthorizationCodeOperationPayload],
+) -> None:
+    payload = payload_type.model_validate(
+        {
+            "flow": "authorization_code",
+            "access_token": "access-token",
+            "refresh_token": "refresh-token",
+            "state": "callback-state",
+            "code_verifier": "pkce-verifier",
+            "callback_uri": "https://octomate.example/oauth/linear/callback",
+            "authorization_uri": "https://auth.example/authorize",
+            "mcp_oauth": {
+                "resource": "https://api.example",
+                "metadata": {
+                    "issuer": "https://auth.example",
+                    "authorization_endpoint": "https://auth.example/authorize",
+                    "token_endpoint": "https://auth.example/token",
+                    "response_types_supported": ["code"],
+                },
+                "client": {
+                    "client_id": "registered-client",
+                    "client_secret": "registered-secret",
+                    "token_endpoint_auth_method": "client_secret_post",
+                },
+                "scope": "read",
+            },
+        }
+    )
+    assert payload.discovery_state is not None
+    assert payload.discovery_state.client.client_secret == "registered-secret"
+    assert str(payload.discovery_state.resource) == "https://api.example/"
+    serialized = payload.model_dump_json()
+    assert '"mcp_oauth"' not in serialized
+    assert '"discovery_state"' in serialized
+    assert payload_type.model_validate_json(serialized) == payload
+
+
+async def test_authorization_code_requires_authorization_endpoint() -> None:
+    flow = AuthorizationCodeFlow(
+        tokens=device_flow(
+            httpx2.MockTransport(lambda request: httpx2.Response(400))
+        ).tokens,
+        authorization_lifetime=timedelta(minutes=10),
+    )
+    with pytest.raises(ValueError, match="requires an authorization endpoint"):
+        await flow.start(
+            context(),
+            AnyHttpUrl("https://octomate.example/callback"),
+            SecretStr("state"),
+        )
 
 
 @pytest.mark.parametrize("status", [200, 400, 401])
@@ -250,6 +330,52 @@ async def test_explicit_refresh_rejection(status: int, error: str) -> None:
     )
     with pytest.raises(OAuthRefreshRejected):
         await flow.refresh(SecretStr("spent"))
+
+
+@pytest.mark.parametrize("token_type", ["bearer", "Bearer", "BEARER"])
+async def test_sdk_token_normalization_preserves_immediate_expiry(
+    token_type: str,
+) -> None:
+    flow = device_flow(
+        httpx2.MockTransport(
+            lambda request: httpx2.Response(
+                200,
+                json={
+                    "access_token": "token",
+                    "token_type": token_type,
+                    "expires_in": 0,
+                },
+            )
+        )
+    )
+    before = datetime.now(UTC)
+    grant = await flow.refresh(SecretStr("refresh"))
+    assert grant.token_type == "Bearer"
+    assert grant.expires_at is not None
+    assert before <= grant.expires_at <= datetime.now(UTC)
+    assert grant.refresh_token == SecretStr("refresh")
+
+
+@pytest.mark.parametrize(
+    ("token_type", "expires_in"), [("unsupported", 3600), ("Bearer", -1)]
+)
+async def test_rejects_unusable_token_response(
+    token_type: str, expires_in: int
+) -> None:
+    flow = device_flow(
+        httpx2.MockTransport(
+            lambda request: httpx2.Response(
+                200,
+                json={
+                    "access_token": "token",
+                    "token_type": token_type,
+                    "expires_in": expires_in,
+                },
+            )
+        )
+    )
+    with pytest.raises(ValueError, match=r"token_type|lifetime cannot be negative"):
+        await flow.refresh(SecretStr("refresh"))
 
 
 async def test_device_polling_and_refresh_through_manager(
@@ -385,7 +511,7 @@ async def test_configured_callback_keeps_overlapping_users_separate(
             host,
         )
     )
-    assert type(host.oauth.connector("work").select_flow()) is OAuthCodeFlow
+    assert type(host.oauth.connector("work").select_flow()) is AuthorizationCodeFlow
     alice, bob = await a_user("alice"), await a_user("bob")
     assert [entry.id for entry in host.mcp.available()] == ["work"]
     assert await host.mcp.list(alice.id) == []
@@ -420,14 +546,14 @@ async def test_configured_callback_keeps_overlapping_users_separate(
     second_payload = await host.oauth.staged_authorization("work", second.operation_id)
     assert first_payload.code_verifier != second_payload.code_verifier
     for owner, payload in [(bob, second_payload), (alice, first_payload)]:
-        assert payload.mcp_oauth is None
+        assert payload.discovery_state is None
         completed = await host.oauth.complete_callback(
             "work", state=payload.state.get_secret_value(), code=owner.username
         )
         grant = completed.grant
         assert completed.user.id == owner.id
         assert grant.access_token == SecretStr(owner.username + "-access")
-        assert grant.mcp_oauth is None
+        assert grant.discovery_state is None
         assert payload.code_verifier is not None
         assert requests[-1]["code_verifier"] == [
             payload.code_verifier.get_secret_value()

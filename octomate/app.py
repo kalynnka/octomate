@@ -10,6 +10,7 @@ from octomate.config import (
     ClaudeCodeConfig,
     CodexConfig,
     DeepseekConfig,
+    DiscoveredOAuthMcpConfig,
     InklingConfig,
     OAuthMcpConfig,
     OctomateConfig,
@@ -163,7 +164,7 @@ def create_app() -> Octomate:
                 | TrunklineChannelConfig()
             ):
                 tentacle = build_channel(id, tentacle_config, octomate)
-            case BareMcpConfig() | OAuthMcpConfig():
+            case BareMcpConfig() | OAuthMcpConfig() | DiscoveredOAuthMcpConfig():
                 tentacle = build_mcp(id, tentacle_config, octomate)
         octomate.connect(tentacle)
 

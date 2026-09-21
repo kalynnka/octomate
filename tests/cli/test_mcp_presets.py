@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from octomate import Octomate
 from octomate.config import OAuthMcpConfig, OctomateConfig
 from octomate.config.mcp.base import AuthorizationCodeFlowConfig, DeviceFlowConfig
-from octomate.oauth.flows import OAuthCodeFlow, OAuthDeviceFlow
+from octomate.oauth.flows import AuthorizationCodeFlow, DeviceAuthorizationFlow
 from octomate.tentacles.mcp import OAuthMcpTentacle, build_mcp
 
 
@@ -93,11 +93,11 @@ def test_github_preset_generates_generic_oauth_config(
     tentacle = build_mcp("github_work", config, host)
     assert type(tentacle) is OAuthMcpTentacle
     assert isinstance(
-        host.oauth.connector("github_work").select_flow(), OAuthDeviceFlow
+        host.oauth.connector("github_work").select_flow(), DeviceAuthorizationFlow
     )
     assert isinstance(
         host.oauth.connector("github_work").select_flow("authorization_code"),
-        OAuthCodeFlow,
+        AuthorizationCodeFlow,
     )
     OctomateConfig.model_validate(
         {

@@ -7,13 +7,13 @@ from urllib.parse import parse_qs
 import httpx2
 import pytest
 from mcp.client.auth.exceptions import OAuthFlowError
-from mcp.shared.auth import OAuthClientMetadata
+from mcp.shared.auth import InvalidRedirectUriError, OAuthClientMetadata
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config import OctomateConfig
+from octomate.config import DiscoveredOAuthMcpConfig, OctomateConfig
 from octomate.config.oauth import OAuthConfig
 from octomate.database import async_session
 from octomate.managers.mcp import McpClientKey, McpUnavailable
@@ -31,7 +31,7 @@ from octomate.schemas.oauth import (
     OAuthTokenPayload,
 )
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.mcp import OAuthMcpTentacle
+from octomate.tentacles.mcp import OAuthMcpTentacle, build_mcp
 from octomate.types.oauth import HttpsUrl
 from tests.agent.test_mcp import ENCRYPTION_KEY, a_turn, an_upstream
 from tests.managers.test_mcp import connected
@@ -48,6 +48,7 @@ ISSUER = "https://auth.example"
 
 class OAuthServer:
     def __init__(self) -> None:
+        self.callback_uri: str = "https://octomate.example/oauth/mcp/callback"
         self.registrations: int = 0
         self.tokens: list[dict[str, list[str]]] = []
         self.refresh_status: int = 200
@@ -132,9 +133,7 @@ class OAuthServer:
                     )
                 else:
                     assert len(data["code_verifier"][0]) >= 43
-                    assert data["redirect_uri"] == [
-                        "https://octomate.example/oauth/mcp/callback"
-                    ]
+                    assert data["redirect_uri"] == [self.callback_uri]
                     code = data["code"][0]
                 return httpx2.Response(
                     200,
@@ -183,7 +182,7 @@ def host(in_memory_engine: AsyncEngine, upstream: OAuthServer) -> Octomate:
 async def install(
     host: Octomate, user: User, namespace: str, tentacle_id: str | None = None
 ) -> OAuthMcp:
-    if tentacle_id is not None:
+    if tentacle_id is not None and tentacle_id not in host.mcp.tentacles:
         tentacle = OAuthMcpTentacle(id=tentacle_id, octomate=host)
         tentacle.label = tentacle_id
         tentacle.upstream = URL
@@ -208,18 +207,24 @@ async def authorize(
 ) -> OAuthGrant:
     authorization = await host.mcp.connect(user, instance.id)
     assert isinstance(authorization, AuthorizationLink)
-    payload = await host.oauth.staged_authorization("mcp", authorization.operation_id)
+    connector_id = instance.tentacle_id or "mcp"
+    payload = await host.oauth.staged_authorization(
+        connector_id, authorization.operation_id
+    )
     assert "state=" not in str(authorization.authorization_uri)
-    assert payload.mcp_oauth is not None
+    assert payload.discovery_state is not None
     params = parse_qs(payload.authorization_uri.query or "")
-    assert params["resource"] == [str(payload.mcp_oauth.resource)]
-    assert params["client_id"] == [payload.mcp_oauth.client.client_id]
-    assert params["scope"] == [payload.mcp_oauth.scope]
+    assert params["resource"] == [str(payload.discovery_state.resource)]
+    assert params["client_id"] == [payload.discovery_state.client.client_id]
+    assert params["scope"] == [payload.discovery_state.scope]
     assert params["code_challenge_method"] == ["S256"]
-    if payload.mcp_oauth.scope and "offline_access" in payload.mcp_oauth.scope.split():
+    if (
+        payload.discovery_state.scope
+        and "offline_access" in payload.discovery_state.scope.split()
+    ):
         assert params["prompt"] == ["consent"]
     completed = await host.oauth.complete_callback(
-        "mcp", state=payload.state.get_secret_value(), code=code, issuer=ISSUER
+        connector_id, state=payload.state.get_secret_value(), code=code, issuer=ISSUER
     )
     return completed.grant
 
@@ -285,13 +290,21 @@ async def test_browser_oauth_and_link_profile_share_authorization_settings(
         assert before + lifetime <= expires_at <= after + lifetime
 
 
+@pytest.mark.parametrize("discovered_template", [False, True])
 async def test_same_url_has_independent_user_and_workspace_grants(
-    host: Octomate, upstream: OAuthServer
+    host: Octomate, upstream: OAuthServer, discovered_template: bool
 ) -> None:
+    tentacle_id = "linear" if discovered_template else None
+    connector_id = tentacle_id or "mcp"
+    if discovered_template:
+        host.connect(
+            build_mcp("linear", DiscoveredOAuthMcpConfig(url=AnyHttpUrl(URL)), host)
+        )
+        upstream.callback_uri = "https://octomate.example/oauth/linear/callback"
     alice, bob = await a_user("alice"), await a_user("bob")
-    first = await install(host, alice, "linear_kalynnka")
-    second = await install(host, alice, "linear_streamify")
-    third = await install(host, bob, "linear_kalynnka")
+    first = await install(host, alice, "linear_kalynnka", tentacle_id)
+    second = await install(host, alice, "linear_streamify", tentacle_id)
+    third = await install(host, bob, "linear_kalynnka", tentacle_id)
     for user, instance, code in [
         (alice, first, "kalynnka"),
         (alice, second, "streamify"),
@@ -301,12 +314,12 @@ async def test_same_url_has_independent_user_and_workspace_grants(
         assert grant.subject is None
         assert grant.account_label is None
         assert (await host.mcp.confirm(user, instance.id)).status == "active"
-        token = await host.oauth.access_token(user, "mcp", mcp_id=instance.id)
+        token = await host.oauth.access_token(user, connector_id, mcp_id=instance.id)
         assert token == SecretStr(code + "-access")
         assert code.encode() not in (await connection(instance)).encrypted_tokens
     assert upstream.registrations == 3
-    assert await host.oauth.access_token(alice, "mcp") is None
-    assert await host.oauth.access_token(bob, "mcp", mcp_id=first.id) is None
+    assert await host.oauth.access_token(alice, connector_id) is None
+    assert await host.oauth.access_token(bob, connector_id, mcp_id=first.id) is None
     with pytest.raises(McpUnavailable):
         await host.mcp.connect(bob, first.id)
     assert (await connection(first)).id != (await connection(second)).id
@@ -322,11 +335,18 @@ async def test_same_url_has_independent_user_and_workspace_grants(
             await session.commit()
 
 
+@pytest.mark.parametrize("discovered_template", [False, True])
 async def test_registration_secrets_persist_encrypted_and_survive_restart(
-    host: Octomate, upstream: OAuthServer
+    host: Octomate, upstream: OAuthServer, discovered_template: bool
 ) -> None:
+    tentacle_id = "logfire" if discovered_template else None
+    if discovered_template:
+        host.connect(
+            build_mcp("logfire", DiscoveredOAuthMcpConfig(url=AnyHttpUrl(URL)), host)
+        )
+        upstream.callback_uri = "https://octomate.example/oauth/logfire/callback"
     user = await a_user()
-    instance = await install(host, user, "logfire")
+    instance = await install(host, user, "logfire", tentacle_id)
     upstream.registration_secret = "dynamically-issued-client-secret"
     await authorize(host, user, instance, "logfire")
     stored = await connection(instance)
@@ -337,12 +357,20 @@ async def test_registration_secrets_persist_encrypted_and_survive_restart(
             stored.encrypted_tokens, context=f"connection:{stored.id}"
         )
     )
-    assert payload.mcp_oauth is not None
-    assert payload.mcp_oauth.client.client_secret == upstream.registration_secret
+    assert payload.discovery_state is not None
+    assert payload.discovery_state.client.client_secret == upstream.registration_secret
     await expire(instance)
     restarted = Octomate(config=host.config, oauth_encryption_key=ENCRYPTION_KEY)
     restarted.oauth.httpx_client_factory = upstream.client
-    token = await restarted.oauth.access_token(user, "mcp", mcp_id=instance.id)
+    if discovered_template:
+        restarted.connect(
+            build_mcp(
+                "logfire", DiscoveredOAuthMcpConfig(url=AnyHttpUrl(URL)), restarted
+            )
+        )
+    token = await restarted.oauth.access_token(
+        user, tentacle_id or "mcp", mcp_id=instance.id
+    )
     assert token == SecretStr("logfire-renewed-access")
     assert upstream.registrations == 1
 
@@ -573,6 +601,66 @@ async def test_cimd_skips_registration_when_supported(
     await authorize(host, user, instance, "cimd")
     assert upstream.registrations == 0
     assert upstream.tokens[0]["client_id"] == [str(host.oauth.client_metadata_url)]
+
+
+@pytest.mark.parametrize("metadata", ["resource", "authorization_server"])
+async def test_sdk_discovery_tries_next_metadata_candidate(
+    host: Octomate,
+    upstream: OAuthServer,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata: str,
+) -> None:
+    original = upstream.respond
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        if metadata == "resource":
+            if request.url.path == "/.well-known/oauth-protected-resource/mcp":
+                return httpx2.Response(200, json={"resource": URL})
+            if request.url.path == "/.well-known/oauth-protected-resource":
+                return httpx2.Response(
+                    200, json={"resource": URL, "authorization_servers": [ISSUER]}
+                )
+        else:
+            if request.url.path == "/.well-known/oauth-authorization-server":
+                return httpx2.Response(200, json={"issuer": ISSUER})
+            if request.url.path == "/.well-known/openid-configuration":
+                return original(
+                    httpx2.Request(
+                        "GET", f"{ISSUER}/.well-known/oauth-authorization-server"
+                    )
+                )
+        return original(request)
+
+    monkeypatch.setattr(upstream, "respond", respond)
+    user = await a_user()
+    instance = await install(host, user, "linear")
+    await authorize(host, user, instance, "discovered")
+    assert upstream.registrations == 1
+    assert len(upstream.tokens) == 1
+
+
+async def test_sdk_registration_rejects_unregistered_callback(
+    host: Octomate, upstream: OAuthServer, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = upstream.respond
+
+    def respond(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/register":
+            return httpx2.Response(
+                201,
+                json={
+                    "client_id": "registered",
+                    "redirect_uris": ["https://other.example/callback"],
+                },
+            )
+        return original(request)
+
+    monkeypatch.setattr(upstream, "respond", respond)
+    user = await a_user()
+    instance = await install(host, user, "linear")
+    with pytest.raises(InvalidRedirectUriError):
+        await host.mcp.connect(user, instance.id)
+    assert upstream.tokens == []
 
 
 async def test_failed_exchange_consumes_callback_without_replaying_it(
