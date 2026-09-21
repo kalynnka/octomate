@@ -185,6 +185,23 @@ class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
     def hash_link_token(token: SecretStr) -> SecretStr:
         return SecretStr(hashlib.sha256(token.get_secret_value().encode()).hexdigest())
 
+    async def link_verified_profile(self, profile: UserProfile, user: User) -> None:
+        """Link an OAuth-verified profile without replacing an existing owner."""
+        async with self.lock(profile.id), async_session() as session:
+            stored = await session.get(UserProfile, profile.id)
+            if stored is None or await session.get(User, user.id) is None:
+                raise InvalidLinkProfile
+            if stored.user_id is not None and stored.user_id != user.id:
+                raise ProfileAlreadyLinked
+            stored.user_id = user.id
+            pending = await session.one_or_none(
+                LinkProfileSession,
+                expressions=[LinkProfileSession["profile_id"] == stored.id],
+            )
+            if pending is not None:
+                pending.consumed_at = datetime.now(UTC)
+            await session.commit()
+
     async def start_link_profile(
         self, profile: UserProfile
     ) -> LinkProfileAuthorization:

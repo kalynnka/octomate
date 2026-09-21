@@ -23,6 +23,7 @@ from octomate.config import (
     DeepseekConfig,
     DiscordChannelConfig,
     DiscordStreamConfig,
+    DiscoveredOAuthMcpConfig,
     InklingConfig,
     LarkChannelConfig,
     ModelConfig,
@@ -1169,22 +1170,59 @@ def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
                 "web": {"type": "trunkline", "agents": ["coding"]},
                 "coding": {"type": "codex"},
                 "tools": {"type": "bare", "url": "https://mcp.example/mcp"},
+                "linear": {
+                    "type": "oauth_discovery",
+                    "url": "https://mcp.linear.app/mcp",
+                },
                 "disabled": {
                     "type": "bare",
                     "url": "https://disabled.example/mcp",
                     "enabled": False,
                 },
-            }
+            },
+            "oauth": {
+                "encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+                "callback_base_uri": "https://octomate.example",
+            },
         }
     )
     monkeypatch.setattr(application, "config", config)
     with patch("logfire.configure"), patch("logging.basicConfig"):
         host = application.create_app()
-    assert list(host.tentacles) == ["web", "coding", "tools"]
+    assert list(host.tentacles) == ["web", "coding", "tools", "linear"]
     assert list(host.agents) == ["coding"]
     assert list(host.channels) == ["web"]
-    assert list(host.mcp.tentacles) == ["tools"]
+    assert list(host.mcp.tentacles) == ["tools", "linear"]
     assert host.channels["web"].agent_ids == ["coding"]
+    assert isinstance(config.tentacles["linear"], DiscoveredOAuthMcpConfig)
+    assert host.mcp.tentacles["linear"].info.auth_kind == "oauth"
+
+
+@pytest.mark.parametrize("setting", ["encryption_key", "callback_base_uri"])
+def test_discovered_oauth_template_requires_authorization_settings(
+    setting: str,
+) -> None:
+    oauth = {
+        "encryption_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+        "callback_base_uri": "https://octomate.example",
+    }
+    del oauth[setting]
+    template = {"type": "oauth_discovery", "url": "https://mcp.linear.app/mcp"}
+    with pytest.raises(ValidationError, match=rf"oauth\.{setting} is required"):
+        OctomateConfig.model_validate(
+            {"tentacles": {"linear": template}, "oauth": oauth}
+        )
+    OctomateConfig.model_validate(
+        {"tentacles": {"linear": {**template, "enabled": False}}}
+    )
+
+
+@pytest.mark.parametrize("field", ["client_id", "client_secret", "flows"])
+def test_discovered_oauth_template_rejects_manual_client_settings(field: str) -> None:
+    with pytest.raises(ValidationError, match="extra_forbidden"):
+        DiscoveredOAuthMcpConfig.model_validate(
+            {"url": "https://mcp.linear.app/mcp", field: "manual setting"}
+        )
 
 
 @pytest.mark.parametrize("duplicate", [False, True])

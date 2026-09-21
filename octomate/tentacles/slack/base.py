@@ -5,13 +5,14 @@ import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, ClassVar, Self
 
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 from rich.style import Style
 from slack_bolt.adapter.socket_mode.async_handler import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
 from octomate.config import SlackChannelConfig
-from octomate.oauth.flows import OAuthCodeFlow
+from octomate.oauth.flows import AuthorizationCodeFlow
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
@@ -186,18 +187,19 @@ class SlackTentacle(
                     ink=ink,
                     mcp_url=AnyHttpUrl(self.upstream),
                     flows=[
-                        OAuthCodeFlow(
-                            authorization_lifetime=octomate.oauth.authorization_lifetime,
-                            authorization_endpoint=AnyHttpUrl(
-                                "https://slack.com/oauth/v2_user/authorize"
-                            ),
+                        AuthorizationCodeFlow(
                             tokens=SlackTokenExchange(
+                                authorization_endpoint=AnyHttpUrl(
+                                    "https://slack.com/oauth/v2_user/authorize"
+                                ),
                                 token_endpoint=AnyHttpUrl(
                                     "https://slack.com/api/oauth.v2.user.access"
                                 ),
-                                client_id=config.oauth.client_id,
-                                client_secret=config.oauth.client_secret,
-                                token_endpoint_auth_method="client_secret_post",
+                                client=OAuthClientInformationFull(
+                                    client_id=config.oauth.client_id,
+                                    client_secret=config.oauth.client_secret.get_secret_value(),
+                                    token_endpoint_auth_method="client_secret_post",
+                                ),
                                 scopes=list(config.oauth.scopes),
                                 invalid_credentials_errors=[
                                     "invalid_grant",
@@ -208,6 +210,7 @@ class SlackTentacle(
                                 ],
                                 httpx_client_factory=octomate.oauth.httpx_client_factory,
                             ),
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
                         )
                     ],
                     callback_transport=DirectHttpOAuthCallbackTransport(

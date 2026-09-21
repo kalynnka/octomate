@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import ClassVar, Literal
 
 import httpx2
-from pydantic import BaseModel, Field, TypeAdapter
+from mcp.shared.auth import OAuthToken
+from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 from octomate.managers.oauth import OAuthConnector
 from octomate.oauth.flows import OAuthTokenExchange
@@ -19,9 +20,15 @@ class SlackAuthedUser(BaseModel):
     scope: str = ""
 
 
-class SlackUserTokenResponse(BaseModel):
+class SlackUserToken(OAuthToken):
     ok: Literal[True]
     authed_user: SlackAuthedUser | None = None
+
+    @field_validator("token_type", mode="before")
+    @classmethod
+    def normalize_user_token_type(cls, value: str | None) -> str | None:
+        # Slack labels its user bearer tokens by account type.
+        return "Bearer" if value == "user" else value
 
 
 class SlackErrorResponse(BaseModel):
@@ -68,9 +75,11 @@ class SlackOAuthConnector(OAuthConnector):
 
 
 class SlackTokenExchange(OAuthTokenExchange):
+    token_model: ClassVar[type[OAuthToken]] = SlackUserToken
+
     async def grant(self, response: httpx2.Response) -> SlackOAuthGrant:
         grant = await super().grant(response)
-        token = SlackUserTokenResponse.model_validate_json(response.content)
+        token = SlackUserToken.model_validate_json(response.content)
         grant.scopes = (
             [
                 scope.strip()
@@ -103,6 +112,6 @@ class SlackTokenExchange(OAuthTokenExchange):
         grant.account_label = f"{identity.user} in {identity.team}"
         return SlackOAuthGrant(
             **grant.model_dump(),
-            mcp_oauth=grant.mcp_oauth,
+            discovery_state=grant.discovery_state,
             team_id=identity.team_id,
         )

@@ -13,6 +13,7 @@ import httpx2
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
@@ -27,6 +28,7 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.oauth import (
+    OAuthCallback,
     OAuthConnector,
     OAuthLockKey,
     OAuthManager,
@@ -35,16 +37,21 @@ from octomate.managers.oauth import (
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
+from octomate.mcp.transport import mcp_http_client
 from octomate.oauth.base import McpBearerAuth
+from octomate.oauth.flows import (
+    AuthorizationCodeFlow,
+    DeviceAuthorizationFlow,
+    OAuthRefreshRejected,
+    OAuthTokenExchange,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.mcp import Mcp
 from octomate.schemas.oauth import (
-    AuthorizationCodeOAuthFlow,
     AuthorizationLink,
     AuthorizationRequest,
     DeviceAuthorization,
     DeviceAuthorizationResponse,
-    DeviceOAuthFlow,
     DirectHttpOAuthCallbackTransport,
     OAuthConnection,
     OAuthFlowContext,
@@ -74,7 +81,7 @@ async def database(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-class FakeDeviceFlow(DeviceOAuthFlow):
+class FakeDeviceFlow(DeviceAuthorizationFlow):
     def __init__(self) -> None:
         self.context: OAuthFlowContext | None = None
         self.starts = 0
@@ -111,8 +118,20 @@ class FakeDeviceFlow(DeviceOAuthFlow):
         return self.completion
 
 
-class FakeAuthorizationCodeFlow(AuthorizationCodeOAuthFlow):
+class FakeAuthorizationCodeFlow(AuthorizationCodeFlow):
     def __init__(self) -> None:
+        super().__init__(
+            tokens=OAuthTokenExchange(
+                authorization_endpoint=AnyHttpUrl("https://example.com/authorize"),
+                token_endpoint=AnyHttpUrl("https://example.com/token"),
+                client=OAuthClientInformationFull(
+                    client_id="test-client", token_endpoint_auth_method="none"
+                ),
+                scopes=[],
+                httpx_client_factory=mcp_http_client,
+            ),
+            authorization_lifetime=timedelta(minutes=10),
+        )
         self.context: OAuthFlowContext | None = None
         self.callback: AnyHttpUrl | None = None
         self.state: SecretStr | None = None
@@ -174,7 +193,9 @@ class FakeAuthorizationCodeFlow(AuthorizationCodeOAuthFlow):
 
     async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
         if self.refresh_refused:
-            raise ValueError("Linear authorization failed: refresh token is spent")
+            raise OAuthRefreshRejected(
+                "Linear authorization failed: refresh token is spent"
+            )
         assert refresh_token.get_secret_value() == "linear-refresh"
         return self.refreshed
 
@@ -451,11 +472,12 @@ async def test_the_callback_stores_an_owner_bound_encrypted_token() -> None:
     manager, profile, flow = await linear_manager()
     _, state = await started(manager, profile, flow)
 
-    grant = await manager.complete_callback(
+    completed = await manager.complete_callback(
         LINEAR_CONNECTOR_ID, state=state, code="auth-code"
     )
 
-    assert grant.account_label == "Alice"
+    assert completed.grant.account_label == "Alice"
+    assert completed.user.id == profile.user_id
     # The verifier the operation was holding is what the exchange spent.
     assert flow.exchanges == [("auth-code", "pkce-verifier")]
     owner = await manager.users.owner(profile)
@@ -496,7 +518,7 @@ async def test_concurrent_callbacks_exchange_an_operation_once() -> None:
         return_exceptions=True,
     )
 
-    assert sum(isinstance(result, OAuthGrant) for result in results) == 1
+    assert sum(isinstance(result, OAuthCallback) for result in results) == 1
     assert sum(isinstance(result, UnusableOAuthOperation) for result in results) == 3
     assert flow.exchanges == [("auth-code", "pkce-verifier")]
 

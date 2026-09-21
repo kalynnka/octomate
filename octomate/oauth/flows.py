@@ -1,22 +1,23 @@
-"""Configured OAuth flows shared by channels and MCP integrations."""
+"""Standard OAuth flows shared by channels and MCP integrations."""
 
 from __future__ import annotations
 
 from base64 import b64encode
 from datetime import UTC, datetime, timedelta
+from typing import ClassVar, Literal, Protocol
 from urllib.parse import quote_plus
 
 import httpx2
 from mcp.client.auth.oauth2 import PKCEParameters, check_registration_usable
 from mcp.shared._httpx_utils import McpHttpClientFactory
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from mcp.shared.auth_utils import calculate_token_expiry
 from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, TypeAdapter
 
 from octomate.schemas.oauth import (
-    AuthorizationCodeOAuthFlow,
     AuthorizationRequest,
     DeviceAuthorizationResponse,
-    DeviceOAuthFlow,
-    McpOAuthState,
+    OAuthDiscoveryState,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
@@ -39,47 +40,37 @@ class DeviceCodeResponse(BaseModel):
     interval: int = Field(default=5, ge=1)
 
 
-class TokenResponse(BaseModel):
-    access_token: SecretStr
-    token_type: str = "bearer"
-    refresh_token: SecretStr | None = None
-    expires_in: int | None = Field(default=None, ge=0)
-    scope: str | None = None
-
-
 class TokenError(BaseModel):
     error: str
     interval: int | None = Field(default=None, ge=1)
 
 
 class OAuthTokenExchange:
+    token_model: ClassVar[type[OAuthToken]] = OAuthToken
+    authorization_endpoint: HttpsUrl | None
     token_endpoint: HttpsUrl
-    client_id: str
-    client_secret: SecretStr | None
-    token_endpoint_auth_method: str
+    client: OAuthClientInformationFull
     scopes: list[str]
     scope_separator: str
     invalid_credentials_errors: list[str]
     httpx_client_factory: McpHttpClientFactory
-    state: McpOAuthState | None
+    discovery_state: OAuthDiscoveryState | None
 
     def __init__(
         self,
         *,
+        authorization_endpoint: HttpsUrl | None = None,
         token_endpoint: HttpsUrl,
-        client_id: str,
-        client_secret: SecretStr | None,
-        token_endpoint_auth_method: str,
+        client: OAuthClientInformationFull,
         scopes: list[str],
         scope_separator: str = " ",
         invalid_credentials_errors: list[str] | None = None,
         httpx_client_factory: McpHttpClientFactory,
-        state: McpOAuthState | None = None,
+        discovery_state: OAuthDiscoveryState | None = None,
     ) -> None:
+        self.authorization_endpoint = authorization_endpoint
         self.token_endpoint = token_endpoint
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.token_endpoint_auth_method = token_endpoint_auth_method
+        self.client = client
         self.scopes = scopes
         self.scope_separator = scope_separator
         self.invalid_credentials_errors = (
@@ -88,7 +79,7 @@ class OAuthTokenExchange:
             else ["invalid_grant", "invalid_client"]
         )
         self.httpx_client_factory = httpx_client_factory
-        self.state = state
+        self.discovery_state = discovery_state
 
     @staticmethod
     async def send(
@@ -105,28 +96,29 @@ class OAuthTokenExchange:
         return response
 
     async def request(self, url: HttpsUrl, data: dict[str, str]) -> httpx2.Response:
-        if self.state is not None:
-            check_registration_usable(self.state.client)
-            data["resource"] = str(self.state.resource)
+        if self.discovery_state is not None:
+            check_registration_usable(self.client)
+            if self.discovery_state.resource is not None:
+                data["resource"] = str(self.discovery_state.resource)
         headers = {"Accept": "application/json"}
-        match self.token_endpoint_auth_method:
+        match self.client.token_endpoint_auth_method:
             case "client_secret_basic":
-                if self.client_secret is None:
+                if self.client.client_secret is None:
                     raise ValueError("OAuth client secret is required")
                 credentials = (
-                    f"{quote_plus(self.client_id)}:"
-                    f"{quote_plus(self.client_secret.get_secret_value())}"
+                    f"{quote_plus(self.client.client_id)}:"
+                    f"{quote_plus(self.client.client_secret)}"
                 )
                 headers["Authorization"] = (
                     "Basic " + b64encode(credentials.encode()).decode()
                 )
             case "client_secret_post":
-                if self.client_secret is None:
+                if self.client.client_secret is None:
                     raise ValueError("OAuth client secret is required")
-                data["client_id"] = self.client_id
-                data["client_secret"] = self.client_secret.get_secret_value()
-            case "none":
-                data["client_id"] = self.client_id
+                data["client_id"] = self.client.client_id
+                data["client_secret"] = self.client.client_secret
+            case "none" | None:
+                data["client_id"] = self.client.client_id
             case _:
                 raise ValueError(
                     "Unsupported OAuth token endpoint authentication method"
@@ -150,7 +142,10 @@ class OAuthTokenExchange:
             response.raise_for_status()
             raise ValueError(f"OAuth token request failed: {error.error}")
         response.raise_for_status()
-        token = TokenResponse.model_validate_json(response.content)
+        token = self.token_model.model_validate_json(response.content)
+        if token.expires_in is not None and token.expires_in < 0:
+            raise ValueError("OAuth token lifetime cannot be negative")
+        expires_at = calculate_token_expiry(token.expires_in)
         scopes = (
             [
                 scope.strip()
@@ -161,15 +156,19 @@ class OAuthTokenExchange:
             else self.scopes
         )
         return OAuthGrant(
-            access_token=token.access_token,
+            access_token=SecretStr(token.access_token),
             token_type=token.token_type,
-            refresh_token=token.refresh_token,
-            expires_at=datetime.now(UTC) + timedelta(seconds=token.expires_in)
-            if token.expires_in is not None
+            refresh_token=SecretStr(token.refresh_token)
+            if token.refresh_token is not None
+            else None,
+            expires_at=datetime.fromtimestamp(expires_at, UTC)
+            if expires_at is not None
             else None,
             scopes=scopes,
-            mcp_oauth=self.state.model_copy(update={"scope": " ".join(scopes)})
-            if self.state is not None
+            discovery_state=self.discovery_state.model_copy(
+                update={"scope": " ".join(scopes)}
+            )
+            if self.discovery_state is not None
             else None,
         )
 
@@ -187,23 +186,32 @@ class OAuthTokenExchange:
         return grant
 
 
-class OAuthCodeFlow(AuthorizationCodeOAuthFlow):
-    """Authorization-code OAuth with explicitly configured endpoints and credentials."""
+class OAuthTokenResolver(Protocol):
+    async def resolve(self, callback_uri: AnyHttpUrl | None) -> OAuthTokenExchange: ...
 
-    authorization_endpoint: HttpsUrl
+
+class AuthorizationCodeFlow:
+    """Authorization-code OAuth using a configured or discovered client."""
+
+    kind: ClassVar[Literal["authorization_code"]] = "authorization_code"
+    tokens: OAuthTokenExchange | OAuthTokenResolver
     authorization_lifetime: timedelta
-    tokens: OAuthTokenExchange
 
     def __init__(
         self,
         *,
-        authorization_endpoint: HttpsUrl,
+        tokens: OAuthTokenExchange | OAuthTokenResolver,
         authorization_lifetime: timedelta,
-        tokens: OAuthTokenExchange,
     ) -> None:
-        self.authorization_endpoint = authorization_endpoint
-        self.authorization_lifetime = authorization_lifetime
         self.tokens = tokens
+        self.authorization_lifetime = authorization_lifetime
+
+    async def resolve_tokens(
+        self, callback_uri: AnyHttpUrl | None = None
+    ) -> OAuthTokenExchange:
+        if isinstance(self.tokens, OAuthTokenExchange):
+            return self.tokens
+        return await self.tokens.resolve(callback_uri)
 
     async def start(
         self,
@@ -211,27 +219,38 @@ class OAuthCodeFlow(AuthorizationCodeOAuthFlow):
         callback_uri: AnyHttpUrl,
         state: SecretStr,
     ) -> AuthorizationRequest:
+        tokens = await self.resolve_tokens(callback_uri)
+        if tokens.authorization_endpoint is None:
+            raise ValueError(
+                "Authorization-code OAuth requires an authorization endpoint"
+            )
         pkce = PKCEParameters.generate()
         params = {
             "response_type": "code",
-            "client_id": self.tokens.client_id,
+            "client_id": tokens.client.client_id,
             "redirect_uri": str(callback_uri),
             "state": state.get_secret_value(),
             "code_challenge": pkce.code_challenge,
             "code_challenge_method": "S256",
         }
-        if self.tokens.scopes:
-            params["scope"] = " ".join(self.tokens.scopes)
+        if tokens.scopes:
+            params["scope"] = " ".join(tokens.scopes)
+        if tokens.discovery_state is not None:
+            if tokens.discovery_state.resource is not None:
+                params["resource"] = str(tokens.discovery_state.resource)
+            if "offline_access" in tokens.scopes:
+                params["prompt"] = "consent"
         return AuthorizationRequest(
             authorization_uri=AnyHttpUrl(
                 str(
-                    httpx2.URL(str(self.authorization_endpoint)).copy_merge_params(
+                    httpx2.URL(str(tokens.authorization_endpoint)).copy_merge_params(
                         params
                     )
                 )
             ),
             code_verifier=SecretStr(pkce.code_verifier),
             expires_at=datetime.now(UTC) + self.authorization_lifetime,
+            discovery_state=tokens.discovery_state,
         )
 
     async def exchange(
@@ -244,8 +263,9 @@ class OAuthCodeFlow(AuthorizationCodeOAuthFlow):
     ) -> OAuthGrant:
         if code_verifier is None:
             raise ValueError("OAuth requires a PKCE verifier")
-        response = await self.tokens.request(
-            self.tokens.token_endpoint,
+        tokens = await self.resolve_tokens()
+        response = await tokens.request(
+            tokens.token_endpoint,
             {
                 "grant_type": "authorization_code",
                 "code": code,
@@ -253,13 +273,17 @@ class OAuthCodeFlow(AuthorizationCodeOAuthFlow):
                 "redirect_uri": str(callback_uri),
             },
         )
-        return await self.tokens.grant(response)
+        return await tokens.grant(response)
 
     async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
-        return await self.tokens.refresh(refresh_token)
+        tokens = await self.resolve_tokens()
+        return await tokens.refresh(refresh_token)
 
 
-class OAuthDeviceFlow(DeviceOAuthFlow):
+class DeviceAuthorizationFlow:
+    """OAuth device authorization with polling and token refresh."""
+
+    kind: ClassVar[Literal["device"]] = "device"
     device_authorization_endpoint: HttpsUrl
     tokens: OAuthTokenExchange
 

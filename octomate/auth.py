@@ -15,13 +15,14 @@ from octomate.managers.user import (
     ProfileNotLinked,
     UserManager,
 )
+from octomate.oauth.flows import AuthorizationCodeFlow
 from octomate.schemas.auth import (
     LinkProfileInfo,
     SessionTokens,
     UserApiKey,
     UserSession,
 )
-from octomate.schemas.oauth import AuthorizationCodeOAuthFlow, AuthorizationLink
+from octomate.schemas.oauth import AuthorizationLink
 from octomate.schemas.user import User, UserProfile
 from octomate.types.auth import ApiKeyScope, NewPassword
 
@@ -306,7 +307,7 @@ async def profile_authorizations(
         for channel in app.channels.values()
         if channel.id in app.oauth.connectors
         and any(
-            isinstance(flow, AuthorizationCodeOAuthFlow)
+            isinstance(flow, AuthorizationCodeFlow)
             for flow in app.oauth.connectors[channel.id].flows
         )
     ]
