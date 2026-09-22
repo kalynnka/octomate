@@ -228,8 +228,9 @@ class DeepseekProcess:
             )
         except TimeoutError:
             await self.stop()
+            self.log_startup_output()
             raise RuntimeError(
-                f"dsh web did not report its URL within {self.ready_timeout:g}s{self.startup_diagnostics()}"
+                f"dsh web did not report its URL within {self.ready_timeout:g}s"
             ) from None
         except BaseException:
             await self.stop()
@@ -269,9 +270,8 @@ class DeepseekProcess:
         await asyncio.gather(*self.relays)
         if self.unknown_option is not None:
             raise HarnessOptionUnsupportedError(self.unknown_option)
-        raise RuntimeError(
-            f"dsh web exited before reporting a URL (code {code}){self.startup_diagnostics()}"
-        )
+        self.log_startup_output()
+        raise RuntimeError(f"dsh web exited before reporting a URL (code {code})")
 
     async def watch_stderr(self, stderr: asyncio.StreamReader) -> None:
         """Relay stderr, keeping the flag named by commander's refusal line —
@@ -307,24 +307,26 @@ class DeepseekProcess:
             self.diagnostics.append(line[:DIAGNOSTIC_WIDTH])
         self.diagnostic_count += 1
 
-    def startup_diagnostics(self) -> str:
+    def log_startup_output(self) -> None:
+        """What a dsh printed before failing to serve is the diagnosis, so it
+        goes out as a log record of its own under the tentacle's tag — not
+        folded into the exception, where it would render as part of a Python
+        traceback it has nothing to do with."""
         if not self.diagnostic_count:
-            return ""
+            return
         omitted = (
             self.diagnostic_count - len(self.diagnostic_head) - len(self.diagnostics)
         )
-        prefix = (
-            f"\n({omitted} earlier lines omitted; full output at DEBUG)"
-            if omitted
-            else ""
-        )
-        return (
-            "\n"
-            + "\n".join(self.diagnostic_head)
-            + prefix
-            + "\n"
-            + "\n".join(self.diagnostics)
-        )
+        lines = [
+            *self.diagnostic_head,
+            *(
+                [f"({omitted} earlier lines omitted; full output at DEBUG)"]
+                if omitted
+                else []
+            ),
+            *self.diagnostics,
+        ]
+        logger.error("dsh web output before its start failed:\n%s", "\n".join(lines))
 
     async def stop(self) -> None:
         """SIGTERM, escalating to SIGKILL — a dsh that ignores the term still

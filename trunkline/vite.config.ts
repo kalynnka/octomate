@@ -13,6 +13,11 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   server: {
+    // Bind the IPv4 loopback explicitly: `localhost` resolves to `::1` first on
+    // current Node, and a `tailscale serve` proxy to 127.0.0.1 then gets
+    // nothing. Requests that arrive that way carry the tailnet hostname.
+    host: '127.0.0.1',
+    allowedHosts: ['.ts.net'],
     proxy: {
       '/api': apiUrl,
       '/oauth': apiUrl,

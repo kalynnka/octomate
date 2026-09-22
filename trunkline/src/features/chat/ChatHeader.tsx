@@ -34,8 +34,8 @@ export function ChatHeader() {
       title={title2}
       className="hov-ink-wash"
       style={{
-        width: 22,
-        height: 22,
+        width: 'var(--trk-btn, 22px)',
+        height: 'var(--trk-btn, 22px)',
         boxSizing: 'border-box',
         flexShrink: 0,
         display: 'inline-flex',
@@ -58,8 +58,8 @@ export function ChatHeader() {
         display: 'flex',
         alignItems: 'center',
         gap: 8,
-        padding: '0 16px',
-        height: 44,
+        padding: 'var(--trk-head-pad, 0 16px)',
+        height: 'var(--trk-head-h, 44px)',
         boxSizing: 'border-box',
         borderBottom: '1px solid var(--line-divider)',
         flexShrink: 0,
@@ -67,12 +67,14 @@ export function ChatHeader() {
         zIndex: 80,
       }}
     >
-      <span style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{title}</span>
-      <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0 }}>{detail?.key ?? selThreadId}</span>
-      <span style={{ flex: 1, minWidth: 8 }} />
+      <span className="trk-head-title">
+        <span style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, maxWidth: '100%', ...ellipsis }}>{title}</span>
+        <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0 }}>{detail?.key ?? selThreadId}</span>
+      </span>
       {cur && (
         <span
           title="Current surface"
+          className="trk-head-chip"
           style={{
             ...label(8.5, '.1em'),
             color: cur.brand,
@@ -102,7 +104,7 @@ export function ChatHeader() {
             background: 'var(--color-teal)',
             border: '1px solid var(--color-teal)',
             padding: '0 8px',
-            height: 22,
+            height: 'var(--trk-btn, 22px)',
             boxSizing: 'border-box',
             cursor: 'pointer',
           }}

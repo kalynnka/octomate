@@ -26,9 +26,9 @@ export function AuthPage({
     <div
       className="paper-texture"
       style={{
-        minHeight: 'calc(100vh / var(--trk-zoom, 1))',
+        minHeight: 'calc(100dvh / var(--trk-zoom, 1))',
         boxSizing: 'border-box',
-        padding: 24,
+        padding: 'var(--trk-auth-pad, 24px)',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -47,7 +47,7 @@ export function AuthPage({
           background: 'var(--card-bg)',
           border: '1px solid var(--line-divider)',
           boxShadow: 'var(--shadow-card)',
-          padding: '26px 30px 24px',
+          padding: 'var(--trk-auth-card-pad, 26px 30px 24px)',
         }}
       >
         <Brackets />
@@ -58,7 +58,7 @@ export function AuthPage({
               Trunkline / Console
             </span>
           </div>
-          <h1 style={{ ...display(42), lineHeight: 1, letterSpacing: '-.035em', margin: '24px 0 10px' }}>
+          <h1 style={{ ...display(42), fontSize: 'var(--trk-auth-title, 42px)', lineHeight: 1, letterSpacing: '-.035em', margin: '24px 0 10px' }}>
             {title}<span style={{ color: 'var(--color-accent)' }}>.</span>
           </h1>
           <p style={{ ...statusNote, margin: 0, lineHeight: 1.6, color: 'var(--fg-3)' }}>{sub}</p>
