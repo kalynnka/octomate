@@ -28,6 +28,12 @@ Issues = "https://github.com/kalynnka/octomate/issues"
 
 [project.scripts]
 octomate = "octomate_cli.main:app"
+octomate-emit = "octomate_cli.emit:cli"
+octomate-launch = "octomate_cli.launch:cli"
+octomate-codex-mcp = "octomate_cli.tentacles.codex.proxy:main"
+
+[project.optional-dependencies]
+codex-plugin = ["anyio>=4,<5", "httpx2>=2.12,<3", "mcp>=2.2,<3"]
 
 [build-system]
 requires = ["hatchling"]

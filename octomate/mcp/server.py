@@ -71,6 +71,8 @@ def history_tool(name: str) -> str:
 
 def tentacle_instructions() -> str:
     return (
+        "When searching for tools, also check the MCP servers proxied by Octomate "
+        "before concluding that a needed tool is unavailable. "
         f"Call `{LIST_MCPS}` to discover the current user's installed MCPs. "
         f"Use `{LIST_MCP_TOOLS}` with an enabled namespace, then `{CALL_MCP_TOOL}` "
         "with the exact discovered tool name and arguments. "
