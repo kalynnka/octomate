@@ -1,7 +1,0 @@
-{
-  "mcpServers": {
-    "octomate": {
-      "command": "octomate-claude-mcp"
-    }
-  }
-}

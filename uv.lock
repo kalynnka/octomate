@@ -1743,26 +1743,8 @@ dependencies = [
     { name = "websockets" },
 ]
 
-[package.optional-dependencies]
-claude-plugin = [
-    { name = "anyio" },
-    { name = "httpx2" },
-    { name = "mcp" },
-]
-codex-plugin = [
-    { name = "anyio" },
-    { name = "httpx2" },
-    { name = "mcp" },
-]
-
 [package.metadata]
 requires-dist = [
-    { name = "anyio", marker = "extra == 'claude-plugin'", specifier = ">=4,<5" },
-    { name = "anyio", marker = "extra == 'codex-plugin'", specifier = ">=4,<5" },
-    { name = "httpx2", marker = "extra == 'claude-plugin'", specifier = ">=2.12,<3" },
-    { name = "httpx2", marker = "extra == 'codex-plugin'", specifier = ">=2.12,<3" },
-    { name = "mcp", marker = "extra == 'claude-plugin'", specifier = ">=2.2,<3" },
-    { name = "mcp", marker = "extra == 'codex-plugin'", specifier = ">=2.2,<3" },
     { name = "octomate-protocol", editable = "protocol" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
@@ -1774,7 +1756,6 @@ requires-dist = [
     { name = "watchfiles", specifier = ">=1.1.1" },
     { name = "websockets", specifier = ">=15" },
 ]
-provides-extras = ["codex-plugin", "claude-plugin"]
 
 [[package]]
 name = "octomate-protocol"

@@ -105,8 +105,7 @@ def main(url: str, token: str | None) -> int:
     return 0
 
 
-def cli() -> None:
-    """Run the hook from an installed command or directly by script path."""
+if __name__ == "__main__":
     args = sys.argv[1:]
     path: str | None = None
     url: str | None = None
@@ -145,7 +144,3 @@ def cli() -> None:
         # answer.
         print("{}")
     raise SystemExit(status)
-
-
-if __name__ == "__main__":
-    cli()

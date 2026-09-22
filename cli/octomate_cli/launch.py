@@ -121,8 +121,7 @@ def main(url: str | None, path: str | None, agent: str, octomate_bin: str) -> in
     return 0
 
 
-def cli() -> None:
-    """Run the launcher from an installed command or directly by script path."""
+if __name__ == "__main__":
     args = sys.argv[1:]
     url: str | None = None
     path: str | None = None
@@ -145,7 +144,3 @@ def cli() -> None:
         print(USAGE, file=sys.stderr)
         raise SystemExit(2)
     raise SystemExit(main(url, path, agent, octomate_bin))
-
-
-if __name__ == "__main__":
-    cli()

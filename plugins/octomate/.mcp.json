@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "octomate": {
-      "command": "octomate-codex-mcp",
-      "env_vars": ["OCTOMATE_CLI_URL", "OCTOMATE_CLI_TOKEN"]
-    }
-  }
-}
