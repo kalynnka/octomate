@@ -45,7 +45,7 @@ from octomate.tentacles.trunkline.base import (
     RouteLockedError,
     TrunklineDirective,
 )
-from octomate.types.permissions import InklingPermissionMode
+from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
@@ -524,7 +524,10 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
 
     assert offered == {
         "inkling": {
-            "modes": ["default", "dontAsk", "bypassPermissions"],
+            "modes": [
+                {"value": mode, "name": mode, "description": None}
+                for mode in ("default", "dontAsk", "bypassPermissions")
+            ],
             "default": "default",
         }
     }
@@ -1239,3 +1242,75 @@ async def test_batch_resolve_resolves_and_streams(
     resolved = await octomate.deferred_actions.get_batch(batch.id)
     assert next(iter(resolved.approvals)).status == "approved"
     assert resolved.status in {"resolved", "resuming", "completed"}
+
+
+async def test_custom_agent_permissions_are_listed_and_validated_on_selection(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register_routes(octomate, {"auditor": agent})
+    tentacle = octomate.agents["auditor"]
+    tentacle.permission_modes = (
+        PermissionMode(value="default", name="Review changes"),
+        PermissionMode(value="audit-only", name="Audit", description="Read only."),
+    )
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        offered = (await client.get("/api/trunkline/permissions")).json()
+        [listed] = (await client.get("/api/trunkline/agents")).json()
+        await client.post(
+            "/api/trunkline/threads/trunkline-custom-permissions/messages",
+            json={"text": "hello", "model": f"auditor{ROUTE_SEP}{RECEPTION_MODEL}"},
+        )
+        [thread] = (await client.get("/api/trunkline/threads")).json()
+        [conversation] = (
+            await client.get(f"/api/trunkline/threads/{thread['id']}/conversations")
+        ).json()
+        url = f"/api/trunkline/conversations/{conversation['id']}/permission-mode"
+        selected = await client.patch(url, json={"permission_mode": "audit-only"})
+        rejected = await client.patch(
+            url, json={"permission_mode": "bypassPermissions"}
+        )
+        cleared = await client.patch(url, json={"permission_mode": None})
+
+    assert offered["auditor"]["modes"] == listed["permission_modes"]
+    assert listed["permission_modes"][1] == {
+        "value": "audit-only",
+        "name": "Audit",
+        "description": "Read only.",
+    }
+    assert listed["default_permission_mode"] == "default"
+    assert selected.status_code == 200
+    assert selected.json()["permission_mode"] == "audit-only"
+    assert rejected.status_code == 422
+    assert cleared.status_code == 200
+    assert cleared.json()["permission_mode"] is None
+
+
+async def test_first_directive_refuses_a_mode_absent_from_its_agent(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        response = await client.post(
+            "/api/trunkline/threads/trunkline-bad-mode/messages",
+            json={
+                "text": "hello",
+                "model": f"inkling{ROUTE_SEP}{RECEPTION_MODEL}",
+                "permission_mode": "unknown-mode",
+            },
+        )
+    assert response.status_code == 422
+    assert "not one of inkling's modes" in response.json()["detail"]

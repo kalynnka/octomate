@@ -320,7 +320,7 @@ def stream_client() -> tuple[TestClient, CodexTentacle]:
         CodexTentacle(
             "codex",
             octomate,
-            config=CodexConfig(permission_mode="deny_all"),
+            config=CodexConfig(permission_mode="auto_review"),
         )
     )
 

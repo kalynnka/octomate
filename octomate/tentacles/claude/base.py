@@ -104,7 +104,11 @@ from octomate.tentacles.claude.transcript import relocate_session
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
-from octomate.types.permissions import ClaudePermissionMode, is_claude_mode
+from octomate.types.permissions import (
+    ClaudePermissionMode,
+    PermissionMode,
+    is_claude_mode,
+)
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -137,7 +141,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
     in_process: ClassVar[bool] = True
 
-    permission_modes: ClassVar[tuple[str, ...]] = get_args(ClaudePermissionMode)
+    permission_modes: tuple[PermissionMode, ...] = tuple(
+        PermissionMode(value=mode, name=mode) for mode in get_args(ClaudePermissionMode)
+    )
 
     @property
     def default_permission_mode(self) -> str | None:

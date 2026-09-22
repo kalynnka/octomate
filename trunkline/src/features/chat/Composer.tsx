@@ -225,12 +225,8 @@ function RouteSelector() {
  * The approval posture the working agent runs under, and the ⇧⇥ switch's own
  * readout — one click steps it the same way the shortcut does.
  *
- * Always on show, so the posture has one fixed place to be read and its absence is
- * something the reader sees rather than something they have to notice. It goes
- * inert, not away, when there is nothing to step: a native session's runtime is
- * observed rather than driven, so it answers to no posture at all, and a thread
- * nothing has routed yet has no agent to have one. Then it says so, and drops the
- * ⇧⇥ hint rather than advertising a shortcut that would do nothing.
+ * Show the agent's configured default until the conversation chooses a mode.
+ * There is no chip until an agent mode is available.
  */
 function PermissionChip() {
   const ntOn = useConsole((s) => s.ntOn)
@@ -245,20 +241,20 @@ function PermissionChip() {
   const postures = agent ? vocabularies?.[agent] : undefined
   const vocabulary = postures?.modes ?? []
   const switchable = vocabulary.length > 0
-  // What this conversation declared, or — declaring nothing being a real state, not a
-  // blank — the default that decides for it. Dimmed either way it is not the row's own.
   const declared = ntOn ? ntPermissionMode : (session?.mode ?? null)
   const mode = declared ?? postures?.default ?? null
+  if (mode === null) return null
+  const selected = vocabulary.find((option) => option.value === mode)
   const title = !agent
     ? 'approval posture — no agent is running this thread yet'
     : switchable
-      ? `approval posture of ${agent} — ⇧⇥ to switch\n${vocabulary.join(' › ')}` +
+      ? `approval posture of ${agent} — ⇧⇥ to switch\n${vocabulary.map((option) => option.name).join(' › ')}` +
         (declared === null ? `\nnot declared here: ${agent}’s configured default` : '')
       : `${agent} answers to no approval posture — its runtime is observed, not driven`
   return (
     <span
       onClick={switchable ? () => void cyclePermissionMode() : undefined}
-      title={title}
+      title={selected?.description ? `${title}\n${selected.description}` : title}
       className={switchable ? 'hov-border' : undefined}
       style={{
         ...label(8, '.06em'),
@@ -279,8 +275,8 @@ function PermissionChip() {
       }}
     >
       {switchable && <span style={{ color: 'var(--fg-3)' }}>⇧⇥</span>}
-      <span style={{ color: declared === null ? 'var(--fg-3)' : 'var(--color-gold)' }}>
-        {mode ?? '—'}
+      <span style={{ color: 'var(--color-gold)' }}>
+        {selected?.name ?? mode}
       </span>
     </span>
   )

@@ -66,15 +66,13 @@ Custom presets must be registered through Octomate before resuming their session
      (`--bridge <checkout>/packages/hooks/hooks-claude-code`), and dsh
      processes need a restart to pick the row up.
 
-2. **The permission vocabulary is the two shipped presets.**
-   `DeepseekPermissionMode` is `workspace-write | danger-full-access` — what dsh
-   ships by default. dsh's preset table is deployment-configurable, so a
-   deployment composing a custom preset (say a `read-only` one) cannot be
-   expressed without widening the literal in `octomate/types/permissions.py`.
-   There is no permission RPC upstream; the tentacle switches presets with the
-   `/permission <preset>` command on the Remote API (`commands/execute`), and
-   a deployment that removed the permission-preset plugin fails the run rather
-   than running under an unknown posture.
+2. **Permission discovery requires the harness catalog Remote.**
+   The tentacle reads `permissionPresets/catalog` at startup, preserving each
+   preset's value, display name, and description, including custom presets.
+   Its configured default must be present. Selection still uses the
+   `/permission <preset>` command through `commands/execute`; discovery and
+   command errors fail explicitly. Native session observations retain their
+   preset names even when absent from the driven catalog.
 
 3. **Model and effort selection is durable session state, not per-turn.**
    dsh has no per-turn model override, so the tentacle calls

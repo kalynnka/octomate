@@ -3,11 +3,11 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from functools import cached_property
-from typing import Annotated, NamedTuple, Self
+from typing import Annotated, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
@@ -15,7 +15,7 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.types.conversations import ChatType
-from octomate.types.permissions import AgentPermissionMode, check_mode
+from octomate.types.permissions import AgentPermissionMode
 
 
 @dataclass(frozen=True)
@@ -128,14 +128,6 @@ class Conversation(BaseTransmuter):
 
     runs: RelationCollection[AgentRun | ExternalAgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
-
-    @model_validator(mode="after")
-    def mode_is_the_agents_own(self) -> Self:
-        """`agent_tentacle_id` is the discriminator: the field's own type is the union
-        of every provider's scale and cannot tell which arm this row is entitled to."""
-        if self.permission_mode is not None:
-            check_mode(self.agent_tentacle_id, self.permission_mode)
-        return self
 
     @property
     def key(self) -> ConversationKey:

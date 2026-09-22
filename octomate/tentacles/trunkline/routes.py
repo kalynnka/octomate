@@ -59,7 +59,7 @@ from octomate.tentacles.trunkline.base import (
     TrunklineDirective,
     TrunklineTentacle,
 )
-from octomate.types.permissions import PERMISSION_MODES, AgentPermissionMode
+from octomate.types.permissions import AgentPermissionMode, PermissionMode
 
 
 class RouteInfo(BaseModel):
@@ -100,7 +100,7 @@ class DirectiveBody(BaseModel):
 
 
 class AgentPostures(BaseModel):
-    modes: list[AgentPermissionMode] = Field(
+    modes: tuple[PermissionMode, ...] = Field(
         description="This agent's whole vocabulary, in the order a picker steps "
         "through it."
     )
@@ -180,15 +180,11 @@ def build_trunkline_router(
         postures: dict[str, AgentPostures] = {}
         for agent_id, agent in octomate.agents.items():
             configured = agent.default_permission_mode
-            if agent_id not in PERMISSION_MODES or configured is None:
+            if configured is None:
                 continue
-            if configured not in PERMISSION_MODES[agent_id]:
-                raise ValueError(
-                    f"agent {agent_id!r} is configured with {configured!r}, which is "
-                    f"not one of its own postures"
-                )
+            agent.check_permission_mode(configured)
             postures[agent_id] = AgentPostures(
-                modes=list(PERMISSION_MODES[agent_id]), default=configured
+                modes=agent.permission_modes, default=configured
             )
         return postures
 
@@ -350,6 +346,13 @@ def build_trunkline_router(
             raise HTTPException(status_code=404, detail=str(error)) from error
         await read_thread(conversation.thread_id, threads, user)
         try:
+            agent = octomate.agents.get(conversation.agent_tentacle_id)
+            if agent is None:
+                raise ValueError(
+                    "This conversation has no driven agent to set permissions on"
+                )
+            if body.permission_mode is not None:
+                agent.check_permission_mode(body.permission_mode)
             return await octomate.conversations.set_permission_mode(
                 conversation, body.permission_mode
             )

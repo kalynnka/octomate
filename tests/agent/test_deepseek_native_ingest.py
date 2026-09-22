@@ -306,7 +306,7 @@ async def test_the_observed_permission_preset_lands_on_the_conversation() -> Non
     assert conversation.permission_mode == "danger-full-access"
 
 
-async def test_an_unmodeled_preset_is_observed_but_not_stored() -> None:
+async def test_a_custom_preset_is_observed_and_stored() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
 
@@ -318,7 +318,7 @@ async def test_an_unmodeled_preset_is_observed_but_not_stored() -> None:
         ],
     )
     conversation = await native_conversation(octomate)
-    assert conversation.permission_mode is None
+    assert conversation.permission_mode == "read-only-audit"
 
 
 async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() -> None:

@@ -69,7 +69,7 @@ from octomate.tentacles.agent import (
     AgentTentacle,
 )
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
-from octomate.types.permissions import InklingPermissionMode
+from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -165,7 +165,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     permission_mode: InklingPermissionMode = "default"
     request_limit: int = 256
 
-    permission_modes: ClassVar[tuple[str, ...]] = get_args(InklingPermissionMode)
+    permission_modes: tuple[PermissionMode, ...] = tuple(
+        PermissionMode(value=mode, name=mode)
+        for mode in get_args(InklingPermissionMode)
+    )
 
     @property
     def default_permission_mode(self) -> str | None:

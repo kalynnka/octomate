@@ -1168,8 +1168,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
      * Two places hold a posture, because a thread being composed has no row to
      * hold one: before the first directive the pick lives here and rides that
      * directive, and afterwards it lives on the conversation and is written
-     * there. Nothing declared steps to the vocabulary's first posture, and the
-     * cycle never returns to it — undeclaring is not a step, it is a reset.
+     * there. When nothing is declared, cycling starts from the agent's default.
      *
      * An agent with no vocabulary (a native session's runtime, which is observed
      * rather than driven) cycles to nothing at all.
@@ -1184,9 +1183,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         queryFn: api.permissionModes,
         staleTime: 60_000,
       })
-      const vocabulary = vocabularies[agent]?.modes ?? []
+      const vocabulary = vocabularies[agent]?.modes.map((mode) => mode.value) ?? []
       if (!vocabulary.length) return
-      const current = s.ntOn ? s.ntPermissionMode : (session?.mode ?? null)
+      const declared = s.ntOn ? s.ntPermissionMode : (session?.mode ?? null)
+      const current = declared ?? vocabularies[agent]?.default
       const next = vocabulary[(vocabulary.indexOf(current ?? '') + 1) % vocabulary.length]
       if (s.ntOn) {
         set({ ntPermissionMode: next })

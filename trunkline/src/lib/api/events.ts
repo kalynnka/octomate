@@ -381,6 +381,8 @@ export interface ApiAgentInfo {
   description: string
   gateway: boolean
   default_model: string | null
+  permission_modes: ApiPermissionMode[]
+  default_permission_mode: string | null
   routes: ApiAgentRoute[]
   /** live runs this instance is driving on the agent's runtime */
   driven_sessions: number
@@ -603,8 +605,14 @@ export interface ApiDeferredBatch {
  * and an agent absent here is one the console cannot switch — either it answers
  * to no posture, or it is a runtime Octomate tails rather than drives.
  */
+export interface ApiPermissionMode {
+  value: string
+  name: string
+  description: string | null
+}
+
 export interface ApiAgentPostures {
-  modes: string[]
+  modes: ApiPermissionMode[]
   /** what a conversation declaring nothing of its own runs under, which is what
    *  a null `permission_mode` means rather than "no posture" */
   default: string

@@ -426,7 +426,7 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
 
     async with tentacle:

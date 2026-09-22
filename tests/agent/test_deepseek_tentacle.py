@@ -210,6 +210,14 @@ class FakeDeepseekApi:
                     "failures": [],
                 }
             ),
+            "permissionPresets/catalog": OkResult(
+                value={
+                    "options": [
+                        {"value": "workspace-write", "name": "Workspace"},
+                        {"value": "danger-full-access", "name": "Full access"},
+                    ]
+                }
+            ),
             "session/create": OkResult(value={"sessionId": "sess-1"}),
             "session/selectModel": OkResult(value={"selected": {}}),
             "session/prompt": OkResult(value={"accepted": True}),
@@ -519,14 +527,24 @@ async def test_without_a_model_the_session_selection_is_left_alone(
     assert not calls_of("session/selectModel")
 
 
+@pytest.mark.parametrize("mode", ["danger-full-access", "audit-only"])
 async def test_the_conversations_posture_overrides_the_configured_one(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events())
+    FakeDeepseekApi.results["permissionPresets/catalog"] = OkResult(
+        value={
+            "options": [
+                {"value": "workspace-write", "name": "Workspace"},
+                {"value": mode, "name": "Custom mode"},
+            ]
+        }
+    )
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "deepseek", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode="danger-full-access"
+        thread_id=_THREAD, permission_mode=mode
     )
     tentacle = _tentacle(conversations)
 
@@ -537,12 +555,12 @@ async def test_the_conversations_posture_overrides_the_configured_one(
     assert isinstance(permission_payload, dict)
     assert permission_payload["args"] == {
         "agentId": "sess-1",
-        "line": "/permission danger-full-access",
+        "line": f"/permission {mode}",
         "submittedAttachments": [],
     }
 
 
-async def test_a_wrong_provider_posture_falls_back_to_config(
+async def test_an_unavailable_posture_fails_before_prompting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
@@ -552,17 +570,11 @@ async def test_a_wrong_provider_posture_falls_back_to_config(
         thread_id=_THREAD, permission_mode="bypassPermissions"
     )
     tentacle = _tentacle(conversations)
-
     async with tentacle:
-        await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
-
-    [permission_payload] = calls_of("commands/execute")
-    assert isinstance(permission_payload, dict)
-    assert permission_payload["args"] == {
-        "agentId": "sess-1",
-        "line": "/permission workspace-write",
-        "submittedAttachments": [],
-    }
+        with pytest.raises(ValueError, match="not one of deepseek's modes"):
+            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+    assert not calls_of("commands/execute")
+    assert not calls_of("session/prompt")
 
 
 async def test_instructions_frame_the_prompt(

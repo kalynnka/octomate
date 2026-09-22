@@ -20,6 +20,7 @@ from pydantic import (
 from pydantic.alias_generators import to_camel
 
 from octomate.types.json import JsonValue
+from octomate.types.permissions import PermissionMode
 
 # Wire names are camelCase; models keep snake_case attributes behind generated
 # validation/serialization aliases, and `populate_by_name` keeps construction
@@ -602,6 +603,10 @@ def user_message_of(event: SessionEvent) -> UserMessageData | None:
         return user_message_adapter.validate_python(event.data)
     except ValidationError:
         return None
+
+
+class PermissionCatalog(BaseModel):
+    options: tuple[PermissionMode, ...]
 
 
 class PermissionPresetData(BaseModel):

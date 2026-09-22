@@ -169,6 +169,31 @@ const agentColumns: TableColumn<ApiAgentInfo>[] = [
       </Stacked>
     ),
   },
+  {
+    key: 'permissions',
+    label: 'Permissions',
+    width: '25%',
+    render: (a) => (
+      <Stacked>
+        {a.permission_modes.length === 0 ? '—' : a.permission_modes.map((mode) => (
+          <span
+            key={mode.value}
+            title={[mode.value, mode.description].filter(Boolean).join('\n')}
+            style={{
+              display: 'flex', alignItems: 'center', gap: 4, minWidth: 0,
+              color: mode.value === a.default_permission_mode ? 'var(--fg-1)' : 'var(--fg-2)',
+              fontWeight: mode.value === a.default_permission_mode ? 700 : 500,
+            }}
+          >
+            <span style={ellipsis}>{mode.name}</span>
+            {mode.value === a.default_permission_mode && (
+              <span style={{ color: 'var(--color-accent)', flexShrink: 0 }} role="img" aria-label="Default permission mode">★</span>
+            )}
+          </span>
+        ))}
+      </Stacked>
+    ),
+  },
 ]
 
 const serverColumns: TableColumn<ApiMcp>[] = [

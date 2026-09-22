@@ -11,7 +11,6 @@ from octomate.config.agents.codex import (
     CodexPersonality,
     CodexReasoningEffort,
     CodexReasoningSummary,
-    CodexSandbox,
 )
 from octomate.config.agents.common import (
     AgentConfig,
@@ -43,7 +42,6 @@ __all__ = [
     "CodexPersonality",
     "CodexReasoningEffort",
     "CodexReasoningSummary",
-    "CodexSandbox",
     "ConfigPath",
     "DeepseekConfig",
     "InklingConfig",
