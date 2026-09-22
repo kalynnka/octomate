@@ -313,7 +313,7 @@ test('Agents show the supplied permission names and mark the configured default'
   assert.equal((html.match(/aria-label="Default permission mode"/g) ?? []).length, 1)
 })
 
-test('permission cycling starts from the configured default and sends mode IDs', async () => {
+test('permission selection and cycling share mode IDs and start from the configured default', async () => {
   queryClient.setQueryData(['permission-modes'], {
     auditor: { default: 'audit-only', modes: [
       { value: 'audit-only', name: 'Read & review', description: null },
@@ -324,6 +324,10 @@ test('permission cycling starts from the configured default and sends mode IDs',
   await useConsole.getState().actions.cyclePermissionMode()
   assert.equal(useConsole.getState().ntPermissionMode, 'workspace-write')
   await useConsole.getState().actions.cyclePermissionMode()
+  assert.equal(useConsole.getState().ntPermissionMode, 'audit-only')
+  await useConsole.getState().actions.cyclePermissionMode()
+  assert.equal(useConsole.getState().ntPermissionMode, 'workspace-write')
+  await useConsole.getState().actions.setPermissionMode('audit-only')
   assert.equal(useConsole.getState().ntPermissionMode, 'audit-only')
   await useConsole.getState().actions.cyclePermissionMode()
   assert.equal(useConsole.getState().ntPermissionMode, 'workspace-write')

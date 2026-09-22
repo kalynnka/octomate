@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useId, useMemo, useRef, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useAuth } from '@/state/auth'
@@ -223,8 +223,7 @@ function RouteSelector() {
 }
 
 /**
- * The approval posture the working agent runs under, and the ⇧⇥ switch's own
- * readout — one click steps it the same way the shortcut does.
+ * Choose the working agent's approval posture from its menu, or cycle with ⇧⇥.
  *
  * Show the agent's configured default until the conversation chooses a mode.
  * There is no chip until an agent mode is available.
@@ -233,9 +232,13 @@ function PermissionChip() {
   const ntOn = useConsole((s) => s.ntOn)
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntPermissionMode = useConsole((s) => s.ntPermissionMode)
+  const ntMenu = useConsole((s) => s.ntMenu)
+  const ntMenuPos = useConsole((s) => s.ntMenuPos)
   const detail = useConsole((s) => s.detail)
-  const { cyclePermissionMode } = useConsole((s) => s.actions)
+  const { setPermissionMode, setNtMenu, closeNtMenu } = useConsole((s) => s.actions)
   const { data: vocabularies } = usePermissionModes()
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menuId = useId()
 
   const session = detail?.sessions.at(-1)
   const agent = ntOn ? ntAgent : session?.agent
@@ -246,39 +249,134 @@ function PermissionChip() {
   const mode = declared ?? postures?.default ?? null
   if (mode === null) return null
   const selected = vocabulary.find((option) => option.value === mode)
-  const title = !agent
-    ? 'approval posture — no agent is running this thread yet'
-    : switchable
-      ? `approval posture of ${agent} — ⇧⇥ to switch\n${vocabulary.map((option) => option.name).join(' › ')}` +
-        (declared === null ? `\nnot declared here: ${agent}’s configured default` : '')
-      : `${agent} answers to no approval posture — its runtime is observed, not driven`
+  const open = ntMenu === 'perm' && switchable
   return (
     <span
-      onClick={switchable ? () => void cyclePermissionMode() : undefined}
-      title={selected?.description ? `${title}\n${selected.description}` : title}
-      className={switchable ? 'hov-border' : undefined}
-      style={{
-        ...label(8, '.06em'),
-        background: 'var(--surface-raised)',
-        border: '1px solid var(--line-divider)',
-        borderRadius: 2,
-        height: 20,
-        boxSizing: 'border-box',
-        padding: '0 7px',
-        display: 'inline-flex',
-        alignItems: 'center',
-        gap: 5,
-        cursor: switchable ? 'pointer' : 'default',
-        opacity: switchable ? 1 : 0.55,
-        whiteSpace: 'nowrap',
-        marginRight: 2,
-        flexShrink: 0,
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && open) {
+          event.stopPropagation()
+          closeNtMenu()
+          trigger.current?.focus()
+        }
       }}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) closeNtMenu()
+      }}
+      style={{ position: 'relative', display: 'inline-flex', marginRight: 2, flexShrink: 0, zIndex: 76 }}
     >
-      {switchable && <span style={{ color: 'var(--fg-3)' }}>⇧⇥</span>}
-      <span style={{ color: 'var(--color-gold)' }}>
-        {selected?.name ?? mode}
-      </span>
+      {open && (
+        <span onClick={closeNtMenu} style={{ position: 'fixed', inset: 0, zIndex: 75 }} />
+      )}
+      <button
+        ref={trigger}
+        type="button"
+        disabled={!switchable}
+        aria-label="Permission mode"
+        aria-expanded={open}
+        aria-controls={open ? menuId : undefined}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect()
+          setNtMenu('perm', {
+            top: rect.top,
+            right: Math.max(16, Math.min(window.innerWidth - rect.right, window.innerWidth - 318)),
+          })
+        }}
+        title={selected?.description ?? 'Permission mode — ⇧⇥ to switch'}
+        className={switchable ? 'hov-border' : undefined}
+        style={{
+          ...label(8, '.06em'),
+          background: 'var(--surface-raised)',
+          border: `1px solid ${open ? 'var(--color-accent)' : 'var(--line-divider)'}`,
+          borderRadius: 2,
+          height: 20,
+          boxSizing: 'border-box',
+          padding: '0 7px',
+          display: 'inline-flex',
+          alignItems: 'center',
+          gap: 5,
+          cursor: switchable ? 'pointer' : 'default',
+          opacity: switchable ? 1 : 0.55,
+          whiteSpace: 'nowrap',
+          position: 'relative',
+          zIndex: 76,
+        }}
+      >
+        {switchable && <span style={{ color: 'var(--fg-3)' }}>⇧⇥</span>}
+        <span style={{ color: 'var(--color-gold)' }}>{selected?.name ?? mode}</span>
+        {switchable && <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1 }}>▾</span>}
+      </button>
+      {open && (
+        <span
+          id={menuId}
+          role="group"
+          aria-label="Permission modes"
+          style={{
+            position: 'fixed',
+            bottom: `calc(100dvh - ${ntMenuPos.top}px + 6px)`,
+            right: ntMenuPos.right,
+            width: 302,
+            maxWidth: 'calc(100vw - 32px)',
+            maxHeight: '60vh',
+            overflowY: 'auto',
+            zIndex: 80,
+            background: 'var(--surface-raised)',
+            border: '1px solid var(--line-color)',
+            boxShadow: 'var(--shadow-soft)',
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <span style={{ display: 'flex', alignItems: 'baseline', gap: 8, padding: '8px 12px 7px', borderBottom: '1px solid var(--line-divider)' }}>
+            <span style={{ ...fieldLabel, color: 'var(--fg-2)' }}>Permissions</span>
+            <span style={{ flex: 1 }} />
+            <span style={{ ...mono(7.5), color: 'var(--fg-3)', letterSpacing: '.06em' }}>{agent}</span>
+          </span>
+          {vocabulary.map((option) => {
+            const on = option.value === mode
+            return (
+              <button
+                key={option.value}
+                type="button"
+                aria-pressed={on}
+                autoFocus={on}
+                onClick={() => {
+                  void setPermissionMode(option.value)
+                  closeNtMenu()
+                  trigger.current?.focus()
+                }}
+                className="hov-wash"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 9,
+                  padding: '5px 12px',
+                  cursor: 'pointer',
+                  background: on ? 'color-mix(in srgb, var(--color-accent) 7%, transparent)' : 'transparent',
+                  border: 0,
+                  borderBottom: '1px solid var(--line-color)',
+                  borderRadius: 0,
+                  textAlign: 'left',
+                }}
+              >
+                <span style={{ width: 20, height: 20, flexShrink: 0, boxSizing: 'border-box', border: `1px solid ${on ? 'var(--color-accent)' : 'var(--line-divider)'}`, color: on ? 'var(--color-accent)' : 'var(--fg-2)', ...mono(8, 700), display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}>
+                  {option.name.slice(0, 2).toUpperCase()}
+                </span>
+                <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
+                  <span style={{ ...mono(10, 700), color: 'var(--fg-1)' }}>{option.name}</span>
+                  {option.description && <span style={{ ...mono(8), color: 'var(--fg-3)', lineHeight: 1.55, letterSpacing: '.02em' }}>{option.description}</span>}
+                </span>
+                <span aria-hidden="true" style={{ width: 12, flexShrink: 0, ...mono(10, 700), color: 'var(--color-accent)', textAlign: 'right' }}>
+                  {on ? '✓' : ''}
+                </span>
+              </button>
+            )
+          })}
+          <span style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 12px', background: 'var(--surface-sunken)' }}>
+            <span style={{ ...fieldLabel, color: 'var(--fg-2)' }}>⇧⇥</span>
+            <span style={{ ...mono(8), color: 'var(--fg-3)' }}>cycle permission modes</span>
+          </span>
+        </span>
+      )}
     </span>
   )
 }
