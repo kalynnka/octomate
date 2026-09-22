@@ -58,5 +58,7 @@ class DiscordTokenExchange(OAuthTokenExchange):
         grant.subject = identity.id
         grant.account_label = identity.username
         return DiscordOAuthGrant(
-            **grant.model_dump(), mcp_oauth=grant.mcp_oauth, identity=identity
+            **grant.model_dump(),
+            discovery_state=grant.discovery_state,
+            identity=identity,
         )

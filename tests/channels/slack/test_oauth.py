@@ -21,7 +21,7 @@ from octomate import Octomate
 from octomate.config import OAuthConfig, OctomateConfig, SlackChannelConfig
 from octomate.config.channels import SlackOAuthClientConfig
 from octomate.database import async_session
-from octomate.oauth.flows import OAuthCodeFlow, OAuthRefreshRejected
+from octomate.oauth.flows import AuthorizationCodeFlow, OAuthRefreshRejected
 from octomate.schemas.oauth import (
     AuthorizationLink,
     DirectHttpOAuthCallbackTransport,
@@ -89,7 +89,7 @@ def slack_transport(
 
 def slack_flow(
     transport: httpx2.AsyncBaseTransport, *, host: Octomate | None = None
-) -> OAuthCodeFlow:
+) -> AuthorizationCodeFlow:
     host = host or Octomate(
         config=OctomateConfig(
             oauth=OAuthConfig(authorization_lifetime=timedelta(minutes=3))
@@ -100,7 +100,7 @@ def slack_flow(
             transport=transport, headers=headers, timeout=timeout, auth=auth
         )
     )
-    SlackTentacle(
+    tentacle = SlackTentacle(
         id="slack",
         octomate=host,
         config=SlackChannelConfig(
@@ -116,9 +116,10 @@ def slack_flow(
             ),
         ),
     )
+    host.connect(tentacle)
     flow = host.oauth.connector("slack").select_flow()
     assert isinstance(host.oauth.connector("slack"), SlackOAuthConnector)
-    assert isinstance(flow, OAuthCodeFlow)
+    assert isinstance(flow, AuthorizationCodeFlow)
     return flow
 
 
@@ -190,6 +191,7 @@ async def test_exchange_posts_the_secret_and_names_the_account() -> None:
         "code_verifier": ["pkce-verifier"],
     }
     assert grant.access_token.get_secret_value() == "xoxp-user"
+    assert grant.token_type == "Bearer"
     assert grant.refresh_token is None
     assert grant.expires_at is None
     assert grant.scopes == ["search:read.public"]
@@ -393,9 +395,9 @@ async def test_slack_does_not_treat_a_generic_oauth_subject_as_a_verified_profil
         )
 
 
-@pytest.mark.parametrize("approve", [False, True])
-async def test_slack_callback_reuses_browser_session_for_optional_profile_linking(
-    approve: bool,
+@pytest.mark.parametrize("callback_session", ["original", "missing", "different"])
+async def test_slack_callback_links_to_the_account_that_started_oauth(
+    callback_session: str,
     in_memory_engine: AsyncEngine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -464,37 +466,41 @@ async def test_slack_callback_reuses_browser_session_for_optional_profile_linkin
             json={"username": user.username, "password": password.get_secret_value()},
         )
         assert login.status_code == 204
-        authorization = await host.oauth.start(user, "slack")
-        assert isinstance(authorization, AuthorizationLink)
+        authorization_response = await client.post(
+            "/api/auth/profile-authorizations/slack"
+        )
+        assert authorization_response.status_code == 200
+        authorization = AuthorizationLink.model_validate(authorization_response.json())
         start = await client.get(str(authorization.authorization_uri))
         assert start.status_code == 307
         [state] = parse_qs(urlsplit(start.headers["location"]).query)["state"]
+        if callback_session == "missing":
+            client.cookies.clear()
+        elif callback_session == "different":
+            other = User(username="other", password_hash=user.password_hash)
+            async with async_session() as session:
+                session.add(other)
+                await session.commit()
+            switched = await client.post(
+                "/api/auth/login",
+                json={
+                    "username": other.username,
+                    "password": password.get_secret_value(),
+                },
+            )
+            assert switched.status_code == 204
         callback = await client.get(
             "/oauth/slack/callback", params={"state": state, "code": "auth-code"}
         )
-        assert callback.status_code == 303
-        location = urlsplit(callback.headers["location"])
-        assert location.netloc == "octomate.example"
-        [ticket] = parse_qs(location.fragment)["link-profile"]
-        inspected = await client.post(
-            "/api/auth/link-profile/inspect", json={"token": ticket}
-        )
-        assert inspected.status_code == 200
-        profile = inspected.json()["profile"]
-        assert profile["channel_tentacle_id"] == "slack"
-        assert profile["channel_user_id"] == "U1"
-        assert profile["name"] == "Steve Li"
-        assert profile["user_id"] is None
-        if approve:
-            confirmation = await client.post(
-                "/api/auth/link-profile/confirm",
-                json={"token": ticket, "expected_user_id": str(user.id)},
-            )
-            assert confirmation.status_code == 200
+        assert callback.status_code == 200
+        assert "Your channel profile is linked" in callback.text
+        assert "location" not in callback.headers
+        assert "xoxp-user" not in callback.text
 
     stored = await host.users.profile("slack", "U1")
     assert stored is not None
-    assert stored.user_id == (user.id if approve else None)
+    assert stored.user_id == user.id
+    assert stored.name == "Steve Li"
     token = await host.oauth.access_token(user, "slack")
     assert token is not None
     assert token.get_secret_value() == "xoxp-user"

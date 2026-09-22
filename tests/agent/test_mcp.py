@@ -17,6 +17,7 @@ import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_headers
+from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, SecretStr
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -55,10 +56,11 @@ from octomate.mcp.server import (
     UNINSTALL_MCP,
     tentacles_mcp,
 )
+from octomate.mcp.transport import mcp_http_client
+from octomate.oauth.flows import DeviceAuthorizationFlow, OAuthTokenExchange
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import (
     DeviceAuthorizationResponse,
-    DeviceOAuthFlow,
     OAuthFlowContext,
     OAuthGrant,
     OAuthPending,
@@ -85,7 +87,24 @@ async def db(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-class StaticGitHubFlow(DeviceOAuthFlow):
+class StaticGitHubFlow(DeviceAuthorizationFlow):
+    def __init__(self) -> None:
+        super().__init__(
+            device_authorization_endpoint=AnyHttpUrl(
+                "https://github.com/login/device/code"
+            ),
+            tokens=OAuthTokenExchange(
+                token_endpoint=AnyHttpUrl(
+                    "https://github.com/login/oauth/access_token"
+                ),
+                client=OAuthClientInformationFull(
+                    client_id="test-client", token_endpoint_auth_method="none"
+                ),
+                scopes=[],
+                httpx_client_factory=mcp_http_client,
+            ),
+        )
+
     async def start(self, context: OAuthFlowContext) -> DeviceAuthorizationResponse:
         return DeviceAuthorizationResponse(
             verification_uri=AnyHttpUrl("https://github.com/login/device"),

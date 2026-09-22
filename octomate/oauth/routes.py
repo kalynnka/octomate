@@ -111,7 +111,7 @@ async def callback(
             "The authorization was declined. You can ask again in the chat any time.",
         )
     try:
-        grant = await manager.complete_callback(
+        completed = await manager.complete_callback(
             connector_id, state=state, code=code, issuer=iss
         )
     except UnusableOAuthOperation as unusable:
@@ -140,29 +140,27 @@ async def callback(
             "fresh link will arrive.",
             status_code=502,
         )
+    grant = completed.grant
     title = (
         f"Connected as {escape(grant.account_label)}"
         if grant.account_label
         else "Connected"
     )
     try:
-        authorization = await manager.link_profile(connector_id, grant)
+        linked = await manager.link_profile(connector_id, grant, completed.user)
     except Exception as failure:
-        logger.warning(
-            "Failed to offer an OAuth profile link (%s)", type(failure).__name__
-        )
+        logger.warning("Failed to link an OAuth profile (%s)", type(failure).__name__)
         return page(
             title,
-            "The connection is ready, but profile linking could not be started. "
+            "The connection is ready, but profile linking could not be completed. "
             "Ask to link your profile in the channel's chat.",
-        )
-    if authorization is not None:
-        return RedirectResponse(
-            str(authorization.authorization_uri),
-            status_code=303,
-            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
     return page(
         title,
-        "You can close this tab and go back to the chat.",
+        (
+            "Your channel profile is linked. "
+            "You can close this tab and go back to the chat."
+            if linked
+            else "You can close this tab and go back to the chat."
+        ),
     )
