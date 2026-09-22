@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.triage import AgentRoute
+from octomate.types.permissions import PermissionMode
 
 
 class AgentInfo(BaseModel):
@@ -15,6 +16,12 @@ class AgentInfo(BaseModel):
     default_model: AgentRouteModelName | None = Field(
         description="What a directive naming no model runs on; null for an agent "
         "whose catalog is empty."
+    )
+    permission_modes: tuple[PermissionMode, ...] = Field(
+        description="Selectable permission modes in the agent's own vocabulary."
+    )
+    default_permission_mode: str | None = Field(
+        description="The configured permission mode used when a conversation declares none."
     )
     routes: list[AgentRoute]
     driven_sessions: int = Field(

@@ -46,6 +46,7 @@ from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
+from octomate.types.permissions import PermissionMode
 
 if TYPE_CHECKING:
     from octomate.capabilities.harness.deferred import DeferredSuspender
@@ -83,6 +84,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             description=self.description,
             gateway=self.gateway,
             default_model=self.default_model,
+            permission_modes=self.permission_modes,
+            default_permission_mode=self.default_permission_mode,
             routes=self.routes,
             driven_sessions=sum(self.driven_sessions.values()),
             native_sessions=sum(self.native_sessions.values()),
@@ -229,10 +232,12 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     in_process: ClassVar[bool] = False
     pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
 
-    # The approval postures this agent answers to, in its own provider's vocabulary.
-    # A fact about the class rather than the row: what Claude accepts does not depend
-    # on which conversation is asking, or on the id this tentacle was registered under.
-    permission_modes: ClassVar[tuple[str, ...]] = ()
+    permission_modes: tuple[PermissionMode, ...] = ()
+
+    def check_permission_mode(self, mode: str) -> None:
+        """Reject selections absent from this tentacle's current catalog."""
+        if not any(option.value == mode for option in self.permission_modes):
+            raise ValueError(f"{mode!r} is not one of {self.id}'s modes")
 
     @property
     def default_permission_mode(self) -> str | None:

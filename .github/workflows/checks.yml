@@ -37,6 +37,7 @@ jobs:
 
   test:
     name: Unit tests (Python ${{ matrix.python }})
+    needs: lint
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -57,6 +58,7 @@ jobs:
 
   trunkline:
     name: Trunkline TypeScript tests
+    needs: lint
     runs-on: ubuntu-latest
     defaults:
       run:

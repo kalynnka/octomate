@@ -10,7 +10,6 @@ from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
-from pydantic import ValidationError
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
@@ -798,43 +797,13 @@ async def test_setting_a_posture_persists_it_and_clearing_it_hands_the_default_b
     assert cleared.permission_mode is None
 
 
-async def test_setting_another_providers_posture_is_refused_before_the_write() -> None:
+async def test_observed_permission_names_survive_without_a_running_catalog() -> None:
     service = ConversationManager()
     thread = await _thread()
-    convo = await service.ensure(thread, agent_tentacle_id="claude")
-
-    with pytest.raises(ValueError, match="not one of claude's modes"):
-        await service.set_permission_mode(convo, "auto_review")
-
-    assert convo.permission_mode is None
-    reloaded = await ConversationManager().ensure(thread, agent_tentacle_id="claude")
-    assert reloaded.permission_mode is None
-
-
-@pytest.mark.parametrize(
-    ("agent_tentacle_id", "permission_mode", "message"),
-    [
-        # Each provider keeps its own vocabulary, and the row's frozen agent is what
-        # says which one it is entitled to.
-        ("claude", "auto_review", "not one of claude's modes"),
-        ("codex", "bypassPermissions", "not one of codex's modes"),
-        ("inkling", "plan", "not one of inkling's modes"),
-        # A tailed runtime keeps its provider's vocabulary — it is observed in one of
-        # those postures — but not another provider's.
-        ("claude-native", "auto_review", "not one of claude-native's modes"),
-        # A channel runs nothing, so it answers to no posture at all.
-        ("slack", "default", "has no permission modes"),
-    ],
-)
-def test_a_posture_must_be_its_own_agents(
-    agent_tentacle_id: str, permission_mode: str, message: str
-) -> None:
-    with pytest.raises(ValidationError, match=message):
-        Conversation(
-            thread_id=uuid7(),
-            agent_tentacle_id=agent_tentacle_id,
-            permission_mode=permission_mode,  # pyright: ignore[reportArgumentType]
-        )
+    conversation = await service.ensure(thread, agent_tentacle_id="custom-native")
+    await service.set_permission_mode(conversation, "audit-only")
+    reloaded = await service.get(conversation.id)
+    assert reloaded.permission_mode == "audit-only"
 
 
 async def _carry_pair(

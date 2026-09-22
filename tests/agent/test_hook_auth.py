@@ -52,7 +52,7 @@ def client_for(path: str) -> TestClient:
         tentacle = CodexTentacle(
             "codex",
             octomate,
-            config=CodexConfig(permission_mode="deny_all"),
+            config=CodexConfig(permission_mode="auto_review"),
         )
     else:
         tentacle = DeepseekTentacle(

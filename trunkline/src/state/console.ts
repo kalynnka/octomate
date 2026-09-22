@@ -228,6 +228,8 @@ export interface ConsoleActions {
   setNtProject(name: string | null): void
   /** step the working agent's approval posture one along its own vocabulary */
   cyclePermissionMode(): Promise<void>
+  /** choose a mode for the draft or persist it on the current conversation */
+  setPermissionMode(mode: string): Promise<void>
   closeNtMenu(): void
   sendNewThread(text: string): void
   /** drop what the last operator left open — the next one boots into their own */
@@ -304,7 +306,7 @@ interface ConsoleState {
   ntPermissionMode: string | null
   /** the new-thread menus the relay honors: the composer's route picker, and
    *  the strip's project picker */
-  ntMenu: 'sel' | 'proj' | null
+  ntMenu: 'sel' | 'proj' | 'perm' | null
   ntMenuPos: { top: number; right: number }
 
   actions: ConsoleActions
@@ -1172,37 +1174,42 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     /**
      * Step the working agent's approval posture one along its own vocabulary —
-     * the ⇧⇥ switch, and the chip's click.
+     * the ⇧⇥ shortcut.
      *
      * Two places hold a posture, because a thread being composed has no row to
      * hold one: before the first directive the pick lives here and rides that
      * directive, and afterwards it lives on the conversation and is written
-     * there. Nothing declared steps to the vocabulary's first posture, and the
-     * cycle never returns to it — undeclaring is not a step, it is a reset.
+     * there. When nothing is declared, cycling starts from the agent's default.
      *
      * An agent with no vocabulary (a native session's runtime, which is observed
      * rather than driven) cycles to nothing at all.
      */
     async cyclePermissionMode() {
-      const s = get()
-      const session = s.detail?.sessions.at(-1)
-      const agent = s.ntOn ? s.ntAgent : session?.agent
-      if (!agent) return
       const vocabularies = await queryClient.fetchQuery({
         queryKey: ['permission-modes'],
         queryFn: api.permissionModes,
         staleTime: 60_000,
       })
-      const vocabulary = vocabularies[agent]?.modes ?? []
+      const s = get()
+      const session = s.detail?.sessions.at(-1)
+      const agent = s.ntOn ? s.ntAgent : session?.agent
+      if (!agent) return
+      const vocabulary = vocabularies[agent]?.modes.map((mode) => mode.value) ?? []
       if (!vocabulary.length) return
-      const current = s.ntOn ? s.ntPermissionMode : (session?.mode ?? null)
+      const declared = s.ntOn ? s.ntPermissionMode : (session?.mode ?? null)
+      const current = declared ?? vocabularies[agent]?.default
       const next = vocabulary[(vocabulary.indexOf(current ?? '') + 1) % vocabulary.length]
+      await actions.setPermissionMode(next)
+    },
+    async setPermissionMode(mode: string) {
+      const s = get()
       if (s.ntOn) {
-        set({ ntPermissionMode: next })
+        set({ ntPermissionMode: mode })
         return
       }
+      const session = s.detail?.sessions.at(-1)
       if (!session) return
-      await api.setPermissionMode(session.conversationId, next)
+      await api.setPermissionMode(session.conversationId, mode)
       // The write is the relay's; this only keeps the chip in step with it. A
       // reader who has moved on since is left alone — their detail is another
       // thread's, and the posture they are looking at is not the one that moved.
@@ -1215,7 +1222,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
                 ...x.detail,
                 sessions: x.detail.sessions.map((each) =>
                   each.conversationId === session.conversationId
-                    ? { ...each, mode: next }
+                    ? { ...each, mode }
                     : each,
                 ),
               },

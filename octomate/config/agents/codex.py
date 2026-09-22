@@ -5,15 +5,12 @@ from __future__ import annotations
 from typing import Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from octomate.config.agents.common import AgentConfig, Claim
 from octomate.types.permissions import CodexPermissionMode
 
 type CodexPersonality = Literal["none", "friendly", "pragmatic"]
-
-
-type CodexSandbox = Literal["read_only", "workspace_write", "full_access"]
 
 
 type CodexReasoningEffort = Literal[
@@ -70,21 +67,10 @@ class CodexConfig(AgentConfig):
     permission_mode: CodexPermissionMode = Field(
         default="user_review",
         description=(
-            "Approval posture a Codex conversation falls back to when it carries none "
-            "of its own: who answers when the agent asks to step past the sandbox — "
-            "the user, the SDK's reviewer, or nobody. `CODEX_PERMISSION_PLANS` maps "
-            "each onto the SDK's approval policy and reviewer."
-        ),
-    )
-    sandbox: CodexSandbox = Field(
-        default="workspace_write",
-        description=(
-            "SDK filesystem sandbox preset for a Codex thread: what a command may "
-            "touch when nobody is asked. The operator's, and fixed for a run — "
-            "deliberately not folded into `permission_mode`, so a conversation's "
-            "approval posture never rewrites what the whole thread reaches. A driven "
-            "run under `workspace_write` is given the network; `read_only` has no "
-            "config key to open it with, so choosing it closes the network too."
+            "Codex permission preset: user_review (Ask for approval), auto_review "
+            "(Approve for me), or full_access (Full access). The first two restrict "
+            "writes to the workspace and review network access; full_access removes "
+            "the sandbox and approval prompts."
         ),
     )
     base_instructions: str | None = Field(
@@ -139,3 +125,13 @@ class CodexConfig(AgentConfig):
             "next pool access. None keeps idle clients until shutdown."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_separate_sandbox[T](cls, value: T) -> T:
+        if isinstance(value, dict) and "sandbox" in value:
+            raise ValueError(
+                "Codex sandbox is now part of permission_mode; remove sandbox and "
+                "choose user_review, auto_review, or full_access"
+            )
+        return value

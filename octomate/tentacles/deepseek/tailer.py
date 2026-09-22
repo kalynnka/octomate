@@ -45,7 +45,6 @@ from octomate.tentacles.deepseek.wire import (
     user_message_of,
 )
 from octomate.tentacles.locks import SessionLocks
-from octomate.types.permissions import is_deepseek_mode
 
 logger = logging.getLogger(__name__)
 
@@ -386,21 +385,11 @@ class DeepseekEventTailer:
         self, state: TailState, preset: str | None
     ) -> None:
         """Keep the conversation's posture at what the session log last said.
-        Observed, never set — and a preset this build's vocabulary lacks is
-        skipped rather than stored, since the column is validated on read."""
+        Observed names are retained even when absent from the driven catalog."""
         conversation = state.conversation
         if conversation is None or preset is None:
             return
         if preset == conversation.permission_mode:
-            return
-        if not is_deepseek_mode(preset):
-            logger.debug(
-                "session %s reports permission preset %r, which this build does "
-                "not model; leaving the conversation at %r",
-                state.session_id,
-                preset,
-                conversation.permission_mode,
-            )
             return
         await self.conversation_manager.set_permission_mode(conversation, preset)
 

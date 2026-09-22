@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from types import TracebackType
-from typing import TYPE_CHECKING, ClassVar, get_args, overload
+from typing import TYPE_CHECKING, ClassVar, overload
 from uuid import uuid4
 
 import anyio
@@ -84,6 +84,7 @@ from octomate.tentacles.deepseek.wire import (
     ErrResult,
     ModelCatalog,
     OkResult,
+    PermissionCatalog,
     QuestionRequestedFrame,
     RemoteCancellation,
     RpcError,
@@ -97,7 +98,6 @@ from octomate.tentacles.deepseek.wire import (
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject, JsonValue
-from octomate.types.permissions import DeepseekPermissionMode, is_deepseek_mode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -160,7 +160,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     # the turn stays live. `pending` parks the card response futures.
     in_process: ClassVar[bool] = True
 
-    permission_modes: ClassVar[tuple[str, ...]] = get_args(DeepseekPermissionMode)
     native_id: ClassVar[str] = DEEPSEEK_NATIVE_ID
 
     @property
@@ -441,6 +440,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.effort_maps = effort_maps
         self.default_provider = catalog.default.provider
 
+    async def discover_permissions(self) -> None:
+        catalog = PermissionCatalog.model_validate(
+            self.unwrap(
+                await self.client.remote("permissionPresets/catalog", {}),
+                "permissionPresets/catalog",
+            )
+        )
+        self.permission_modes = catalog.options
+        self.check_permission_mode(self.config.permission_mode)
+
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
         await self.client.__aenter__()
@@ -452,6 +461,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         try:
             self.process = await self.start_process()
             await self.discover_models()
+            await self.discover_permissions()
             socket = await self.client.open_mux()
         except BaseException:
             await self.client.__aexit__()
@@ -810,11 +820,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        permission_mode = (
-            conversation.permission_mode
-            if is_deepseek_mode(conversation.permission_mode)
-            else self.config.permission_mode
-        )
+        permission_mode = conversation.permission_mode or self.config.permission_mode
+        self.check_permission_mode(permission_mode)
         project = await self.run_project(conversation.thread_id)
         workspace = self.octomate.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)

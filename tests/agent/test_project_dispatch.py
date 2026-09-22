@@ -94,7 +94,7 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
     async with tentacle:
         async with tentacle.run_stream_events(

@@ -348,7 +348,6 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     config = CodexConfig.model_validate(
         {
             "permission_mode": "auto_review",
-            "sandbox": "read_only",
             "base_instructions": "stay concise",
             "developer_instructions": "work carefully",
             "ephemeral": True,
@@ -359,7 +358,6 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     )
 
     assert config.permission_mode == "auto_review"
-    assert config.sandbox == "read_only"
     assert config.base_instructions == "stay concise"
     assert config.developer_instructions == "work carefully"
     assert config.ephemeral is True
@@ -367,18 +365,12 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     assert config.effort == "xhigh"
     assert config.summary == "detailed"
 
-    denied = CodexConfig.model_validate({"permission_mode": "deny_all"})
-    assert denied.permission_mode == "deny_all"
-    # The sandbox keeps its own default; no posture moves it.
-    assert denied.sandbox == "workspace_write"
-
 
 def test_codex_config_validates_sdk_setting_names() -> None:
     with pytest.raises(ValidationError, match="Input should be"):
         CodexConfig.model_validate(
             {
                 "permission_mode": "never",
-                "sandbox": "workspace-write",
                 "effort": "extreme",
                 "summary": "verbose",
                 "personality": "spicy",
@@ -405,9 +397,9 @@ def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
     }
 
 
-def test_deepseek_config_rejects_a_foreign_permission_preset() -> None:
-    with pytest.raises(ValidationError, match="Input should be"):
-        DeepseekConfig.model_validate({"permission_mode": "user_review"})
+def test_deepseek_config_accepts_deployment_permission_names() -> None:
+    config = DeepseekConfig.model_validate({"permission_mode": "read-only-audit"})
+    assert config.permission_mode == "read-only-audit"
 
 
 def test_deepseek_config_rejects_a_non_loopback_host() -> None:

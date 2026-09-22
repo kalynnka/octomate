@@ -11,28 +11,32 @@ from unittest.mock import AsyncMock, Mock
 
 import anyio
 import pytest
-from openai_codex import AsyncCodex
+from openai_codex import AsyncCodex, AsyncThread
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.client import ApprovalHandler
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
-    Config,
+    AskForApprovalValue,
     ConfigReadResponse,
+    DangerFullAccessSandboxPolicy,
     ItemCompletedNotification,
     MessagePhase,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
-    SandboxWorkspaceWrite,
     ThreadItem,
+    ThreadResumeParams,
+    ThreadStartParams,
     Turn,
     TurnCompletedNotification,
     TurnError,
     TurnItemsView,
+    TurnStartParams,
     TurnStatus,
+    WorkspaceWriteSandboxPolicy,
 )
 from openai_codex.models import Notification, NotificationPayload
 from pydantic import BaseModel, SecretStr, TypeAdapter
@@ -62,7 +66,6 @@ from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject
-from octomate.types.permissions import CodexPermissionMode
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
     FakeConversation,
@@ -346,25 +349,6 @@ class ApprovalFakeTurn(FakeTurn):
             yield event
 
 
-class ApprovalFakeThread(FakeThread):
-    async def turn(
-        self,
-        input: str,
-        *,
-        approval_mode: ApprovalMode | None = None,
-        cwd: str | None = None,
-        effort: ReasoningEffort | None = None,
-        model: str | None = None,
-        output_schema: JsonObject | None = None,
-        personality: Personality | None = None,
-        sandbox: Sandbox | None = None,
-        summary: ReasoningSummary | None = None,
-    ) -> ApprovalFakeTurn:
-        turn = ApprovalFakeTurn()
-        FakeCodex.turns.append(turn)
-        return turn
-
-
 @dataclass
 class FakeFeelers:
     batch: FakePresentedBatch
@@ -427,7 +411,7 @@ def _tentacle(
     return CodexTentacle(
         "codex",
         Octomate(conversations=conversations),
-        config=config or CodexConfig(permission_mode="deny_all"),
+        config=config or CodexConfig(permission_mode="auto_review"),
     )
 
 
@@ -463,7 +447,7 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     conversations = FakeConversationManager()
     tentacle = _tentacle(
         conversations,
-        config=CodexConfig(instrument=instrument, permission_mode="deny_all"),
+        config=CodexConfig(instrument=instrument, permission_mode="auto_review"),
     )
 
     events = []
@@ -503,7 +487,7 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "start"
     assert thread_call.model == "gpt-5.3-codex"
-    assert thread_call.approval_mode == ApprovalMode.deny_all
+    assert thread_call.approval_mode == ApprovalMode.auto_review
     # The configured preset, in a chat thread as in any other: the run has a
     # workspace of its own for it to be scoped to.
     assert thread_call.sandbox == Sandbox.workspace_write
@@ -525,7 +509,7 @@ async def test_instructions_join_the_developer_instructions(
     tentacle = _tentacle(
         conversations,
         config=CodexConfig(
-            permission_mode="deny_all",
+            permission_mode="auto_review",
             developer_instructions="House style.",
         ),
     )
@@ -665,7 +649,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         self: CodexTentacle,
         client: codex_base.AsyncCodex,
         *,
-        plan: codex_base.CodexPermissionPlan,
+        approval_mode: ApprovalMode | None,
         base_instructions: str | None,
         config: JsonObject,
         cwd: str | None,
@@ -675,18 +659,22 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> ApprovalFakeThread:
+    ) -> FakeThread:
         # `user_review` is the one posture with no public SDK knob, so it is the
         # reviewer path the bridge exists for.
-        assert plan.sdk_mode is None
-        assert plan.reviewer is codex_base.ApprovalsReviewer.user
+        assert approval_mode is None
+        assert sandbox is Sandbox.workspace_write
         assert config == {"mcp_servers": {}}
         assert isinstance(client, FakeCodex)
-        return ApprovalFakeThread("thread-new")
+        client._client.turn_start = AsyncMock()
+        return FakeThread("thread-new")
 
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     monkeypatch.setattr(codex_base, "CodexClient", capture_handler)
     monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_fake_thread)
+    monkeypatch.setattr(
+        codex_base, "AsyncTurnHandle", Mock(return_value=ApprovalFakeTurn())
+    )
     approval = DeferredApproval(
         tool_name="codex_command_execution",
         tool_call_id="cmd-1",
@@ -1328,170 +1316,95 @@ async def test_failed_client_startup_releases_its_pool_lease(
 
 
 @pytest.mark.parametrize(
-    ("permission_mode", "sdk_mode", "reviewer"),
+    ("mode", "approval", "sandbox"),
     [
-        ("user_review", None, ApprovalsReviewer.user),
-        ("auto_review", ApprovalMode.auto_review, ApprovalsReviewer.auto_review),
-        ("deny_all", ApprovalMode.deny_all, None),
+        ("auto_review", ApprovalMode.auto_review, Sandbox.workspace_write),
+        ("full_access", ApprovalMode.deny_all, Sandbox.full_access),
     ],
 )
-def test_every_posture_names_its_row_of_the_sdk_approval_knobs(
-    permission_mode: CodexPermissionMode,
-    sdk_mode: ApprovalMode | None,
-    reviewer: ApprovalsReviewer | None,
-) -> None:
-    plan = codex_base.CODEX_PERMISSION_PLANS[permission_mode]
-    assert (plan.sdk_mode, plan.reviewer) == (sdk_mode, reviewer)
-
-
-async def test_the_conversations_posture_overrides_the_configured_one(
+@pytest.mark.parametrize("external_id", [None, "previous-thread"])
+async def test_the_conversations_preset_overrides_the_configured_one(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
+    approval: ApprovalMode,
+    sandbox: Sandbox,
+    external_id: str | None,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode="auto_review"
+        thread_id=_THREAD, permission_mode=mode, external_id=external_id
     )
     tentacle = _tentacle(
-        conversations,
-        config=CodexConfig(permission_mode="deny_all"),
+        conversations, config=CodexConfig(permission_mode="user_review")
     )
 
     async with tentacle:
         await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
 
     [thread_call] = FakeCodex.thread_calls
-    assert thread_call.approval_mode == ApprovalMode.auto_review
-
-
-async def test_the_sandbox_is_the_operators_and_no_posture_moves_it(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The sandbox is what a command may touch when nobody is asked, so it is fixed
-    for the run: a conversation's approval posture never rewrites it."""
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    reset_fake_codex(text_script("done"))
-    conversations = FakeConversationManager()
-    conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode="deny_all"
-    )
-    tentacle = _tentacle(
-        conversations,
-        config=CodexConfig(permission_mode="auto_review", sandbox="read_only"),
-    )
-
-    async with tentacle:
-        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
-
-    [thread_call] = FakeCodex.thread_calls
-    assert thread_call.approval_mode == ApprovalMode.deny_all
-    assert thread_call.sandbox == Sandbox.read_only
-
-
-async def test_a_driven_run_opens_the_network(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """`workspace_write` ships `networkAccess: false`, which leaves a coding agent
-    with no registry, no API and no remote. Two things have to hold for the network
-    to be open, so both are asserted here: the app-server is told to resolve the
-    preset with it on, and the turn sends no policy of its own to stamp it back off.
-    """
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    reset_fake_codex(text_script("done"))
-    tentacle = _tentacle(FakeConversationManager())
-
-    async with tentacle:
-        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
-
-    assert FakeCodex.last_config is not None
-    assert FakeCodex.last_config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        *codex_base.DRIVEN_CONFIG_OVERRIDES,
-    )
+    assert thread_call.approval_mode is approval
+    assert thread_call.sandbox is sandbox
+    assert thread_call.kind == ("resume" if external_id else "start")
     [turn_call] = FakeCodex.turn_calls
-    assert turn_call.sandbox is None
-    # And the write scope is untouched: the thread still carries the preset.
-    [thread_call] = FakeCodex.thread_calls
-    assert thread_call.sandbox == Sandbox.workspace_write
+    assert turn_call.approval_mode is approval
+    assert turn_call.sandbox is sandbox
 
 
-async def test_an_operators_own_network_answer_wins(
+async def test_a_warm_thread_reapplies_the_selected_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Codex keeps the last `--config` it is handed, so a deployment that has said
-    something about the key itself has to be the one that lands."""
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
-    operator = "sandbox_workspace_write.network_access=false"
-    tentacle = _tentacle(
-        FakeConversationManager(),
-        config=CodexConfig(
-            permission_mode="deny_all",
-            runtime=CodexSdkConfig(config_overrides=(operator,)),
-        ),
-    )
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(thread_id=_THREAD, permission_mode="auto_review")
+    conversations.store[(_THREAD, "codex", "")] = conversation
+    tentacle = _tentacle(conversations)
 
     async with tentacle:
-        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+        for mode in ("auto_review", "full_access", "auto_review"):
+            conversation.permission_mode = mode
+            await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
 
-    assert FakeCodex.last_config is not None
-    assert FakeCodex.last_config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        operator,
-        *codex_base.DRIVEN_CONFIG_OVERRIDES,
-    )
-
-
-def test_the_network_override_names_a_key_the_sdk_still_has() -> None:
-    """The override is a config string, so nothing type-checks it and a renamed key
-    would fail silently in the safe-looking direction — the network simply staying
-    shut. The SDK ships the config schema it is a path into, so the key is pinned
-    against that here rather than left to a live run to disprove."""
-    key, _, value = codex_base.NETWORK_ACCESS.partition("=")
-    table, _, field = key.rpartition(".")
-
-    assert table in Config.model_fields
-    assert Config.model_fields[table].annotation == SandboxWorkspaceWrite | None
-    assert field in SandboxWorkspaceWrite.model_fields
-    assert SandboxWorkspaceWrite.model_fields[field].annotation == bool | None
-    # Off by default is the whole reason this exists.
-    assert SandboxWorkspaceWrite.model_fields[field].default is False
-    assert value == "true"
+    assert FakeCodex.builds == 1
+    assert len(FakeCodex.thread_calls) == 1
+    assert [(call.approval_mode, call.sandbox) for call in FakeCodex.turn_calls] == [
+        (ApprovalMode.auto_review, Sandbox.workspace_write),
+        (ApprovalMode.deny_all, Sandbox.full_access),
+        (ApprovalMode.auto_review, Sandbox.workspace_write),
+    ]
 
 
-async def test_a_claude_posture_on_a_codex_conversation_falls_back_to_config(
+@pytest.mark.parametrize("mode", ["deny_all", "bypassPermissions"])
+async def test_unavailable_saved_modes_require_an_explicit_choice(
     monkeypatch: pytest.MonkeyPatch,
+    mode: str,
 ) -> None:
-    """The column holds every provider's scale, so the tentacle establishes the arm is
-    its own. `Conversation` already refuses this pairing; this is the second edge."""
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
-        thread_id=_THREAD, permission_mode="bypassPermissions"
+        thread_id=_THREAD, permission_mode=mode
     )
     tentacle = _tentacle(
-        conversations,
-        config=CodexConfig(permission_mode="deny_all"),
+        conversations, config=CodexConfig(permission_mode="full_access")
     )
 
     async with tentacle:
-        await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
+        with pytest.raises(ValueError, match="not one of codex's modes"):
+            await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
 
-    [thread_call] = FakeCodex.thread_calls
-    assert thread_call.approval_mode == ApprovalMode.deny_all
+    assert not FakeCodex.thread_calls
+    assert not FakeCodex.turn_calls
 
 
 @pytest.mark.parametrize(
-    "permission_mode",
-    # Only the posture that needs a human falls back when there is none; one that
-    # already says who reviews is left alone.
-    ["user_review", "auto_review", "deny_all"],
+    "permission_mode", ["user_review", "auto_review", "full_access"]
 )
 async def test_a_subagent_run_declines_only_where_a_human_was_needed(
     monkeypatch: pytest.MonkeyPatch,
-    permission_mode: CodexPermissionMode,
+    permission_mode: str,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
@@ -1513,11 +1426,16 @@ async def test_a_subagent_run_declines_only_where_a_human_was_needed(
 
     [thread_call] = FakeCodex.thread_calls
     expected = (
-        ApprovalMode.deny_all
-        if permission_mode == "user_review"
-        else codex_base.CODEX_PERMISSION_PLANS[permission_mode].sdk_mode
+        ApprovalMode.auto_review
+        if permission_mode == "auto_review"
+        else ApprovalMode.deny_all
     )
     assert thread_call.approval_mode == expected
+    assert thread_call.sandbox is (
+        Sandbox.full_access
+        if permission_mode == "full_access"
+        else Sandbox.workspace_write
+    )
 
 
 async def a_kicker() -> UserProfile:
@@ -1571,7 +1489,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
 
     async with tentacle:
@@ -1594,10 +1512,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     )
 
     assert config.env[codex_base.MCP_CONVERSATION_ENV] == str(conversation.id)
-    assert config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        *codex_base.DRIVEN_CONFIG_OVERRIDES,
-    )
+    assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == ("resume" if external_id else "start")
     assert thread_call.config == {
@@ -1634,10 +1549,7 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        *codex_base.DRIVEN_CONFIG_OVERRIDES,
-    )
+    assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {"mcp_servers": {"owner": {"enabled": False}}}
     assert codex_base.MCP_TOKEN_ENV not in (config.env or {})
@@ -1674,7 +1586,7 @@ async def test_driven_isolation_overrides_local_feature_settings(
     tentacle = _tentacle(
         FakeConversationManager(),
         config=CodexConfig(
-            permission_mode="deny_all",
+            permission_mode="auto_review",
             runtime=CodexSdkConfig(
                 config_overrides=(
                     "features.hooks=true",
@@ -1722,7 +1634,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
 
     async with tentacle:
@@ -1730,10 +1642,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (
-        codex_base.NETWORK_ACCESS,
-        *codex_base.DRIVEN_CONFIG_OVERRIDES,
-    )
+    assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {"mcp_servers": {}}
     assert codex_base.MCP_TOKEN_ENV not in (config.env or {})
@@ -1753,7 +1662,7 @@ async def test_an_mcp_wiring_flip_evicts_the_pooled_client(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
 
     async with tentacle:
@@ -1799,7 +1708,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
 
     async with tentacle:
@@ -1882,7 +1791,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         self: CodexTentacle,
         client: codex_base.AsyncCodex,
         *,
-        plan: codex_base.CodexPermissionPlan,
+        approval_mode: ApprovalMode | None,
         base_instructions: str | None,
         config: JsonObject,
         cwd: str | None,
@@ -1909,7 +1818,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="deny_all"),
+        config=CodexConfig(permission_mode="auto_review"),
     )
     suspender = RecordingSuspender()
 
@@ -1968,3 +1877,107 @@ async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "resume"
     assert thread_call.thread_id == "thread-prev"
+
+
+@pytest.mark.parametrize("resume", [False, True])
+async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
+    tentacle = _tentacle(FakeConversationManager())
+    client = AsyncMock(spec=AsyncCodex)
+    client._client = AsyncMock()
+    client._client.thread_start.return_value.thread.id = "new-thread"
+    client._client.thread_resume.return_value.thread.id = "previous-thread"
+    if resume:
+        thread = await tentacle.resume_codex_thread(
+            client,
+            thread_id="previous-thread",
+            approval_mode=None,
+            base_instructions=None,
+            config={},
+            cwd="/workspace",
+            developer_instructions=None,
+            model=None,
+            model_provider=None,
+            personality=None,
+            sandbox=Sandbox.workspace_write,
+        )
+        params = client._client.thread_resume.call_args.args[1]
+        assert isinstance(params, ThreadResumeParams)
+        assert thread.id == "previous-thread"
+        client.thread_resume.assert_not_awaited()
+    else:
+        thread = await tentacle.start_codex_thread(
+            client,
+            approval_mode=None,
+            base_instructions=None,
+            config={},
+            cwd="/workspace",
+            developer_instructions=None,
+            ephemeral=None,
+            model=None,
+            model_provider=None,
+            personality=None,
+            sandbox=Sandbox.workspace_write,
+        )
+        params = client._client.thread_start.call_args.args[0]
+        assert isinstance(params, ThreadStartParams)
+        assert thread.id == "new-thread"
+        client.thread_start.assert_not_awaited()
+    assert params.approval_policy is not None
+    assert params.approval_policy.root is AskForApprovalValue.on_request
+    assert params.approvals_reviewer is ApprovalsReviewer.user
+
+
+async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> None:
+    tentacle = _tentacle(FakeConversationManager())
+    client = AsyncCodex()
+    client._client = AsyncMock()
+    client._initialized = True
+    thread = AsyncThread(client, "warm-thread")
+    for approval, sandbox, reviewer, policy in (
+        (ApprovalMode.deny_all, Sandbox.full_access, None, AskForApprovalValue.never),
+        (
+            None,
+            Sandbox.workspace_write,
+            ApprovalsReviewer.user,
+            AskForApprovalValue.on_request,
+        ),
+        (
+            ApprovalMode.auto_review,
+            Sandbox.workspace_write,
+            ApprovalsReviewer.auto_review,
+            AskForApprovalValue.on_request,
+        ),
+        (
+            None,
+            Sandbox.workspace_write,
+            ApprovalsReviewer.user,
+            AskForApprovalValue.on_request,
+        ),
+    ):
+        await tentacle.turn_codex_thread(
+            client,
+            thread,
+            "work",
+            approval_mode=approval,
+            sandbox=sandbox,
+            cwd="/workspace",
+            effort=None,
+            model=None,
+            output_schema=None,
+            personality=None,
+            summary=None,
+        )
+        params = client._client.turn_start.call_args.kwargs["params"]
+        assert isinstance(params, TurnStartParams)
+        assert params.thread_id == "warm-thread"
+        assert params.approval_policy is not None
+        assert params.approval_policy.root is policy
+        assert params.approvals_reviewer is reviewer
+        assert params.sandbox_policy is not None
+        if sandbox is Sandbox.full_access:
+            assert isinstance(params.sandbox_policy.root, DangerFullAccessSandboxPolicy)
+        else:
+            assert isinstance(params.sandbox_policy.root, WorkspaceWriteSandboxPolicy)
+            assert params.sandbox_policy.root.network_access is False
+            assert params.sandbox_policy.root.writable_roots == []
+            assert params.cwd == "/workspace"

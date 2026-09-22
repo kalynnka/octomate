@@ -260,8 +260,9 @@ repository at `mirrors/.blank`, and thrown away when the run that made it ends.
 
 **One code path, not two.** Both kinds are a fork of a mirror, made by the same
 `materialize`, landing on the same `octomate/thread-<id>` branch, writable, and
-bounded by the same `sandbox: workspace_write`. What binding changes is the
-ending — a project thread's tree is saved to its mirror and resumed into next
+bounded by the selected permission preset. Codex's Ask for approval and Approve
+for me presets use its workspace sandbox; Full access removes it. What binding
+changes is the ending — a project thread's tree is saved to its mirror and resumed into next
 turn, a chat thread's is discarded. That is a better thing to tell a model than
 "you may not write": **binding is what makes your work kept.**
 

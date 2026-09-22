@@ -525,6 +525,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         conversation = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=agent_tentacle_id
         )
+        self.octomate.agents[agent_tentacle_id].check_permission_mode(mode)
         await self.octomate.conversations.set_permission_mode(conversation, mode)
 
     def stream_kick(self, signal: AwakeSignal) -> StreamingResponse:

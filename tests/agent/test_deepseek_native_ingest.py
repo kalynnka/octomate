@@ -203,7 +203,9 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     conversation = await native_conversation(octomate)
     [run] = conversation.runs
     request = next(m for m in run.messages if isinstance(m, ModelRequest))
-    assert request.parts[0].content == "hi\n\nalso check the tests"
+    part = request.parts[0]
+    assert isinstance(part, UserPromptPart)
+    assert part.content == "hi\n\nalso check the tests"
     assert run.source == "gateway"
     thread = await a_loaded_thread(
         octomate.thread_manager, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
@@ -306,7 +308,7 @@ async def test_the_observed_permission_preset_lands_on_the_conversation() -> Non
     assert conversation.permission_mode == "danger-full-access"
 
 
-async def test_an_unmodeled_preset_is_observed_but_not_stored() -> None:
+async def test_a_custom_preset_is_observed_and_stored() -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
 
@@ -318,7 +320,7 @@ async def test_an_unmodeled_preset_is_observed_but_not_stored() -> None:
         ],
     )
     conversation = await native_conversation(octomate)
-    assert conversation.permission_mode is None
+    assert conversation.permission_mode == "read-only-audit"
 
 
 async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() -> None:

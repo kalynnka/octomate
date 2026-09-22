@@ -85,7 +85,7 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
     if "codex" in agents:
         instructions.append(
             "- [ ] Review `config/tentacles.yaml`: `tentacles.codex.runtime`, "
-            "`tentacles.codex.permission_mode` and `tentacles.codex.sandbox`. Confirm the desktop "
+            "`tentacles.codex.permission_mode`. Confirm the desktop "
             "account's native Codex login. Driven sessions disable inherited plugins, "
             "hooks, apps and MCP connections. Configure tools in Octomate, then verify "
             "an actual request through Octomate after activation.\n"

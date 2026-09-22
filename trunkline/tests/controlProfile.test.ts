@@ -293,3 +293,43 @@ for (const failed of [false, true]) {
     assert.ok(html.includes(failed ? 'Could not load channels.' : 'Loading channels…'))
   })
 }
+
+test('Agents show the supplied permission names and mark the configured default', () => {
+  useConsole.getInitialState().mgmtSec = 'agents'
+  queryClient.setQueryData(['agents'], [{
+    id: 'auditor', description: 'Review agent', gateway: false,
+    default_model: null, routes: [], driven_sessions: 0, native_sessions: 0,
+    default_permission_mode: 'audit-only',
+    permission_modes: [
+      { value: 'audit-only', name: 'Read & review', description: 'No edits allowed.' },
+      { value: 'workspace-write', name: 'Workspace edits', description: null },
+    ],
+  }])
+  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+  assert.match(html, />Permissions</)
+  assert.match(html, />Read &amp; review</)
+  assert.match(html, />Workspace edits</)
+  assert.match(html, /No edits allowed\./)
+  assert.equal((html.match(/aria-label="Default permission mode"/g) ?? []).length, 1)
+})
+
+test('permission selection and cycling share mode IDs and start from the configured default', async () => {
+  queryClient.setQueryData(['permission-modes'], {
+    auditor: { default: 'audit-only', modes: [
+      { value: 'audit-only', name: 'Read & review', description: null },
+      { value: 'workspace-write', name: 'Workspace edits', description: null },
+    ] },
+  })
+  useConsole.setState({ ntOn: true, ntAgent: 'auditor', ntPermissionMode: null })
+  await useConsole.getState().actions.cyclePermissionMode()
+  assert.equal(useConsole.getState().ntPermissionMode, 'workspace-write')
+  await useConsole.getState().actions.cyclePermissionMode()
+  assert.equal(useConsole.getState().ntPermissionMode, 'audit-only')
+  await useConsole.getState().actions.cyclePermissionMode()
+  assert.equal(useConsole.getState().ntPermissionMode, 'workspace-write')
+  await useConsole.getState().actions.setPermissionMode('audit-only')
+  assert.equal(useConsole.getState().ntPermissionMode, 'audit-only')
+  await useConsole.getState().actions.cyclePermissionMode()
+  assert.equal(useConsole.getState().ntPermissionMode, 'workspace-write')
+  useConsole.setState({ ntOn: false, ntAgent: '', ntPermissionMode: null })
+})
