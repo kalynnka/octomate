@@ -70,9 +70,11 @@ def test_portable_hook_commands_keep_the_script_cli(command: str) -> None:
 
 
 @pytest.mark.parametrize("from_environment", [False, True])
+@pytest.mark.parametrize("agent", ["codex", "claude"])
 async def test_plugin_mcp_preserves_instructions_tools_and_caller(
     tmp_path: Path,
     from_environment: bool,
+    agent: str,
 ) -> None:
     instructions = "Search the MCP servers proxied by Octomate."
     upstream = FastMCP("test-octomate", instructions=instructions)
@@ -109,7 +111,7 @@ async def test_plugin_mcp_preserves_instructions_tools_and_caller(
                 f'url = "http://127.0.0.1:{port}"\ntoken = "plugin-test-token"\n'
             )
             parameters = StdioServerParameters(
-                command=str(Path(sys.executable).parent / "octomate-codex-mcp"),
+                command=str(Path(sys.executable).parent / f"octomate-{agent}-mcp"),
                 cwd=str(tmp_path),
                 env={
                     key: value
@@ -138,7 +140,7 @@ async def test_plugin_mcp_preserves_instructions_tools_and_caller(
                     assert not result.is_error
                     assert result.structured_content == {"result": "through-plugin"}
             token = "environment-token" if from_environment else "plugin-test-token"
-            assert callers == [(f"Bearer {token}", "codex-native")]
+            assert callers == [(f"Bearer {token}", f"{agent}-native")]
         finally:
             server.should_exit = True
             await asyncio.wait_for(serving, timeout=10)

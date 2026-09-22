@@ -21,6 +21,11 @@ connection and native hooks using the same CLI configuration. The separate
 `octomate codex mcp install` and `octomate codex hooks install` commands remain
 available.
 
+For Claude Code, the [Octomate plugin](../plugins/octomate-claude/README.md)
+bundles the same integration through Claude's plugin marketplace and supports
+user, project, and local installation scopes. The separate Claude MCP and hook
+install commands remain available too.
+
 All commands remain available in help. The foreground runner,
 `octomate service serve`, requires the separately installed `octomate` server package. Update this package with the same installer
 used to install it, such as `pip install --upgrade octomate-cli`.

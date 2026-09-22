@@ -30,10 +30,12 @@ Issues = "https://github.com/kalynnka/octomate/issues"
 octomate = "octomate_cli.main:app"
 octomate-emit = "octomate_cli.emit:cli"
 octomate-launch = "octomate_cli.launch:cli"
-octomate-codex-mcp = "octomate_cli.tentacles.codex.proxy:main"
+octomate-codex-mcp = "octomate_cli.tentacles.proxy:codex_main"
+octomate-claude-mcp = "octomate_cli.tentacles.proxy:claude_main"
 
 [project.optional-dependencies]
 codex-plugin = ["anyio>=4,<5", "httpx2>=2.12,<3", "mcp>=2.2,<3"]
+claude-plugin = ["anyio>=4,<5", "httpx2>=2.12,<3", "mcp>=2.2,<3"]
 
 [build-system]
 requires = ["hatchling"]

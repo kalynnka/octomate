@@ -1,4 +1,4 @@
-"""Connect the Codex plugin's stdio MCP transport to the configured Octomate."""
+"""Connect native plugins' stdio MCP transport to the configured Octomate."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ from mcp.client.streamable_http import streamable_http_client
 from mcp.server.stdio import stdio_server
 
 from octomate_cli.tentacles.mcp import (
+    CLAUDE_NATIVE_CLIENT,
     CLIENT_HEADER,
     CODEX_NATIVE_CLIENT,
     octomate_secret,
@@ -15,11 +16,11 @@ from octomate_cli.tentacles.mcp import (
 )
 
 
-async def proxy() -> None:
+async def proxy(client_name: str) -> None:
     url = octomate_url(None)
     headers = {
         "Authorization": f"Bearer {octomate_secret()}",
-        CLIENT_HEADER: CODEX_NATIVE_CLIENT,
+        CLIENT_HEADER: client_name,
     }
     async with (
         httpx2.AsyncClient(
@@ -47,9 +48,9 @@ async def proxy() -> None:
         tasks.cancel_scope.cancel()
 
 
-def main() -> None:
-    anyio.run(proxy)
+def codex_main() -> None:
+    anyio.run(proxy, CODEX_NATIVE_CLIENT)
 
 
-if __name__ == "__main__":
-    main()
+def claude_main() -> None:
+    anyio.run(proxy, CLAUDE_NATIVE_CLIENT)
