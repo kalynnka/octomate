@@ -237,10 +237,12 @@ async def test_startup_failure_keeps_cause_without_flooding_logs(
     caplog.set_level(logging.INFO)
     with pytest.raises(RuntimeError) as caught:
         await process(binary, tmp_path, []).start()
-    message = str(caught.value)
+    assert str(caught.value) == "dsh web exited before reporting a URL (code 1)"
+    (output,) = [r for r in caplog.records if r.levelno == logging.ERROR]
+    message = output.getMessage()
     assert "Cannot find module required-plugin" in message
     assert "frame-299" in message
     assert "omitted" in message
     assert len(message.splitlines()) <= 31
-    assert "private-token" not in message + caplog.text
+    assert "private-token" not in caplog.text
     assert len(caplog.records) <= 2
