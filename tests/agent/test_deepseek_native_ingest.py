@@ -203,7 +203,9 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     conversation = await native_conversation(octomate)
     [run] = conversation.runs
     request = next(m for m in run.messages if isinstance(m, ModelRequest))
-    assert request.parts[0].content == "hi\n\nalso check the tests"
+    part = request.parts[0]
+    assert isinstance(part, UserPromptPart)
+    assert part.content == "hi\n\nalso check the tests"
     assert run.source == "gateway"
     thread = await a_loaded_thread(
         octomate.thread_manager, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
