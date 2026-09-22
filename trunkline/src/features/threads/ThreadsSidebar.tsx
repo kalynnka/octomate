@@ -6,7 +6,6 @@
 import { useState } from 'react'
 import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
-import { TriStripe } from '@/components/TriStripe'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
 import type { ThreadSummary } from '@/lib/api/types'
@@ -98,9 +97,10 @@ export function ThreadsSidebar() {
     <aside
       id="trk-sb-panel"
       className="trk-sb"
+      data-folded={sbFold ? '' : undefined}
       data-dragging={railDrag === 'sb' ? '' : undefined}
       style={{
-        width: sbFold ? '26px' : widths.sb ? `${widths.sb}px` : 'clamp(200px,21vw,272px)',
+        width: sbFold ? 'var(--trk-rail-w, 26px)' : widths.sb ? `${widths.sb}px` : 'clamp(200px,21vw,272px)',
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
@@ -110,13 +110,16 @@ export function ThreadsSidebar() {
         position: 'relative',
       }}
     >
+      {/* On a phone the folded rail is a 36px strip: any touch on it opens
+          the drawer, whose own rail then answers the letters and the gear. */}
+      {sbFold && <span className="trk-rail-tap" onClick={toggleSidebar} />}
       <div
         style={{
           display: 'flex',
           alignItems: 'center',
           gap: 10,
           padding: sbFold ? 0 : '0 14px',
-          height: 44,
+          height: 'var(--trk-head-h, 44px)',
           boxSizing: 'border-box',
           borderBottom: '1px solid var(--line-divider)',
           flexShrink: 0,
@@ -148,8 +151,8 @@ export function ThreadsSidebar() {
               title="Channels panel"
               className="hov-ink-wash"
               style={{
-                width: 22,
-                height: 22,
+                width: 'var(--trk-btn, 22px)',
+                height: 'var(--trk-btn, 22px)',
                 boxSizing: 'border-box',
                 flexShrink: 0,
                 display: 'inline-flex',
@@ -170,8 +173,8 @@ export function ThreadsSidebar() {
             title="Show channels"
             className="hov-ink-wash"
             style={{
-              width: 22,
-              height: 22,
+              width: 'var(--trk-btn, 22px)',
+              height: 'var(--trk-btn, 22px)',
               boxSizing: 'border-box',
               margin: '0 auto',
               display: 'inline-flex',
@@ -187,7 +190,7 @@ export function ThreadsSidebar() {
         )}
       </div>
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <span style={{ position: 'relative', width: 26, flexShrink: 0 }}>
+        <span style={{ position: 'relative', width: 'var(--trk-rail-w, 26px)', flexShrink: 0 }}>
           <span
             className="trk-chrail"
             style={{
@@ -195,12 +198,12 @@ export function ThreadsSidebar() {
               left: 0,
               top: 0,
               bottom: 0,
-              width: 26,
+              width: 'var(--trk-rail-w, 26px)',
               zIndex: 100,
               display: 'flex',
               flexDirection: 'column',
-              gap: 2,
-              padding: '8px 0 8px 3px',
+              gap: 'var(--trk-rail-gap, 2px)',
+              padding: 'var(--trk-rail-pad, 8px 0 8px 3px)',
               background: 'var(--card-bg-hover)',
               borderRight: '1px solid var(--line-divider)',
               overflow: 'hidden',
@@ -226,18 +229,19 @@ export function ThreadsSidebar() {
                     gap: 7,
                     cursor: 'pointer',
                     flexShrink: 0,
-                    padding: '1px 8px 1px 2px',
+                    padding: 'var(--trk-rail-row-pad, 1px 8px 1px 2px)',
                   }}
                 >
                   <span
                     style={{
-                      width: 18,
-                      height: 18,
+                      width: 'var(--trk-rail-letter, 18px)',
+                      height: 'var(--trk-rail-letter, 18px)',
                       flexShrink: 0,
                       display: 'inline-flex',
                       alignItems: 'center',
                       justifyContent: 'center',
                       ...mono(8, 700),
+                      fontSize: 'var(--trk-rail-fs, 8px)',
                       color: on ? 'var(--trk-on-fill)' : c.brand,
                       background: on ? c.brand : 'transparent',
                       border: `1px solid ${on ? c.brand : 'transparent'}`,
@@ -281,13 +285,13 @@ export function ThreadsSidebar() {
                 gap: 7,
                 cursor: 'pointer',
                 flexShrink: 0,
-                padding: '1px 8px 1px 2px',
+                padding: 'var(--trk-rail-row-pad, 1px 8px 1px 2px)',
               }}
             >
               <span
                 style={{
-                  width: 18,
-                  height: 18,
+                  width: 'var(--trk-rail-letter, 18px)',
+                  height: 'var(--trk-rail-letter, 18px)',
                   flexShrink: 0,
                   display: 'inline-flex',
                   alignItems: 'center',
@@ -361,7 +365,7 @@ export function ThreadsSidebar() {
                     display: 'flex',
                     alignItems: 'center',
                     gap: 7,
-                    padding: '11px 14px 5px',
+                    padding: 'var(--trk-ch-pad, 11px 14px 5px)',
                     cursor: 'pointer',
                   }}
                 >
@@ -437,7 +441,7 @@ export function ThreadsSidebar() {
                       key={t.id}
                       onClick={t.pick}
                       className="hov-wash"
-                      style={{ position: 'relative', padding: '7px 14px 7px 30px', cursor: 'pointer' }}
+                      style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px 7px 30px)', cursor: 'pointer' }}
                     >
                       {t.on && (
                         <>
@@ -540,7 +544,6 @@ export function ThreadsSidebar() {
           {'// end of index'}
         </span>
       </div>
-      <TriStripe />
       {!sbFold && (
         <span
           onMouseDown={dragStart}

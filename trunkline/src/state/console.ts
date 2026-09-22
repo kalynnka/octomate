@@ -185,6 +185,8 @@ export interface ConsoleActions {
   toggleTrace(): void
   /** fold/unfold panels when the window crosses width breakpoints */
   applyViewport(width: number): void
+  /** dismiss the touch layout's overlays; an open control page keeps its rail */
+  closeOverlays(): void
   setRailWidth(key: RailKey, w: number): void
   setRailDrag(key: RailKey | null): void
   toggleCardOpen(uid: string, def?: boolean): void
@@ -672,6 +674,13 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // Dossier and control are explicit opens; a wider window does not
       // reopen them on the user's behalf.
       if (crossedDown(PANEL_BREAK)) set({ pvOpen: false, mgmtOpen: false, mgmtSec: '' })
+    },
+    closeOverlays() {
+      set((s) => ({
+        sbFold: true,
+        traceOn: false,
+        mgmtOpen: s.mgmtSec ? s.mgmtOpen : false,
+      }))
     },
     toggleTrace() {
       set((s) => {
