@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
-from pydantic import ConfigDict, Field
+from pydantic import ConfigDict, Field, model_validator
 
 from octomate.config.agents.common import AgentConfig, Claim
 from octomate.types.permissions import CodexPermissionMode
@@ -125,3 +125,13 @@ class CodexConfig(AgentConfig):
             "next pool access. None keeps idle clients until shutdown."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def reject_separate_sandbox[T](cls, value: T) -> T:
+        if isinstance(value, dict) and "sandbox" in value:
+            raise ValueError(
+                "Codex sandbox is now part of permission_mode; remove sandbox and "
+                "choose user_review, auto_review, or full_access"
+            )
+        return value
