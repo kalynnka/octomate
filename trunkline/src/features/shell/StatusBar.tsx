@@ -5,6 +5,7 @@
  * session. Ported from the comp's "Bottom bar iterations · 09 Red dot".
  */
 import { useState, type CSSProperties, type ReactNode } from 'react'
+import { Icon } from '@/components/Icon'
 import { mono } from '@/components/text'
 import { useHealth } from '@/lib/api/hooks'
 import type { StatusChip } from '@/lib/api/types'
@@ -213,7 +214,17 @@ export function StatusBar() {
               letterSpacing: '.06em',
             }}
           >
-            <div style={{ padding: '7px 12px', borderBottom: '1px solid var(--line-divider)', color: 'var(--fg-3)' }}>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '7px 12px',
+                borderBottom: '1px solid var(--line-divider)',
+                color: 'var(--fg-3)',
+              }}
+            >
+              <Icon name="user" size={11} />
               {user?.name}
             </div>
             <div
@@ -222,8 +233,16 @@ export function StatusBar() {
                 setControlSection('profile')
               }}
               className="hov-wash"
-              style={{ padding: '8px 12px', cursor: 'pointer', borderBottom: '1px solid var(--line-color)' }}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '8px 12px',
+                cursor: 'pointer',
+                borderBottom: '1px solid var(--line-color)',
+              }}
             >
+              <Icon name="idCard" size={11} style={{ opacity: 0.7 }} />
               profile
             </div>
             <div
@@ -239,7 +258,7 @@ export function StatusBar() {
                 color: signOutError ? 'var(--color-red)' : undefined,
               }}
             >
-              <span style={{ opacity: 0.7 }}>⏻</span>
+              <Icon name="logOut" size={11} style={{ opacity: 0.7 }} />
               {signingOut ? 'signing out…' : signOutError ? 'sign-out failed · retry' : 'sign out'}
             </div>
           </div>
