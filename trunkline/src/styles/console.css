@@ -636,6 +636,9 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .hov-dim:hover {
   opacity: 0.85;
 }
+.hov-bright:hover {
+  filter: brightness(1.09);
+}
 .hov-border-line:hover {
   border-color: var(--line-divider);
   color: var(--fg-1);
@@ -997,7 +1000,9 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   }
   .trk-head-chip,
   .trk-comp-hint,
-  .trk-comp-tools {
+  .trk-comp-tools,
+  .trk-sbar-channel,
+  .trk-sbar-meta > :not(:last-child) {
     display: none !important;
   }
   #trk-chatlog {
