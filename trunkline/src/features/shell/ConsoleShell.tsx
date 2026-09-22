@@ -9,8 +9,11 @@ import { TimelinePanel } from '@/features/timeline/TimelinePanel'
 import { StatusBar } from './StatusBar'
 
 export function ConsoleShell() {
-  const { applyViewport, cyclePermissionMode, selectThread, startNewThread } = useConsole(
+  const { applyViewport, closeOverlays, cyclePermissionMode, selectThread, startNewThread } = useConsole(
     (s) => s.actions,
+  )
+  const overlayOpen = useConsole(
+    (s) => !s.sbFold || (!s.mgmtSec && (s.mgmtOpen || (s.traceOn === true && !s.pvOpen))),
   )
   // Boot into the newest live thread; an empty or unreachable relay opens the
   // new-thread flow (the status bar carries the offline state). The shell
@@ -55,14 +58,15 @@ export function ConsoleShell() {
       style={{
         display: 'flex',
         flexDirection: 'column',
-        height: 'calc(100vh / var(--trk-zoom, 1))',
+        height: 'calc(100dvh / var(--trk-zoom, 1))',
         overflow: 'hidden',
+        position: 'relative',
         background: 'var(--page-bg)',
         color: 'var(--fg-1)',
         fontFamily: 'var(--font-sans)',
       }}
     >
-      <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
+      <div className="trk-shell-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
         <ThreadsSidebar />
         <ControlRail />
         <ReviewPanel />
@@ -70,6 +74,9 @@ export function ConsoleShell() {
         <TimelinePanel />
       </div>
       <StatusBar />
+      {/* Covers the status bar as well as the row: a touch anywhere outside
+          the open overlay dismisses it. */}
+      {overlayOpen && <div className="trk-scrim" onClick={closeOverlays} />}
     </div>
   )
 }

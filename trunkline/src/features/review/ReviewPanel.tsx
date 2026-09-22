@@ -229,7 +229,7 @@ export function ReviewPanel() {
     return () => window.removeEventListener('keydown', onKey)
   }, [sel, draft, clearSelection])
 
-  const widthCss = pvW ? `${pvW}px` : 'clamp(440px,40vw,720px)'
+  const widthCss = pvW ? `${pvW}px` : 'var(--trk-pv-w, clamp(440px,40vw,720px))'
   const asideStyle = {
     width: widthCss,
     flexShrink: 0,

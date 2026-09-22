@@ -896,3 +896,125 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     row-gap: 9px;
   }
 }
+
+/* --------------------------------------------------------------------------
+   Touch layout — phones in either orientation. The thread tree becomes a
+   drawer over the chat, the side panels become overlays beside the channel
+   rail, and hit targets grow to a finger's width. Each custom property here
+   overrides a `var(--trk-…, <desktop value>)` fallback written at the element
+   it sizes, so the desktop number stays where it is read.
+   -------------------------------------------------------------------------- */
+.trk-scrim,
+.trk-rail-tap {
+  display: none;
+}
+.trk-head-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+@media (max-width: 599px), (max-height: 519px) and (max-width: 999px) {
+  :root {
+    --trk-interface-scale: 1;
+    --trk-rail-w: 36px;
+    --trk-rail-letter: 28px;
+    --trk-rail-fs: 10px;
+    --trk-rail-gap: 6px;
+    --trk-rail-pad: 10px 0 10px 4px;
+    --trk-rail-row-pad: 2px 8px 2px 0;
+    --trk-btn: 32px;
+    --trk-ch-pad: 13px 14px 7px;
+    --trk-th-pad: 11px 14px 11px 30px;
+    --trk-head-h: 54px;
+    --trk-head-pad: 0 10px 0 12px;
+    --trk-comp-head-pad: 7px 12px 6px;
+    --trk-comp-pad: 9px 12px 10px;
+    --trk-comp-bar-pad: 4px 12px 5px 8px;
+    --trk-auth-pad: 12px;
+    --trk-auth-card-pad: 20px 18px 18px;
+    --trk-auth-title: 34px;
+  }
+  .trk-shell-row {
+    padding-left: var(--trk-rail-w);
+  }
+  /* iOS Safari only delivers a tap as a click to something that looks
+     clickable, and a bare div is not: the cursor is what makes it one. */
+  .trk-scrim {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 84;
+    background: rgb(26 24 20 / 0.38);
+    cursor: pointer;
+  }
+  .trk-rail-tap {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 101;
+    cursor: pointer;
+  }
+  #trk-sb-panel {
+    position: absolute !important;
+    left: 0;
+    top: 0;
+    bottom: 0;
+  }
+  #trk-sb-panel:not([data-folded]) {
+    width: min(300px, 86vw) !important;
+    z-index: 90;
+    box-shadow: var(--shadow-card);
+  }
+  #trk-mgmt-panel,
+  #mdv-panel,
+  #trk-trace-panel {
+    position: absolute !important;
+    top: 0;
+    bottom: 0;
+    z-index: 86;
+    box-shadow: var(--shadow-card) !important;
+  }
+  #trk-mgmt-panel,
+  #mdv-panel {
+    left: var(--trk-rail-w);
+  }
+  #trk-trace-panel {
+    right: 0;
+  }
+  #mdv-panel:not([data-folded]) {
+    width: calc(100% - var(--trk-rail-w)) !important;
+  }
+  .trk-chrail:hover {
+    width: var(--trk-rail-w) !important;
+    box-shadow: none;
+  }
+  .trk-head-title {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 3px;
+  }
+  .trk-head-chip,
+  .trk-comp-hint,
+  .trk-comp-tools {
+    display: none !important;
+  }
+  #trk-chatlog {
+    padding: 14px 12px;
+  }
+}
+/* A phone on its side: the sign-in card must still fit without a scroll. */
+@media (max-height: 519px) and (max-width: 999px) {
+  :root {
+    --trk-auth-card-pad: 14px 18px;
+    --trk-auth-title: 28px;
+  }
+}
+
+/* Tablet: the dossier takes the wider share the narrower window can give. */
+@media (min-width: 600px) and (max-width: 1099px) and (min-height: 520px), (min-width: 1000px) and (max-width: 1099px) {
+  :root {
+    --trk-pv-w: clamp(360px, 52vw, 720px);
+  }
+}

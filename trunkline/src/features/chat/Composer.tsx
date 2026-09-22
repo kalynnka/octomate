@@ -48,8 +48,8 @@ function RouteSelector() {
   }, [routesData])
   const open = ntMenu === 'sel'
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', marginRight: 2, flexShrink: 0 }}>
-      <span style={{ position: 'relative', display: 'inline-flex', zIndex: 76 }}>
+    <span style={{ display: 'inline-flex', alignItems: 'center', marginRight: 2, minWidth: 0 }}>
+      <span style={{ position: 'relative', display: 'inline-flex', zIndex: 76, minWidth: 0 }}>
         {open && (
           <span onClick={() => setNtMenu('sel')} style={{ position: 'fixed', inset: 0, zIndex: 75 }} />
         )}
@@ -70,11 +70,12 @@ function RouteSelector() {
             gap: 5,
             cursor: 'pointer',
             whiteSpace: 'nowrap',
+            minWidth: 0,
           }}
         >
           <span style={{ color: 'var(--color-accent)' }}>{ntAgent}</span>
           <span style={{ color: 'var(--fg-3)' }}>·</span>
-          <span style={{ color: 'var(--fg-1)' }}>{ntModel}</span>
+          <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{ntModel}</span>
           <span style={{ color: 'var(--fg-3)' }}>[{ntEffort}]</span>
           <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
         </span>
@@ -331,7 +332,7 @@ export function Composer() {
   return (
     <div className="lt-fade-in" style={{ flexShrink: 0 }}>
       <div style={{ borderTop: '2px solid var(--trk-bracket)' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '7px 24px 6px', borderBottom: '1px solid var(--trk-vline)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: 'var(--trk-comp-head-pad, 7px 24px 6px)', borderBottom: '1px solid var(--trk-vline)' }}>
           <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>&gt;_</span>
           <span style={{ ...mono(10.5), ...ellipsis, minWidth: 0 }}>
             <span style={{ fontWeight: 700, color: 'var(--color-accent)' }}>{username}@trunkline</span>
@@ -346,7 +347,7 @@ export function Composer() {
             MD·Live
           </span>
         </div>
-        <div style={{ padding: '9px 24px 11px' }}>
+        <div style={{ padding: 'var(--trk-comp-pad, 9px 24px 11px)' }}>
           {queue.length > 0 && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '0 0 8px' }}>
               {queue.map((q) => (
@@ -450,25 +451,27 @@ export function Composer() {
             </span>
           </ComposerPrimitive.Root>
         </div>
-        <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 24px 5px' }}>
+        <div className="trk-comp-hint" style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 24px 5px' }}>
           <span style={{ ...mono(8), color: 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}>
             ↵ send · ⇧↵ newline · ⇧⇥ posture · **b** _i_ `code` ``` fence
           </span>
         </div>
         <div
-          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '3px 24px 4px 18px', borderTop: '1px solid var(--trk-vline)' }}
+          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: 'var(--trk-comp-bar-pad, 3px 24px 4px 18px)', borderTop: '1px solid var(--trk-vline)' }}
         >
-          <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
-            <Icon name="paperclip" size={15} />
+          <span className="trk-comp-tools" style={{ display: 'contents' }}>
+            <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
+              <Icon name="paperclip" size={15} />
+            </span>
+            <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
+              <Icon name="code" size={15} />
+            </span>
+            <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
+              <Icon name="globe" size={15} />
+            </span>
+            <span style={{ width: 1, height: 16, background: 'var(--trk-vline)', margin: '0 6px' }} />
+            <span style={{ ...fieldLabel, color: 'var(--color-accent)' }}>Directive</span>
           </span>
-          <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
-            <Icon name="code" size={15} />
-          </span>
-          <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
-            <Icon name="globe" size={15} />
-          </span>
-          <span style={{ width: 1, height: 16, background: 'var(--trk-vline)', margin: '0 6px' }} />
-          <span style={{ ...fieldLabel, color: 'var(--color-accent)' }}>Directive</span>
           {queue.length > 0 && (
             <span style={{ ...mono(8, 700), color: 'var(--color-accent)', letterSpacing: '.08em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
               · {String(queue.length).padStart(2, '0')} queued — sends as one turn
@@ -494,7 +497,7 @@ export function Composer() {
                 gap: 5,
                 whiteSpace: 'nowrap',
                 marginRight: 2,
-                flexShrink: 0,
+                minWidth: 0,
               }}
             >
               <span style={{ color: 'var(--color-accent)' }}>{sesAgent || '—'}</span>
@@ -503,7 +506,7 @@ export function Composer() {
               {sesModel && (
                 <>
                   <span style={{ color: 'var(--fg-3)' }}>·</span>
-                  <span style={{ color: 'var(--fg-1)' }}>{sesModel}</span>
+                  <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{sesModel}</span>
                 </>
               )}
             </span>
