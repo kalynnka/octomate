@@ -176,7 +176,7 @@ agent selection, channel bindings and adding an MCP preset with the CLI.
 |---|---|
 | `projects.yaml` | When you want driven agents to work on a [registered project](projects.md) |
 | `providers.yaml` | When using [Inkling](../usage/agents/inkling.md) with model providers |
-| `oauth.yaml` | When linking chat profiles or authorising [MCP connectors](../usage/mcp/proxy.md) |
+| `oauth.yaml` | When linking chat profiles or authorising [MCP connections](../tentacles/mcp.md) |
 | `observability.yaml` | When changing logging or opting into [tracing](observability.md) |
 
 Leave these defaults alone for the first console conversation. Supply credentials

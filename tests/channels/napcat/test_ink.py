@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace, TracebackType
 from typing import cast
 
 import httpx
+import pytest
 from pydantic import SecretStr
 from websockets.asyncio.client import ClientConnection
 
@@ -26,9 +28,121 @@ from octomate.tentacles.feelers.output import (
 )
 from octomate.tentacles.napcat import NapcatChromo, NapcatInk, NapcatTentacle
 from octomate.tentacles.napcat.schema import NapcatOutboundMessage
+from octomate.types.json import JsonObject
 from tests.channels.napcat.fakes import FakeNapcatHTTP
 from tests.support.channels import drive
 from tests.support.scenarios import plain_answer, play
+
+
+@pytest.mark.parametrize("chat_type", ["group", "dm"])
+async def test_napcat_quotes_replies_and_normalizes_numeric_ids(chat_type: str) -> None:
+    requests: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(
+            200, json={"status": "ok", "retcode": 0, "data": {"message_id": 123}}
+        )
+
+    ink = NapcatInk("http://napcat.test", SecretStr("token"))
+    await ink.httpx.aclose()
+    async with httpx.AsyncClient(
+        base_url=ink.http_url,
+        headers={"Authorization": "Bearer token"},
+        transport=httpx.MockTransport(respond),
+    ) as client:
+        ink.httpx = client
+        message = NapcatOutboundMessage(
+            segments=[{"type": "text", "data": {"text": "hello"}}]
+        )
+        result = await ink.send_message(
+            "2002", chat_type, [message], channel_thread_id="2002", reply_to="1001"
+        )
+
+    assert result == "123"
+    [request] = requests
+    assert request.headers["Authorization"] == "Bearer token"
+    assert request.url.path == (
+        "/send_private_msg" if chat_type == "dm" else "/send_group_msg"
+    )
+    assert json.loads(request.content) == {
+        "user_id" if chat_type == "dm" else "group_id": "2002",
+        "message": [
+            {"type": "reply", "data": {"id": "1001"}},
+            {"type": "text", "data": {"text": "hello"}},
+        ],
+    }
+    assert message.segments == [{"type": "text", "data": {"text": "hello"}}]
+
+
+@pytest.mark.parametrize(
+    ("response", "error", "match"),
+    [
+        (
+            {"status": "failed", "retcode": 1200, "message": "not logged in"},
+            RuntimeError,
+            "not logged in",
+        ),
+        ({"status": "ok", "retcode": 0, "data": None}, ValueError, "no data"),
+        ({"status": "ok", "retcode": 0, "data": {}}, ValueError, "no message_id"),
+    ],
+)
+async def test_napcat_send_rejects_unsuccessful_onebot_responses(
+    response: JsonObject, error: type[Exception], match: str
+) -> None:
+    ink = NapcatInk("http://napcat.test")
+    await ink.httpx.aclose()
+    async with httpx.AsyncClient(
+        base_url=ink.http_url,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json=response)
+        ),
+    ) as client:
+        ink.httpx = client
+        with pytest.raises(error, match=match):
+            await ink.send_message(
+                "2002",
+                "group",
+                [
+                    NapcatOutboundMessage(
+                        segments=[{"type": "text", "data": {"text": "hi"}}]
+                    )
+                ],
+                channel_thread_id="2002",
+            )
+
+
+async def test_napcat_rejects_subthread_destinations() -> None:
+    ink = NapcatInk("http://napcat.test")
+    try:
+        with pytest.raises(ValueError, match="only group chats and DMs"):
+            await ink.send_message("2002", "thread", [], channel_thread_id="1001")
+    finally:
+        await ink.close()
+
+
+async def test_napcat_inspect_uses_login_identity() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/get_login_info"
+        return httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "retcode": 0,
+                "data": {"user_id": 42, "nickname": "Octomate"},
+            },
+        )
+
+    ink = NapcatInk("http://napcat.test")
+    await ink.httpx.aclose()
+    async with httpx.AsyncClient(
+        base_url=ink.http_url, transport=httpx.MockTransport(respond)
+    ) as client:
+        ink.httpx = client
+        profile = await ink.inspect()
+
+    assert profile.channel_user_id == "42"
+    assert profile.name == "Octomate"
 
 
 async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
@@ -57,8 +171,10 @@ async def test_napcat_ink_sends_group_private_and_reply_messages() -> None:
             "/send_group_msg",
             {
                 "group_id": "2002",
-                "message": message.segments,
-                "reply": "1001",
+                "message": [
+                    {"type": "reply", "data": {"id": "1001"}},
+                    *message.segments,
+                ],
             },
         ),
         (
@@ -77,10 +193,9 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
     image.write_bytes(b"image-bytes")
     address = ChannelAddress(
         channel_tentacle_id="napcat",
-        chat_type="thread",
+        chat_type="group",
         chat_id="2002",
         user_id="3003",
-        channel_thread_id="1001",
     )
 
     message_id = await feeler.present(
@@ -102,7 +217,6 @@ async def test_napcat_segments_feeler_delivers_native_media(tmp_path) -> None:
                     {"type": "text", "data": {"text": "look:"}},
                     {"type": "image", "data": {"file": f"base64://{image_b64}"}},
                 ],
-                "reply": "1001",
             },
         )
     ]

@@ -1,45 +1,20 @@
-# MCP proxy
+# Use and manage connections
 
-Connect a service once in Octomate, then use it from your agents. Each person
-chooses which connectors to install and, for OAuth services, signs in with their
-own account.
+Use the services you have connected to Octomate from your agents, then manage
+access as your needs change.
 
-## Add a connector { #installing-per-user }
+## Before you start { #installing-per-user }
 
-1. Open **MCP** in Trunkline.
-2. Choose one of the configured offerings and select **Install**, or use
-   **Install MCP** to add a service by its MCP URL.
-3. Give the installation a name and a distinct namespace. The namespace is a
-   short label that helps distinguish connections, such as `tracker_work` and
-   `tracker_personal`.
-4. Complete authorisation if requested, then check that the connector is enabled
-   and ready.
+For account ownership, operator trust and namespaces, start with the
+[MCP overview](../../tentacles/mcp.md). To connect a service, follow
+[Add through Trunkline](../../tentacles/mcp/trunkline.md) or the
+[preset walkthrough](../../tentacles/mcp/presets.md#connect-it-to-your-account),
+which also covers connecting through an agent conversation.
 
-You can also ask your agent to help:
-
-> Show me the available connectors and help me connect my project tracker.
-
-If the service requires setup by the server operator, send them the
-[Tentacles connector guide](../../tentacles/mcp.md). A connector being listed as
-available does not mean it is already connected to your account.
-
-For GitHub, follow the [Trunkline or conversation walkthrough](../../tentacles/mcp.md#connect-it-to-your-account)
-to install the configured preset and connect your account.
-
-## Sign in and grant access { #authorising }
-
-Follow the authorisation prompt in Trunkline or the private link sent through your
-channel. Some services ask you to enter a device code; others open a consent page.
-Check which account you are signing in with and the access being requested.
-
-Complete that step in the provider's page, then return to Octomate and check the
-connection. Installing a connector alone does not finish authorisation. Keep
-passwords and tokens out of the chat; use the connection form or provider's
-sign-in page.
-
-Linking your channel profile to Octomate is a separate step. If you want a
-connector you installed in Trunkline to be available while chatting elsewhere,
-[link that channel profile](../../installation/accounts.md#link-your-channel-profiles).
+If an installed OAuth connection is awaiting consent,
+[complete authorization](../../tentacles/mcp/trunkline.md#complete-oauth-authorization)
+before using its tools.
+{ #authorising }
 
 ## Use it from an agent
 
@@ -54,15 +29,24 @@ These connectors are available to Inkling, driven Claude Code and Codex, and
 native agents connected through [Octomate MCP](octomate.md). Driven DeepSeek
 Harness cannot use them yet.
 
-OAuth connections use the account you authorised. Some offerings instead use a
-credential supplied by the server operator; those act as that shared service
-account. Check with the operator if the account identity matters for your task.
+## Use the connection across channels
+
+[Link each channel profile](../../installation/accounts.md#link-your-channel-profiles)
+to the Octomate account that owns the connection. You can then refer to the same
+namespace from another channel without installing the service again.
 
 ## Pause or remove a connection
 
-Use the connector controls in Trunkline's **MCP** panel to disable it temporarily,
-enable it again or remove it. Disabling keeps the installation for later; removing
-it means you will need to install it again to use it.
+Ask your agent to pause a connection:
+
+> Disable my tracker_work connection until I need it again.
+
+Disabling keeps the installation and saved authorization. Ask the agent to enable
+it again, or select **Disabled** in Trunkline's **MCP → Installed** table.
+
+To remove a connection, select its remove button in **Installed**, then
+**Confirm remove**. This deletes the installation and its saved credentials;
+you will need to install it again to use it.
 
 Removing or disconnecting a service in Octomate does not revoke the grant at the
 provider. Use the provider's connected-app settings when you also want to revoke
@@ -70,7 +54,8 @@ that access.
 
 ## If a service is unavailable
 
-Open **MCP** and check whether the connector is disabled or awaiting authorisation.
-Reconnect if its authorisation is no longer valid, then retry a simple read-only
-request. If it is ready but the agent cannot find it, confirm that the conversation
-belongs to the same linked account and uses one of the supported agents above.
+Open **MCP → Installed** and check whether the connection is disabled or awaiting
+authorization. [Reconnect](../../tentacles/mcp/trunkline.md#complete-oauth-authorization)
+if its authorization is no longer valid, then retry a simple read-only request.
+If it is ready but the agent cannot find it, confirm that the conversation belongs
+to the same linked account and uses one of the supported agents above.

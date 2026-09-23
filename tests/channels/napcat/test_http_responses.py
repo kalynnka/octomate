@@ -27,26 +27,26 @@ async def napcat_api() -> AsyncIterator[
         yield ink, responses, requests
 
 
-async def test_inspect_uses_the_login_id_when_the_profile_omits_it(
+async def test_inspect_normalizes_login_identity_and_ignores_unknown_fields(
     napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
 ) -> None:
     ink, responses, requests = napcat_api
-    responses.extend(
-        [
-            httpx.Response(200, json={"data": {"user_id": 42}}),
-            httpx.Response(200, json={"data": {"nick": "Octomate", "future": True}}),
-        ]
+    responses.append(
+        httpx.Response(
+            200,
+            json={
+                "status": "ok",
+                "retcode": 0,
+                "data": {"user_id": 42, "nickname": "Octomate", "future": True},
+            },
+        )
     )
 
     profile = await ink.inspect()
 
     assert profile.channel_user_id == "42"
     assert profile.name == "Octomate"
-    assert [request.url.path for request in requests] == [
-        "/get_login_info",
-        "/get_stranger_info",
-    ]
-    assert requests[1].content == b'{"user_id":"42"}'
+    assert [request.url.path for request in requests] == ["/get_login_info"]
 
 
 @pytest.mark.parametrize(
@@ -59,7 +59,9 @@ async def test_profile_preserves_identity_and_name_normalization(
     expected_id: str,
 ) -> None:
     ink, responses, _ = napcat_api
-    responses.append(httpx.Response(200, json={"data": data}))
+    responses.append(
+        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
+    )
 
     profile = await ink.get_user_profile("42")
 
@@ -68,7 +70,13 @@ async def test_profile_preserves_identity_and_name_normalization(
 
 
 @pytest.mark.parametrize(
-    "body", ['{"data": []}', '{"data": {"user_id": [42]}}', "[]", "{"]
+    "body",
+    [
+        '{"status": "ok", "data": []}',
+        '{"status": "ok", "data": {"user_id": [42]}}',
+        "[]",
+        "{",
+    ],
 )
 async def test_invalid_profile_response_keeps_the_existing_identity_fallback(
     napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]], body: str
@@ -83,23 +91,35 @@ async def test_invalid_profile_response_keeps_the_existing_identity_fallback(
 
 
 @pytest.mark.parametrize(
-    ("body", "expected"),
+    ("data", "expected"),
     [
-        ({"data": {"url": "https://image.test/pic.png"}}, "https://image.test/pic.png"),
-        ({"data": {}}, None),
-        ({"data": None}, None),
+        ({"url": "https://image.test/pic.png"}, "https://image.test/pic.png"),
         ({}, None),
     ],
 )
 async def test_image_response_url_is_optional(
     napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
-    body: JsonValue,
+    data: JsonValue,
     expected: str | None,
+) -> None:
+    ink, responses, _ = napcat_api
+    responses.append(
+        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
+    )
+
+    assert await ink.get_image_url("image-key") == expected
+
+
+@pytest.mark.parametrize("body", [{"status": "ok", "data": None}, {"status": "ok"}])
+async def test_image_response_requires_data(
+    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+    body: JsonValue,
 ) -> None:
     ink, responses, _ = napcat_api
     responses.append(httpx.Response(200, json=body))
 
-    assert await ink.get_image_url("image-key") == expected
+    with pytest.raises(ValueError, match="returned no data"):
+        await ink.get_image_url("image-key")
 
 
 @pytest.mark.parametrize("url", [42, [], {}])
@@ -108,29 +128,60 @@ async def test_invalid_image_urls_fail_at_the_response_boundary(
     url: JsonValue,
 ) -> None:
     ink, responses, _ = napcat_api
-    responses.append(httpx.Response(200, json={"data": {"url": url}}))
+    responses.append(
+        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": {"url": url}})
+    )
 
     with pytest.raises(ValidationError):
         await ink.get_image_url("image-key")
 
 
 @pytest.mark.parametrize(
-    "first_data", [None, {}, {"message_id": None}, {"message_id": []}]
+    ("first_data", "error", "match"),
+    [
+        (None, ValueError, "returned no data"),
+        ({}, ValueError, "returned no message_id"),
+        ({"message_id": None}, ValueError, "returned no message_id"),
+        ({"message_id": []}, ValidationError, "message_id"),
+        ({"message_id": True}, ValidationError, "message_id"),
+    ],
 )
-async def test_send_skips_missing_or_invalid_ids_and_returns_the_first_id_as_text(
+async def test_send_rejects_missing_or_invalid_ids_before_sending_more_messages(
     napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
     first_data: JsonValue,
+    error: type[Exception],
+    match: str,
 ) -> None:
     ink, responses, requests = napcat_api
     responses.extend(
-        httpx.Response(200, json={"data": data})
+        httpx.Response(200, json={"status": "ok", "retcode": 0, "data": data})
         for data in [first_data, {"message_id": 123}, {"message_id": 456}]
     )
     message = NapcatOutboundMessage(segments=[{"type": "text", "data": {"text": "hi"}}])
 
+    with pytest.raises(error, match=match):
+        await ink.send_message(
+            "42", "dm", [message, message, message], channel_thread_id="42"
+        )
+
+    assert len(requests) == 1
+
+
+async def test_send_returns_the_first_id_as_text(
+    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+) -> None:
+    ink, responses, requests = napcat_api
+    responses.extend(
+        httpx.Response(
+            200, json={"status": "ok", "retcode": 0, "data": {"message_id": message_id}}
+        )
+        for message_id in [123, 456]
+    )
+    message = NapcatOutboundMessage(segments=[{"type": "text", "data": {"text": "hi"}}])
+
     result = await ink.send_message(
-        "42", "dm", [message, message, message], channel_thread_id="42"
+        "42", "dm", [message, message], channel_thread_id="42"
     )
 
     assert result == "123"
-    assert len(requests) == 3
+    assert len(requests) == 2

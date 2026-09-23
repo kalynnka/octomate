@@ -53,12 +53,6 @@ class ActionResponse[DataT](BaseModel):
     wording: str | None = None
 
 
-class LoginInfo(BaseModel):
-    model_config = ConfigDict(coerce_numbers_to_str=True)
-
-    user_id: str = ""
-
-
 class ImageInfo(BaseModel):
     url: str | None = None
 

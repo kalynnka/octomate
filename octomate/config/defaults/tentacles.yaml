@@ -167,12 +167,14 @@
 #
 #   napcat:
 #     type: napcat
+#     mention_only: true
 #     agents:
 #       - inkling
 #     stream:
 #       enabled: false
 #     ws_url: ws://127.0.0.1:3001
-#     http_url: http://127.0.0.1:3000
+#     http_url: http://127.0.0.1:3002
+#     access_token: ...  # Same token on both NapCat network servers.
 
 # MCP tentacles offer connection settings that users explicitly install.
 # The configured key identifies the template users install.

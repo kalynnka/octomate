@@ -13,7 +13,6 @@ from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.napcat.schema import (
     ActionResponse,
     ImageInfo,
-    LoginInfo,
     NapcatOutboundMessage,
     NapcatUserProfile,
     SentMessage,
@@ -39,29 +38,35 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
             headers["Authorization"] = f"Bearer {access_token.get_secret_value()}"
         self.httpx = httpx.AsyncClient(base_url=self.http_url, headers=headers)
 
+    async def call_api[DataT](
+        self,
+        endpoint: str,
+        payload: JsonObject,
+        response_model: type[ActionResponse[DataT]],
+    ) -> DataT:
+        resp = await self.httpx.post(endpoint, json=payload)
+        resp.raise_for_status()
+        result = response_model.model_validate_json(resp.content)
+        if result.status != "ok" or result.retcode != 0:
+            raise RuntimeError(
+                f"NapCat {endpoint} failed ({result.retcode}): "
+                f"{result.message or result.wording or result.status}"
+            )
+        if result.data is None:
+            raise ValueError(f"NapCat {endpoint} returned no data")
+        return result.data
+
     async def inspect(self) -> NapcatUserProfile:
-        resp = await self.httpx.post("/get_login_info", json={})
-        resp.raise_for_status()
-        login_data = ActionResponse[LoginInfo].model_validate_json(resp.content).data
-        user_id = login_data.user_id if login_data is not None else ""
-        resp = await self.httpx.post(
-            "/get_stranger_info",
-            json={"user_id": user_id},
+        return await self.call_api(
+            "/get_login_info", {}, ActionResponse[NapcatUserProfile]
         )
-        resp.raise_for_status()
-        data = ActionResponse[JsonObject].model_validate_json(resp.content).data or {}
-        data.setdefault("user_id", user_id)
-        return NapcatUserProfile.model_validate(data)
 
     async def get_user_profile(self, user_id: str) -> NapcatUserProfile:
         try:
-            resp = await self.httpx.post(
+            data = await self.call_api(
                 "/get_stranger_info",
-                json={"user_id": user_id},
-            )
-            resp.raise_for_status()
-            data = (
-                ActionResponse[JsonObject].model_validate_json(resp.content).data or {}
+                {"user_id": user_id},
+                ActionResponse[JsonObject],
             )
             data.setdefault("user_id", user_id)
             return NapcatUserProfile.model_validate(data)
@@ -75,10 +80,10 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         return None
 
     async def get_image_url(self, file: str) -> str | None:
-        resp = await self.httpx.post("/get_image", json={"file": file})
-        resp.raise_for_status()
-        data = ActionResponse[ImageInfo].model_validate_json(resp.content).data
-        return data.url if data is not None else None
+        data = await self.call_api(
+            "/get_image", {"file": file}, ActionResponse[ImageInfo]
+        )
+        return data.url
 
     async def download(self, url: str) -> httpx.Response:
         resp = await self.httpx.get(url)
@@ -119,29 +124,23 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         reply_to: str | None = None,
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
+        if chat_type not in {"dm", "group"}:
+            raise ValueError("NapCat supports only group chats and DMs")
         first_msg_id: IMMessageID | None = None
-        if not reply_to and chat_type == "thread":
-            reply_to = channel_thread_id
         endpoint = "/send_private_msg" if chat_type == "dm" else "/send_group_msg"
         id_field = "user_id" if chat_type == "dm" else "group_id"
         for message in messages:
             segments: list[JsonValue] = [*message.segments]
+            if reply_to:
+                segments.insert(0, {"type": "reply", "data": {"id": reply_to}})
             payload: JsonObject = {
                 id_field: chat_id,
                 "message": segments,
             }
-            if reply_to:
-                payload["reply"] = reply_to
-            try:
-                resp = await self.httpx.post(endpoint, json=payload)
-                resp.raise_for_status()
-                data = (
-                    ActionResponse[SentMessage].model_validate_json(resp.content).data
-                )
-                if data is not None:
-                    first_msg_id = first_msg_id or data.message_id
-            except Exception:
-                logger.warning("NapcatInk: send_message failed", exc_info=True)
+            data = await self.call_api(endpoint, payload, ActionResponse[SentMessage])
+            if data.message_id is None:
+                raise ValueError(f"NapCat {endpoint} returned no message_id")
+            first_msg_id = first_msg_id or data.message_id
         return first_msg_id
 
     async def close(self) -> None:

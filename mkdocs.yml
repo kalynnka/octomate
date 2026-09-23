@@ -80,9 +80,13 @@ nav:
           - Slack: usage/channels/slack.md
           - Lark / Feishu: usage/channels/lark.md
           - Discord: usage/channels/discord.md
+          - NapCat: usage/channels/napcat.md
           - Trunkline: usage/channels/trunkline.md
-      - MCP connectors:
-          - tentacles/mcp.md
+      - MCP:
+          - Overview: tentacles/mcp.md
+          - Built-in tentacles: tentacles/mcp/builtins.md
+          - Add presets: tentacles/mcp/presets.md
+          - Add through Trunkline: tentacles/mcp/trunkline.md
   - Usage:
       - usage/index.md
       - Sessions and permissions:
@@ -96,9 +100,9 @@ nav:
       - Projects and workspaces:
           - Projects: usage/projects.md
           - Workspaces: usage/workspaces.md
-      - MCP:
-          - Octomate MCP: usage/mcp/octomate.md
-          - MCP proxy: usage/mcp/proxy.md
+      - Tools and services:
+          - Use Octomate from your agent: usage/mcp/octomate.md
+          - Use and manage connections: usage/mcp/proxy.md
   - Concepts:
       - concepts/index.md
       - Design:

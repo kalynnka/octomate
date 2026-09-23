@@ -30,6 +30,7 @@ Start a separate thread when the subject changes.
 | Lark / Feishu one-to-one chat | In that chat |
 | Discord server text channel | In the public reply thread |
 | Discord DM | In that DM |
+| NapCat group or DM | In the same chat; there are no subthreads |
 | Trunkline | In the conversation you opened |
 | Your agent's own app, editor or terminal | In that agent's session; Trunkline lets you read the collected history |
 
@@ -57,5 +58,8 @@ conversation.
 - **Discord:** mentioning the bot or replying to its message can address it.
   New task threads are public, so use a DM for private requests.
 - **Trunkline:** each conversation is already a thread. No mention is needed.
+- **NapCat:** mention the bot for each request in a group when `mention_only` is
+  enabled. DMs need no mention. Quoted replies stay in the same chat and do not
+  open a task thread; new requests use the recent chat recap.
 
 To continue through another channel, follow [Moving a conversation](gateway.md).

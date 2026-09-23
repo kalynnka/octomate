@@ -13,6 +13,6 @@ class FakeNapcatHTTP:
         self.posts.append((endpoint, json))
         return httpx.Response(
             200,
-            json={"data": {"message_id": "msg-1"}},
+            json={"status": "ok", "retcode": 0, "data": {"message_id": "msg-1"}},
             request=httpx.Request("POST", f"http://napcat{endpoint}"),
         )

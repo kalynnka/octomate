@@ -27,8 +27,9 @@ client connected, those sessions appear in Octomate's history too.
 | Find something we discussed before | [History](history.md) |
 | Work on a repository or folder | [Projects](projects.md) |
 | Continue file changes and review the result | [Workspaces](workspaces.md) |
-| Use Octomate from my own agent | [Octomate MCP](mcp/octomate.md) |
-| Give my agents access to another service | [MCP proxy](mcp/proxy.md) |
+| Use Octomate from my own agent | [Use Octomate from your agent](mcp/octomate.md) |
+| Connect another service | [MCP setup](../tentacles/mcp.md) |
+| Use connected services and manage access | [Use and manage connections](mcp/proxy.md) |
 
 For conversations and tools to follow you across channels,
 [link your channel profiles](../installation/accounts.md#link-your-channel-profiles)

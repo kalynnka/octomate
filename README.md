@@ -98,6 +98,7 @@ Your agent can combine recorded history with your connected GitHub tools.
 | [Slack](https://kalynnka.github.io/octomate/usage/channels/slack/) | Channels, threads, DMs and the assistant pane |
 | [Lark / Feishu](https://kalynnka.github.io/octomate/usage/channels/lark/) | Groups, threads and one-to-one chats |
 | [Discord](https://kalynnka.github.io/octomate/usage/channels/discord/) | Server channels, public threads and DMs |
+| [NapCat](https://kalynnka.github.io/octomate/usage/channels/napcat/) | Group chats and DMs (QQ bridge); no subthreads |
 | [Trunkline](https://kalynnka.github.io/octomate/usage/channels/trunkline/) | Octomate's web console — preview |
 
 ### MCP connectors
