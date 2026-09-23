@@ -1,5 +1,5 @@
 site_name: Octomate
-site_description: Relay and collect every chat you have with a coding agent, then spread it to where you already work.
+site_description: Connect agents, channels and tools through tentacles. Bring your agents wherever you need them, with shared history and control.
 site_url: https://kalynnka.github.io/octomate/
 repo_url: https://github.com/kalynnka/octomate
 repo_name: kalynnka/octomate
@@ -42,23 +42,20 @@ nav:
   - Home: index.md
   - Installation:
       - installation/index.md
-      - Getting started:
-          - Requirements: installation/requirements.md
-          - Quick start: installation/quickstart.md
-          - A brief for your agent: installation/agent-setup.md
       - Server:
-          - Server setup: installation/server.md
+          - Quickstart: installation/quickstart.md
+          - Requirements: installation/requirements.md
           - macOS: installation/macos.md
-          - Linux: installation/linux.md
-          - Windows: installation/windows.md
-          - Docker: installation/docker.md
+          - Manual setup: installation/server.md
       - Configuration:
           - The config home: installation/configuration.md
           - Server settings: installation/settings.md
           - The tentacle registry: installation/tentacles.md
+          - Register projects: installation/projects.md
       - Accounts and tokens: installation/accounts.md
-      - Clients:
+      - Client:
           - installation/clients/index.md
+          - Quick start: installation/clients/quickstart.md
           - Claude Code: installation/clients/claude-code.md
           - Codex: installation/clients/codex.md
           - DeepSeek Harness: installation/clients/deepseek.md
@@ -66,12 +63,10 @@ nav:
           - Networking: installation/networking.md
           - Observability: installation/observability.md
           - Upgrades and backups: installation/upgrading.md
-  - Usage:
-      - usage/index.md
+  - Tentacles:
+      - tentacles/index.md
       - Agents:
           - usage/agents/index.md
-          - Permissions and approvals: usage/agents/permissions.md
-          - Driven and native sessions: usage/agents/sessions.md
           - Claude Code: usage/agents/claude-code.md
           - Codex: usage/agents/codex.md
           - DeepSeek Harness: usage/agents/deepseek.md
@@ -81,8 +76,14 @@ nav:
           - Slack: usage/channels/slack.md
           - Lark / Feishu: usage/channels/lark.md
           - Discord: usage/channels/discord.md
-          - QQ through NapCat: usage/channels/napcat.md
           - Trunkline: usage/channels/trunkline.md
+      - MCP connectors:
+          - tentacles/mcp.md
+  - Usage:
+      - usage/index.md
+      - Sessions and permissions:
+          - Start a conversation: usage/agents/sessions.md
+          - Permission modes: usage/agents/permissions.md
       - Conversations:
           - Threads and chat rooms: usage/threads.md
           - Moving a conversation: usage/gateway.md
@@ -100,6 +101,7 @@ nav:
           - The reflex graph: concepts/reflex.md
           - Feelers: concepts/feelers.md
           - The tentacle model: concepts/tentacles.md
+          - MCP design: concepts/mcp.md
       - Storage:
           - Persistence: concepts/persistence.md
           - Workspace design: concepts/workspaces.md

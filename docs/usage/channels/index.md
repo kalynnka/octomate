@@ -5,6 +5,15 @@ messages, and draws a run back onto the platform in whatever that platform can s
 Keyed by instance, so two Lark apps are two keys, two separate sets of threads, and
 two bots.
 
+## Enable a channel
+
+Follow the app setup for [Slack](slack.md), [Lark / Feishu](lark.md) or
+[Discord](discord.md), or build [Trunkline](trunkline.md) for browser access.
+Add its block to `tentacles.yaml`, supply the required credentials, and name
+at least one enabled agent in `agents`. Set `enabled: true` if the generator
+left it disabled. Check the configuration, restart Octomate and send a message
+to verify the connection. See the [shared enablement steps](../../tentacles/index.md#enable-a-tentacle).
+
 ```yaml
 tentacles:
   slack:
@@ -19,7 +28,9 @@ tentacles:
       characters: 1000
 ```
 
-Secrets go in `.env` as `OCTOMATE__TENTACLES__<KEY>__<FIELD>`, never in the block.
+Supply secrets in YAML or environment variables named
+`OCTOMATE__TENTACLES__<KEY>__<FIELD>`. A `.env` file is optional; remove matching
+YAML placeholders if using it, because YAML takes precedence.
 
 ## Shared settings
 
@@ -33,8 +44,8 @@ Secrets go in `.env` as `OCTOMATE__TENTACLES__<KEY>__<FIELD>`, never in the bloc
 | `mcp` | `false` | Whether this channel serves its own MCP tools to the agents on it. Slack only. |
 
 Streaming defaults differ: Slack, Lark and Trunkline stream by default; Discord
-coalesces edits and is off until you set `stream.enabled: true`; NapCat cannot
-stream. Within a `stream:` block you set only what you change and keep the
+coalesces edits and is off until you set `stream.enabled: true`.
+Within a `stream:` block you set only what you change and keep the
 platform's other defaults.
 
 ## Being addressed
@@ -63,16 +74,16 @@ your-channel-profiles).
 
 ## What each channel renders
 
-| | Slack | Lark | Discord | Trunkline | QQ |
-|---|---|---|---|---|---|
-| Streaming text | Native stream | Streaming card | Message edits | Every event, live | No |
-| Thinking and tool cards | Folding plan | Cards that fold | No | Yes | No |
-| Todo checklist | Plan tasks | Card | No | Yes | Appended text |
-| Approval cards | Buttons, paged | One card each | Buttons, one each | Yes | Text only, cannot answer |
-| Question cards | Wizard | Card, paged | Buttons and a modal | Yes | Text only, cannot answer |
-| Sub-threads | Yes | Yes | Public threads from a text channel | No | No |
-| Direct messages | Yes | Yes | Yes | No | Yes |
-| Profile linking | From chat, or Slack OAuth | From chat | From chat, or Discord OAuth | Not needed | From chat |
+| | Slack | Lark | Discord | Trunkline |
+|---|---|---|---|---|
+| Streaming text | Native stream | Streaming card | Message edits | Every event, live |
+| Thinking and tool cards | Folding plan | Cards that fold | No | Yes |
+| Todo checklist | Plan tasks | Card | No | Yes |
+| Approval cards | Buttons, paged | One card each | Buttons, one each | Yes |
+| Question cards | Wizard | Card, paged | Buttons and a modal | Yes |
+| Sub-threads | Yes | Yes | Public threads from a text channel | No |
+| Direct messages | Yes | Yes | Yes | No |
+| Profile linking | From chat, or Slack OAuth | From chat | From chat, or Discord OAuth | Not needed |
 
 Subagents get a timeline of their own on Slack, Lark and Discord. Every channel
 posts a one-line error with a trace id when handling a message fails, and ignores a

@@ -5,3 +5,19 @@
 .md-typeset table:not([class]) {
   font-size: 0.75rem;
 }
+
+.md-typeset .config-home-table table:not([class]) {
+  display: table;
+  width: 100%;
+}
+
+.md-typeset .config-home-table :is(th, td):nth-child(-n + 2) {
+  min-width: 0;
+  width: 1%;
+  white-space: nowrap;
+}
+
+.md-typeset .config-home-table td:nth-child(2) code {
+  white-space: nowrap;
+  word-break: normal;
+}

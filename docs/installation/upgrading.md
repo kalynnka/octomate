@@ -1,6 +1,7 @@
 # Upgrades and backups
 
-Two things upgrade separately, and the CLI keeps them apart on purpose.
+The operator CLI and the server upgrade separately. Choose the command for the
+component you intend to change, and back up the server before upgrading it.
 
 | Command | Upgrades | Leaves alone |
 |---|---|---|
@@ -9,30 +10,35 @@ Two things upgrade separately, and the CLI keeps them apart on purpose.
 
 `octomate upgrade` succeeds only for a `uv tool install octomate-cli` installation.
 Run from the server's own environment it refuses and names the standalone install;
-run through `uvx` it tells you how to refresh that invocation. A compatible server
-release never requires a client upgrade: the transcript stream checks a wire protocol
-version at the handshake, not package versions, and refuses a mismatch with a clear
-line.
+run through `uvx` it tells you how to refresh that invocation. The transcript stream
+checks a wire protocol version at the handshake and reports incompatibility;
+client and server package version numbers do not need to be identical.
 
 ## What to back up
 
 - The database, with a consistent snapshot rather than a file copy. A copied `.db`
   can miss transactions still in the write-ahead log. Use SQLite's backup API:
   `sqlite3 octomate.db ".backup '/backups/octomate-$(date +%F).sqlite3'"`.
-- The config home and `.env`. The `auth` salts and `oauth.encryption_key` are the
+- The config home and secrets, wherever you supply them: YAML, the service
+  environment or an optional `.env`. The `auth` salts and `oauth.encryption_key` are the
   part you cannot regenerate: without the salts every session and API key is
   invalid, and without the key every stored OAuth token is unreadable.
-- Optionally `.octomate/mirrors/`. Mirrors are rebuilt from their upstreams, but a
+- `.octomate/mirrors/`, if you want to retain saved project work. An upstream can
+  rebuild the original project, but a
   thread's saved snapshots live under `refs/octomate/threads/` in the mirror and
   are lost with it.
 
-Workspaces under `.octomate/workspaces/` are caches; every turn's work is in the
-mirror.
+Retain active workspaces too when backing up work in progress. A failed save can
+leave changes only in `.octomate/workspaces/`; those directories are not always
+safe to discard. Quiesce agent work before taking a filesystem snapshot.
 
 ## Migrations
 
-`octomate service serve`, `service start` and `service restart` never migrate. A
-start on a stale schema refuses. Migrations are a deliberate step:
+`octomate service serve`, `service start` and `service restart` never migrate.
+Managed macOS startup checks that the schema is current; a foreground invocation
+does not replace that check. First run the
+[read-only path check](configuration.md#validate-without-starting). After backing
+up and rehearsing an upgrade, migrate deliberately from the installation root:
 
 ```sh
 cd "$OCTOMATE_INSTALL_ROOT"
@@ -70,21 +76,36 @@ backup path and the next command. Nothing is retried or rolled back automaticall
 Every step is appended to `logs/server.log`.
 
 The web console is not part of it. After a server upgrade, rebuild Trunkline from
-the new checkout as in [Server setup](server.md#build-trunkline).
+the new checkout as in [Manual setup](server.md#build-trunkline).
 
-## Linux and Docker
+## Manual installations
 
-By hand, in the same order the managed upgrade takes:
+Stop the server using the supervisor you configured, or stop its foreground
+process. Set the [service context](server.md#set-the-service-context), then take
+a consistent database backup:
 
 ```sh
-systemctl --user stop octomate.service
-sqlite3 "$OCTOMATE_INSTALL_ROOT/octomate.db" ".backup '$OCTOMATE_INSTALL_ROOT/backups/pre-upgrade.sqlite3'"
-git -C "$OCTOMATE_INSTALL_ROOT/app" fetch --tags
-git -C "$OCTOMATE_INSTALL_ROOT/app" checkout --detach 'octomate-vX.Y.Z'
-uv sync --locked --no-dev --project "$OCTOMATE_INSTALL_ROOT/app"
-# rehearse on a copy, then:
-"$OCTOMATE_INSTALL_ROOT/app/.venv/bin/alembic" -c "$OCTOMATE_INSTALL_ROOT/app/octomate/migrations/alembic.ini" upgrade head
-systemctl --user start octomate.service
+mkdir -p "$OCTOMATE_INSTALL_ROOT/backups"
+export OCTOMATE_BACKUP="$OCTOMATE_INSTALL_ROOT/backups/pre-upgrade-$(date +%Y%m%d-%H%M%S).sqlite3"
+sqlite3 "$OCTOMATE_INSTALL_ROOT/octomate.db" ".backup '$OCTOMATE_BACKUP'"
 ```
 
-Docker follows the same shape with `docker compose`; see [Docker](docker.md#upgrading).
+Back up the configuration and working data described above too. Review the target
+release and local changes before checking out its tag:
+
+```sh
+git -C "$OCTOMATE_INSTALL_ROOT/app" fetch --tags
+git -C "$OCTOMATE_INSTALL_ROOT/app" checkout --detach 'octomate-vX.Y.Z'
+uv sync --locked --no-default-groups --project "$OCTOMATE_INSTALL_ROOT/app"
+```
+
+Rehearse migrations on a separate copy of the snapshot, with `OCTOMATE_DB_URL`
+pointing explicitly to that copy. Confirm its path before running Alembic. A
+successful rehearsal reaches the expected revision, reports `ok` from
+`PRAGMA integrity_check`, and no rows from `PRAGMA foreign_key_check`.
+
+After a successful rehearsal, restore the real service context above, run the
+[path check](configuration.md#validate-without-starting) again, and migrate the
+real database using the [migration command above](#migrations). Then
+[rebuild Trunkline](server.md#build-trunkline), restart the server with the same
+account and environment, and repeat the installation's HTTP, sign-in and agent checks.

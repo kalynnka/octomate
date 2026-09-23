@@ -1,127 +1,73 @@
 # MCP proxy
 
-Octomate stands between an agent and the vendor MCP servers its users have
-connected. The operator declares a server once; each user installs it for
-themselves and authorises it with their own account; the agent then reaches it as
-that person. Nothing is shared across users, and the server's own credentials never
-leave the server.
+Connect a service once in Octomate, then use it from your agents. Each person
+chooses which connectors to install and, for OAuth services, signs in with their
+own account.
 
-It is a proxy in a narrow sense. Installed tools are not re-exported as tools of
-their own. An agent discovers a connector with `mcp_list_servers`, loads its tools
-with `mcp_list_tools`, and calls one with `mcp_call_tool`, which forwards the call
-and returns the upstream's result unchanged. Arguments are validated by the
-upstream, not twice. That keeps a per-user tool list out of the prompt prefix,
-where it would fork every cached prompt.
+## Add a connector { #installing-per-user }
 
-## Declaring a connector
+1. Open **MCP** in Trunkline.
+2. Choose one of the configured offerings and select **Install**, or use
+   **Install MCP** to add a service by its MCP URL.
+3. Give the installation a name and a distinct namespace. The namespace is a
+   short label that helps distinguish connections, such as `tracker_work` and
+   `tracker_personal`.
+4. Complete authorisation if requested, then check that the connector is enabled
+   and ready.
 
-Three template types cover any remote server, all under `tentacles:`:
+You can also ask your agent to help:
 
-```yaml
-tentacles:
-  linear:                          # discovered OAuth, no app registration
-    type: oauth_discovery
-    url: https://mcp.linear.app/mcp
-  notion:                          # one operator token for every caller
-    type: bare
-    url: https://mcp.notion.com/mcp
-    token: ntn_...                 # or OCTOMATE__TENTACLES__NOTION__TOKEN
-  github:                          # a registered OAuth application
-    type: oauth
-    url: https://api.githubcopilot.com/mcp/
-    client_id: Iv1...
-    scopes: [repo, read:org, read:user]
-    scope_separator: ","
-    flows:
-      - type: device
-        device_authorization_endpoint: https://github.com/login/device/code
-        token_endpoint: https://github.com/login/oauth/access_token
-      - type: authorization_code
-        authorization_endpoint: https://github.com/login/oauth/authorize
-        token_endpoint: https://github.com/login/oauth/access_token
-        token_endpoint_auth_method: client_secret_post
-```
+> Show me the available connectors and help me connect my project tracker.
 
-| Type | Credential | Needs |
-|---|---|---|
-| `bare` | The deployment's own token, or none. Every caller is the deployment. | Nothing, or `oauth.encryption_key` when a token is set |
-| `oauth_discovery` | Each user's grant, obtained by discovering the server's OAuth metadata and registering a client dynamically, or through a hosted client metadata document | `oauth.encryption_key`, `oauth.callback_base_uri` |
-| `oauth` | Each user's grant, through an application you registered with the provider | `oauth.encryption_key`; `callback_base_uri` too for an authorization-code flow |
+If the service requires setup by the server operator, send them the
+[Tentacles connector guide](../../tentacles/mcp.md). A connector being listed as
+available does not mean it is already connected to your account.
 
-`octomate mcp preset github --client-id <id>` writes the GitHub block above into
-the config home for you, with GitHub's endpoints and scopes filled in. Put the
-client secret in `OCTOMATE__TENTACLES__GITHUB__CLIENT_SECRET`. The `oauth` type's
-`flows` lists what the provider supports; the first is the default, and a
-`client_secret` must match the token endpoint's authentication method.
+## Sign in and grant access { #authorising }
 
-Slack is the fourth: its [channel tentacle](../channels/slack.md#mcp-tools-acting-as-
-the-person)
-is also a connector when `mcp: true`.
+Follow the authorisation prompt in Trunkline or the private link sent through your
+channel. Some services ask you to enter a device code; others open a consent page.
+Check which account you are signing in with and the access being requested.
 
-A URL must be HTTPS and resolve to a public address; a redirect is refused, so
-declare the final endpoint. The one exception is a `bare` server, which accepts a
-plain URL for a server on your own network.
+Complete that step in the provider's page, then return to Octomate and check the
+connection. Installing a connector alone does not finish authorisation. Keep
+passwords and tokens out of the chat; use the connection form or provider's
+sign-in page.
 
-## Installing, per user
+Linking your channel profile to Octomate is a separate step. If you want a
+connector you installed in Trunkline to be available while chatting elsewhere,
+[link that channel profile](../../installation/accounts.md#link-your-channel-profiles).
 
-Declaring a connector makes it an **offering**. Each user installs it, from
-Trunkline's MCP panel, from a chat by asking the agent, or over the account API:
+## Use it from an agent
 
-```
-mcp_list_tentacles                     what is on offer
-mcp_install name namespace url         install one; tentacle_id for an offering
-mcp_list_servers                       what I have, enabled or not, authorised or not
-mcp_enable / mcp_disable / mcp_uninstall
-```
+Start with a read-only request to check access:
 
-An installation has a **namespace** you choose, stored as `personal/<name>`, which
-is what the tool calls name. A remote server can also be installed by URL without
-an offering, either unauthenticated or with discovered OAuth. Personal bearer
-tokens are entered through the authenticated HTTP API, never as a tool argument.
+> Use my work tracker connection to list the tasks assigned to me.
 
-Installing enables the connector. It does not authorise it.
+Name the connection when you have more than one for the same service. Then ask for
+changes as needed, being clear about which account or workspace to use.
 
-## Authorising
+These connectors are available to Inkling, driven Claude Code and Codex, and
+native agents connected through [Octomate MCP](octomate.md). Driven DeepSeek
+Harness cannot use them yet.
 
-For an OAuth connector the user connects once:
+OAuth connections use the account you authorised. Some offerings instead use a
+credential supplied by the server operator; those act as that shared service
+account. Check with the operator if the account identity matters for your task.
 
-- **Device flow**: `oauth_connect` sends the code and link to the user's direct
-  messages; `oauth_confirm` polls until the provider approves.
-- **Authorization code**: `oauth_connect` sends a start link to the user's DMs; the
-  browser round-trips through `<callback_base_uri>/oauth/<tentacle>/callback`, and
-  the landing page says "Connected" and nothing else. `oauth_confirm` then reports
-  it active.
+## Pause or remove a connection
 
-Links go to a private surface, never to the group, and are never returned to the
-model. A pending device authorisation is resumed rather than restarted. Stored
-grants are encrypted with `oauth.encryption_key`, refreshed shortly before expiry,
-and retired to "invalid" when the provider rejects a refresh, at which point the
-user reconnects. One registered application can authorise several installed
-servers. Disconnecting revokes nothing at the provider.
+Use the connector controls in Trunkline's **MCP** panel to disable it temporarily,
+enable it again or remove it. Disabling keeps the installation for later; removing
+it means you will need to install it again to use it.
 
-`oauth_link_profile` is a different flow with the same delivery: it links the
-channel profile driving the turn to an Octomate account. See
-[Accounts and tokens](../../installation/accounts.md#link-your-channel-profiles).
+Removing or disconnecting a service in Octomate does not revoke the grant at the
+provider. Use the provider's connected-app settings when you also want to revoke
+that access.
 
-## Connections and the pool
+## If a service is unavailable
 
-Upstream clients are cached per user and per installation, closed after
-`mcp_pool.idle_timeout` seconds without a call (an hour), and closed immediately on
-disable or uninstall. Every request refuses to follow a redirect and refuses a
-private or link-local address, so an installed credential can never be sent
-somewhere other than the endpoint it was installed for.
-
-```yaml
-mcp_pool:
-  idle_timeout: 3600
-```
-
-## Where the tools show up
-
-- **Inkling** mounts the connector tools in process, deferred so the person's list
-  never touches the prompt prefix, and the server's instructions tell it to check
-  them before saying a tool does not exist.
-- **Driven Claude Code and Codex** reach them through the Octomate MCP server they
-  are given.
-- **Native sessions** reach them through their installed `octomate` MCP entry.
-- **Driven dsh** has no path to them yet.
+Open **MCP** and check whether the connector is disabled or awaiting authorisation.
+Reconnect if its authorisation is no longer valid, then retry a simple read-only
+request. If it is ready but the agent cannot find it, confirm that the conversation
+belongs to the same linked account and uses one of the supported agents above.

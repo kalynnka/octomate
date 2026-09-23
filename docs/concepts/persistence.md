@@ -39,6 +39,21 @@ operations and connections; todos per conversation; projects; spilled tool
 outputs. Runs are polymorphic on `kind`, so a native turn replayed from a
 transcript carries its byte range and last line alongside a driven run's fields.
 
+### Rooms, threads and the ledger
+
+A room and a task thread share the `Thread` model. A room message can open a
+sub-thread with recent room messages as a recap; the agent's context belongs to
+that sub-thread. An active agent is pinned by a handoff, with append-only records
+of who took over and why. Group room roots remain unowned so one exchange cannot
+capture all future group messages.
+
+The chat ledger holds visible messages. Agent conversations hold their separate
+model context and run transcripts. History search and handoff briefs use the
+ledger rather than copying another agent's private transcript. Message handles
+such as `#msg:<platform id>` let tools page around a search hit or cite a message.
+History visibility comes from participation by the user's linked profiles, not
+from platform group membership.
+
 ## Migrations
 
 Every schema change is an Alembic revision produced by

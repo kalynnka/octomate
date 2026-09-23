@@ -1,32 +1,62 @@
 # Installation
 
+Start with **one agent and Trunkline**, the web console. Get a native session into
+history and a driven reply back from the console, then add your chat platforms and
+MCP connectors.
+
+[Copy the agent setup brief](quickstart.md#agent-tldr){ .md-button .md-button--primary }
+[Deploy on macOS yourself](macos.md){ .md-button }
+
+## What you install
+
 An installation has two halves.
 
 - The **server** runs Octomate: the database, the channel connections, the agents it
-  drives, and the web console. One per deployment. The `octomate` package.
+  drives, and the web console. One per deployment. The `octomate` package, best
+  installed from a release checkout.
 - The **client** lives wherever you run a coding agent yourself. It forwards that
   session's hooks and transcript to the server and gives the agent Octomate's tools
-  over MCP. One per machine. The `octomate-cli` package, which installs alone.
+  over MCP. One per machine.
+
+Both halves use the same command. `octomate-cli` is one package with two jobs: on
+the server host it is the operator tool that prepares, starts and upgrades the
+service; on an agent's machine it is the client that installs hooks and the MCP
+entry. It is installed once per machine, as a standalone uv tool.
 
 They can share one computer. A laptop can also send to a server elsewhere, but the
 transcript tail stays on the laptop, because that is where the transcript files are.
 
-[Requirements](requirements.md) lists what the server host needs.
-[Quick start](quickstart.md) is the short version of the whole tab; the
-[brief for your agent](agent-setup.md) is the same thing written for an assistant to
-carry out.
+Start with the [server quick start](quickstart.md), then the
+[client quick start](clients/quickstart.md). The [Agent TL;DR](quickstart.md#agent-tldr)
+that opens the quick start is both halves, written for an assistant to carry out.
 
 ## Choose a server path
 
-| Host | Setup | Supervision | Where it stops today |
-|---|---|---|---|
-| macOS | `octomate service init --prepare` | A GUI LaunchAgent the CLI manages: `service start`, `stop`, `status`, `logs`, `verify`, `upgrade` | Activation is a manual copy of the generated plist. The service runs only while that desktop account is logged in. |
-| Linux | Source checkout, explicit config | A systemd user unit you write from the recipe | No CLI service installer and no managed upgrade. |
-| Windows | WSL 2 | The Linux recipe inside WSL | No native Windows service, and no native transcript tail: the client must run in WSL too. |
-| Docker | `docker compose up -d` | Docker's restart policy | Driven agents need their harness logins inside the container. |
+Read the [requirements](requirements.md), then choose:
 
-The `service` commands other than `serve`, `invite` and `user` require macOS. On
-every platform, `octomate service serve` runs the server in the foreground.
+- **[macOS](macos.md):** prepare with the CLI wizard and run under your desktop
+  account as a GUI LaunchAgent.
+- **[Manual setup](server.md):** prepare a source checkout, configure it with the
+  generator or YAML templates, and run the server in the foreground.
+
+!!! info "Deployment support"
+    **macOS is the only deployment flow tested end to end.** Manual setup
+    describes the shared installation steps; supervision on other hosts is up to
+    you. The interactive wizard and managed service commands require macOS.
+
+## Follow the setup in order
+
+1. Prepare the server with [Quickstart](quickstart.md), [macOS](macos.md) or
+   [Manual setup](server.md).
+2. Review the [config home](configuration.md), [server settings](settings.md) and
+   [tentacle registry](tentacles.md), in that order.
+3. [Create your account and issue a client token](accounts.md).
+4. [Connect your native agent](clients/quickstart.md) with hooks and MCP.
+5. Add an [external channel](../usage/channels/index.md),
+   [project](projects.md) or [MCP connector](../tentacles/mcp.md) when
+   you need it. Use [Tailscale or another private connection](networking.md#tailscale)
+   for access from other devices. Public internet exposure is not recommended,
+   even with Octomate's built-in login enabled.
 
 ## Installation is complete when
 

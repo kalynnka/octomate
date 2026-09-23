@@ -29,6 +29,11 @@ Sign-in needs an `auth:` block. The console API is at `/api/trunkline`, cookie
 authenticated, with `X-Octomate-Request: 1` on writes, so the console and the API
 must share an origin.
 
+Name agents you have already enabled, check the configuration and restart Octomate
+after the build below. [Create your account](../../installation/accounts.md),
+sign in and start a conversation to verify a reply. The
+[macOS walkthrough](../../installation/macos.md) includes this setup end to end.
+
 ## Build or develop
 
 ```sh

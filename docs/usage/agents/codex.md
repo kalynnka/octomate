@@ -3,6 +3,13 @@
 `type: codex` drives Codex through the openai-codex SDK's app-server, one warm
 process per conversation, and records the Codex sessions you run yourself.
 
+## Enable
+
+Run Codex once as the server account and complete its login. Add the block below
+to `tentacles.yaml`, bind `codex` in a channel's `agents` list, and
+[check and restart Octomate](../../tentacles/index.md#enable-a-tentacle).
+For your own native sessions, follow [Codex client setup](../../installation/clients/codex.md).
+
 ```yaml
 tentacles:
   codex:

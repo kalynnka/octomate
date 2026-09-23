@@ -1,53 +1,51 @@
 # History
 
-An agent answering you can read every thread you have spoken in: this one, your
-direct messages elsewhere, the group a hand-off came from, a terminal session you
-ran last week, on any of your linked accounts. Messages that did not wake the agent
-are there too. The scope is the person, not the thread.
+Ask an agent to find something you discussed earlier, whether it happened in this
+channel, another linked channel or one of your collected native sessions.
 
-## Tools
+> Find our discussion about the launch checklist and remind me what we decided.
 
-| Inkling | Over MCP | Purpose |
-|---|---|---|
-| `search_thread_history` | `history_search` | Find messages matching every term, best match first |
-| `read_thread_history_before` | `history_read_before` | The messages just before a given one, oldest first |
-| `read_thread_history_after` | `history_read_after` | The messages just after |
+## Find an earlier conversation
 
-A search takes a query, an optional actor kind (`human`, `agent`, `bot` or
-`system`) and a limit, ten by default. The paging tools take a message's row id or
-its `#msg:<id>` handle, as a hit or a brief shows it. Over MCP each line is clipped
-at 400 characters and a page over 50 is refused rather than clamped, since those
-runtimes have no spill store to catch an oversized return.
+Give the agent a few distinctive words from the topic. Ask it to read the
+surrounding messages before summarising a decision, so a search hit is not mistaken
+for the final answer.
 
-Search is discovery, not replay: it returns a handful of hits, and paging around one
-is how the agent reads the context it needs.
+> Search for “release checklist”, then read the messages around the result. What
+> was still unfinished?
 
-## What is searchable
+You can also open the thread in Trunkline to read it yourself. If a result includes
+a message reference, reuse that reference when asking the agent to look more
+closely at the conversation.
 
-Only the visible text of the chat ledger: what people, bots and agents said, taken
-from text and markdown segments. Tool arguments, thinking, attachments and the
-model transcripts are outside the index. The search is English, lexical:
+## Bring history across channels
 
-- Porter stemming folds related word forms, so "correcting settings" finds "We
-  corrected the authentication setting".
-- Every whitespace-separated term must match. Operators and quotes in a query are
-  literal text.
-- Ranking is BM25, ties broken newest first.
-- No substring match, no other languages, no semantic search.
+[Link your channel profiles](../installation/accounts.md#link-your-channel-profiles)
+to the same account. Your agents can then search conversations you participated
+in through those profiles. Native sessions join that history when their client
+is connected to your account.
 
-## Visibility
+Without linking, a channel identity has access only to the history associated with
+that identity. If the agent cannot find a conversation from elsewhere, check the
+profile link and whether the session appears in Trunkline.
 
-A thread is readable because one of the asker's linked profiles has spoken in it.
-That includes everything other people said in a shared thread, and excludes a
-thread the person never spoke in, however much they could see it on the platform.
-Octomate does not track channel membership. A visitor, an unlinked profile, has one
-account's worth of history and can be followed nowhere.
+## What you can find { #what-is-searchable }
 
-The scope is applied inside the search itself, before ranking and limits, so a
-result never leaks and gets filtered afterwards.
+Search covers visible message text: your prompts and the replies in recorded
+conversations. It does not search inside attachments, tool arguments or the
+agent's private reasoning.
 
-## Under the hood
+Use short, distinctive English terms. Every term must match, so adding words can
+make a search too narrow. Try fewer words or terms you remember using if nothing
+appears. Search does not understand meaning in the way a model does; it will not
+reliably find a conversation from a vague description or a phrase in another
+language.
 
-The index is a SQLite FTS5 table maintained by triggers on the ledger, in the
-ledger's own transaction, and rebuilt from the ledger rows if dropped. Migrations
-own it. See [Persistence](../concepts/persistence.md).
+## Which conversations are available { #visibility }
+
+An agent answering you can read recorded threads where one of your linked
+profiles has spoken. That includes other participants' messages in those threads.
+It does not include every conversation in a group merely because you are a member.
+
+If important context is missing, provide it in the current conversation rather
+than assuming the agent has seen it.

@@ -1,5 +1,8 @@
 # Codex
 
+Configure the server URL and your API token first with the
+[client quick start](quickstart.md), then install the two integrations:
+
 ```sh
 octomate codex hooks install
 octomate codex mcp install

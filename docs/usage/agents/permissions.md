@@ -1,27 +1,39 @@
-# Permissions and approvals
+# Permission modes
 
-## Permission modes
+Choose how much an agent may do without asking you. Start with its default mode
+and change it when the task calls for a different level of control.
 
-Each runtime has its own approval posture, handed over on its own terms:
+## Change a conversation's mode
 
-| Agent | Modes | Default |
+Open the conversation in Trunkline and use its permission control to choose from
+the modes that agent offers. The choice applies to that conversation's subsequent
+work. To approve just one pending action, answer its card instead of changing the
+whole conversation's mode.
+
+For a native session, use the permission controls in your agent's own interface.
+Octomate records that session; it does not change its local mode for you.
+
+## Choose a mode { #permission-modes }
+
+| Agent | Starting choice | Other choices to recognise |
 |---|---|---|
-| Claude Code | `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto`, the SDK's own scale | `default` |
-| Codex | `user_review` (ask), `auto_review` (approve for me), `full_access` | `user_review` |
-| DeepSeek Harness | Whatever presets the harness reports, `workspace-write` and `danger-full-access` out of the box | `workspace-write` |
-| Inkling | `default`, `dontAsk`, `bypassPermissions` | `default` |
+| Claude Code | `default` | `plan` for planning, `acceptEdits` for automatically allowing edits, and other modes offered by Claude Code |
+| Codex | `user_review` | `auto_review` delegates approval decisions; `full_access` removes the usual sandbox and approval prompts |
+| DeepSeek Harness | `workspace-write` | The presets supplied by your harness, including `danger-full-access` |
+| Inkling | `default` | `dontAsk` makes assumptions and denies tools needing approval; `bypassPermissions` allows those tools without asking |
 
-The block's `permission_mode` is the fallback for a conversation that carries no
-posture of its own. Trunkline can switch a conversation's posture, and the
-conversation keeps it from then on. Octomate adds no sandbox of its own: what a run
-may touch inside its [workspace](../workspaces.md) is the runtime's rule.
+A mode that skips questions does not necessarily grant more access. Inkling's
+`dontAsk`, for example, can leave a task incomplete because a required action was
+denied. Read the agent's report for assumptions and skipped work.
 
-## Approvals and questions
+## Decide how much freedom the task needs
 
-When a tool needs permission, or the agent asks the user something, the run raises
-an **action** and the channel shows a card. Every runtime reaches the same cards
-through its own mechanism, and the answer flows back the same way. A card that
-nobody answers expires after `approval_timeout`, one hour by default, and the pending
-tool is denied so the run can finish. "Allow for session" grants are persisted on
-the conversation and honoured on later turns. [Approvals and questions](../actions.md)
-has the details, including which runtimes survive a restart mid-question.
+Keep review enabled when you want to check actions as they arise. An agent may
+still use tools already allowed by its mode without showing a card. Choose a
+broader mode only when you intend to grant that freedom for the conversation;
+permission names do not mean exactly the same thing across agents.
+
+Use **Allow for session**, when offered, to avoid repeated requests for a
+particular tool without changing the entire mode. See
+[Approvals and questions](../actions.md) for answering cards and handling expired
+requests.

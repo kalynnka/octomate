@@ -34,6 +34,9 @@ OCTOMATE__TENTACLES__LARK__APP_SECRET=...
 ```
 
 Two apps are two keys with `type: lark`, and two separate sets of threads.
+Name agents you have already enabled, set `enabled: true` if this channel was
+generated disabled, then check the configuration and restart Octomate. Open a
+one-to-one chat with the bot or mention it in a group and verify a reply.
 
 ## Where things land
 

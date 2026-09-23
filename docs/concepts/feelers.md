@@ -30,7 +30,7 @@ Every channel instance carries one of each:
 A channel gets working defaults for all six out of its ink and chromo: a timeline
 that accumulates and sends one message at the end, plain-text approval and question
 cards, a plain-text OAuth message. Slack, Lark and Discord replace nearly all of
-them; QQ replaces two.
+them.
 
 The OAuth feeler's `present` is concrete on the base class and resolves the private
 address itself, redirecting a request made on a shared surface to the person's DM

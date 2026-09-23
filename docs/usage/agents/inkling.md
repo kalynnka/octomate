@@ -5,6 +5,14 @@ Inkling is the agent Octomate runs itself: an in-process
 fallback for any model Pydantic AI supports, and the chat-side generalist when the
 work does not need a coding harness.
 
+## Enable
+
+Choose a model supported by your provider and add it under `models` in the block
+below. Supply its [provider credentials](#providers), bind `inkling` in a channel's
+`agents` list, and [check and restart Octomate](../../tentacles/index.md#enable-a-tentacle).
+No separate harness or native hooks are needed; verify it by sending a message
+through the channel.
+
 ```yaml
 tentacles:
   inkling:
@@ -30,8 +38,9 @@ a route on any channel that binds the agent. `settings` is a per-model Pydantic 
 A model name is `<provider>:<model>`, with providers `openai`, `openai-chat`,
 `deepseek`, `google`, `google-cloud`, `anthropic` and `bedrock`. Each resolves
 through `providers.yaml`, and an omitted block falls back to the provider's own
-environment variables, `ANTHROPIC_API_KEY` and the like. Prefer
-`OCTOMATE__PROVIDERS__<NAME>__API_KEY` in `.env` over a key in the home.
+environment variables, `ANTHROPIC_API_KEY` and the like. Supply keys in the YAML
+provider block or `OCTOMATE__PROVIDERS__<NAME>__API_KEY` environment variables;
+`.env` is optional.
 
 ```yaml
 providers:

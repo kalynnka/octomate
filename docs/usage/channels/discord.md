@@ -34,6 +34,10 @@ tentacles:
 OCTOMATE__TENTACLES__DISCORD__BOT_TOKEN=...
 ```
 
+Name agents you have already enabled, set `enabled: true` if this channel was
+generated disabled, then check the configuration and restart Octomate. Mention
+the bot in a server text channel and verify that it replies in a new thread.
+
 ## Where things land
 
 | Discord surface | In Octomate | The reply |

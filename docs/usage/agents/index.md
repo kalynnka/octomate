@@ -4,6 +4,23 @@ Every agent tentacle answers the same calls from Octomate: run a turn for a
 conversation, stream what happens, raise approvals and questions, and say which
 models it offers. What differs is the runtime behind it.
 
+## Enable an agent
+
+Choose [Claude Code](claude-code.md), [Codex](codex.md) or the experimental
+[DeepSeek Harness](deepseek.md) to reuse an existing runtime. Use
+[Inkling](inkling.md) as the backup when you want a model through Pydantic AI.
+For a harness agent, install and authenticate the runtime as the account running
+the server. For Inkling, supply provider credentials and at least one model.
+
+Add the agent to `tentacles.yaml`, then include its id in a channel's `agents`
+list. Set `enabled: true` if its block is disabled, check the configuration and
+restart Octomate. Send a request through that channel to verify the agent replies.
+The [Tentacles guide](../../tentacles/index.md#enable-a-tentacle) walks through
+the shared steps. To collect sessions from your own app, editor or terminal,
+also follow the [client setup](../../installation/clients/quickstart.md).
+
+## Configuration
+
 ```yaml
 tentacles:
   claude:
@@ -56,6 +73,6 @@ harness's own settings, including the model a resumed session had chosen. Inklin
 default is the first entry in its `models` list. A channel exposes every model of
 every agent it binds; the entry agent's default is what answers a new conversation.
 
-[Permissions and approvals](permissions.md) covers the posture each runtime takes
-and how a card reaches you. [Driven and native sessions](sessions.md) covers what a
-run from a channel switches off, and how a session from your own terminal arrives.
+[Permission modes](permissions.md) helps you choose how much an agent may do
+without asking. [Start a conversation](sessions.md) covers using a channel or
+continuing in your agent's own app, editor or terminal.

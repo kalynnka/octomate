@@ -2,13 +2,13 @@
 
 Octomate is a **relay**. On one side, the harnesses people already run: Claude
 Code, Codex, DeepSeek Harness, and its own in-process Inkling. On the other, the
-places they already talk: Slack, Lark, Discord, QQ, the console. In the middle, one
+places they already talk: Slack, Lark, Discord, the console. In the middle, one
 record of every conversation, one graph that decides where a message goes, and one
 set of tools every agent gets. Trunkline's status bar calls the server the relay for
 the same reason.
 
 ```text
-  Slack / Lark / Discord / QQ / Trunkline      a session you run yourself
+  Slack / Lark / Discord / Trunkline           a session you run yourself
                  |                                      |
                  v                                      v
          ChannelTentacle                     hook router + transcript tail
@@ -68,7 +68,7 @@ representations. [Persistence](persistence.md).
 The word appears in a few places with a few meanings, worth separating:
 
 - The **MCP proxy**: Octomate forwards tool calls to the servers a user installed,
-  as that user, without re-exporting their tools. [MCP proxy](../usage/mcp/proxy.md).
+  as that user, without re-exporting their tools. [MCP design](mcp.md).
 - A **run proxied to a channel**: a harness's native event stream translated into
   Octomate's event vocabulary and drawn by feelers. That is the adapter layer inside
   each agent tentacle.

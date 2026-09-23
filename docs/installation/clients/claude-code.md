@@ -1,5 +1,9 @@
 # Claude Code
 
+Configure the server URL and your API token first with the
+[client quick start](quickstart.md). Run these commands from the project where
+you want Octomate's MCP tools; the MCP default is local to that directory:
+
 ```sh
 octomate claude hooks install
 octomate claude mcp install

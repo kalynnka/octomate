@@ -1,72 +1,59 @@
 # Octomate MCP
 
-Octomate serves one MCP server, at `/octomate/mcp`, that offers every agent the same
-three things: the routing spells, history search, and the person's own installed
-MCP connectors. It is how a native Claude Code session in your terminal reaches the
-same tools a driven run has.
+Octomate MCP lets your own agent use your shared history, reach connected channels
+and work with the services you have added to Octomate. Once connected, ask for
+these things in the same conversation where you normally work.
 
-## Who is speaking
+## Connect your agent
 
-The endpoint is streamable HTTP, stateless, and gated by an API token with the
-`mcp` scope. The token says which **user**; a header says which **runtime**, and
-both are written by configuration, never by the model:
+Follow the [client quickstart](../../installation/clients/quickstart.md) for your
+agent, including its MCP setup, then restart the agent to load the connection.
+The connection uses your Octomate account.
 
-| Header | Set by | Meaning |
-|---|---|---|
-| `X-Octomate-Client: claude-native`, `codex-native`, `deepseek-native` | `octomate <runtime> mcp install` | A native session speaking for the token's user |
-| `X-Octomate-Conversation: <id>` | A driven Codex launch | A driven turn, answered only while that run is in flight and only for the bearer that kicked it |
+Try a simple request:
 
-A call with neither header is refused, with a sentence saying why. A deployment
-with no registered user answers 401 to everything.
+> Check Octomate and tell me which agents and destinations are available to me.
 
-How each runtime gets there:
+If Octomate's tools do not appear, revisit the MCP setup for that client. Session
+collection and the MCP connection are separate; seeing a transcript in Trunkline
+does not by itself mean the agent can use Octomate's tools.
 
-| Runtime | Connection | Tool names |
-|---|---|---|
-| Native Claude Code, Codex, dsh | HTTP, from the client's static entry | `mcp__octomate__<tool>`, or `mcp__octomate` for Codex |
-| Driven Claude Code | The same server built in process for the turn | `mcp__octomate__<tool>` |
-| Driven Codex | HTTP as server `octomate_driven`, with a temporary per-conversation token | `mcp__octomate_driven` |
-| Inkling | The connector tools in process; routing and history are its own capabilities | Bare names |
-| Driven dsh | Nothing yet | |
+## Find previous work
 
-Native installation is covered in [Hooks and MCP](../../installation/clients/index.md).
+> Find our earlier discussion about the launch plan and read the decisions before
+> updating this draft.
 
-## The tools
+[History](../history.md) explains what the agent can search and how linking your
+profiles makes conversations from other channels available.
 
-Listed in the order the server offers them.
+## Continue through a channel
 
-**Gateway.** `gateway_scry`, `gateway_summon`, `gateway_teleport`, `gateway_scheme`,
-`gateway_send`, `gateway_dispel`. What each does, and what a native session may
-not do, is on [Moving a conversation](../gateway.md). Over MCP `send` delivers
-inside the call, since there is no run stream to ride, and `teleport` answers with a
-fixed sentence because the runtime cannot be suspended the way Inkling can.
+> Hand this task to an available agent in my connected channel. Include the plan,
+> what is finished, and what still needs checking.
 
-**History.** `history_search`, `history_read_before`, `history_read_after`. See
-[History](../history.md). Each requires the session to speak for a registered
-user.
+The receiving agent can continue from the brief. Your local agent keeps running
+where it is, and local files are not transferred. See
+[Moving a conversation](../gateway.md#from-a-native-session) for the available
+ways to continue elsewhere.
 
-**Connectors.** `mcp_list_tentacles` lists what the operator configured;
-`mcp_list_servers` lists what this user installed, with enabled and authorisation
-state; `mcp_install`, `mcp_enable`, `mcp_disable`, `mcp_uninstall` manage them by
-id; `mcp_list_tools` loads one connector's tool schemas and instructions;
-`mcp_call_tool` calls one as the user. Management needs a registered user.
+## Use connected services
 
-**Authorisation.** `oauth_connect` sends the user a private authorisation link or
-device code for a connector; `oauth_confirm` checks, polling where the provider
-requires it; `oauth_link_profile` sends the current channel user a private link to
-attach this profile to an account. None of them returns a link to the model.
+> Which services have I connected? Check whether the project tracker is ready,
+> then use it to list my open tasks.
 
-The server's instructions, sent with the tool list, tell the model when to route,
-how to search history, and to check the installed connectors before concluding a
-tool does not exist. The tool descriptions themselves are the same docstrings
-Inkling's capabilities compile, so no two runtimes read a different contract.
+[Install and authorise an MCP connector](proxy.md) first. Your agent can discover
+its tools and use them on your behalf. Give a clear request about what to read or
+change, just as you would for any other tool.
 
-## Tokens
+## When you work through a channel
 
-A native client's token is one you issued and saved with `octomate configure`;
-rotating it means reinstalling the MCP entry, which embeds it. A driven Codex run
-gets a key minted for the asking user, scoped to `mcp`, expiring after
-`auth.runtime_api_key_lifetime` (a day) and revoked when the process closes. The
-user's plaintext never touches the model or the launch config; the header names
-the conversation and the token lives in an environment variable the launch config
-references.
+Driven Claude Code and Codex sessions receive Octomate's tools automatically;
+Inkling has the same capabilities built in. You do not install a separate client
+entry for those runs. Driven DeepSeek Harness does not yet have these tools.
+
+## If your connection stops working
+
+Check that the server is reachable and your client token is still valid. After
+rotating a token, update the client configuration and reinstall its MCP entry,
+then restart the agent. The [client guide](../../installation/clients/quickstart.md)
+contains the commands.

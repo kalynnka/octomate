@@ -9,6 +9,15 @@ over its `/api` gateway, HTTP for calls and a multiplexed WebSocket for events.
 Octomate always starts and owns its own `dsh web` child; it never attaches to a
 running one.
 
+## Enable
+
+Install `dsh` and configure its models and credentials as the server account.
+Add the block below to `tentacles.yaml`, set `executable` if `dsh` is not on the
+service's `PATH`, and bind `deepseek` in a channel's `agents` list.
+[Check and restart Octomate](../../tentacles/index.md#enable-a-tentacle), then
+verify a reply. For native collection, follow
+[DeepSeek Harness client setup](../../installation/clients/deepseek.md).
+
 ```yaml
 tentacles:
   deepseek:

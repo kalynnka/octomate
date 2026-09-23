@@ -6,13 +6,14 @@ is the contract for anyone, person or agent, who changes it.
 
 ## The shape
 
-Six tabs, each answering one kind of question. A fact belongs in exactly one of
+Seven tabs, each answering one kind of question. A fact belongs in exactly one of
 them; the others link to it.
 
 | Tab | Question it answers | Written for |
 |---|---|---|
 | **Installation** | How do I get a server running and my agent connected? | An operator, or their assistant, doing it once |
-| **Usage** | What can I do with it, per tentacle and across them? | Someone who has it running |
+| **Tentacles** | Which integrations are available, and how do I enable them? | Someone connecting agents, channels and tools |
+| **Usage** | How do I work across the connections I enabled? | Someone who has it running |
 | **Concepts** | Why is it built this way? | A developer about to read the code |
 | **Contributing** | How do I change it? | A developer about to write code |
 | **API Reference** | What exactly is this symbol? | Generated from docstrings; never hand-written |
@@ -23,15 +24,18 @@ substance sits in the sections beneath it, which are what the sidebar shows:
 
 | Tab | Sections |
 |---|---|
-| Installation | Getting started · Server · Configuration · Clients · Operations |
-| Usage | Agents · Channels · Conversations · Projects and workspaces · MCP |
+| Installation | Server · Configuration · Client · Operations |
+| Tentacles | Agents · Channels · MCP connectors |
+| Usage | Sessions and permissions · Conversations · Projects and workspaces · MCP |
 | Concepts | Design · Storage |
 | Contributing | Development · Extending Octomate · Project workflow |
 | API Reference | Server · Client and protocol |
 
-Within Usage the tentacles come first: one page per agent under `usage/agents/` and
-one per channel under `usage/channels/`, each family with an overview for what its
-members share, Inkling last. A page that belongs to no section, such as Accounts and
+The Tentacles tab owns the integration catalog and enablement guides. Existing
+agent and channel pages retain their paths under `usage/agents/` and
+`usage/channels/` so their URLs stay stable. Each family has an overview, with
+Inkling last among agents. Shared session and permission guides stay in Usage.
+A page that belongs to no section, such as Accounts and
 tokens or Vocabulary, sits between sections at the top level. A new page joins an
 existing section. A new section is a structural change: propose it before writing
 it, and add its row here.
@@ -45,6 +49,10 @@ Page templates, so pages of one kind stay parallel:
   Native sessions · Not yet. Its row goes in the tables on the agents overview.
 - **An installation page**: the steps in the order they are run, what each writes,
   and how to verify. Commands in fenced blocks with the working directory stated.
+- **A usage page**: what the user wants to do, the steps or an example request,
+  what to expect, and practical limits. Configuration belongs in Installation or
+  Tentacles; storage, transport and runtime design belong in Concepts; tool
+  signatures belong in the API Reference.
 
 ## Where a change lands
 

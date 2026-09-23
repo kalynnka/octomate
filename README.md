@@ -9,7 +9,7 @@ Three things, in that order:
 - **Collect.** Claude Code, Codex, DeepSeek Harness, or a run you drove from chat —
   every turn lands in one record, including the sessions you start yourself in your own
   terminal or app.
-- **Spread.** The same thread reaches Slack, Lark, Discord, the web console and QQ,
+- **Spread.** The same thread reaches Slack, Lark, Discord and the web console,
   rendered natively on each. You go on working where you already work.
 - **Offer.** That history, and the tools built on it, are available from any of those
   surfaces — searchable mid-run, resumable later, handed to a different agent when the
@@ -18,8 +18,8 @@ Three things, in that order:
 > ⚠️ **Early development** — APIs and architecture are subject to change.
 
 **Documentation: [kalynnka.github.io/octomate](https://kalynnka.github.io/octomate/)** —
-installation for macOS, Linux, Windows and Docker, a brief you can hand to your own
-agent, one page per tentacle, and the concepts behind the design.
+installation and an agent setup brief, a [Tentacles catalog](https://kalynnka.github.io/octomate/tentacles/)
+with enablement guides, and the concepts behind the design.
 
 ---
 
@@ -57,7 +57,6 @@ surface.
 | **Lark / Feishu** | lark-oapi, WebSocket long connection | ready |
 | **Discord** | discord.py, Gateway WebSocket | ready |
 | **Trunkline** | the web console, over `/api/trunkline` | 🚧 preview |
-| **QQ (NapCat)** | NapCat, OneBot WebSocket | 🚧 unverified |
 
 Every one of these dials out, so none of them needs an inbound port. A port is only
 needed for what you point at Octomate yourself: the native-session hook routers, the
@@ -141,7 +140,7 @@ in memory.
 ## How it works
 
 ```
-  Slack / Lark / Discord / QQ / Trunkline    a session you run yourself
+  Slack / Lark / Discord / Trunkline         a session you run yourself
              |                                       |
              v                                       v
       ChannelTentacle                      hook router + transcript tail
@@ -178,17 +177,28 @@ database, the channels and the driven agents. The **client** (`octomate-cli`) li
 every machine where you run a coding agent and forwards its sessions.
 
 ```bash
+# the server, on macOS: an isolated install and a LaunchAgent the CLI manages
 uv tool install octomate-cli
-octomate service init --prepare        # macOS: an isolated install and a LaunchAgent draft
+octomate service init --prepare
+```
+
+```bash
+# the client, wherever a coding agent runs
+uv tool install octomate-cli
 octomate configure --url https://octomate.example.com --token '<api-token>'
 octomate claude hooks install && octomate claude mcp install
 ```
 
-The docs cover [macOS](https://kalynnka.github.io/octomate/installation/macos/),
+Both halves are one package: `octomate-cli` is the operator tool on the server host
+and the client everywhere else. macOS is the route that runs in production; the
 [Linux](https://kalynnka.github.io/octomate/installation/linux/),
 [Windows](https://kalynnka.github.io/octomate/installation/windows/) and
-[Docker](https://kalynnka.github.io/octomate/installation/docker/), and there is a
-[brief](https://kalynnka.github.io/octomate/installation/agent-setup/) you can hand to
+[Docker](https://kalynnka.github.io/octomate/installation/docker/) recipes are
+derived from it and not yet validated, and say so. The
+[server](https://kalynnka.github.io/octomate/installation/quickstart/) and
+[client](https://kalynnka.github.io/octomate/installation/clients/quickstart/) quick
+starts are the short versions, and there is a
+[brief](https://kalynnka.github.io/octomate/installation/quickstart/#agent-tldr) you can hand to
 your own agent to do the setup.
 
 ## Configuration
@@ -224,8 +234,8 @@ tentacles:
     agents: [claude]
 ```
 
-Secrets stay out of the home: `.env` and the environment override it with the
-`OCTOMATE__` prefix and `__` between levels, so
+Secrets can be supplied in YAML or environment variables; `.env` is optional.
+Environment variables use the `OCTOMATE__` prefix and `__` between levels, so
 `OCTOMATE__TENTACLES__SLACK__BOT_TOKEN` sets `tentacles.slack.bot_token`. The
 [configuration page](https://kalynnka.github.io/octomate/installation/configuration/)
 has the precedence rules and every block.
@@ -252,7 +262,7 @@ The codebase keeps an octopus metaphor, and these are the words it uses:
 | Body part | Concept | What it is |
 |---|---|---|
 | **Octomate** 🐙 | `octomate/base.py` | The coordinator. Owns every tentacle, and the managers they share. |
-| **Tentacle** 🦑 | `ChannelTentacle` | One per configured channel, keyed by instance: Slack, Lark, Discord, NapCat, Trunkline. |
+| **Tentacle** 🦑 | `ChannelTentacle` | One per configured channel, keyed by instance: Slack, Lark, Discord, Trunkline. |
 | **Agent tentacle** 🧠 | `AgentTentacle` | One per agent: claude, codex, deepseek, inkling. |
 | **Reflex** ⚡ | `octomate/reflex/` | The graph a signal runs through, from waking to a result or a suspension. |
 | **Feeler** 🫧 | `feelers/` | The view. Decides how a streamed run event is rendered on a channel — timeline, segments and markdown, plus the cards you answer. |

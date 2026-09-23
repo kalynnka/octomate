@@ -1,58 +1,52 @@
 # Approvals and questions
 
-Most tools give you one global switch. Octomate raises **actions** instead. One
-action is exactly one thing you are asked: one approval for one tool call, or one
-question. Actions arrive as a **batch**, everything a turn is waiting on together,
-so a turn that needs two tools and an answer interrupts you once.
+When an agent needs permission or a decision, answer the request in the
+conversation or open it in Trunkline. A task may wait for several answers before
+it continues.
 
-## What an action is
+## Approve or deny a tool call
 
-| Kind | Raised when | You answer with |
-|---|---|---|
-| Approval | A tool needs permission under the conversation's posture | Approve or deny, optionally "allow for session" |
-| Question | The agent asks something, with up to three choices and a hint | A choice, or free text |
+1. Read what the agent wants to do and check the files, command or service involved.
+2. Choose **Approve** to allow that request or **Deny** to refuse it.
+3. If offered, choose **Allow for session** only when you want later uses of that
+   tool in the same conversation to proceed without asking again.
 
-Questions are capped at three choices for consistent cards; a runtime whose native
-tool offers more is trimmed, and free text is always accepted. Each action carries
-who answered it and when, which is what makes "who approved that" a row.
+Denying a request lets the agent know it cannot take that action. You can follow
+up with an alternative, such as asking it to prepare changes for review.
 
-## What happens while you decide
+## Answer a question
 
-The run is suspended and the batch is persisted with everything needed to resume
-it. How the wait works differs by agent:
+Select a suggested answer or enter your own. If the card contains several
+questions, complete them and submit the answers. Typing into an unfinished card
+alone does not send your decision.
 
-- **Inkling** ends the run on the deferral. The batch lives in the database, and
-  the answer resumes the same conversation through the graph, even after a restart.
-- **Claude Code, Codex and DeepSeek Harness** keep the live process parked while
-  the card waits, because the harness itself is blocked on the answer. A restart
-  loses the parked run, though the conversation resumes on the next message.
+> Use the shorter version, keep the examples, and leave the introduction as it is.
 
-An unanswered card expires after the agent's `approval_timeout`, one hour by
-default. The tool is then denied with a message saying so, and the run finishes. A
-run with no user, a commissioned accomplice, is denied immediately.
+Specific answers help the agent continue without another round of clarification.
 
-"Allow for session" adds the tool to the conversation's allow list, persisted, so
-the next turn does not ask again. Trunkline can change a conversation's permission
-mode outright.
+## Find a pending request { #where-cards-appear }
 
-## Where cards appear
+Look in the thread where the task is running. You can also open that thread in
+Trunkline to answer its pending requests, even when the conversation began in
+another channel. The exact buttons and layout vary by channel.
 
-Cards are posted on the surface the turn is answering, sub-thread included. Each
-channel renders them its own way; see the
-[render matrix](channels/index.md#what-each-channel-renders). Slack and Lark carry
-the batch's state in the buttons; Discord carries ids and reloads the action from
-the database; Trunkline shows the batch in the thread and resolves it over the API.
-Any of them can answer a batch raised on another channel's thread through
-Trunkline. On QQ, cards are text and cannot be answered.
+If you have already answered, check the conversation for progress before trying
+again. The same request cannot be resolved twice.
 
-A batch is resumed exactly once. Pressing a button on an already resolved batch is
-refused, not replayed.
+## If the request expires or the server restarts
 
-## Postures
+Unanswered requests usually expire after an hour, unless the operator has changed
+the timeout. The pending tool call is denied; return to the conversation and tell
+the agent whether to try again or take a different approach.
 
-Which actions arise at all is the runtime's posture, chosen per agent in
-[configuration](agents/permissions.md#permission-modes) and switchable per conversation
-from Trunkline. Inkling's `dontAsk` and `bypassPermissions` resolve questions and
-approvals in process and say in the report what they assumed; Codex's
-`auto_review` and `full_access` never raise a request; Claude's SDK scale is
-handed over as it is.
+After a server restart, Claude Code, Codex and DeepSeek Harness may need a fresh
+message to continue interrupted work. Inkling can resume its saved questions and
+approvals. Check the result before repeating an action that might already have
+completed.
+
+## Change how often the agent asks
+
+Use the conversation's permission controls in Trunkline. A mode that allows more
+actions automatically will show fewer approval requests. Read
+[Permission modes](agents/permissions.md) before changing it; the available
+choices depend on the agent.

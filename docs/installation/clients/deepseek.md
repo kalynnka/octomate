@@ -1,5 +1,9 @@
 # DeepSeek Harness (experimental)
 
+Configure the server URL and your API token first with the
+[client quick start](quickstart.md). These steps connect a native dsh session;
+they are separate from the server's driven dsh runtime.
+
 dsh has no hook protocol of its own. Octomate's hooks ride a bridge plugin that
 speaks Claude Code's dialect, and the bridge ships outside dsh's bundle, so the
 first install links it:

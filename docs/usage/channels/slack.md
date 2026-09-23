@@ -39,7 +39,9 @@ OCTOMATE__TENTACLES__SLACK__BOT_TOKEN=xoxb-...
 OCTOMATE__TENTACLES__SLACK__APP_TOKEN=xapp-...
 ```
 
-Restart, invite the bot to a channel, and `@`-mention it, or open its assistant pane.
+Name agents you have already enabled and set `enabled: true` if this channel was
+generated disabled. Check the configuration, restart Octomate, invite the bot to a
+channel and `@`-mention it, or open its assistant pane. Verify a reply.
 
 ## Where things land
 

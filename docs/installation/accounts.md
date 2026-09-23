@@ -4,15 +4,17 @@ Three credentials serve three purposes:
 
 - Your **Octomate account** owns your linked channel profiles, your history, your
   API tokens and your installed MCP connectors.
-- Your **harness login** lets Claude Code, Codex or dsh call its provider. Octomate
-  never sees it.
+- Your **harness login** lets Claude Code, Codex or dsh call its provider. The
+  harness running under the service account uses that account's credentials.
 - A **bot token** connects the server to a chat platform. It belongs to the
   deployment, not to a person.
 
 ## Register the first account
 
-Registration is by invitation. Issue one from the server's own environment, with the
-same config home and database the server uses:
+Registration is by invitation. With the migrated server and Trunkline running,
+open another terminal and set `OCTOMATE_INSTALL_ROOT` to your installation path.
+Issue the invitation from the server's environment with the same config home and
+database. This command writes an invitation to that database:
 
 ```sh
 cd "$OCTOMATE_INSTALL_ROOT"
@@ -30,15 +32,10 @@ can use it.
 Passwords need 11 to 1024 characters with at least one lowercase letter, one
 uppercase letter, one digit and one symbol. Whitespace is not a symbol.
 
-Without `--url`, `service invite` prints a bare code for the CLI path:
-
-```sh
-octomate service user create --username alice --invitationcode '<code>' --password '...'
-```
-
-Prefer the browser: it keeps the password out of shell history. Both paths need the
-server package and an `auth:` block in the config home. Registration issues no
-token; sign in to Trunkline next.
+Without `--url`, `service invite` prints a bare invitation code for
+`service user create`. Prefer browser registration, which keeps your password out
+of command arguments and shell history. Registration creates the account;
+sign in to Trunkline next to issue an API key.
 
 ## Issue a client token
 
@@ -73,11 +70,12 @@ The full schema is at the server's `/docs`.
 
 ## Link your channel profiles
 
-The first time you speak to the bot on Slack, Lark, Discord or QQ, Octomate records
+The first time you speak to the bot on Slack, Lark or Discord, Octomate records
 a **visitor profile**: a platform identity it has seen, owned by nobody. Linking
 that profile to your account is what lets cross-channel routing, history search and
-your installed MCP connectors recognise you. Until then the agent answers, but knows
-nothing beyond the current chat.
+your installed MCP connectors recognise you. Before linking, the agent can answer
+and read history available to that individual profile; it cannot combine that
+identity with your profiles on other channels.
 
 Two ways to link:
 
@@ -87,8 +85,8 @@ Two ways to link:
   the account shown, and confirm. A profile owned by someone else is never
   transferred.
 - **From Trunkline.** Under **Profile**, connect Slack or Discord with the
-  platform's own OAuth. This needs the channel's `oauth` block configured. Lark and
-  QQ link from the chat only.
+  platform's own OAuth. This needs the channel's `oauth` block configured. Lark
+  links from the chat only.
 
 Both need `auth` and `oauth.callback_base_uri` configured. Linking a profile does not
 authorise any MCP connector; that is a separate consent per connector.

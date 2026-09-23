@@ -3,6 +3,13 @@
 `type: claude` drives Claude Code through the Claude Agent SDK as a local subprocess,
 and records the Claude Code sessions you run yourself.
 
+## Enable
+
+Run Claude Code once as the server account and complete its login. Add the block
+below to `tentacles.yaml`, bind `claude` in a channel's `agents` list, and
+[check and restart Octomate](../../tentacles/index.md#enable-a-tentacle).
+For your own native sessions, follow [Claude Code client setup](../../installation/clients/claude-code.md).
+
 ```yaml
 tentacles:
   claude:

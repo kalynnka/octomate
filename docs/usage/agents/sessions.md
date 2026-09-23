@@ -1,44 +1,57 @@
-# Driven and native sessions
+# Start a conversation
 
-## What a driven session disables
+Use your agent directly when you want to work in its own interface, or give it a
+task through a channel and return when you are ready. You can use both approaches.
 
-A run started from a channel runs on the server as the service account. It must
-speak as the person who asked and nobody else, so each harness is launched with its
-local customisations off:
+## Work through a channel
 
-| Agent | Disabled | Provided instead |
-|---|---|---|
-| Claude Code | User settings, hooks, plugins and skills (safe mode), every local MCP server | Octomate's MCP server, in process, and its instructions appended to the system prompt |
-| Codex | Hooks, plugins, apps, notifications, every local MCP server | Octomate's MCP server over HTTP with a temporary per-conversation token |
-| DeepSeek Harness | Plugins, hooks, MCP servers and profile patches, by running with a fresh home | Nothing. A driven dsh turn has no Octomate tools yet |
-| Inkling | Not applicable | Its capabilities, the user's MCP connectors, and file and shell tools rooted in the workspace |
+In Trunkline, start a new conversation, choose an agent and model, and send your
+request. If the task involves project files, choose the project before the first
+message. In another connected channel, message the bot directly or mention it in
+a shared conversation.
 
-Settings, credentials and sessions are still shared where the harness keeps them
-apart from customisation: Claude's login, Codex's login, dsh's settings and
-credentials files.
+> Compare these proposals, point out the tradeoffs, and recommend a next step.
 
-## Native sessions
+Watch the reply in that conversation. You can leave the page while the agent
+works; return to read the result or answer a request for your input. Work may
+pause for an approval, so check pending requests if a task appears to have stopped.
 
-Claude Code, Codex and DeepSeek Harness each serve a hook router at
-`/hooks/<runtime>` and a transcript stream at `/hooks/<runtime>/stream`. A session
-you run yourself, with the [client installed](../../installation/clients/index.md),
-lands
-as a thread on a pseudo-channel named after the runtime, `claude-native` and so on,
-owned by the user whose token the client presents. A session started under a
-declared project root is filed under that project, when the client is on the
-server's own machine.
+Reply in the same thread to continue. Start a new thread for an unrelated task.
+To change agents during the work, ask for a
+[handoff](../gateway.md#summon).
 
-The hooks carry the human ledger: the prompt at `UserPromptSubmit`, the answer at
-`Stop`. The tail carries everything else: tool calls, thinking, subagents, usage.
-Without a tail, a session keeps only the hooks' sketch. Nothing sweeps for sessions
-that ran while the server was down; the next prompt's launcher catches a session up.
+## Keep using your own agent { #native-sessions }
 
-A native session can call the routing spells over MCP, with limits: it can be
-summoned away from and schemed into someone's direct messages, but it cannot be
-teleported, and it has no workspace to dispel. See
-[Moving a conversation](../gateway.md).
+After [connecting the client](../../installation/clients/quickstart.md), use your
+agent in its app, editor or terminal as usual. Octomate calls these **native
+sessions**; work started through a channel is a **driven session**.
 
-## Telemetry
+Your native session keeps its own settings, tools and working directory. Open
+Trunkline to read the collected conversation, or ask an agent to
+[find it in your history](../history.md). To use Octomate's history and handoff
+tools from that session, connect [Octomate MCP](../mcp/octomate.md) as well.
 
-Each harness agent has an `instrument` flag that exports its native spans under
-Octomate's trace. See [Observability](../../installation/observability.md).
+Reading a native session in Trunkline does not let you control the running agent.
+To continue its work through a channel, ask the native agent to hand over the task
+and relevant context. Its local process and files stay where they are.
+
+## What to expect when switching
+
+| Working directly with your agent | Working through a channel |
+|---|---|
+| Uses the machine and files where you started it | Uses the server and the selected project workspace |
+| Keeps your agent's usual customisations | Uses the integrations configured in Octomate |
+| You answer prompts in the agent's own interface | You answer supported prompts in the channel or Trunkline |
+
+If a tool you use locally is missing in a channel conversation, check your
+[MCP connectors](../mcp/proxy.md). Local plugins and MCP connections are not
+inherited by channel work. DeepSeek Harness currently cannot use Octomate's tools
+in driven sessions; use its native MCP connection or another enabled agent.
+
+## If a session is missing
+
+Send a fresh prompt after the server and client are connected, then check
+Trunkline again. A session used while the server was unavailable is not collected
+just by opening the console; continuing that session gives the client another
+opportunity to send it. If it still does not appear, check the
+[client setup](../../installation/clients/quickstart.md) for your agent.
