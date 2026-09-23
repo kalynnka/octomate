@@ -219,6 +219,72 @@ async def test_a_session_start_hook_never_tails_the_claimed_path(
     assert tailer.sessions == {}
 
 
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "Stop"])
+async def test_hooks_persist_and_revise_the_codex_session_name(event: str) -> None:
+    octomate = Octomate()
+    ingest, _ = wired(octomate)
+    key = ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="UserPromptSubmit",
+            session_id=SESSION_ID,
+            prompt="the opening line",
+        ),
+        SENDER,
+    )
+    thread = await a_loaded_thread(octomate.thread_manager, key)
+    assert thread.title == "the opening line"
+
+    for name in [" First generated name ", "Revised name", "Revised name", None, " "]:
+        await ingest.handle(
+            CodexHookInput(
+                hook_event_name=event, session_id=SESSION_ID, session_name=name
+            ),
+            SENDER,
+        )
+        thread = await a_loaded_thread(octomate.thread_manager, key)
+        conversation = await octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+        )
+        expected = (
+            "First generated name"
+            if name == " First generated name "
+            else "Revised name"
+        )
+        assert conversation.name == expected
+        assert thread.title == expected
+
+
+async def test_a_child_hook_cannot_rename_the_parent_session() -> None:
+    octomate = Octomate()
+    ingest, _ = wired(octomate)
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="SessionStart",
+            session_id=SESSION_ID,
+            session_name="Parent name",
+        ),
+        SENDER,
+    )
+    await ingest.handle(
+        CodexHookInput(
+            hook_event_name="Stop",
+            session_id=SESSION_ID,
+            agent_id=CHILD_THREAD_ID,
+            session_name="Child name",
+        ),
+        SENDER,
+    )
+    thread = await a_loaded_thread(
+        octomate.thread_manager, ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    assert conversation.name == "Parent name"
+    assert thread.title == "Parent name"
+
+
 async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     octomate = Octomate()
     ingest, tailer = wired(octomate)

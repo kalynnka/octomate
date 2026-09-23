@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 # Internal deployment maintenance runs in the installed service environment.
 dependencies = [
     "octomate-protocol>=0.0.1,<0.1",
+    "openai-codex>=0.147.0",
     "pydantic>=2.12.5",
     "pydantic-settings>=2.14.1",
     "pyyaml>=6",

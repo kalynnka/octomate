@@ -17,9 +17,9 @@ nothing is said: the emit hook on the same event already complained on stderr.
 
 Run by absolute path, never as `python -m octomate...`, and imports nothing from
 octomate: `octomate/__init__.py` builds `Octomate`, which costs ~1.9s to import, and
-this command is on the blocking path of every prompt. The spawned tail pays that cost
-detached, off it. Anything added here must keep the stdlib-only property; the
-environment variable name and the client-config resolution are duplicated from
+this command is on the blocking path of every prompt. Shared hook schemas live in
+the lightweight protocol package. The environment variable name and the client-config
+resolution are duplicated from
 `octomate_cli/config.py` for the same reason — change them together.
 
 Prints nothing on success: a `UserPromptSubmit` hook's stdout is injected into the
@@ -28,12 +28,13 @@ turn's context, so silence is the only correct answer.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
+
+from octomate_protocol.hooks import NativeHookEvent
 
 OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
 
@@ -83,10 +84,8 @@ def stream_url(url: str | None, path: str | None) -> str | None:
 
 
 def main(url: str | None, path: str | None, agent: str, octomate_bin: str) -> int:
-    event = json.load(sys.stdin)
-    session_id = event.get("session_id")
-    transcript_path = event.get("transcript_path")
-    if not isinstance(session_id, str) or not isinstance(transcript_path, str):
+    event = NativeHookEvent.model_validate_json(sys.stdin.read())
+    if event.transcript_path is None:
         # An event that names no transcript has nothing to tail; the forwarding hooks
         # still carry the ledger, so this is not the place to complain.
         return 0
@@ -98,18 +97,16 @@ def main(url: str | None, path: str | None, agent: str, octomate_bin: str) -> in
         agent,
         "tail",
         "--session",
-        session_id,
+        event.session_id,
         "--path",
-        transcript_path,
+        event.transcript_path,
         "--url",
         target,
     ]
-    cwd = event.get("cwd")
-    if isinstance(cwd, str) and cwd:
-        command += ["--cwd", cwd]
-    agent_path = event.get("agent_transcript_path")
-    if isinstance(agent_path, str) and agent_path:
-        command += ["--agent-path", agent_path]
+    if event.cwd:
+        command += ["--cwd", event.cwd]
+    if event.agent_transcript_path:
+        command += ["--agent-path", event.agent_transcript_path]
     subprocess.Popen(
         command,
         stdin=subprocess.DEVNULL,

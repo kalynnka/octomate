@@ -65,6 +65,20 @@ class CodexHookIngest:
         # Child rollout ingestion owns other agent-scoped events.
         if event.agent_id is not None:
             return
+        if event.session_name and event.hook_event_name in {
+            "SessionStart",
+            "UserPromptSubmit",
+            "Stop",
+        }:
+            async with self.locks.hold(event.session_id):
+                thread = await self.session_thread(event)
+                conversation = await self.octomate.conversations.ensure(
+                    thread.id, agent_tentacle_id=CODEX_NATIVE_ID
+                )
+                await self.octomate.conversations.set_name(
+                    conversation, event.session_name
+                )
+                await self.octomate.thread_manager.rename(thread, event.session_name)
         if event.hook_event_name == "Stop":
             await self.on_stop(event, sender)
             return

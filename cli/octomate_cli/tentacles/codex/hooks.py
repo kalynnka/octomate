@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shlex
 import sys
 from enum import Enum
@@ -12,8 +11,13 @@ from typing import Annotated
 import typer
 
 from octomate_cli.config import CLISettings
+from octomate_cli.tentacles.codex.schema import (
+    CommandHook,
+    Hook,
+    HookGroup,
+    HookSettings,
+)
 from octomate_cli.tentacles.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
-from octomate_cli.tentacles.types import JsonObject
 
 # Bound so a wedged or slow Octomate can never freeze someone's Codex session.
 HOOK_TIMEOUT = 10
@@ -65,30 +69,12 @@ def hooks_file(scope: Scope, path: Path | None) -> Path:
     return root / ".codex" / "hooks.json"
 
 
-def load(path: Path) -> JsonObject:
-    if not path.exists() or not path.read_text().strip():
-        return {}
-    value = json.loads(path.read_text())
-    if not isinstance(value, dict):
-        raise typer.BadParameter(f"{path} is not a JSON object")
-    return value
-
-
-def write(path: Path, value: JsonObject) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(value, indent=2) + "\n")
-
-
-def is_octomate_handler(value: object) -> bool:
+def is_octomate_handler(value: Hook) -> bool:
     """A command hook aimed at Octomate's Codex hook path (which the stream path
     extends, so pinned launchers match too) — matched by path, not the exact command,
     so a re-install replaces a stale handler whatever its host, port, or interpreter,
     including ones written by versions that ran `codex hooks emit`."""
-    return (
-        isinstance(value, dict)
-        and value.get("type") == "command"
-        and CODEX_HOOK_PATH in str(value.get("command", ""))
-    )
+    return isinstance(value, CommandHook) and CODEX_HOOK_PATH in value.command
 
 
 def stream_url_for(hook_url: str) -> str:
@@ -98,7 +84,7 @@ def stream_url_for(hook_url: str) -> str:
     return f"{'wss' if scheme == 'https' else 'ws'}://{rest}{CODEX_STREAM_PATH}"
 
 
-def codex_launch_handler(hook_url: str | None) -> JsonObject:
+def codex_launch_handler(hook_url: str | None) -> CommandHook:
     """The launcher `command` hook: spawns `octomate codex tail` for the session,
     detached (`launch.py`) — the forwarding hooks reach Octomate but can start
     nothing on this machine, and the stream needs a local process. The command pins
@@ -118,7 +104,9 @@ def codex_launch_handler(hook_url: str | None) -> JsonObject:
     ]
     if hook_url is not None:
         command += ["--url", stream_url_for(hook_url)]
-    return {"type": "command", "command": shlex.join(command), "timeout": HOOK_TIMEOUT}
+    return CommandHook(
+        type="command", command=shlex.join(command), timeout=HOOK_TIMEOUT
+    )
 
 
 @hooks_typer.command("install")
@@ -142,10 +130,8 @@ def install(
     stacking another.
     """
     target = hooks_file(scope, path)
-    document = load(target)
-    hooks = document.setdefault("hooks", {})
-    if not isinstance(hooks, dict):
-        raise typer.BadParameter(f"{target} has a non-object 'hooks' section")
+    document = HookSettings.load(target)
+    hooks = document.hooks
     # By absolute path, not `-m octomate...`: importing the package costs ~1.9s, which
     # Codex would pay on every blocking hook. Through `sys.executable` so the hook runs
     # on this interpreter, not whichever `python` the session's PATH resolves.
@@ -153,32 +139,17 @@ def install(
     if url is not None:
         parts += ["--url", url]
     command = shlex.join(parts)
-    group: JsonObject = {
-        "hooks": [{"type": "command", "command": command, "timeout": HOOK_TIMEOUT}]
-    }
-    launcher_group: JsonObject = {"hooks": [codex_launch_handler(url)]}
+    group = HookGroup(
+        hooks=[CommandHook(type="command", command=command, timeout=HOOK_TIMEOUT)]
+    )
+    launcher_group = HookGroup(hooks=[codex_launch_handler(url)])
     for event in HANDLED_HOOK_EVENTS:
-        groups = hooks.get(event)
-        kept = []
-        if isinstance(groups, list):
-            for existing in groups:
-                if not isinstance(existing, dict):
-                    kept.append(existing)
-                    continue
-                handlers = existing.get("hooks")
-                if not isinstance(handlers, list):
-                    kept.append(existing)
-                    continue
-                remaining = [
-                    handler for handler in handlers if not is_octomate_handler(handler)
-                ]
-                if remaining:
-                    kept.append({**existing, "hooks": remaining})
-        installed = [*kept, group]
+        document.remove_handlers(event, is_octomate_handler)
+        hooks.setdefault(event, []).append(group)
         if event in LAUNCHER_HOOK_EVENTS:
-            installed.append(launcher_group)
-        hooks[event] = installed
-    write(target, document)
+            hooks[event].append(launcher_group)
+    document.hooks = hooks
+    document.write(target)
     hook_target = url if url is not None else f"${CLISettings.env('url')} at fire time"
     typer.echo(f"Installed Octomate Codex hooks in {target} → {hook_target}")
     typer.echo(f"  events: {', '.join(HANDLED_HOOK_EVENTS)}")
@@ -199,33 +170,8 @@ def uninstall(
     path: Annotated[Path | None, typer.Option("--hooks-file")] = None,
 ) -> None:
     target = hooks_file(scope, path)
-    document = load(target)
-    hooks = document.get("hooks")
-    if isinstance(hooks, dict):
-        for event in list(hooks):
-            groups = hooks[event]
-            kept = []
-            if isinstance(groups, list):
-                for group in groups:
-                    if not isinstance(group, dict):
-                        kept.append(group)
-                        continue
-                    handlers = group.get("hooks")
-                    if not isinstance(handlers, list):
-                        kept.append(group)
-                        continue
-                    remaining = [
-                        handler
-                        for handler in handlers
-                        if not is_octomate_handler(handler)
-                    ]
-                    if remaining:
-                        kept.append({**group, "hooks": remaining})
-            if kept:
-                hooks[event] = kept
-            else:
-                del hooks[event]
-        if not hooks:
-            document.pop("hooks", None)
-    write(target, document)
+    document = HookSettings.load(target)
+    for event in list(document.hooks):
+        document.remove_handlers(event, is_octomate_handler)
+    document.write(target)
     typer.echo(f"Removed Octomate Codex hooks from {target}")
