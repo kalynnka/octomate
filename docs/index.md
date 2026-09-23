@@ -13,9 +13,10 @@ with your day. When you return, the conversation can move with you: its **gatewa
 can **teleport** it with its history to another connected channel, or hand the
 work to another agent with the context to continue.
 
-An agent can be part of an app, an editor or a terminal. Octomate connects agents,
-channels and tools through **tentacles**, so where you talk to an agent can be
-independent of where it runs and what it can do.
+Agents run in harness products such as the Claude and Codex apps, IDEs, and
+terminal TUIs. Octomate connects agents, channels and tools through **tentacles**,
+so where you talk to an agent can be independent of where it runs and what it can
+do.
 
 Research an idea, make a plan, create something or automate a task. Your agents
 work on a machine you control, with shared history, tools and approvals. Your

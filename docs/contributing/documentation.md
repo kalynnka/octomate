@@ -25,8 +25,8 @@ substance sits in the sections beneath it, which are what the sidebar shows:
 | Tab | Sections |
 |---|---|
 | Installation | Server · Deployments · Configuration · Client · Operations |
-| Tentacles | Agents · Channels · MCP connectors |
-| Usage | Sessions and permissions · Conversations · Projects and workspaces · MCP |
+| Tentacles | Agents · Channels · MCP |
+| Usage | Sessions and permissions · Conversations · Projects and workspaces · Tools and services |
 | Concepts | Design · Storage |
 | Contributing | Development · Extending Octomate · Project workflow |
 | API Reference | Configuration · Tentacle interfaces · Reflex graph · Managers · Schemas · Capabilities · MCP and OAuth · CLI · Protocol |
@@ -39,6 +39,13 @@ A page that belongs to no section, such as Accounts and
 tokens or Vocabulary, sits between sections at the top level. A new page joins an
 existing section. A new section is a structural change: propose it before writing
 it, and add its row here.
+
+Tentacles → MCP owns account ownership and trust, namespaces, built-in tentacles,
+preset setup and installing and authorizing connections through Trunkline or an
+agent conversation. Usage → Tools and services owns everyday agent requests,
+supported agents, using connections across channels and managing access. Link to
+the setup guides from Usage instead of repeating their steps. Keep the existing
+`usage/mcp/` page paths so their URLs stay stable.
 
 Page templates, so pages of one kind stay parallel:
 

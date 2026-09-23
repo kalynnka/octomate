@@ -29,7 +29,7 @@ services:
     ports:
       - "127.0.0.1:8000:8080"
 
-  # NapCat is retained for future use; the integration is not currently usable.
+  # Optional NapCat bridge; see docs/usage/channels/napcat.md for setup.
   # napcat:
   #   profiles: [qq]
   #   image: mlikiowa/napcat-docker:latest

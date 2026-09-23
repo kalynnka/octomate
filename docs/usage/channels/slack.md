@@ -105,7 +105,7 @@ reads plus canvases, deliberately without `chat:write`. Widening the list later
 means every connected user reconnects.
 
 Each user connects once, from a chat, by asking the agent to connect Slack, or from
-Trunkline. See [MCP proxy](../mcp/proxy.md).
+Trunkline. See [MCP setup](../../tentacles/mcp.md).
 
 ## Profile linking
 

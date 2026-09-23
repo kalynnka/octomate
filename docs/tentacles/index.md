@@ -25,24 +25,18 @@ routes and permissions.
 | [Slack](../usage/channels/slack.md) | Channels, threads, direct messages and the assistant pane | Create a Socket Mode app and supply its app and bot tokens |
 | [Lark / Feishu](../usage/channels/lark.md) | Groups, threads and one-to-one chats | Create a bot app with a long connection and supply its app credentials |
 | [Discord](../usage/channels/discord.md) | Server channels, public threads and direct messages | Add a bot to your server and supply its token |
+| [NapCat](../usage/channels/napcat.md) | Group chats and direct messages (QQ bridge) | Log in through NapCat and enable its HTTP and forward WebSocket servers |
 | [Trunkline](../usage/channels/trunkline.md) | Octomate's web console | Build the frontend and configure sign-in; the console is in preview |
 
 Each channel guide covers app setup, credentials and its presentation of messages
 and approvals. [Compare channel capabilities](../usage/channels/index.md#what-each-channel-renders).
 
-## MCP connectors
+## MCP
 
-| Type | Connects to | Setup |
-|---|---|---|
-| `bare` | An MCP server with no authentication or one deployment token | Supply the endpoint and optional token |
-| `oauth_discovery` | An MCP server that advertises its OAuth configuration | Supply the endpoint and configure Octomate's OAuth settings |
-| `oauth` | An MCP server using an OAuth app you register | Supply the app credentials, scopes and supported flows |
-| Slack with `mcp: true` | Slack tools acting as the linked person | Enable the channel's MCP option and user OAuth |
-
-[Enable MCP connectors](mcp.md) covers these types, the
-[built-in GitHub preset](mcp.md#built-in-presets), and connecting through Trunkline
-or a conversation.
-Each person installs and authorises the connectors they want to use.
+[MCP](mcp.md) connects tool services to your agents. Configure a
+[built-in tentacle](mcp/builtins.md), [add a provider preset](mcp/presets.md), or
+[add an endpoint through Trunkline](mcp/trunkline.md).
+Each person installs and authorises the connections they want to use.
 
 ## Enable a tentacle
 

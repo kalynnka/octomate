@@ -29,8 +29,8 @@ others:
 | Kind | `type` values | Reference |
 |---|---|---|
 | Agent | `claude`, `codex`, `deepseek`, `inkling` | [Agents](../usage/agents/index.md) |
-| Channel | `slack`, `lark`, `discord`, `trunkline` | [Channels](../usage/channels/index.md) |
-| MCP | `bare`, `oauth`, `oauth_discovery` | [MCP proxy](../usage/mcp/proxy.md) |
+| Channel | `slack`, `lark`, `discord`, `napcat`, `trunkline` | [Channels](../usage/channels/index.md) |
+| MCP | `bare`, `oauth`, `oauth_discovery` | [Built-in MCP tentacles](../tentacles/mcp/builtins.md) |
 
 ## Add a channel
 
@@ -56,24 +56,11 @@ and also exposes the registered agents' model catalogs.
 
 ## Add an MCP connector
 
-Configure the [OAuth origin and encryption key](settings.md#profile-linking-and-mcp-authorisation)
-first when the connector needs them. The CLI can generate GitHub's template on
-macOS, Linux or WSL:
-
-```sh
-cd "$OCTOMATE_INSTALL_ROOT"
-export OCTOMATE_HOME="$OCTOMATE_INSTALL_ROOT/config"
-octomate mcp preset github --client-id '<your-oauth-app-client-id>'
-```
-
-This adds a `github` entry to `config/tentacles.yaml` with the provider endpoints
-and scopes. It refuses to replace an existing id. Follow its instructions for the
-client secret and callback registration, then restart the server.
-
-A template offers a connector; it does not install or authorise it for every
-person. Each user installs it and completes consent through the
-[MCP proxy flow](../usage/mcp/proxy.md). Other remote services can be configured
-with the `bare`, `oauth` or `oauth_discovery` types.
+Follow [Add presets](../tentacles/mcp/presets.md) for the GitHub CLI setup, or
+[Built-in tentacles](../tentacles/mcp/builtins.md) to configure another service.
+These guides cover credentials, OAuth settings and enabling the offering.
+Each person then [installs and authorizes their connection](../tentacles/mcp/trunkline.md).
+The [MCP overview](../tentacles/mcp.md) explains account ownership and operator trust.
 
 ## Registry rules
 

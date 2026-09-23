@@ -1,4 +1,4 @@
-# Octomate MCP
+# Use Octomate from your agent
 
 Octomate MCP lets your own agent use your shared history, reach connected channels
 and work with the services you have added to Octomate. Once connected, ask for
@@ -41,9 +41,9 @@ ways to continue elsewhere.
 > Which services have I connected? Check whether the project tracker is ready,
 > then use it to list my open tasks.
 
-[Install and authorise an MCP connector](proxy.md) first. Your agent can discover
-its tools and use them on your behalf. Give a clear request about what to read or
-change, just as you would for any other tool.
+[Connect the service](../../tentacles/mcp.md) first, then follow
+[Use and manage connections](proxy.md) for supported agents, everyday requests
+and access controls.
 
 ## When you work through a channel
 

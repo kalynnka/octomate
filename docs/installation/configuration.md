@@ -38,7 +38,7 @@ client's `cli.toml`, mirrors and workspaces, none of which make it a config home
 | `projects.yaml` | `projects` | [Register projects](projects.md) |
 | `providers.yaml` | `providers` | [Inkling](../usage/agents/inkling.md) |
 | `observability.yaml` | `logging`, `logfire` | [Observability](observability.md) |
-| `oauth.yaml` | `oauth` | [MCP proxy](../usage/mcp/proxy.md) |
+| `oauth.yaml` | `oauth` | [OAuth settings](settings.md#profile-linking-and-mcp-authorisation) |
 
 The assignment of keys to files is a convention. Every file is read into one
 settings payload, so a key placed in the wrong file still applies. Keep the
