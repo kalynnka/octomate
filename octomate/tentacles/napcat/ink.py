@@ -11,8 +11,12 @@ from octomate.schemas.segments import ImageSegment
 from octomate.tentacles.channel import DownloadedImage, Ink
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.napcat.schema import (
+    ActionResponse,
+    ImageInfo,
+    LoginInfo,
     NapcatOutboundMessage,
     NapcatUserProfile,
+    SentMessage,
 )
 from octomate.types.json import JsonObject
 
@@ -38,14 +42,14 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
     async def inspect(self) -> NapcatUserProfile:
         resp = await self.httpx.post("/get_login_info", json={})
         resp.raise_for_status()
-        login_data = resp.json().get("data", {})
-        user_id = str(login_data.get("user_id", ""))
+        login_data = ActionResponse[LoginInfo].model_validate_json(resp.content).data
+        user_id = login_data.user_id if login_data is not None else ""
         resp = await self.httpx.post(
             "/get_stranger_info",
             json={"user_id": user_id},
         )
         resp.raise_for_status()
-        data = resp.json().get("data", {})
+        data = ActionResponse[JsonObject].model_validate_json(resp.content).data or {}
         data.setdefault("user_id", user_id)
         return NapcatUserProfile.model_validate(data)
 
@@ -56,7 +60,9 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
                 json={"user_id": user_id},
             )
             resp.raise_for_status()
-            data = resp.json().get("data", {})
+            data = (
+                ActionResponse[JsonObject].model_validate_json(resp.content).data or {}
+            )
             data.setdefault("user_id", user_id)
             return NapcatUserProfile.model_validate(data)
         except Exception:
@@ -71,7 +77,8 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
     async def get_image_url(self, file: str) -> str | None:
         resp = await self.httpx.post("/get_image", json={"file": file})
         resp.raise_for_status()
-        return resp.json().get("data", {}).get("url")
+        data = ActionResponse[ImageInfo].model_validate_json(resp.content).data
+        return data.url if data is not None else None
 
     async def download(self, url: str) -> httpx.Response:
         resp = await self.httpx.get(url)
@@ -128,8 +135,11 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
             try:
                 resp = await self.httpx.post(endpoint, json=payload)
                 resp.raise_for_status()
-                data = resp.json().get("data") or {}
-                first_msg_id = first_msg_id or data.get("message_id")
+                data = (
+                    ActionResponse[SentMessage].model_validate_json(resp.content).data
+                )
+                if data is not None:
+                    first_msg_id = first_msg_id or data.message_id
             except Exception:
                 logger.warning("NapcatInk: send_message failed", exc_info=True)
         return first_msg_id

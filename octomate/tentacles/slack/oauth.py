@@ -9,7 +9,7 @@ from mcp.shared.auth import OAuthToken
 from pydantic import BaseModel, Field, TypeAdapter, field_validator
 
 from octomate.managers.oauth import OAuthConnector
-from octomate.oauth.flows import OAuthTokenExchange
+from octomate.oauth.flows import OAuthTokenExchange, TokenError
 from octomate.schemas.oauth import OAuthGrant
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackUserProfile
@@ -93,9 +93,14 @@ class SlackTokenExchange(OAuthTokenExchange):
 
     token_model: ClassVar[type[OAuthToken]] = SlackUserToken
 
-    async def grant(self, response: httpx2.Response) -> SlackOAuthGrant:
-        grant = await super().grant(response)
-        token = SlackUserToken.model_validate_json(response.content)
+    async def grant(
+        self, response: httpx2.Response, token: OAuthToken | TokenError | None = None
+    ) -> SlackOAuthGrant:
+        if token is None:
+            token = self.parse_response(response)
+        grant = await super().grant(response, token)
+        if not isinstance(token, SlackUserToken):
+            raise ValueError("Slack authorization requires a Slack user token")
         grant.scopes = (
             [
                 scope.strip()

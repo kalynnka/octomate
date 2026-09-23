@@ -6,17 +6,20 @@ The JSON literals here are the exact shapes dsh's own web client reads."""
 from __future__ import annotations
 
 import pytest
+from octomate_protocol.deepseek import (
+    ClientRequest,
+    ErrResult,
+    OkResult,
+    RemoteItem,
+    ServerResponse,
+    remote_message_adapter,
+)
 from pydantic import ValidationError
 
 from octomate.tentacles.deepseek.process import BANNER
 from octomate.tentacles.deepseek.wire import (
-    ClientRequest,
-    ErrResult,
-    OkResult,
     ReasoningDeltaChunk,
     RemoteInvocation,
-    RemoteItem,
-    ServerResponse,
     SessionEvent,
     SessionRecord,
     TextDeltaChunk,
@@ -28,7 +31,6 @@ from octomate.tentacles.deepseek.wire import (
     permission_preset_of,
     provenance_of,
     remote_event_adapter,
-    remote_message_adapter,
     request_route_of,
     session_follow_adapter,
     text_of,

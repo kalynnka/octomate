@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
-import json
 import logging
 from typing import Self
 
@@ -37,7 +37,7 @@ from lark_oapi.core.http import Transport
 from lark_oapi.core.http.transport import _build_header, _build_url
 from lark_oapi.core.json import JSON
 from lark_oapi.core.model import BaseRequest, Config, RawResponse, RequestOption
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
@@ -45,15 +45,21 @@ from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel import DownloadedImage, Ink
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.schema import (
+    LarkBotInfoResponse,
+    LarkCardReference,
+    LarkCardSettings,
     LarkOutboundMessage,
     LarkStreamCard,
+    LarkTextContent,
     LarkUserProfile,
 )
+from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 
 
 SDK_AEXECUTE = Transport.aexecute
+multipart_data_adapter = TypeAdapter(JsonObject)
 
 # Each entered ink's own pooled client, keyed by the `Config` its `lark.Client`
 # dispatches with — the one argument `Transport.aexecute` receives that
@@ -93,19 +99,20 @@ async def pooled_aexecute(
     # the SDK transport does before sending.
     _build_header(req, option, conf)
     body_json = JSON.marshal(req.body) if req.body is not None else None
-    json_, files, data = None, None, None
+    content, files, data = None, None, None
     if req.files:
         files = req.files
         if body_json is not None:
-            data = json.loads(body_json)
+            data = multipart_data_adapter.validate_json(body_json)
     elif body_json is not None:
-        json_ = json.loads(body_json)
+        content = body_json.encode()
+        req.headers.setdefault("Content-Type", "application/json")
     response = await client.request(
         str(req.http_method.name),
         url,
         headers=req.headers,
         params=tuple(req.queries),
-        json=json_,
+        content=content,
         data=data,
         files=files,
         timeout=conf.timeout,
@@ -160,33 +167,26 @@ class LarkInk(Ink[LarkOutboundMessage]):
             self.http = None
 
     async def inspect(self) -> LarkUserProfile:
-        # The bot-info endpoint has no async SDK method, so call it over async
-        # httpx. A sync client here would block Octomate's event loop — freezing
-        # the startup probe and every channel entered after Lark in the lifespan.
-        async with httpx.AsyncClient(base_url="https://open.feishu.cn") as http:
-            token_resp = await http.post(
-                "/open-apis/auth/v3/tenant_access_token/internal",
-                json={
-                    "app_id": self.app_id,
-                    "app_secret": self.app_secret.get_secret_value(),
-                },
+        request = (
+            BaseRequest.builder()
+            .http_method(lark.HttpMethod.GET)
+            .uri("/open-apis/bot/v3/info")
+            .token_types({lark.AccessTokenType.TENANT})
+            .build()
+        )
+        # Even the SDK's arequest performs synchronous token acquisition.
+        response = await asyncio.to_thread(self.client.request, request)
+        if not response.success():
+            raise RuntimeError(
+                f"LarkInk: inspect failed: {response.code} {response.msg}"
             )
-            token_resp.raise_for_status()
-            token = token_resp.json().get("tenant_access_token")
-            if not token:
-                raise RuntimeError("LarkInk: failed to obtain tenant_access_token")
-            resp = await http.get(
-                "/open-apis/bot/v3/info",
-                headers={"Authorization": f"Bearer {token}"},
-            )
-            resp.raise_for_status()
-            bot = resp.json().get("bot", {})
-        if not bot:
+        if response.raw is None or response.raw.content is None:
             raise RuntimeError("LarkInk: inspect failed, no bot info returned")
+        bot = LarkBotInfoResponse.model_validate_json(response.raw.content).bot
         return LarkUserProfile(
-            channel_user_id=bot.get("open_id", ""),
-            name=bot.get("app_name", ""),
-            avatar_url=bot.get("avatar_url", ""),
+            channel_user_id=bot.open_id,
+            name=bot.app_name,
+            avatar_url=bot.avatar_url,
         )
 
     async def get_user_profile(self, user_id: str) -> LarkUserProfile:
@@ -348,9 +348,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
             [
                 LarkOutboundMessage(
                     msg_type="text",
-                    content=json.dumps(
-                        {"text": text}, ensure_ascii=False, separators=(",", ":")
-                    ),
+                    content=LarkTextContent(text=text).model_dump_json(),
                 )
             ],
             reply_to=reply_to,
@@ -395,11 +393,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
     ) -> IMMessageID | None:
         msg = LarkOutboundMessage(
             msg_type="interactive",
-            content=json.dumps(
-                {"type": "card", "data": {"card_id": card.card_id}},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+            content=LarkCardReference(data={"card_id": card.card_id}).model_dump_json(),
         )
         return await self.send_message(
             chat_id,
@@ -456,11 +450,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         """Disable streaming_mode so the card settles (typewriter stops, the
         card becomes interactive). Best-effort: a failure only leaves the card
         locked until Lark's ~10 minute auto-timeout."""
-        settings = json.dumps(
-            {"config": {"streaming_mode": False}},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        settings = LarkCardSettings(config={"streaming_mode": False}).model_dump_json()
         request = (
             SettingsCardRequest.builder()
             .card_id(card.card_id)

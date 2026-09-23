@@ -10,7 +10,9 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from octomate_cli import launch as launch_module
@@ -18,6 +20,7 @@ from octomate_cli.config import CLISettings, project_config_path, user_config_pa
 from octomate_cli.launch import OCTOMATE_URL_ENV as LAUNCH_URL_ENV
 from octomate_cli.tentacles.claude import CLAUDE_HOOK_PATH
 from octomate_cli.tentacles.hooks import LAUNCH_SCRIPT
+from pydantic import ValidationError
 
 STREAM_URL = "ws://127.0.0.1:9999/hooks/claude/stream"
 EVENT = {
@@ -139,6 +142,21 @@ def test_an_event_naming_no_transcript_spawns_nothing(tmp_path: Path) -> None:
     assert not args_file.exists()
 
 
+def test_an_invalid_transcript_path_fails_before_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sys, "stdin", StringIO(json.dumps({**EVENT, "transcript_path": ["invalid"]}))
+    )
+    with (
+        patch.object(launch_module.subprocess, "Popen") as spawn,
+        pytest.raises(ValidationError, match="transcript_path"),
+    ):
+        launch_module.main(STREAM_URL, None, "claude", "/unused/octomate")
+
+    spawn.assert_not_called()
+
+
 def test_the_stream_url_derives_from_the_environment(tmp_path: Path) -> None:
     """The installed command carries only `--path`; the stream address comes from
     OCTOMATE_CLI_URL when the hook fires — `https` base, `wss` stream — so the launcher
@@ -221,8 +239,8 @@ def test_bad_usage_fails_loudly() -> None:
 
 def test_the_script_never_imports_the_octomate_package() -> None:
     """Why this script exists at all: importing the package builds `Octomate` (~1.9s),
-    and Claude blocks on this hook once a turn. Run by path with stdlib imports only
-    it stays ~50ms; an `octomate` import here would silently hand that cost back."""
+    and Claude blocks on this hook once a turn. The shared hook schema must stay
+    independent of the server package."""
     probe = (
         "import importlib.util, sys;"
         f"spec = importlib.util.spec_from_file_location('launch', {str(LAUNCH_SCRIPT)!r});"

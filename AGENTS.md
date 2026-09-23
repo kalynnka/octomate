@@ -17,6 +17,7 @@
 7. When an attribute needs documentation, put it at the definition: a Pydantic `Field(description=...)` for model fields, and a brief comment on the field for dataclass, `TypedDict`, or plain-class attributes (which have no description slot). Prefer this over a free-floating comment above the attribute.
 8. The tree is `ruff format`ed. Run `uv run ruff format` and `uv run ruff check` on the files your change touches, and pass paths explicitly — never format the whole tree, which buries the change under unrelated reflow.
 9. Never put a ticket identifier in code, a docstring, a comment, or a document. Say the reason itself: a reader of the code has no tracker in front of them, and the identifier is what the commit that closed the ticket records.
+10. Prefer at most two levels of control-flow nesting, and never exceed three within a function (excluding the function and class scopes). Use guard clauses, combined context managers, or methods that own meaningful behavior to flatten deeper code; preserve resource cleanup and exception behavior.
 
 ### Helpers
 
@@ -36,6 +37,7 @@
 5. Absent that approval, finish the work, run the checks, report what changed, and stop. A request to do work is not a request to publish it, and creating a branch first does not make an unrequested commit acceptable — branching is what to do *when* committing, not a licence to commit.
 6. When undoing a commit for review, preserve its changes in the working tree unless the user explicitly asks to discard them.
 7. A branch is named `<kind>/<slug>`, taking `kind` from the same set the commit subjects use — `feat`, `fix`, `docs`, `chore`, `refactor`, `test`, `perf`. Never put a person in a branch name: git already records the author, and the name should say what the work is. Include the issue identifier when there is one, so Linear links the branch to it — `feat/octo-29-project-registry`. A tool that suggests a branch name, Linear included, does not override this.
+8. Pull request titles must follow Conventional Commits: `<kind>: <description>` or `<kind>(<scope>): <description>`, using the same kinds as branch names. Describe the final change and start the description with a lowercase letter. Check `.github/workflows/pr-title.yml` before creating or editing a PR title, and verify the PR title check passes before reporting completion.
 
 ## Typing
 

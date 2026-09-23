@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -306,20 +305,17 @@ def question_button(
         "type": "button",
         "text": {"type": "plain_text", "text": text},
         "action_id": action.value if isinstance(action, SlackBlockAction) else action,
-        "value": json.dumps(
-            SlackQuestionActionValueAdapter.dump_python(
-                value,
-                mode="json",
-                include={
-                    "batch_id": True,
-                    "questions": {"__all__": QUESTION_STATE_FIELDS},
-                    "page": True,
-                    "answers": True,
-                },
-                exclude_defaults=True,
-                exclude_none=True,
-            )
-        ),
+        "value": SlackQuestionActionValueAdapter.dump_json(
+            value,
+            include={
+                "batch_id": True,
+                "questions": {"__all__": QUESTION_STATE_FIELDS},
+                "page": True,
+                "answers": True,
+            },
+            exclude_defaults=True,
+            exclude_none=True,
+        ).decode(),
     }
     if style:
         button["style"] = style

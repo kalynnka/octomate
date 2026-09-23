@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -16,7 +15,7 @@ from octomate.tentacles.feelers.deferred import ApprovalFeeler
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.feelers import cards
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
-from octomate.tentacles.lark.schema import LarkOutboundMessage
+from octomate.tentacles.lark.schema import LarkInteractiveCard, LarkOutboundMessage
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
@@ -64,7 +63,9 @@ class LarkApprovalFeeler(ApprovalFeeler):
 
 
 def approval_card(action: DeferredApproval) -> str:
-    return json.dumps(approval_card_data(action), ensure_ascii=False)
+    return LarkInteractiveCard.model_validate(
+        approval_card_data(action)
+    ).model_dump_json(by_alias=True, exclude_unset=True)
 
 
 def approval_card_data(action: DeferredApproval) -> JsonObject:

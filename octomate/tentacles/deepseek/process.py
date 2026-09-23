@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import logging
 import os
 import re
@@ -28,6 +27,8 @@ from tempfile import TemporaryDirectory
 from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import HttpUrl, SecretStr
+
+from octomate.tentacles.deepseek.schema import SharedDataPatch
 
 logger = logging.getLogger(__name__)
 
@@ -179,23 +180,23 @@ class DeepseekProcess:
         patch = Path(self.runtime_home.name) / "shared-data.json"
         await asyncio.to_thread(
             patch.write_text,
-            json.dumps(
+            SharedDataPatch(
                 [
                     {
                         "id": "settings",
-                        "config": {"path": str(shared_home / "settings.yaml")},
+                        "config": {"path": shared_home / "settings.yaml"},
                     },
                     {
                         "id": "credentials",
-                        "config": {"path": str(shared_home / ".credentials.yaml")},
+                        "config": {"path": shared_home / ".credentials.yaml"},
                     },
                     {
                         "id": "session-persistence-jsonl",
-                        "config": {"root": str(shared_home / "sessions")},
+                        "config": {"root": shared_home / "sessions"},
                     },
-                    {"id": "attachment-local", "config": {"dshHome": str(shared_home)}},
+                    {"id": "attachment-local", "config": {"dshHome": shared_home}},
                 ]
-            ),
+            ).model_dump_json(),
         )
         process = await asyncio.create_subprocess_exec(
             self.executable,

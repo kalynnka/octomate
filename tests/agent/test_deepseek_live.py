@@ -18,6 +18,10 @@ from urllib.parse import urlsplit
 import httpx
 import pytest
 from octomate_cli.streaming.deepseek import DshHistoryClient, new_entries
+from octomate_protocol.deepseek import (
+    ErrResult,
+    OkResult,
+)
 from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import FunctionToolResultEvent, PartStartEvent
@@ -33,8 +37,6 @@ from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
-    ErrResult,
-    OkResult,
     QuestionRequestedFrame,
 )
 from tests.support.managers import FakeConversationManager

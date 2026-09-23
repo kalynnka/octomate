@@ -5,13 +5,18 @@ from __future__ import annotations
 import asyncio
 import json
 
+import httpx
+import lark_oapi as lark
+import pytest
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from lark_oapi.core.http import Transport
+from lark_oapi.core.json import JSON
+from lark_oapi.core.model import BaseRequest, Config
 from pydantic import SecretStr
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.lark import LarkTentacle
-from octomate.tentacles.lark.ink import SDK_AEXECUTE, LarkInk, pools
+from octomate.tentacles.lark.ink import SDK_AEXECUTE, LarkInk, pooled_aexecute, pools
 from octomate.tentacles.lark.schema import LarkOutboundMessage
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 
@@ -217,3 +222,37 @@ async def test_each_lark_ink_owns_a_pool_and_routing_survives_a_peer_exit() -> N
     assert not pools
     assert first_pool.is_closed
     assert Transport.aexecute is SDK_AEXECUTE
+
+
+@pytest.mark.parametrize("multipart", [False, True])
+async def test_pooled_transport_preserves_sdk_body_encoding(multipart: bool) -> None:
+    config = Config()
+    request = BaseRequest()
+    request.http_method = lark.HttpMethod.POST
+    request.uri = "/open-apis/test"
+    request.body = {"text": "你好", "count": 3}
+    if multipart:
+        request.files = {"image": ("image.png", b"image-bytes", "image/png")}
+
+    def respond(outgoing: httpx.Request) -> httpx.Response:
+        if multipart:
+            assert outgoing.headers["content-type"].startswith("multipart/form-data;")
+            assert b'name="text"' in outgoing.content
+            assert "你好".encode() in outgoing.content
+            assert b"image-bytes" in outgoing.content
+            assert b'name="count"' in outgoing.content
+        else:
+            assert outgoing.headers["content-type"] == "application/json"
+            body = JSON.marshal(request.body)
+            assert body is not None
+            assert outgoing.content == body.encode()
+        return httpx.Response(200, content=b'{"code":0}')
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        pools[config] = client
+        try:
+            response = await pooled_aexecute(config, request)
+        finally:
+            del pools[config]
+    assert response.status_code == 200
+    assert response.content == b'{"code":0}'
