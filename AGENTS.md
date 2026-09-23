@@ -17,6 +17,7 @@
 7. When an attribute needs documentation, put it at the definition: a Pydantic `Field(description=...)` for model fields, and a brief comment on the field for dataclass, `TypedDict`, or plain-class attributes (which have no description slot). Prefer this over a free-floating comment above the attribute.
 8. The tree is `ruff format`ed. Run `uv run ruff format` and `uv run ruff check` on the files your change touches, and pass paths explicitly — never format the whole tree, which buries the change under unrelated reflow.
 9. Never put a ticket identifier in code, a docstring, a comment, or a document. Say the reason itself: a reader of the code has no tracker in front of them, and the identifier is what the commit that closed the ticket records.
+10. Prefer at most two levels of control-flow nesting, and never exceed three within a function (excluding the function and class scopes). Use guard clauses, combined context managers, or methods that own meaningful behavior to flatten deeper code; preserve resource cleanup and exception behavior.
 
 ### Helpers
 

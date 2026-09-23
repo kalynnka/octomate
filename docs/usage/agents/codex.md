@@ -37,6 +37,12 @@ Each conversation gets its own app-server process from a pool, evicted after
 recently used first. The Codex thread id is the conversation's resumable handle,
 so a turn on a fresh process resumes the same thread.
 
+After each turn, Octomate reads the Codex thread's name through the SDK without
+loading its turn history. When Codex supplies a nonblank name, Octomate updates
+the conversation name and its thread title. Later turns pick up revised names;
+subagent conversation names do not replace the parent thread's title. A failed
+name lookup is logged and does not discard the run's result.
+
 The run's working directory is the thread's [workspace](../workspaces.md). In
 `user_review` and `auto_review` the sandbox is `workspace_write`, so that directory
 is the write boundary; `full_access` removes the sandbox and the prompts. Both the
