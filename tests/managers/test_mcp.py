@@ -322,6 +322,22 @@ async def test_catalog_preserves_upstream_instructions(
                             "error": {"code": -32601, "message": "Method not found"},
                         },
                     )
+                if body.get("method") == "tools/list":
+                    return httpx2.Response(
+                        200,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "tools": [
+                                    {
+                                        "name": "answer",
+                                        "inputSchema": {"type": "object"},
+                                    }
+                                ]
+                            },
+                        },
+                    )
             return await transport.handle_async_request(request)
 
         if legacy:
