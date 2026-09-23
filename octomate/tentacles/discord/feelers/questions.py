@@ -1,3 +1,5 @@
+"""Discord question wizard: a paged layout view with a modal for free-text answers."""
+
 from __future__ import annotations
 
 import re
@@ -35,6 +37,8 @@ class DiscordQuestionChoiceButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.LayoutView]],
     template=QUESTION_CHOICE_CUSTOM_ID_TEMPLATE,
 ):
+    """A persistent choice button; picking it records the answer and turns the page."""
+
     def __init__(
         self,
         batch_id: uuid.UUID,
@@ -106,6 +110,8 @@ class DiscordQuestionAnswerButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.LayoutView]],
     template=QUESTION_ANSWER_CUSTOM_ID_TEMPLATE,
 ):
+    """A persistent button that opens the free-text answer modal."""
+
     def __init__(
         self,
         batch_id: uuid.UUID,
@@ -182,6 +188,8 @@ class DiscordQuestionNavButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.LayoutView]],
     template=QUESTION_NAV_CUSTOM_ID_TEMPLATE,
 ):
+    """A persistent Previous, Next or Submit button; Submit resolves the batch."""
+
     def __init__(
         self,
         batch_id: uuid.UUID,
@@ -272,6 +280,9 @@ class DiscordQuestionNavButton(
 
 
 class DiscordQuestionModal(discord.ui.Modal):
+    """The free-text answer form for one question; submitting records the answer
+    and redraws its page."""
+
     def __init__(
         self,
         batch_id: uuid.UUID,
@@ -320,6 +331,9 @@ class DiscordQuestionModal(discord.ui.Modal):
 
 
 class DiscordAskQuestionFeeler(QuestionFeeler):
+    """The wizard as one layout view: choice, answer and navigation buttons for
+    the page shown."""
+
     def __init__(self, ink: DiscordInk) -> None:
         self.ink = ink
 

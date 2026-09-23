@@ -1,3 +1,5 @@
+"""Conversation-scoped todos and their write payload."""
+
 from __future__ import annotations
 
 import uuid
@@ -16,6 +18,8 @@ from octomate.types.todos import TodoStatus
 
 @sqlalchemy_materia.bless(todos_models.Todo)
 class Todo(BaseTransmuter):
+    """One conversation-scoped todo, keyed by its short `ref`."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)

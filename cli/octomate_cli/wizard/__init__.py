@@ -26,6 +26,8 @@ TENTACLES: dict[str, TentacleSetup[str] | TentacleSetup[McpPreset]] = {
 
 @dataclass
 class TentacleSelections:
+    """What the tentacle step chose: agent ids, channel ids and MCP presets."""
+
     agents: list[str]
     channels: list[str]
     mcps: list[McpPreset]

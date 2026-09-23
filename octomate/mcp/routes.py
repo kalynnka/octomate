@@ -1,3 +1,6 @@
+"""The HTTP API for a user's MCP installations: listing, installing, authorizing,
+enabling and removing them."""
+
 import logging
 import uuid
 from typing import Annotated

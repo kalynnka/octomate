@@ -1,3 +1,6 @@
+"""Per-subsystem Logfire instances, the trace destination handed to native
+exporters, and the span attributes agent input messages are recorded with."""
+
 from __future__ import annotations
 
 from collections.abc import Sequence

@@ -1,3 +1,5 @@
+"""The hook payload POSTed back from a native Codex session."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -9,6 +11,8 @@ from pydantic import BaseModel, ConfigDict
 
 
 class CodexHookInput(BaseModel):
+    """A hook event from a native Codex session, as the hook route validates it."""
+
     model_config = ConfigDict(extra="ignore")
 
     hook_event_name: str

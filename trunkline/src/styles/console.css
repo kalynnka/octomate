@@ -924,11 +924,9 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     --trk-rail-w: 36px;
     --trk-rail-letter: 28px;
     --trk-rail-fs: 10px;
-    --trk-rail-gap: 6px;
-    --trk-rail-pad: 10px 0 10px 4px;
-    --trk-rail-row-pad: 2px 8px 2px 0;
+    --trk-rail-row-pad: 2px 8px 2px 4px;
     --trk-btn: 32px;
-    --trk-ch-pad: 13px 14px 7px;
+    --trk-channel-row-h: 40px;
     --trk-th-pad: 11px 14px 11px 30px;
     --trk-head-h: 54px;
     --trk-head-pad: 0 10px 0 12px;

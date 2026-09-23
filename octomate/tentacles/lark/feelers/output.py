@@ -1,3 +1,5 @@
+"""Lark timeline rendering: a run as cards, with the answer streamed into one."""
+
 from __future__ import annotations
 
 import asyncio
@@ -96,6 +98,9 @@ def format_tool_result(part: ToolReturnPart | RetryPromptPart) -> str:
 
 
 class LarkMarkdownFeeler:
+    """Sends markdown as an interactive card, falling back to a text message when
+    the card is refused."""
+
     def __init__(self, *, ink: LarkInk, chromo: LarkChromo) -> None:
         self.ink = ink
         self.chromo = chromo
@@ -566,6 +571,9 @@ class LarkTimelineFeeler(TimelineFeeler):
 
 @dataclass
 class LarkSubagentTimelineState(SubagentTimelineState):
+    """A commissioned child run rendered as one card, patched with its response
+    and terminal status when it settles."""
+
     ink: LarkInk
     activity: SubagentActivity
     chat_id: str

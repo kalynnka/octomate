@@ -1,3 +1,7 @@
+"""What every Octomate MCP server shares: the bearer verifier for scoped API
+tokens, and the docstring projection that keeps a spell's MCP tool and its
+Inkling tool identical."""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

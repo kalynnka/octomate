@@ -7,7 +7,18 @@
   "packages": {
     ".": {
       "component": "octomate",
-      "exclude-paths": ["cli", "protocol", "tests", "docs"]
+      "exclude-paths": [
+        "cli",
+        "protocol",
+        "tests",
+        "docs",
+        "trunkline",
+        ".github",
+        ".vscode",
+        "mkdocs.yml",
+        "AGENTS.md",
+        "claude.md"
+      ]
     },
     "cli": {
       "component": "octomate-cli"

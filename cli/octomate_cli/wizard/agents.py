@@ -1,3 +1,5 @@
+"""The agent tentacles the init wizard offers, and what each says when selected."""
+
 from __future__ import annotations
 
 from rich.console import Console
@@ -7,14 +9,14 @@ from octomate_cli.wizard.base import TentacleSetup
 
 def claude(console: Console) -> str:
     console.print(
-        "Claude uses this desktop account's existing login. Driven sessions disable local customizations; configure tools in Octomate. No setup token is requested."
+        "Claude uses the service account's login. Docker requires a separate container login or explicit credentials. Driven sessions disable local customizations; configure tools in Octomate. No credentials are collected here."
     )
     return "claude"
 
 
 def codex(console: Console) -> str:
     console.print(
-        "Codex uses this desktop account's existing login. Driven sessions disable local plugins, hooks, apps and MCPs; configure tools in Octomate."
+        "Codex uses the service account's login. Docker requires a separate container login. Driven sessions disable local plugins, hooks, apps and MCPs; configure tools in Octomate."
     )
     return "codex"
 

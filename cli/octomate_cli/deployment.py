@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import errno
 import os
 import secrets
@@ -48,6 +49,7 @@ from octomate.config.channels import (
 )
 from octomate.config.database import database_settings
 from octomate.mcp.server import OCTOMATE_MCP_PATH
+from octomate_cli.installation import DeploymentTarget
 from octomate_cli.mcp import McpPreset
 
 ALEMBIC_INI = Path(str(files("octomate").joinpath("migrations", "alembic.ini")))
@@ -67,7 +69,12 @@ CHANNEL_PLACEHOLDERS: dict[str, dict[str, str]] = {
 }
 
 
-def configuration_checklist(agents: list[str], channels: list[str], root: Path) -> str:
+def configuration_checklist(
+    agents: list[str],
+    channels: list[str],
+    root: Path,
+    target: DeploymentTarget = DeploymentTarget.launchd,
+) -> str:
     instructions = [
         "# Complete this service configuration\n",
         "This scaffold validates template structure only. Setup remains incomplete; "
@@ -75,17 +82,24 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
         "## Selected agents\n",
     ]
     if "claude" in agents:
+        login = (
+            "Use the desktop account's native Claude login and Keychain credentials. "
+            "Do not replace that login with a setup token. "
+            if target == DeploymentTarget.launchd
+            else "Authenticate Claude as the service account. In Docker, use the persistent "
+            "agent home or provide credentials explicitly in the container environment; "
+            "the host's Keychain is not available inside the container. "
+        )
         instructions.append(
             "- [ ] Review `config/tentacles.yaml`: `tentacles.claude`, including `permission_mode`. "
-            "Use the desktop account's native Claude login and Keychain credentials. "
-            "Do not replace that login with a setup token. Driven sessions use safe mode: "
+            f"{login}Driven sessions use safe mode: "
             "local instructions, skills, plugins, hooks and MCP connections are disabled. "
             "Configure tools in Octomate and verify them after activation.\n"
         )
     if "codex" in agents:
         instructions.append(
             "- [ ] Review `config/tentacles.yaml`: `tentacles.codex.runtime`, "
-            "`tentacles.codex.permission_mode`. Confirm the desktop "
+            "`tentacles.codex.permission_mode`. Confirm the service "
             "account's native Codex login. Driven sessions disable inherited plugins, "
             "hooks, apps and MCP connections. Configure tools in Octomate, then verify "
             "an actual request through Octomate after activation.\n"
@@ -104,9 +118,13 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
     for channel in channels:
         if channel == "trunkline":
             instructions.append(
-                "- [ ] Trunkline API is enabled in `config/tentacles.yaml`. The frontend "
-                "build is separate: set `tentacles.trunkline.static_dir` to its existing "
-                "build directory to serve it. Create an account after database setup "
+                "- [ ] Trunkline API is enabled in `config/tentacles.yaml`. "
+                + (
+                    "The separate Trunkline container serves the frontend; leave `static_dir` unset on the server. "
+                    if target == DeploymentTarget.docker
+                    else "Build the frontend separately and set `tentacles.trunkline.static_dir` to its existing build directory to serve it. "
+                )
+                + "Create an account after database setup "
                 "and verify console sign-in.\n"
             )
         else:
@@ -136,17 +154,32 @@ def configuration_checklist(agents: list[str], channels: list[str], root: Path) 
             "\n## Before activation\n",
             "- [ ] Keep `.env` private. It contains generated Octomate auth salts; "
             "preparation does not collect channel credentials.\n",
-            "- [ ] Recheck the completed configuration with "
-            f"`octomate service init --prepare --root {shlex.quote(str(root))}` "
-            "without source or selection flags. A successful schema check does not verify "
-            "credentials or live readiness.\n",
-            "- [ ] Review `control/io.octomate.server.plist` before installing it as a GUI "
-            "LaunchAgent. Database initialization, the first account and service activation "
-            "are separate deployment steps. The desktop account must be logged in; "
-            "logging out stops the service, and reboot requires another desktop login.\n",
+            (
+                "- [ ] From the host installation directory, recheck with "
+                "`docker compose run --rm octomate python -m octomate_cli.deployment check`. "
+                "A successful schema check does not verify credentials or live readiness.\n"
+                if target == DeploymentTarget.docker
+                else "- [ ] Recheck the completed configuration with "
+                f"`octomate service init --prepare --target {target.value} --root {shlex.quote(str(root))}` "
+                "without source or selection flags. A successful schema check does not verify "
+                "credentials or live readiness.\n"
+            ),
+            (
+                "- [ ] Review `control/io.octomate.server.plist` before installing it as a GUI "
+                "LaunchAgent. Database initialization, the first account and service activation "
+                "are separate deployment steps. The desktop account must be logged in; "
+                "logging out stops the service, and reboot requires another desktop login.\n"
+                if target == DeploymentTarget.launchd
+                else {
+                    DeploymentTarget.systemd: "- [ ] Review `control/octomate.service`. Initialize the database and create the first account, then install the unit with `systemctl --user`. Enable lingering if it must run without a login.\n",
+                    DeploymentTarget.docker: "- [ ] Review the host's `compose.yaml`. Initialize the database and create the first account. Log agents in with `docker compose run` before starting the service with `docker compose up -d`.\n",
+                    DeploymentTarget.manual: "- [ ] Initialize the database, create the first account and run the server in the foreground.\n",
+                }[target]
+            ),
             "- [ ] After activation, send an actual agent request through Octomate, verify "
-            "a connector tool call configured in Octomate, then restart the GUI service "
-            "and repeat verification. These checks have not run during preparation.\n",
+            "a connector tool call configured in Octomate, then restart the "
+            + ("GUI service " if target == DeploymentTarget.launchd else "service ")
+            + "and repeat verification. These checks have not run during preparation.\n",
         ]
     )
     return "\n".join(instructions)
@@ -157,6 +190,7 @@ def prepare(
     channels: list[str],
     agents: list[str],
     mcps: list[McpPreset] | None = None,
+    target: DeploymentTarget = DeploymentTarget.launchd,
 ) -> None:
     if not agents or any(
         name not in {"claude", "codex", "deepseek"} for name in agents
@@ -201,7 +235,11 @@ def prepare(
             for mcp in mcps
         }
     )
-    encryption_key = secrets.token_urlsafe(32) if configured_mcps else None
+    encryption_key = (
+        base64.urlsafe_b64encode(secrets.token_bytes(32)).decode()
+        if configured_mcps
+        else None
+    )
     routes = list(dict.fromkeys(agents))
     configured_channels: dict[str, ChannelConfigVariant] = {}
     for channel in channels:
@@ -240,8 +278,10 @@ def prepare(
     configured_tentacles.update(configured_channels)
     configured_tentacles.update(configured_mcps)
     config = OctomateConfig(
-        host=IPv4Address("127.0.0.1"),
-        port=port,
+        host=IPv4Address(
+            "0.0.0.0" if target == DeploymentTarget.docker else "127.0.0.1"
+        ),
+        port=8000 if target == DeploymentTarget.docker else port,
         tentacles=configured_tentacles,
         auth=AuthConfig(
             access_token_salt=SecretStr(salts["access_token_salt"]),
@@ -309,7 +349,7 @@ def prepare(
         )
         dotenv.chmod(0o600)
         checklist = staging / "CONFIGURATION.md"
-        checklist.write_text(configuration_checklist(agents, channels, root))
+        checklist.write_text(configuration_checklist(agents, channels, root, target))
         checklist.chmod(0o600)
         subprocess.run(
             [sys.executable, "-m", "octomate_cli.deployment", "check"],
@@ -489,6 +529,9 @@ def main() -> None:
     )
     parser.add_argument("--port", type=int)
     parser.add_argument(
+        "--target", type=DeploymentTarget, choices=list(DeploymentTarget)
+    )
+    parser.add_argument(
         "--agent", action="append", choices=("claude", "codex", "deepseek")
     )
     parser.add_argument(
@@ -514,15 +557,29 @@ def main() -> None:
             if args.mcp_presets
             else []
         )
-        prepare(args.port, args.channel, args.agent, mcps)
+        prepare(
+            args.port,
+            args.channel,
+            args.agent,
+            mcps,
+            args.target or DeploymentTarget.launchd,
+        )
         return
-    if args.port is not None or args.agent or args.channel or args.mcp_presets:
+    if (
+        args.port is not None
+        or args.agent
+        or args.channel
+        or args.mcp_presets
+        or args.target
+    ):
         parser.error(
-            "--port, --agent, --channel and --mcp-presets apply only to prepare"
+            "--port, --agent, --channel, --mcp-presets and --target apply only to prepare"
         )
     config = OctomateConfig()
     database = database_path()
-    if not isinstance(config.host, IPv4Address) or config.host.is_unspecified:
+    if not isinstance(config.host, IPv4Address) or (
+        config.host.is_unspecified and action not in {"check", "ready"}
+    ):
         raise ValueError("The managed server requires an explicit IPv4 bind address.")
     if action == "ready":
         head = ScriptDirectory.from_config(Config(str(ALEMBIC_INI))).get_current_head()

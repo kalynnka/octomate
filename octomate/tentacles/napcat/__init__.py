@@ -1,3 +1,5 @@
+"""NapCat (OneBot) channel tentacle."""
+
 from octomate.tentacles.napcat.base import NapcatTentacle
 from octomate.tentacles.napcat.chromo import NapcatChromo
 from octomate.tentacles.napcat.ink import NapcatInk

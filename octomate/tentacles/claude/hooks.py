@@ -1,3 +1,5 @@
+"""The hook payload POSTed back from a native Claude Code session."""
+
 from __future__ import annotations
 
 from pathlib import Path

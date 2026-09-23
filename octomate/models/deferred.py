@@ -1,3 +1,5 @@
+"""Deferred action batches and their polymorphic actions."""
+
 from __future__ import annotations
 
 import uuid
@@ -157,12 +159,16 @@ class DeferredAction(Base, TransmuterProxiedMixin):
 
 
 class DeferredQuestionAction(DeferredAction):
+    """A question row."""
+
     __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_identity": "question",
     }
 
 
 class DeferredApprovalAction(DeferredAction):
+    """An approval row."""
+
     __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_identity": "approval",
     }

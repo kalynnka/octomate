@@ -151,6 +151,46 @@ export function ControlRail() {
           )
         })}
       </div>
+      <a
+        href="https://kalynnka.github.io/octomate/"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Documentation (opens in a new tab)"
+        aria-label="Documentation (opens in a new tab)"
+        className="hov-wash"
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 12,
+          padding: '0 16px 0 13px',
+          height: 30,
+          width: '100%',
+          boxSizing: 'border-box',
+          flexShrink: 0,
+          borderTop: '1px solid var(--line-divider)',
+          borderLeft: '3px solid transparent',
+          textDecoration: 'none',
+        }}
+      >
+        <span
+          style={{
+            ...mono(10, 700),
+            letterSpacing: '.1em',
+            color: 'var(--fg-3)',
+            width: 26,
+            flexShrink: 0,
+          }}
+        >
+          {`D0${defs.length + 1}`}
+        </span>
+        <span style={{ ...mono(12, 500), color: 'var(--fg-2)', flexShrink: 0 }}>
+          Docs
+        </span>
+        <span style={{ flex: 1 }} />
+        <span style={{ ...mono(8), color: 'var(--fg-3)', ...ellipsis, minWidth: 0, flexShrink: 1 }}>
+          new tab <span aria-hidden="true">↗</span>
+        </span>
+      </a>
       <span
         onMouseDown={dragStart}
         title="Drag to resize"

@@ -1,3 +1,9 @@
+"""The dsh session-event stream as pydantic-ai parts and events.
+
+`DeepseekRunAccumulator` folds each mux frame into stream events for the channel
+feelers and persisted `ModelMessage`s, keeping the raw frames as replay metadata.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
@@ -78,6 +84,8 @@ json_object_adapter = TypeAdapter(JsonObject)
 
 @dataclass
 class StreamingPartState:
+    """A text or thinking part in flight, with the frames folded into it."""
+
     index: int
     part: TextPart | ThinkingPart
     events: list[JsonValue] = field(default_factory=list)
@@ -85,6 +93,12 @@ class StreamingPartState:
 
 @dataclass
 class NativeToolState:
+    """A dsh tool call in flight.
+
+    Its live and native call parts, and the argument JSON and frames gathered
+    before its result lands.
+    """
+
     live_call: ToolCallPart
     native_call: NativeToolCallPart
     # The raw argument JSON accumulated from tool-call deltas; the `tool/call`

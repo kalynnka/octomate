@@ -1,9 +1,13 @@
+"""Block Kit `action_id` values the Slack tentacle registers handlers for."""
+
 from __future__ import annotations
 
 from enum import StrEnum
 
 
 class SlackBlockAction(StrEnum):
+    """The `action_id` of each interactive element Octomate posts to Slack."""
+
     APPROVAL_APPROVE = "octomate_approval_approve"
     APPROVAL_DENY = "octomate_approval_deny"
     ASK_QUESTION_BACK = "octomate_question_back"

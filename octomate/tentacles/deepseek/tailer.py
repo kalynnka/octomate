@@ -1,3 +1,9 @@
+"""Assembly of native dsh turns from a streamed session log.
+
+History entries streamed in by `octomate deepseek tail` feed `DeepseekEventTailer`,
+which commits each completed turn as an `ExternalAgentRun`.
+"""
+
 from __future__ import annotations
 
 import asyncio

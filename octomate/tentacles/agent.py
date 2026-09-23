@@ -1,3 +1,6 @@
+"""The agent tentacle base: pydantic-ai-style run entrypoints, subagent runs, and
+the session bookkeeping every runtime shares."""
+
 from __future__ import annotations
 
 import asyncio
@@ -69,9 +72,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # Routing metadata supplied by the harness, or config when it is unavailable.
     claims: Mapping[AgentRouteModelName, Claim] = MappingProxyType({})
 
-    # Whether this agent's driven turns offer the gateway spells — the agent's side
-    # of the switch; the channel-agent connection's `gateway` is the other, and both
-    # must be on. Subclasses assign it from their config in `__init__`.
+    # Whether this agent's driven turns offer the gateway spells; the only switch,
+    # read by `ReflexDeps.gateway_agents`. Subclasses assign it from their config
+    # in `__init__`.
     gateway: bool = True
 
     # Native hook/stream identity for this runtime, shared by its configured agents.
@@ -436,12 +439,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
         A subagent run is addressed at a pre-ensured conversation its spawner
         owns (`conversation_id` is required, not optional), and it is fully
-        non-interactive — every human interaction declines at once. The caller
-        controls `capabilities` outright: a subagent mounts exactly what its
-        spawner passes, never the tentacle's own set (inkling overrides to keep
-        its defaults out; claude/codex ignore capabilities entirely). The
-        spawner passes its framing as `instructions` and stamps the run tree
-        after the report returns.
+        non-interactive — every human interaction declines at once. What
+        `capabilities` mounts is the runtime's to decide: inkling adds the
+        spawner's set to its own, claude reads it only for a `GatewayCapability`,
+        and codex ignores it. The spawner passes its framing as `instructions`
+        and stamps the run tree after the report returns.
         """
         return await self.run(
             user_prompt,

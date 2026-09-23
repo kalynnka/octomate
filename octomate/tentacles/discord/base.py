@@ -1,3 +1,9 @@
+"""Discord channel tentacle.
+
+Runs a discord.py Gateway client, hands messages to the ingest pipeline and
+routes button and modal interactions through the component router.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -45,6 +51,9 @@ logger = logging.getLogger(__name__)
 
 
 class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
+    """Discord channel: a long-lived Gateway connection translated into core
+    events, its approval and question components resolved by the router."""
+
     brand_color: ClassVar[Style | None] = Style(color="#5865F2", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(

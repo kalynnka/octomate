@@ -1,3 +1,10 @@
+"""The Inkling agent tentacle.
+
+A pydantic-ai `Agent` run through Octomate's react loop, with the capabilities it
+mounts per run and the deferral chain that decides who answers its approvals and
+questions.
+"""
+
 from __future__ import annotations
 
 import asyncio

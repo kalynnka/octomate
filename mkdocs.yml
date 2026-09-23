@@ -1,0 +1,229 @@
+site_name: Octomate
+site_description: Connect agents, channels and tools through tentacles. Bring your agents wherever you need them, with shared history and control.
+site_url: https://kalynnka.github.io/octomate/
+repo_url: https://github.com/kalynnka/octomate
+repo_name: kalynnka/octomate
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; Octomate contributors
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.tabs.link
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Installation:
+      - installation/index.md
+      - Server:
+          - Quickstart: installation/quickstart.md
+          - Requirements: installation/requirements.md
+      - Deployments:
+          - Overview: installation/deployment.md
+          - macOS: installation/macos.md
+          - Linux: installation/linux.md
+          - Docker: installation/docker.md
+          - Manual setup: installation/server.md
+      - Configuration:
+          - Paths: installation/configuration.md
+          - Server: installation/settings.md
+          - Tentacles: installation/tentacles.md
+          - Projects: installation/projects.md
+      - Accounts and tokens: installation/accounts.md
+      - Client:
+          - installation/clients/index.md
+          - Quick start: installation/clients/quickstart.md
+          - Claude Code: installation/clients/claude-code.md
+          - Codex: installation/clients/codex.md
+          - DeepSeek Harness: installation/clients/deepseek.md
+      - Operations:
+          - Networking: installation/networking.md
+          - Observability: installation/observability.md
+          - Upgrades and backups: installation/upgrading.md
+  - Tentacles:
+      - tentacles/index.md
+      - Agents:
+          - usage/agents/index.md
+          - Claude Code: usage/agents/claude-code.md
+          - Codex: usage/agents/codex.md
+          - DeepSeek Harness: usage/agents/deepseek.md
+          - Inkling: usage/agents/inkling.md
+      - Channels:
+          - usage/channels/index.md
+          - Slack: usage/channels/slack.md
+          - Lark / Feishu: usage/channels/lark.md
+          - Discord: usage/channels/discord.md
+          - Trunkline: usage/channels/trunkline.md
+      - MCP connectors:
+          - tentacles/mcp.md
+  - Usage:
+      - usage/index.md
+      - Sessions and permissions:
+          - Start a conversation: usage/agents/sessions.md
+          - Permission modes: usage/agents/permissions.md
+      - Conversations:
+          - Threads and chat rooms: usage/threads.md
+          - Moving a conversation: usage/gateway.md
+          - Approvals and questions: usage/actions.md
+          - History: usage/history.md
+      - Projects and workspaces:
+          - Projects: usage/projects.md
+          - Workspaces: usage/workspaces.md
+      - MCP:
+          - Octomate MCP: usage/mcp/octomate.md
+          - MCP proxy: usage/mcp/proxy.md
+  - Concepts:
+      - concepts/index.md
+      - Design:
+          - The reflex graph: concepts/reflex.md
+          - Feelers: concepts/feelers.md
+          - The tentacle model: concepts/tentacles.md
+          - MCP design: concepts/mcp.md
+      - Storage:
+          - Persistence: concepts/persistence.md
+          - Workspace design: concepts/workspaces.md
+      - Vocabulary: concepts/vocabulary.md
+  - Contributing:
+      - contributing/index.md
+      - Development:
+          - Set up: contributing/setup.md
+          - Checks and tests: contributing/checks.md
+          - Repository layout: contributing/layout.md
+      - Extending Octomate:
+          - Adding a channel tentacle: contributing/channel-tentacle.md
+          - Adding an agent tentacle: contributing/agent-tentacle.md
+          - Adding an MCP tentacle: contributing/mcp-tentacle.md
+      - Project workflow:
+          - Documentation: contributing/documentation.md
+          - Releases: contributing/releases.md
+          - Plans and issues: contributing/planning.md
+  - API Reference:
+      - api/index.md
+      - Configuration:
+          - api/config.md
+          - The deployment: api/config/deployment.md
+          - Agents: api/config/agents.md
+          - Channels: api/config/channels.md
+          - MCP connectors: api/config/mcp.md
+          - Accounts and OAuth: api/config/auth.md
+          - Projects and workspaces: api/config/projects.md
+          - Providers and models: api/config/providers.md
+          - Observability: api/config/observability.md
+      - Tentacle interfaces:
+          - api/tentacles.md
+          - Base: api/tentacles/base.md
+          - Native session hooks: api/tentacles/hooks.md
+          - Feelers: api/tentacles/feelers.md
+      - Reflex graph:
+          - api/reflex.md
+          - Graph, state and dependencies: api/reflex/graph.md
+          - Nodes: api/reflex/nodes.md
+      - Managers:
+          - api/managers.md
+          - Base manager: api/managers/base.md
+          - Threads and conversations: api/managers/conversations.md
+          - Users and accounts: api/managers/users.md
+          - Projects and workspaces: api/managers/workspaces.md
+          - MCP and OAuth: api/managers/mcp.md
+      - Schemas:
+          - api/schemas.md
+          - Conversations: api/schemas/conversations.md
+          - The graph’s vocabulary: api/schemas/graph.md
+          - People: api/schemas/users.md
+          - Projects, MCP and the rest: api/schemas/resources.md
+      - Capabilities:
+          - api/capabilities.md
+          - Tools: api/capabilities/tools.md
+          - Harness: api/capabilities/harness.md
+      - MCP and OAuth:
+          - api/mcp.md
+          - The served server: api/mcp/server.md
+          - OAuth: api/mcp/oauth.md
+      - CLI:
+          - api/cli.md
+          - Commands: api/cli/commands.md
+          - Native integrations: api/cli/integrations.md
+          - Hook entry points and streaming: api/cli/streaming.md
+          - Maintenance: api/cli/maintenance.md
+      - Protocol:
+          - api/protocol.md
+          - Configuration: api/protocol/config.md
+          - Transcript streaming: api/protocol/stream.md
+          - Deployment: api/protocol/deployment.md
+
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    anchors: warn
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [., cli, protocol]
+          options:
+            allow_inspection: false
+            show_root_heading: true
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            docstring_style: google
+            members_order: source
+            show_if_no_docstring: true
+            filters: ["!^_"]
+            extensions:
+              - griffe_pydantic:
+                  schema: false
+
+extra_css:
+  - stylesheets/code.css

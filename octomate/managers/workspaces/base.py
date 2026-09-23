@@ -1,3 +1,6 @@
+"""Thread workspaces: the forks of a project mirror a run happens in, and their
+lifecycle from open to save to release."""
+
 from __future__ import annotations
 
 import asyncio

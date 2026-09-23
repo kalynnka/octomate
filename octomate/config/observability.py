@@ -1,3 +1,5 @@
+"""Logging levels and Logfire export settings."""
+
 from __future__ import annotations
 
 from typing import Annotated, Literal
@@ -11,6 +13,8 @@ LogLevel = Annotated[
 
 
 class LoggingConfig(BaseModel):
+    """Console log levels: the root level and per-logger overrides."""
+
     level: LogLevel = "INFO"
     loggers: dict[str, LogLevel] = Field(
         default_factory=dict,
@@ -43,6 +47,9 @@ class LogfireInstrumentConfig(BaseModel):
 
 
 class LogfireConfig(BaseModel):
+    """Logfire export: service identity, where spans go, and per-library
+    instrumentation."""
+
     service_name: str = "octomate"
     environment: str = "development"
     send_to_logfire: bool = False

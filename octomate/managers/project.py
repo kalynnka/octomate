@@ -1,3 +1,5 @@
+"""The project registry: the code locations declared in the `projects:` block."""
+
 from __future__ import annotations
 
 from collections.abc import Iterable

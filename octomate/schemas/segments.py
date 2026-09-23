@@ -1,3 +1,6 @@
+"""Message segments: the typed pieces — text, mentions, images, markdown, replies,
+files, cards — a message is made of on every platform."""
+
 from __future__ import annotations
 
 import mimetypes
@@ -13,10 +16,14 @@ from octomate.types.json import JsonObject, JsonValue
 
 
 class TextData(TypedDict):
+    """The text of a text segment."""
+
     text: str
 
 
 class AtData(BaseModel):
+    """The mentioned user's platform id, and a display name when known."""
+
     user_id: str
     name: str | None = None
 
@@ -47,10 +54,14 @@ class ImageData(BaseModel):
 
 
 class MarkdownData(TypedDict):
+    """The markdown of a markdown segment."""
+
     text: str
 
 
 class ReplyData(TypedDict):
+    """The replied-to message's id, with its content and author when known."""
+
     id: str
     content: NotRequired[str]
     # Resolved platform author, when known; lets a reply address that user without
@@ -59,12 +70,16 @@ class ReplyData(TypedDict):
 
 
 class FileData(BaseModel):
+    """A local file path, the name it is shown as, and its size in bytes."""
+
     file: str
     name: str = ""
     size: int = 0
 
 
 class CardData(BaseModel):
+    """A platform-native card payload as JSON."""
+
     payload: JsonObject
 
 
@@ -120,7 +135,7 @@ class ImageSegment(Segment):
 class MarkdownSegment(Segment):
     """Markdown-formatted text. Set data.text to the markdown content.
     Platforms that support markdown render it natively; others strip it to plain text.
-    Images can be embedded inline using ![alt](image_key) syntax — no separate ImageSegment needed."""
+    Images can be embedded inline with `![alt](image_key)`; no separate ImageSegment is needed."""
 
     type: Literal["markdown"] = "markdown"
     data: MarkdownData
@@ -145,6 +160,9 @@ class ReplySegment(Segment):
 
 
 class FileSegment(Segment):
+    """Send a file. Set data.file to a local file path and data.name to the name it
+    is shown as."""
+
     type: Literal["file"] = "file"
     data: FileData
 
@@ -163,6 +181,9 @@ CARD_TEXT_KEYS = frozenset({"text", "content", "title", "alt_text"})
 
 
 class CardSegment(Segment):
+    """A platform-native card. Set data.payload to the card JSON the platform
+    renders."""
+
     type: Literal["card"] = "card"
     data: CardData
 

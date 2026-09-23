@@ -1,3 +1,6 @@
+"""An SDK transport that runs the Claude CLI on a remote host over SSH. Parked:
+nothing constructs it while remote runs are off — see `ClaudeCodeConfig.ssh`."""
+
 from __future__ import annotations
 
 import shlex

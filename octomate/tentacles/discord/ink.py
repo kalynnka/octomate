@@ -1,3 +1,5 @@
+"""Discord transport over discord.py: sending, editing, typing and thread creation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 
 class DiscordSendKwargs(TypedDict, total=False):
+    """The keyword arguments `send_message` passes to `Messageable.send`."""
+
     files: list[discord.File]
     allowed_mentions: discord.AllowedMentions
     reference: discord.PartialMessage
@@ -31,6 +35,9 @@ class DiscordSendKwargs(TypedDict, total=False):
 
 
 class DiscordInk(Ink[DiscordOutboundMessage]):
+    """Discord transport over a logged-in discord.py client; edits a message in
+    place for streaming and opens a public thread for a sub-thread."""
+
     def __init__(
         self,
         client: discord.Client,

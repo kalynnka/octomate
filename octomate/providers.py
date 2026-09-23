@@ -1,3 +1,6 @@
+"""Model construction from config: the registry that builds pydantic-ai models and
+providers from `ProvidersConfig`, and the httpx log filter scoped to their hosts."""
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,6 @@
+"""Tool-level capabilities: reporting a failed tool call to the model instead of
+ending the turn."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

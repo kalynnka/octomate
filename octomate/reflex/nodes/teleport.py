@@ -1,3 +1,6 @@
+"""The node that performs a `teleport`: carries the running agent's history
+somewhere else and resumes it there."""
+
 from __future__ import annotations
 
 import logging

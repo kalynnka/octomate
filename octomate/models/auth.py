@@ -1,3 +1,5 @@
+"""Local account tables: invitations, sessions, profile-link sessions, API keys."""
+
 from __future__ import annotations
 
 import uuid
@@ -15,6 +17,8 @@ from octomate.types.auth import ApiKeyScope
 
 
 class UserInvitation(Base, TransmuterProxiedMixin):
+    """A single-use registration invitation."""
+
     __tablename__ = "user_invitations"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
@@ -37,6 +41,8 @@ class UserInvitation(Base, TransmuterProxiedMixin):
 
 
 class UserSession(Base, TransmuterProxiedMixin):
+    """A signed-in session's token hashes and deadlines."""
+
     __tablename__ = "user_sessions"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
@@ -114,6 +120,8 @@ class LinkProfileSession(Base, TransmuterProxiedMixin):
 
 
 class UserApiKey(Base, TransmuterProxiedMixin):
+    """A personal API key's hash, prefix and scopes."""
+
     __tablename__ = "user_api_keys"
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)

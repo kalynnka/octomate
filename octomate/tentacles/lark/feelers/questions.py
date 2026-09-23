@@ -1,3 +1,5 @@
+"""Lark question wizard: one interactive card paged through a batch of questions."""
+
 from __future__ import annotations
 
 import json
@@ -38,6 +40,9 @@ LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
 
 
 class LarkAskQuestionFeeler(QuestionFeeler):
+    """The wizard as one interactive card: a form with choice buttons, a text
+    input and Back, Next or Submit for the page shown."""
+
     def __init__(self, ink: LarkInk) -> None:
         self.ink = ink
 

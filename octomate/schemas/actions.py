@@ -1,3 +1,6 @@
+"""Message-level action payloads: the composed agent message, confirmations,
+questions and todos."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -19,6 +22,8 @@ class AgentMessage(BaseModel):
 
 
 class ConfirmAction(BaseModel):
+    """A pending confirmation of a tool call, with its approvers and expiry."""
+
     confirmation_id: str
     conversation_address: ChannelAddress
     tool_name: str
@@ -34,6 +39,8 @@ class ConfirmAction(BaseModel):
 
 
 class QuestionAction(BaseModel):
+    """A pending question with its options and expiry."""
+
     question_id: str
     conversation_address: ChannelAddress
     text: str
@@ -45,12 +52,16 @@ class QuestionAction(BaseModel):
 
 
 class QuestionResponse(BaseModel):
+    """A user's answer to a question."""
+
     question_id: str
     answer: str
     responder_id: str
 
 
 class TodoAction(BaseModel):
+    """A todo item as a message-level action."""
+
     todo_id: str
     title: str
     active_form: str = ""

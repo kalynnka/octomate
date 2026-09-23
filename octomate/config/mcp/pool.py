@@ -1,7 +1,11 @@
+"""Idle eviction for pooled MCP clients."""
+
 from pydantic import BaseModel, Field
 
 
 class McpPoolConfig(BaseModel):
+    """Idle eviction for pooled MCP clients."""
+
     idle_timeout: float = Field(
         default=60 * 60.0,
         gt=0,

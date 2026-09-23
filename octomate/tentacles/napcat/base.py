@@ -1,3 +1,9 @@
+"""NapCat channel tentacle.
+
+Holds a reconnecting OneBot WebSocket connection and hands every frame it reads
+to the ingest pipeline.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 
 class NapcatTentacle(ChannelTentacle[str | bytes, NapcatOutboundMessage]):
+    """NapCat channel: a reconnecting OneBot WebSocket read into core events, with
+    plain-text approvals and questions and no streaming."""
+
     brand_color: ClassVar[Style | None] = Style(color="#6A828B", bold=True)
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(direct_message=True)
 

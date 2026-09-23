@@ -1,3 +1,5 @@
+"""NapCat translation: OneBot frames to `MessageEvent`, segments to OneBot messages."""
+
 from __future__ import annotations
 
 import base64
@@ -37,6 +39,9 @@ async def inline_base64(path: Path) -> str:
 
 
 class NapcatChromo(Chromo[str | bytes, NapcatOutboundMessage]):
+    """NapCat translation: message frames decoded, action echoes dropped, outbound
+    markdown stripped to plain text."""
+
     async def sip(self, raw: str | bytes) -> MessageEvent | None:
         try:
             frame = inbound_adapter.validate_json(raw)

@@ -1,3 +1,5 @@
+"""Typed lines of a Claude Code transcript on disk, and where Claude files them."""
+
 from __future__ import annotations
 
 import logging
@@ -37,6 +39,8 @@ class TranscriptSessionLine(TranscriptSchema):
 
 
 class TranscriptUserMessage(TranscriptSchema):
+    """The `message` of a user line: a plain prompt, or its raw content blocks."""
+
     role: Literal["user"]
     # Raw blocks, not anthropic `ContentBlockParam`: the input-block union's smart
     # validation lazily wraps a tool-result's inner string content in a char-by-char
@@ -45,6 +49,8 @@ class TranscriptUserMessage(TranscriptSchema):
 
 
 class TranscriptUserLine(TranscriptSessionLine):
+    """A user line: the prompt opening a turn, or a tool-result line within one."""
+
     type: Literal["user"]
     message: TranscriptUserMessage
     prompt_id: str = Field(alias="promptId")
@@ -58,6 +64,8 @@ class TranscriptUserLine(TranscriptSessionLine):
 
 
 class TranscriptAssistantLine(TranscriptSessionLine):
+    """An assistant line: the API `Message` Claude returned."""
+
     type: Literal["assistant"]
     message: AnthropicMessage
     request_id: str | None = Field(default=None, alias="requestId")
@@ -65,6 +73,8 @@ class TranscriptAssistantLine(TranscriptSessionLine):
 
 
 class TranscriptSystemLine(TranscriptSessionLine):
+    """A system line: API retries, hook results, and other session notices."""
+
     type: Literal["system"]
     subtype: str
     level: str
@@ -87,17 +97,23 @@ class TranscriptSystemLine(TranscriptSessionLine):
 
 
 class TranscriptAttachmentLine(TranscriptSessionLine):
+    """An attachment line, its payload kept raw."""
+
     type: Literal["attachment"]
     attachment: JsonObject
 
 
 class TranscriptFileBackup(TranscriptSchema):
+    """One tracked file's backup in a file-history snapshot."""
+
     backup_file_name: str | None = Field(alias="backupFileName")
     backup_time: AwareDatetime = Field(alias="backupTime")
     version: int
 
 
 class TranscriptFileHistorySnapshot(TranscriptSchema):
+    """The tracked-file backups taken as of one message."""
+
     message_id: str = Field(alias="messageId")
     timestamp: AwareDatetime
     tracked_file_backups: dict[str, TranscriptFileBackup] = Field(
@@ -106,6 +122,8 @@ class TranscriptFileHistorySnapshot(TranscriptSchema):
 
 
 class TranscriptFileHistorySnapshotLine(TranscriptSchema):
+    """A file-history-snapshot line: the tracked-file backups as of one message."""
+
     type: Literal["file-history-snapshot"]
     message_id: str = Field(alias="messageId")
     is_snapshot_update: bool = Field(alias="isSnapshotUpdate")
@@ -121,6 +139,8 @@ class TranscriptQueueOperationLine(TranscriptSchema):
 
 
 class TranscriptAiTitleLine(TranscriptSchema):
+    """An ai-title line: the title Claude generated for the session."""
+
     type: Literal["ai-title"]
     session_id: str = Field(alias="sessionId")
     ai_title: str = Field(alias="aiTitle")
@@ -140,12 +160,16 @@ class TranscriptModeLine(TranscriptSchema):
 
 
 class TranscriptPermissionModeLine(TranscriptSchema):
+    """A permission-mode line: the mode the session switched to."""
+
     type: Literal["permission-mode"]
     session_id: str = Field(alias="sessionId")
     permission_mode: str = Field(alias="permissionMode")
 
 
 class TranscriptPullRequestLine(TranscriptSchema):
+    """A pr-link line: a pull request linked to the session."""
+
     type: Literal["pr-link"]
     session_id: str = Field(alias="sessionId")
     pr_number: int = Field(alias="prNumber")

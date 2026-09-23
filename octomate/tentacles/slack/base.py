@@ -1,3 +1,9 @@
+"""Slack channel tentacle.
+
+Runs the Socket Mode connection, hands message events to the ingest pipeline and
+resolves approval and question block actions into deferred-action responses.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -95,6 +101,9 @@ use `gateway_send`.
 class SlackTentacle(
     ChannelTentacle[SlackMessageEvent, SlackOutboundMessage], OAuthMcpTentacle
 ):
+    """Slack channel: a long-lived Socket Mode connection translated into core
+    events, and when configured the OAuth-backed MCP offering Slack's own tools."""
+
     brand_color: ClassVar[Style | None] = Style(color="#746576", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(

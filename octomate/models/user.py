@@ -1,3 +1,5 @@
+"""The users and channel profiles tables."""
+
 from __future__ import annotations
 
 import uuid
@@ -12,6 +14,8 @@ from octomate.models.base import Base, SecretString
 
 
 class User(Base, TransmuterProxiedMixin):
+    """A registered human; one row per account."""
+
     __tablename__ = "users"
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
     username: Mapped[str] = mapped_column(
@@ -44,6 +48,8 @@ class User(Base, TransmuterProxiedMixin):
 
 
 class UserProfile(Base, TransmuterProxiedMixin):
+    """One platform identity on a channel, owned by a user or left a visitor."""
+
     __tablename__ = "user_profiles"
     __table_args__ = (
         UniqueConstraint(

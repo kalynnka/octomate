@@ -1,3 +1,6 @@
+"""The node that performs a `scheme`: hands this turn's brief to a person's direct
+messages."""
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,6 @@
+"""The thread ledger tables: threads, messages, bindings, handoffs, and the
+full-text index."""
+
 from __future__ import annotations
 
 import uuid

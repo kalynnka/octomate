@@ -1,3 +1,6 @@
+"""The tentacle base class and the console log formatting that tints each
+tentacle's lines."""
+
 from __future__ import annotations
 
 import logging

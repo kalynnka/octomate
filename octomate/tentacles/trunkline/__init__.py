@@ -1,3 +1,5 @@
+"""The Trunkline web console channel."""
+
 from octomate.tentacles.trunkline.base import (
     TrunklineChromo,
     TrunklineDirective,

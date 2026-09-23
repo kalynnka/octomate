@@ -1,3 +1,6 @@
+"""The node that runs the agent: records the handoff, drives the run onto the
+channel's timeline, and acts on whatever decision or deferral the run left."""
+
 from __future__ import annotations
 
 import logging
@@ -34,6 +37,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
+    """Runs the summoned agent on the target channel and acts on how the run ends:
+    a reply, a spell to perform, or a deferral to park."""
+
     resume_batch_id: uuid.UUID | None = None
     # Set by Teleport to resume the same agent where it landed, with its pending
     # call resolved — against the forked history, or in place.

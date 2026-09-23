@@ -1,3 +1,5 @@
+"""Discord approval messages, each with persistent Approve and Deny buttons."""
+
 from __future__ import annotations
 
 import re
@@ -30,6 +32,9 @@ class DiscordApprovalButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.View]],
     template=APPROVAL_CUSTOM_ID_TEMPLATE,
 ):
+    """A persistent Approve or Deny button, its `custom_id` naming the batch and
+    action it decides."""
+
     def __init__(
         self,
         batch_id: uuid.UUID,
@@ -102,6 +107,8 @@ class DiscordApprovalButton(
 
 
 class DiscordApprovalFeeler(ApprovalFeeler):
+    """One message per approval with its Approve and Deny buttons."""
+
     def __init__(self, ink: DiscordInk) -> None:
         self.ink = ink
 

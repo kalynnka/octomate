@@ -1,3 +1,10 @@
+"""The Codex agent tentacle.
+
+Driven runs go over pooled Codex app-server clients, with server requests bridged
+to a human; native sessions arrive through the hook and stream routes mounted here,
+into `CodexHookIngest` and `CodexTranscriptTailer`.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -155,6 +162,8 @@ DRIVEN_CONFIG_OVERRIDES = (
 
 @dataclass
 class PooledCodexClient:
+    """One conversation's warm Codex app-server client and what closes with it."""
+
     client: AsyncCodex
     resources: contextlib.AsyncExitStack
     # The live SDK thread handle for this Octomate thread; created on first turn and
@@ -288,6 +297,12 @@ class CodexClientPool:
 
 @dataclass
 class CodexBridgeContext:
+    """The driven turn a Codex server request is answered for.
+
+    Held per conversation while the turn runs; SDK transport threads read it for the
+    loop and context they otherwise lack.
+    """
+
     loop: asyncio.AbstractEventLoop
     conversation: Conversation
     conversation_address: ChannelAddress
@@ -299,11 +314,15 @@ class CodexBridgeContext:
 
 # The pinned SDK generates notifications but omits this server-request shape.
 class CodexInputOption(TypedDict):
+    """One choice offered on a Codex user-input question."""
+
     label: str
     description: str
 
 
 class CodexInputQuestion(TypedDict):
+    """One question in a Codex user-input request, with its optional choices."""
+
     id: str
     header: str
     question: str
@@ -311,6 +330,8 @@ class CodexInputQuestion(TypedDict):
 
 
 class CodexInputRequest(TypedDict):
+    """The params of Codex's `item/tool/requestUserInput` server request."""
+
     itemId: str
     questions: list[CodexInputQuestion]
 

@@ -1,3 +1,5 @@
+"""Builder for Slack's `card` block."""
+
 from __future__ import annotations
 
 from octomate.tentacles.slack.schema import SlackBlock

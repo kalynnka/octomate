@@ -1,3 +1,5 @@
+"""Slack Web API client: messages, file uploads and `chat.startStream` streaming."""
+
 from __future__ import annotations
 
 import logging
@@ -38,6 +40,9 @@ SLACK_MARKDOWN_CHUNKER = MarkdownChunker(limit=SLACK_MARKDOWN_TEXT_LIMIT)
 
 
 class SlackInk(Ink[SlackOutboundMessage]):
+    """Slack Web API transport over one pooled aiohttp session, with chat streams
+    for the timeline and a file upload for a reply too long for a message."""
+
     def __init__(self, bot_token: SecretStr) -> None:
         self.bot_token = bot_token
         token = bot_token.get_secret_value()

@@ -1,3 +1,6 @@
+"""The host's managers, each owning one persisted concern: conversations, deferred
+actions, OAuth, projects, threads, todos and users."""
+
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.oauth import OAuthManager

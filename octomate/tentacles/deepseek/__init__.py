@@ -1,3 +1,5 @@
+"""DeepSeek Harness (dsh) tentacle."""
+
 from octomate.tentacles.deepseek.adapter import DeepseekRunAccumulator
 from octomate.tentacles.deepseek.base import DeepseekTentacle
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
