@@ -8,16 +8,18 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from octomate_protocol.deepseek import (
+    ClientRequest,
+    ErrResult,
+    OkResult,
+    RpcError,
+    RpcResult,
+)
 from pydantic import HttpUrl, SecretStr
 
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.wire import (
-    ClientRequest,
-    ErrResult,
     MuxFrame,
-    OkResult,
-    RpcError,
-    RpcResult,
     SessionAssistantFrame,
 )
 from octomate.types.json import JsonObject
@@ -59,6 +61,12 @@ async def test_cookie_exchange_authenticates_http_and_websocket_requests() -> No
         ) as connect:
             connect.return_value.recv.return_value = '{"type":"item","streamId":"$events","value":{"type":"ready","clientId":"test-client"}}'
             await client.open_mux()
+        assert json.loads(connect.return_value.send.call_args.args[0]) == {
+            "type": "open",
+            "streamId": "$events",
+            "endpoint": "$events",
+            "payload": {"args": {}},
+        }
         connect.assert_awaited_once_with(
             "ws://127.0.0.1:3080/api/remote.mux",
             additional_headers={"Cookie": "dsh-auth-test=signed-cookie"},
@@ -178,8 +186,20 @@ async def test_session_stream_waits_for_snapshot_and_keeps_chunks_cursorless() -
         await asyncio.sleep(0)
         assert not follow.done()
         opened = json.loads(socket.send.call_args.args[0])
-        assert opened["endpoint"] == "session/follow"
-        assert opened["payload"]["args"]["request"]["assistantStream"] is True
+        assert opened == {
+            "type": "open",
+            "streamId": "session-1",
+            "endpoint": "session/follow",
+            "payload": {
+                "args": {
+                    "request": {
+                        "address": {"kind": "session", "sessionId": "session-1"},
+                        "maxMessages": 1,
+                        "assistantStream": True,
+                    }
+                }
+            },
+        }
         incoming.put_nowait(
             json.dumps(
                 {

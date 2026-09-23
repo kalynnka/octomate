@@ -9,8 +9,6 @@ callback, which needs ingress this deployment does not have.
 
 from __future__ import annotations
 
-import json
-
 from octomate.capabilities.harness.events import (
     LinkProfileAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
@@ -24,7 +22,7 @@ from octomate.tentacles.feelers.oauth import (
 )
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.feelers import cards
-from octomate.tentacles.lark.schema import LarkOutboundMessage
+from octomate.tentacles.lark.schema import LarkInteractiveCard, LarkOutboundMessage
 from octomate.types.json import JsonObject
 
 
@@ -49,10 +47,9 @@ class LarkOAuthFeeler(OAuthFeeler[LarkOutboundMessage]):
             [
                 LarkOutboundMessage(
                     msg_type="interactive",
-                    content=json.dumps(
-                        authorization_card_data(event),
-                        ensure_ascii=False,
-                    ),
+                    content=LarkInteractiveCard.model_validate(
+                        authorization_card_data(event)
+                    ).model_dump_json(by_alias=True, exclude_unset=True),
                 )
             ],
             channel_thread_id=channel_thread_id,

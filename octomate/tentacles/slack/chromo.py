@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import re
 import time
@@ -23,6 +22,7 @@ from octomate.tentacles.slack.schema import (
     SlackMessageEvent,
     SlackOutboundMessage,
     SlackThreadContext,
+    slack_message_adapter,
 )
 from octomate.types.conversations import ChatType
 
@@ -37,6 +37,7 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
 
     async def sip(self, raw: SlackMessageEvent) -> MessageEvent | None:
         try:
+            raw = slack_message_adapter.validate_python(raw)
             channel_type = raw.get("channel_type", "")
             message_id = raw.get("ts", "")
             thread_ts = raw.get("thread_ts", "")
@@ -94,7 +95,7 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
                 chat_type=chat_type,
                 shared=shared,
                 segments=segments,
-                raw=json.dumps(raw, ensure_ascii=False),
+                raw=slack_message_adapter.dump_json(raw).decode(),
             )
         except Exception:
             logger.warning("SlackChromo: failed to decode event", exc_info=True)

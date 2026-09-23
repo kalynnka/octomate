@@ -15,6 +15,7 @@ from openai_codex import AsyncCodex, AsyncThread
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.client import ApprovalHandler
+from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
@@ -28,6 +29,7 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     ThreadItem,
+    ThreadReadResponse,
     ThreadResumeParams,
     ThreadStartParams,
     Turn,
@@ -49,11 +51,12 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
+from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces.base import ChatWorkspace, Workspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -72,6 +75,7 @@ from tests.support.managers import (
     FakeConversationManager,
     FakePresentedBatch,
     RecordingSuspender,
+    a_thread,
 )
 from tests.support.scenarios import play
 from tests.support.users import a_user, auth_config
@@ -194,6 +198,28 @@ class FakeThread:
     def __init__(self, id: str) -> None:
         self.id = id
 
+    async def read(self, *, include_turns: bool = False) -> ThreadReadResponse:
+        FakeCodex.read_calls.append((self.id, include_turns))
+        return ThreadReadResponse.model_validate(
+            {
+                "thread": {
+                    "id": self.id,
+                    "sessionId": self.id,
+                    "name": FakeCodex.thread_name,
+                    "cliVersion": "0.147.0",
+                    "createdAt": 0,
+                    "updatedAt": 0,
+                    "cwd": "/workspace",
+                    "ephemeral": False,
+                    "modelProvider": "openai",
+                    "preview": "the opening line",
+                    "source": "appServer",
+                    "status": {"type": "idle"},
+                    "turns": [],
+                }
+            }
+        )
+
     async def turn(
         self,
         input: str,
@@ -229,6 +255,8 @@ class FakeThread:
 
 class FakeCodex:
     script: ClassVar[list[Notification]] = []
+    thread_name: ClassVar[str | None] = None
+    read_calls: ClassVar[list[tuple[str, bool]]] = []
     last_config: ClassVar[CodexSdkConfig | None] = None
     thread_calls: ClassVar[list[ThreadCall]] = []
     turn_calls: ClassVar[list[TurnCall]] = []
@@ -391,6 +419,8 @@ class StructuredCodexResult(BaseModel):
 
 def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.script = script
+    FakeCodex.thread_name = None
+    FakeCodex.read_calls = []
     FakeCodex.last_config = None
     FakeCodex.thread_calls = []
     FakeCodex.turn_calls = []
@@ -401,6 +431,112 @@ def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.closed = 0
     FakeCodex.on_turn = None
     FakeCodex.local_mcp_servers = {}
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_driven_names_are_persisted_and_revised_without_reading_turns(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    resumed: bool,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    sdk_thread_id = "prior-thread" if resumed else "thread-new"
+    reset_fake_codex(text_script("done", thread_id=sdk_thread_id))
+    octomate = Octomate()
+    thread_id = await a_thread()
+    conversation = await octomate.conversations.ensure(
+        thread_id, agent_tentacle_id="codex"
+    )
+    if resumed:
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            assert stored is not None
+            stored.external_id = sdk_thread_id
+            await session.commit()
+    tentacle = CodexTentacle(
+        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+    )
+    expected = None
+    names = [None, "", "  ", " First name ", "修复会话名称", "修复会话名称", None, " "]
+    async with tentacle:
+        for name in names:
+            FakeCodex.thread_name = name
+            result = await tentacle.run(
+                "work", conversation_address=KEY, thread_id=thread_id
+            )
+            assert result.output == "done"
+            if name and name.strip():
+                expected = name.strip()
+            stored_conversation = await octomate.conversations.get(
+                conversation.id, with_history=False
+            )
+            thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+            assert thread is not None
+            assert stored_conversation.name == expected
+            assert thread.title == expected
+    assert FakeCodex.read_calls == [(sdk_thread_id, False)] * len(names)
+    assert len(FakeCodex.thread_calls) == 1
+    assert FakeCodex.thread_calls[0].kind == ("resume" if resumed else "start")
+
+
+async def test_driven_child_name_does_not_rename_parent_thread(
+    monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
+    FakeCodex.thread_name = "Child work"
+    octomate = Octomate()
+    thread_id = await a_thread()
+    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    assert thread is not None
+    await octomate.thread_manager.rename(thread, "Parent work")
+    parent = await octomate.conversations.ensure(thread_id, agent_tentacle_id="codex")
+    await octomate.conversations.set_name(parent, "Parent work")
+    child = await octomate.conversations.ensure(
+        thread_id,
+        agent_tentacle_id="codex",
+        subagent_id="child",
+        parent_conversation_id=parent.id,
+    )
+    tentacle = CodexTentacle(
+        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+    )
+    async with tentacle:
+        await tentacle.run(
+            "work",
+            conversation_address=KEY,
+            thread_id=thread_id,
+            conversation_id=child.id,
+        )
+    assert (
+        await octomate.conversations.get(child.id, with_history=False)
+    ).name == "Child work"
+    assert (
+        await octomate.conversations.get(parent.id, with_history=False)
+    ).name == "Parent work"
+    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    assert thread is not None
+    assert thread.title == "Parent work"
+
+
+@pytest.mark.parametrize("error", [CodexError("lookup failed"), OSError("unavailable")])
+async def test_driven_name_lookup_failure_keeps_the_run_result(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    error: CodexError | OSError,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
+    read = AsyncMock(side_effect=error)
+    monkeypatch.setattr(FakeThread, "read", read)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    async with tentacle:
+        result = await tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
+    assert result.output == "done"
+    assert len(conversations.runs) == 1
+    read.assert_awaited_once_with(include_turns=False)
+    assert "Codex session name lookup failed for thread-new" in caplog.text
 
 
 def _tentacle(

@@ -14,7 +14,7 @@ import logging
 import time
 import uuid
 from collections import OrderedDict
-from collections.abc import AsyncGenerator, Callable, Sequence
+from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
@@ -48,6 +48,7 @@ from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.async_client import AsyncCodexClient
 from openai_codex.client import CodexClient
+from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApproval,
@@ -1202,6 +1203,42 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         return AsyncTurnHandle(client, thread.id, turn.turn.id)
 
+    @contextlib.contextmanager
+    def track_turn(
+        self, conversation_id: uuid.UUID, turn: AsyncTurnHandle
+    ) -> Generator[None]:
+        self.live_turns[conversation_id] = turn
+        try:
+            yield
+        finally:
+            if self.live_turns.get(conversation_id) is turn:
+                self.live_turns.pop(conversation_id, None)
+
+    async def sync_session_name(
+        self, conversation: Conversation, codex_thread: AsyncThread
+    ) -> None:
+        try:
+            metadata = await codex_thread.read(include_turns=False)
+        except (CodexError, OSError):
+            logger.warning(
+                "Codex session name lookup failed for %s",
+                codex_thread.id,
+                exc_info=True,
+            )
+            return
+        name = metadata.thread.name
+        if not name or not name.strip():
+            return
+        await self.octomate.conversations.set_name(conversation, name)
+        if conversation.parent_conversation_id is not None:
+            return
+        thread = await self.octomate.thread_manager.get(
+            conversation.thread_id, with_messages=False
+        )
+        if thread is None:
+            raise ValueError(f"unknown thread {conversation.thread_id}")
+        await self.octomate.thread_manager.rename(thread, name)
+
     async def _iter_events(
         self,
         user_prompt: str | Sequence[UserContent] | None,
@@ -1339,125 +1376,107 @@ class CodexTentacle(AgentTentacle[str, None]):
         workspace = self.octomate.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
 
-        codex_thread_id: str | None = None
-        with codex_logfire.span(
-            "CodexTentacle {agent_id} {run_name} [{conversation_address}]",
-            agent_id=self.id,
-            run_name=run_name or "codex",
-            conversation_address=str(conversation_address),
-            **agent_input_message_attributes(user_prompt),
-        ):
-            # Entered here so the tree exists before a turn is dispatched into it,
-            # and a chat thread's is thrown away when the run leaves — after the
-            # client is back in the pool, which is why the pool sits inside it.
-            async with (
-                self.conversation_locks.hold(str(conversation.id)),
-                workspace,
-            ):
-                session = self.octomate.gateway.get(conversation.id)
-                user_id = (
-                    session.user_profile.user_id
-                    if session is not None
-                    and session.user_profile is not None
-                    and self.octomate.auth is not None
-                    else None
+        async with contextlib.AsyncExitStack() as resources:
+            resources.enter_context(
+                codex_logfire.span(
+                    "CodexTentacle {agent_id} {run_name} [{conversation_address}]",
+                    agent_id=self.id,
+                    run_name=run_name or "codex",
+                    conversation_address=str(conversation_address),
+                    **agent_input_message_attributes(user_prompt),
                 )
-                pooled = await self.pool.acquire(conversation.id, user_id=user_id)
-                try:
-                    codex_thread = pooled.thread
-                    if codex_thread is None:
-                        # SDK startup can wait on network I/O. Enter after acquiring
-                        # the lease so it cannot hold up other conversations' clients.
-                        await pooled.client.__aenter__()
-                        thread_config = await self.thread_config(
-                            pooled.client,
-                            run_cwd,
-                            pooled.api_key.token
-                            if pooled.api_key is not None
-                            else None,
-                        )
-                        if conversation.external_id:
-                            codex_thread = await self.resume_codex_thread(
-                                pooled.client,
-                                thread_id=conversation.external_id,
-                                approval_mode=approval_mode,
-                                base_instructions=self.config.base_instructions,
-                                config=thread_config,
-                                cwd=run_cwd,
-                                developer_instructions=developer_instructions,
-                                model=sdk_model,
-                                model_provider=self.provider
-                                if sdk_model is not None
-                                else None,
-                                personality=personality,
-                                sandbox=sandbox,
-                            )
-                        else:
-                            codex_thread = await self.start_codex_thread(
-                                pooled.client,
-                                approval_mode=approval_mode,
-                                base_instructions=self.config.base_instructions,
-                                config=thread_config,
-                                cwd=run_cwd,
-                                developer_instructions=developer_instructions,
-                                ephemeral=self.config.ephemeral,
-                                model=sdk_model,
-                                model_provider=self.provider
-                                if sdk_model is not None
-                                else None,
-                                personality=personality,
-                                sandbox=sandbox,
-                            )
-                        pooled.thread = codex_thread
-                    codex_thread_id = codex_thread.id
-                    async with self.driving(codex_thread_id):
-                        self.bridge_contexts[conversation.id] = CodexBridgeContext(
-                            loop=asyncio.get_running_loop(),
-                            conversation=conversation,
-                            conversation_address=conversation_address,
-                            run_name=run_name,
-                            session_allowed=set(conversation.allowed_tools),
-                        )
-                        try:
-                            turn = await self.turn_codex_thread(
-                                pooled.client,
-                                codex_thread,
-                                prompt_text,
-                                approval_mode=approval_mode,
-                                sandbox=sandbox,
-                                cwd=run_cwd,
-                                effort=turn_effort,
-                                model=sdk_model,
-                                output_schema=output_schema,
-                                personality=personality,
-                                summary=summary,
-                            )
-                            self.live_turns[conversation.id] = turn
-                            interrupted = False
-                            try:
-                                async for notification in turn.stream():
-                                    for event in accumulator.consume(notification):
-                                        yield event
-                                    if (
-                                        not interrupted
-                                        and session is not None
-                                        and isinstance(
-                                            session.decision, TeleportDecision
-                                        )
-                                    ):
-                                        # Moving mid-run: the move is the graph's to
-                                        # perform, and this process is still where
-                                        # it was, so the turn ends now — as the
-                                        # deferral the graph performs and resumes from.
-                                        interrupted = True
-                                        await turn.interrupt()
-                            finally:
-                                if self.live_turns.get(conversation.id) is turn:
-                                    self.live_turns.pop(conversation.id, None)
-                        finally:
-                            self.bridge_contexts.pop(conversation.id, None)
-                finally:
-                    await self.pool.release(conversation.id)
+            )
+            await resources.enter_async_context(
+                self.conversation_locks.hold(str(conversation.id))
+            )
+            # Keep the workspace alive until the turn ends and the pool lease returns.
+            await resources.enter_async_context(workspace)
+            session = self.octomate.gateway.get(conversation.id)
+            user_id = (
+                session.user_profile.user_id
+                if session is not None
+                and session.user_profile is not None
+                and self.octomate.auth is not None
+                else None
+            )
+            pooled = await self.pool.acquire(conversation.id, user_id=user_id)
+            resources.push_async_callback(self.pool.release, conversation.id)
+            codex_thread = pooled.thread
+            if codex_thread is None:
+                # SDK startup can wait on network I/O. Enter after acquiring
+                # the lease so it cannot hold up other conversations' clients.
+                await pooled.client.__aenter__()
+                thread_config = await self.thread_config(
+                    pooled.client,
+                    run_cwd,
+                    pooled.api_key.token if pooled.api_key is not None else None,
+                )
+                if conversation.external_id:
+                    codex_thread = await self.resume_codex_thread(
+                        pooled.client,
+                        thread_id=conversation.external_id,
+                        approval_mode=approval_mode,
+                        base_instructions=self.config.base_instructions,
+                        config=thread_config,
+                        cwd=run_cwd,
+                        developer_instructions=developer_instructions,
+                        model=sdk_model,
+                        model_provider=self.provider if sdk_model is not None else None,
+                        personality=personality,
+                        sandbox=sandbox,
+                    )
+                else:
+                    codex_thread = await self.start_codex_thread(
+                        pooled.client,
+                        approval_mode=approval_mode,
+                        base_instructions=self.config.base_instructions,
+                        config=thread_config,
+                        cwd=run_cwd,
+                        developer_instructions=developer_instructions,
+                        ephemeral=self.config.ephemeral,
+                        model=sdk_model,
+                        model_provider=self.provider if sdk_model is not None else None,
+                        personality=personality,
+                        sandbox=sandbox,
+                    )
+                pooled.thread = codex_thread
+            codex_thread_id = codex_thread.id
+            await resources.enter_async_context(self.driving(codex_thread_id))
+            self.bridge_contexts[conversation.id] = CodexBridgeContext(
+                loop=asyncio.get_running_loop(),
+                conversation=conversation,
+                conversation_address=conversation_address,
+                run_name=run_name,
+                session_allowed=set(conversation.allowed_tools),
+            )
+            resources.callback(self.bridge_contexts.pop, conversation.id, None)
+            turn = await self.turn_codex_thread(
+                pooled.client,
+                codex_thread,
+                prompt_text,
+                approval_mode=approval_mode,
+                sandbox=sandbox,
+                cwd=run_cwd,
+                effort=turn_effort,
+                model=sdk_model,
+                output_schema=output_schema,
+                personality=personality,
+                summary=summary,
+            )
+            resources.enter_context(self.track_turn(conversation.id, turn))
+            interrupted = False
+            async for notification in turn.stream():
+                for event in accumulator.consume(notification):
+                    yield event
+                if (
+                    not interrupted
+                    and session is not None
+                    and isinstance(session.decision, TeleportDecision)
+                ):
+                    # Stop here so the graph can move and resume the conversation.
+                    interrupted = True
+                    await turn.interrupt()
+            await self.sync_session_name(conversation, codex_thread)
 
         run_id = str(uuid7())
         recorded_run = await self.octomate.conversations.record_agent_run(

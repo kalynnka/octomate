@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -204,20 +203,17 @@ def approval_button(
         "text": {"type": "plain_text", "text": text},
         "style": style,
         "action_id": action.value,
-        "value": json.dumps(
-            SlackApprovalActionValueAdapter.dump_python(
-                value,
-                mode="json",
-                include={
-                    "batch_id": True,
-                    "approvals": {"__all__": APPROVAL_STATE_FIELDS},
-                    "page": True,
-                    "decisions": True,
-                },
-                exclude_defaults=True,
-                exclude_none=True,
-            )
-        ),
+        "value": SlackApprovalActionValueAdapter.dump_json(
+            value,
+            include={
+                "batch_id": True,
+                "approvals": {"__all__": APPROVAL_STATE_FIELDS},
+                "page": True,
+                "decisions": True,
+            },
+            exclude_defaults=True,
+            exclude_none=True,
+        ).decode(),
     }
 
 

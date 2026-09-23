@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
@@ -11,33 +10,38 @@ from types import TracebackType
 from uuid import uuid4
 
 import httpx
+from octomate_protocol.deepseek import (
+    ClientRequest,
+    ErrResult,
+    OkResult,
+    RemoteEnd,
+    RemoteError,
+    RemoteItem,
+    RemoteSessionFollow,
+    RpcError,
+    RpcResult,
+    ServerResponse,
+    remote_message_adapter,
+)
 from pydantic import HttpUrl, SecretStr, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
-    ClientRequest,
-    ErrResult,
     MuxFrame,
-    OkResult,
     QuestionRequestedFrame,
+    RemoteCancel,
     RemoteCancellation,
-    RemoteEnd,
-    RemoteError,
+    RemoteEventsOpen,
     RemoteInvocation,
-    RemoteItem,
     RemoteReady,
-    RpcError,
     RpcReceipt,
-    RpcResult,
-    ServerResponse,
     SessionAssistantFrame,
     SessionEventFrame,
     SessionRecord,
     SessionSnapshot,
     StreamErrorFrame,
     remote_event_adapter,
-    remote_message_adapter,
     session_follow_adapter,
 )
 from octomate.types.json import JsonObject, JsonValue
@@ -182,16 +186,7 @@ class DeepseekApiClient:
         )
         socket = await connect(self.ws_url(MUX_PATH), additional_headers=headers)
         try:
-            await socket.send(
-                json.dumps(
-                    {
-                        "type": "open",
-                        "streamId": EVENT_STREAM,
-                        "endpoint": "$events",
-                        "payload": {"args": {}},
-                    }
-                )
-            )
+            await socket.send(RemoteEventsOpen().model_dump_json(by_alias=True))
             raw = await asyncio.wait_for(socket.recv(), 10)
             message = remote_message_adapter.validate_json(raw)
             if not isinstance(message, RemoteItem) or message.stream_id != EVENT_STREAM:
@@ -207,25 +202,21 @@ class DeepseekApiClient:
         self.subscriptions[session_id] = ready
         try:
             await socket.send(
-                json.dumps(
-                    {
-                        "type": "open",
-                        "streamId": session_id,
-                        "endpoint": "session/follow",
-                        "payload": {
-                            "args": {
-                                "request": {
-                                    "address": {
-                                        "kind": "session",
-                                        "sessionId": session_id,
-                                    },
-                                    "maxMessages": 1,
-                                    "assistantStream": True,
-                                }
+                RemoteSessionFollow(
+                    stream_id=session_id,
+                    payload={
+                        "args": {
+                            "request": {
+                                "address": {
+                                    "kind": "session",
+                                    "sessionId": session_id,
+                                },
+                                "maxMessages": 1,
+                                "assistantStream": True,
                             }
-                        },
-                    }
-                )
+                        }
+                    },
+                ).model_dump_json(by_alias=True)
             )
             await asyncio.wait_for(ready, 10)
         except BaseException:
@@ -234,7 +225,9 @@ class DeepseekApiClient:
 
     async def unfollow(self, socket: ClientConnection, session_id: str) -> None:
         self.subscriptions.pop(session_id, None)
-        await socket.send(json.dumps({"type": "cancel", "streamId": session_id}))
+        await socket.send(
+            RemoteCancel(stream_id=session_id).model_dump_json(by_alias=True)
+        )
 
     async def mux_frames(
         self, socket: ClientConnection

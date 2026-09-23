@@ -12,8 +12,10 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from io import StringIO
 from pathlib import Path
 from threading import Thread
+from unittest.mock import patch
 
 import pytest
 from octomate_cli import emit as emit_module
@@ -27,9 +29,13 @@ from octomate_cli.emit import (
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH as CANONICAL_CODEX_HOOK_PATH
 from octomate_cli.tentacles.codex.hooks import HOOK_TIMEOUT as CANONICAL_HOOK_TIMEOUT
 from octomate_cli.tentacles.hooks import EMIT_SCRIPT
+from openai_codex import CodexError
+from openai_codex.generated.v2_all import ThreadReadResponse
+from pydantic import ValidationError
 
 SECRET = "the-hook-token"
-PAYLOAD = {"hook_event_name": "Stop", "session_id": "s1", "turn_id": "t1"}
+# Transport tests use a child event so they never launch a real Codex process.
+PAYLOAD = {"hook_event_name": "SubagentStop", "session_id": "s1", "turn_id": "t1"}
 
 
 class Received:
@@ -62,8 +68,8 @@ def router() -> Iterator[tuple[str, Received]]:
     server.shutdown()
 
 
-def emit(
-    args: list[str], env: dict[str, str], payload: dict[str, object] | None = None
+def emit[T](
+    args: list[str], env: dict[str, str], payload: dict[str, T] | None = None
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(EMIT_SCRIPT), *args],
@@ -102,6 +108,136 @@ def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None
 
     assert received.body is not None
     assert "octomate_driven" not in received.body
+
+
+def test_forwarding_preserves_unmodeled_fields_and_explicit_nulls(
+    router: tuple[str, Received],
+) -> None:
+    url, received = router
+    payload = {
+        **PAYLOAD,
+        "agent_id": None,
+        "runtime_data": {"nested": [1, "原样", None, {"enabled": True}]},
+        "last_assistant_message": "done",
+    }
+
+    result = emit(
+        ["--path", CODEX_HOOK_PATH, "--url", url], {TOKEN_ENV: SECRET}, payload
+    )
+
+    assert result.returncode == 0
+    assert received.body == payload
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "[]",
+        '{"hook_event_name": "Stop"}',
+        '{"hook_event_name": "Stop", "session_id": 42}',
+        '{"hook_event_name": "Stop", "session_id": "s1", "agent_id": []}',
+    ],
+)
+def test_invalid_hook_payloads_fail_before_sdk_or_http_calls(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setattr(sys, "stdin", StringIO(raw))
+    with (
+        patch.object(emit_module, "CodexClient") as client,
+        patch.object(emit_module.urllib.request, "urlopen") as post,
+        pytest.raises(ValidationError),
+    ):
+        emit_module.main("http://localhost/hooks/codex", SECRET)
+
+    client.assert_not_called()
+    post.assert_not_called()
+
+
+@pytest.mark.parametrize("event", ["SessionStart", "UserPromptSubmit", "Stop"])
+@pytest.mark.parametrize("name", ["修复 session names", None, "", "  "])
+def test_codex_hooks_read_the_name_through_the_sdk(
+    router: tuple[str, Received],
+    monkeypatch: pytest.MonkeyPatch,
+    event: str,
+    name: str | None,
+) -> None:
+    url, received = router
+    payload = {**PAYLOAD, "hook_event_name": event}
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    response = ThreadReadResponse.model_validate(
+        {
+            "thread": {
+                "id": "s1",
+                "sessionId": "s1",
+                "name": name,
+                "agentNickname": "Kepler",
+                "cliVersion": "0.147.0",
+                "createdAt": 0,
+                "updatedAt": 0,
+                "cwd": "/client/project",
+                "ephemeral": False,
+                "modelProvider": "openai",
+                "preview": "the opening line",
+                "source": "cli",
+                "status": {"type": "notLoaded"},
+                "turns": [],
+            }
+        }
+    )
+    with patch.object(emit_module, "CodexClient", autospec=True) as factory:
+        client = factory.return_value.__enter__.return_value
+        client.thread_read.return_value = response
+
+        assert emit_module.main(url, SECRET) == 0
+
+        client.initialize.assert_called_once_with()
+        client.thread_read.assert_called_once_with("s1", include_turns=False)
+        client.thread_resume.assert_not_called()
+        client.thread_start.assert_not_called()
+        factory.return_value.__exit__.assert_called_once()
+    expected = {**payload, "session_name": name} if name and name.strip() else payload
+    assert received.body == expected
+    assert received.authorization == f"Bearer {SECRET}"
+
+
+@pytest.mark.parametrize(
+    "error", [CodexError("not persisted yet"), OSError("cannot launch")]
+)
+def test_a_name_lookup_failure_still_delivers_the_hook(
+    router: tuple[str, Received],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    error: CodexError | OSError,
+) -> None:
+    url, received = router
+    payload = {**PAYLOAD, "hook_event_name": "Stop"}
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    with patch.object(emit_module, "CodexClient", autospec=True) as factory:
+        client = factory.return_value.__enter__.return_value
+        client.thread_read.side_effect = error
+
+        assert emit_module.main(url, SECRET) == 0
+
+        factory.return_value.__exit__.assert_called_once()
+    assert received.body == payload
+    assert "session name lookup for s1 failed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("child", [False, True])
+def test_codex_names_are_not_requested_for_claude_or_child_hooks(
+    router: tuple[str, Received], monkeypatch: pytest.MonkeyPatch, child: bool
+) -> None:
+    url, received = router
+    path = CODEX_HOOK_PATH if child else "/hooks/claude"
+    payload = {**PAYLOAD, "hook_event_name": "Stop"}
+    if child:
+        payload["agent_id"] = "child"
+    monkeypatch.setattr(sys, "stdin", StringIO(json.dumps(payload)))
+    with patch.object(emit_module, "CodexClient", autospec=True) as factory:
+        assert emit_module.main(base_of(url) + path, SECRET) == 0
+
+        factory.assert_not_called()
+    assert received.body == payload
 
 
 def test_without_a_secret_nothing_is_posted(router: tuple[str, Received]) -> None:
@@ -294,9 +430,8 @@ def test_the_script_and_the_settings_class_agree_on_which_file_wins(
 
 def test_the_script_never_imports_the_octomate_package() -> None:
     """Why this script exists at all: importing the package builds `Octomate` and pulls
-    in pydantic-ai (~1.9s), and Codex blocks on this hook twice a turn. Run by path with
-    stdlib imports only, it stays ~50ms. An `octomate` import here would silently hand
-    every turn that cost back."""
+    in pydantic-ai (~1.9s). Reading names needs the Codex SDK, but must not also
+    import the server package into every blocking hook."""
     probe = (
         "import importlib.util, sys;"
         f"spec = importlib.util.spec_from_file_location('emit', {str(EMIT_SCRIPT)!r});"

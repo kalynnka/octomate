@@ -10,11 +10,11 @@ carries stdin to the router at `<base>{--path}`.
 Run by absolute path, never as `python -m octomate...`, and imports nothing from
 octomate. Both matter: `octomate/__init__.py` builds `Octomate`, which pulls in
 pydantic-ai and costs ~1.9s to import — per hook, on a handler the session blocks on,
-several times a turn. By path with stdlib only it is ~25ms, because Python never
-imports the package.
+several times a turn. Codex session names are read through its SDK without loading
+turn history; the observer never resumes or runs the session.
 
-Anything added here must keep that property: stdlib imports only. The environment
-variable names, the hook path, and the client-config resolution below are duplicated
+Keep server-package imports out of this script. The environment variable names,
+the hook path, and the client-config resolution below are duplicated
 from `octomate_cli/config.py` and `octomate_cli/tentacles/codex/hooks.py` for the same
 reason — this module cannot import them without paying for a package. Change them
 together; the tests hold the copies to the canonical ones.
@@ -22,13 +22,17 @@ together; the tests hold the copies to the canonical ones.
 
 from __future__ import annotations
 
-import json
 import os
 import sys
 import tomllib
 import urllib.error
 import urllib.request
 from pathlib import Path
+from urllib.parse import urlsplit
+
+from octomate_protocol.hooks import NativeHookEvent
+from openai_codex import CodexError
+from openai_codex.client import CodexClient
 
 TOKEN_ENV = "OCTOMATE_CLI_TOKEN"
 OCTOMATE_URL_ENV = "OCTOMATE_CLI_URL"
@@ -76,7 +80,7 @@ def resolved(key: str, env: str, tables: list[dict[str, object]]) -> str | None:
 
 
 def main(url: str, token: str | None) -> int:
-    payload = json.load(sys.stdin)
+    payload = NativeHookEvent.model_validate_json(sys.stdin.read())
     if not token:
         print(
             f"octomate: no credential — {TOKEN_ENV} is unset and the "
@@ -86,9 +90,29 @@ def main(url: str, token: str | None) -> int:
         )
         return 1
 
+    if (
+        urlsplit(url).path == CODEX_HOOK_PATH
+        and payload.agent_id is None
+        and payload.hook_event_name in {"SessionStart", "UserPromptSubmit", "Stop"}
+    ):
+        try:
+            with CodexClient() as client:
+                client.initialize()
+                name = client.thread_read(
+                    payload.session_id, include_turns=False
+                ).thread.name
+            if name and name.strip():
+                payload.session_name = name
+        except (CodexError, OSError) as error:
+            # An optional title must not prevent delivery of the observed hook.
+            print(
+                f"octomate: session name lookup for {payload.session_id} failed: {error}",
+                file=sys.stderr,
+            )
+
     request = urllib.request.Request(
         url,
-        data=json.dumps(payload).encode(),
+        data=payload.model_dump_json(exclude_unset=True).encode(),
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {token}",

@@ -332,6 +332,23 @@ async def test_explicit_refresh_rejection(status: int, error: str) -> None:
         await flow.refresh(SecretStr("spent"))
 
 
+@pytest.mark.parametrize("error", ["invalid_grant", "authorization_pending"])
+async def test_token_errors_take_precedence_over_success_fields(error: str) -> None:
+    flow = device_flow(
+        httpx2.MockTransport(
+            lambda request: httpx2.Response(
+                200, json={"error": error, "access_token": "not-a-grant"}
+            )
+        )
+    )
+    if error == "invalid_grant":
+        with pytest.raises(OAuthRefreshRejected):
+            await flow.complete(context(), SecretStr("device"))
+    else:
+        result = await flow.complete(context(), SecretStr("device"))
+        assert isinstance(result, OAuthPending)
+
+
 @pytest.mark.parametrize("token_type", ["bearer", "Bearer", "BEARER"])
 async def test_sdk_token_normalization_preserves_immediate_expiry(
     token_type: str,

@@ -12,8 +12,10 @@ from octomate.tentacles.channel import DownloadedImage, Ink
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.napcat.schema import (
     ActionResponse,
+    ImageInfo,
     NapcatOutboundMessage,
     NapcatUserProfile,
+    SentMessage,
 )
 from octomate.types.json import JsonObject
 
@@ -36,10 +38,15 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
             headers["Authorization"] = f"Bearer {access_token.get_secret_value()}"
         self.httpx = httpx.AsyncClient(base_url=self.http_url, headers=headers)
 
-    async def call_api(self, endpoint: str, payload: JsonObject) -> JsonObject:
+    async def call_api[DataT](
+        self,
+        endpoint: str,
+        payload: JsonObject,
+        response_model: type[ActionResponse[DataT]],
+    ) -> DataT:
         resp = await self.httpx.post(endpoint, json=payload)
         resp.raise_for_status()
-        result = ActionResponse.model_validate(resp.json())
+        result = response_model.model_validate_json(resp.content)
         if result.status != "ok" or result.retcode != 0:
             raise RuntimeError(
                 f"NapCat {endpoint} failed ({result.retcode}): "
@@ -50,14 +57,16 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         return result.data
 
     async def inspect(self) -> NapcatUserProfile:
-        data = await self.call_api("/get_login_info", {})
-        return NapcatUserProfile.model_validate(data)
+        return await self.call_api(
+            "/get_login_info", {}, ActionResponse[NapcatUserProfile]
+        )
 
     async def get_user_profile(self, user_id: str) -> NapcatUserProfile:
         try:
             data = await self.call_api(
                 "/get_stranger_info",
                 {"user_id": user_id},
+                ActionResponse[JsonObject],
             )
             data.setdefault("user_id", user_id)
             return NapcatUserProfile.model_validate(data)
@@ -71,9 +80,10 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
         return None
 
     async def get_image_url(self, file: str) -> str | None:
-        data = await self.call_api("/get_image", {"file": file})
-        url = data.get("url")
-        return url if isinstance(url, str) else None
+        data = await self.call_api(
+            "/get_image", {"file": file}, ActionResponse[ImageInfo]
+        )
+        return data.url
 
     async def download(self, url: str) -> httpx.Response:
         resp = await self.httpx.get(url)
@@ -127,11 +137,10 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
                 id_field: chat_id,
                 "message": segments,
             }
-            data = await self.call_api(endpoint, payload)
-            message_id = data.get("message_id")
-            if not isinstance(message_id, (str, int)) or isinstance(message_id, bool):
+            data = await self.call_api(endpoint, payload, ActionResponse[SentMessage])
+            if data.message_id is None:
                 raise ValueError(f"NapCat {endpoint} returned no message_id")
-            first_msg_id = first_msg_id or str(message_id)
+            first_msg_id = first_msg_id or data.message_id
         return first_msg_id
 
     async def close(self) -> None:

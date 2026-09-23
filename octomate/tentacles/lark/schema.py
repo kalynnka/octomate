@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, NotRequired, Protocol, TypeAlias, runtime_checkable
+from typing import Annotated, Literal, NotRequired, Protocol, runtime_checkable
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    JsonValue,
+    RootModel,
+    Tag,
+    model_validator,
+    with_config,
+)
 from typing_extensions import TypedDict
 
 from octomate.schemas.deferred import DeferredQuestion
@@ -19,8 +29,8 @@ class LarkAvatar(Protocol):
     avatar_origin: str | None
 
 
-LarkProfileValue: TypeAlias = str | int | bool | None | JsonObject | LarkAvatar
-LarkProfileData: TypeAlias = dict[str, LarkProfileValue]
+type LarkProfileValue = str | int | bool | JsonObject | LarkAvatar | None
+type LarkProfileData = dict[str, LarkProfileValue]
 
 
 class LarkApprovalActionValue(TypedDict):
@@ -54,6 +64,198 @@ class LarkOutboundMessage:
 class LarkStreamCard:
     card_id: str
     element_id: str
+
+
+class LarkTextContent(BaseModel):
+    text: str
+
+
+class LarkImageContent(BaseModel):
+    image_key: str
+
+
+class LarkCardReferenceData(TypedDict):
+    card_id: str
+
+
+class LarkCardReference(BaseModel):
+    type: Literal["card"] = "card"
+    data: LarkCardReferenceData
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkCardSummary(TypedDict):
+    content: str
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkPrintSettings(TypedDict):
+    default: int
+    android: int
+    ios: int
+    pc: int
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkStreamingOptions(TypedDict):
+    print_frequency_ms: LarkPrintSettings
+    print_step: LarkPrintSettings
+    print_strategy: Literal["fast"]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkStreamingConfig(TypedDict):
+    streaming_mode: bool
+    summary: NotRequired[LarkCardSummary]
+    streaming_config: NotRequired[LarkStreamingOptions]
+
+
+class LarkCardSettings(BaseModel):
+    config: LarkStreamingConfig
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkMarkdownElement(TypedDict):
+    tag: Literal["markdown"]
+    content: str
+    element_id: NotRequired[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkCardText(TypedDict):
+    tag: Literal["plain_text", "markdown", "lark_md"]
+    content: str
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkCardHeader(TypedDict):
+    title: LarkCardText
+    template: NotRequired[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkDivider(TypedDict):
+    tag: Literal["hr"]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkButton(TypedDict):
+    tag: Literal["button"]
+    text: LarkCardText
+    type: NotRequired[str]
+    value: NotRequired[JsonObject]
+    action_type: NotRequired[str]
+    url: NotRequired[str]
+    name: NotRequired[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkActionRow(TypedDict):
+    tag: Literal["action"]
+    actions: list[LarkButton]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkInput(TypedDict):
+    tag: Literal["input"]
+    name: str
+    placeholder: NotRequired[LarkCardText]
+    default_value: NotRequired[str]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkForm(TypedDict):
+    tag: Literal["form"]
+    name: str
+    elements: list[LarkCardElement]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkColumn(TypedDict):
+    tag: Literal["column"]
+    elements: list[LarkCardElement]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkColumnSet(TypedDict):
+    tag: Literal["column_set"]
+    columns: list[LarkColumn]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkCollapsiblePanel(TypedDict):
+    tag: Literal["collapsible_panel"]
+    expanded: bool
+    header: LarkCardHeader
+    elements: list[LarkCardElement]
+
+
+type LarkCardElement = Annotated[
+    LarkMarkdownElement
+    | LarkDivider
+    | LarkButton
+    | LarkActionRow
+    | LarkInput
+    | LarkForm
+    | LarkColumn
+    | LarkColumnSet
+    | LarkCollapsiblePanel,
+    Field(discriminator="tag"),
+]
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkCardBody(TypedDict):
+    elements: list[LarkCardElement]
+
+
+class LarkCard(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    header: LarkCardHeader | None = None
+    schema_version: Literal["2.0"] = Field(default="2.0", alias="schema")
+    config: LarkStreamingConfig | None = None
+    body: LarkCardBody
+
+
+class LarkLegacyCard(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    header: LarkCardHeader | None = None
+    elements: list[LarkCardElement]
+
+
+def lark_card_kind(value: LarkCard | LarkLegacyCard | JsonValue) -> str:
+    if isinstance(value, LarkCard) or (isinstance(value, dict) and "schema" in value):
+        return "v2"
+    return "legacy"
+
+
+class LarkInteractiveCard(
+    RootModel[
+        Annotated[
+            Annotated[LarkCard, Tag("v2")] | Annotated[LarkLegacyCard, Tag("legacy")],
+            Discriminator(lark_card_kind),
+        ]
+    ]
+):
+    pass
+
+
+class LarkRawCard(RootModel[JsonObject]):
+    """An externally supplied card, carried without interpreting its schema."""
+
+
+class LarkBotInfo(BaseModel):
+    open_id: NonEmptyStr
+    app_name: str = ""
+    avatar_url: str = ""
+
+
+class LarkBotInfoResponse(BaseModel):
+    bot: LarkBotInfo
 
 
 class LarkUserProfile(UserProfile):

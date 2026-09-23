@@ -1,27 +1,18 @@
 from __future__ import annotations
 
+import httpx
+
 from octomate.types.json import JsonObject
-
-
-class FakeNapcatResponse:
-    def __init__(self, data: JsonObject | None = None) -> None:
-        self._data = data or {
-            "status": "ok",
-            "retcode": 0,
-            "data": {"message_id": "msg-1"},
-        }
-
-    def raise_for_status(self) -> None:
-        return None
-
-    def json(self) -> JsonObject:
-        return self._data
 
 
 class FakeNapcatHTTP:
     def __init__(self) -> None:
         self.posts: list[tuple[str, JsonObject]] = []
 
-    async def post(self, endpoint: str, json: JsonObject) -> FakeNapcatResponse:
+    async def post(self, endpoint: str, json: JsonObject) -> httpx.Response:
         self.posts.append((endpoint, json))
-        return FakeNapcatResponse()
+        return httpx.Response(
+            200,
+            json={"status": "ok", "retcode": 0, "data": {"message_id": "msg-1"}},
+            request=httpx.Request("POST", f"http://napcat{endpoint}"),
+        )

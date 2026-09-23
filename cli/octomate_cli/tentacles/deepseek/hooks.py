@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from pydantic import ValidationError
 
 from octomate_cli.config import CLISettings
 from octomate_cli.tentacles.deepseek.config import (
@@ -20,8 +21,12 @@ from octomate_cli.tentacles.deepseek.config import (
     patch_text_with_block,
     patch_text_without_block,
 )
+from octomate_cli.tentacles.deepseek.schema import (
+    BridgeManifest,
+    CommandHook,
+    HookSettings,
+)
 from octomate_cli.tentacles.hooks import EMIT_SCRIPT, LAUNCH_SCRIPT, announce_secret
-from octomate_cli.tentacles.types import JsonObject
 
 # Bound so a wedged or slow Octomate can never freeze someone's dsh session —
 # both registered events sit on blocking seams (pre-step and turn-stopping).
@@ -70,7 +75,7 @@ def bridge_link(home: Path) -> Path:
     return home / "profiles" / "node_modules" / BRIDGE_PACKAGE
 
 
-def emit_handler(url: str | None) -> JsonObject:
+def emit_handler(url: str | None) -> CommandHook:
     """The forwarding `command` hook: `emit.py` carries the event body from
     stdin to the hook router, reading the credential — and, unless `url` pins
     one, the router's address — from the environment at fire time."""
@@ -91,7 +96,7 @@ def stream_url_for(hook_url: str) -> str:
     return f"{'wss' if scheme == 'https' else 'ws'}://{rest}{DEEPSEEK_STREAM_PATH}"
 
 
-def launch_handler(hook_url: str | None) -> JsonObject:
+def launch_handler(hook_url: str | None) -> CommandHook:
     """The launcher `command` hook: spawns `octomate deepseek tail` for the
     session, detached (`launch.py`) — the forwarding hook reaches Octomate but
     can start nothing on this machine, and the stream needs a local process to
@@ -114,20 +119,20 @@ def launch_handler(hook_url: str | None) -> JsonObject:
     return {"type": "command", "command": shlex.join(command), "timeout": HOOK_TIMEOUT}
 
 
-def hooks_document(url: str | None) -> JsonObject:
+def hooks_document(url: str | None) -> HookSettings:
     handler = emit_handler(url)
     # The launcher rides the prompt event only: by the time it fires, the emit
     # hook on the same event has already created the session server-side, and
     # the tail it spawns deduplicates itself per session.
-    return {
-        "hooks": {
+    return HookSettings(
+        hooks={
             "UserPromptSubmit": [
                 {"hooks": [handler]},
                 {"hooks": [launch_handler(url)]},
             ],
             "Stop": [{"hooks": [handler]}],
         }
-    }
+    )
 
 
 def patch_block(config_path: Path) -> str:
@@ -151,8 +156,8 @@ def link_bridge(home: Path, bridge: Path) -> Path:
     would fail every dsh boot, not just the hooks."""
     manifest = bridge / "package.json"
     try:
-        name = json.loads(manifest.read_text()).get("name")
-    except (OSError, json.JSONDecodeError):
+        name = BridgeManifest.model_validate_json(manifest.read_bytes()).name
+    except (OSError, ValidationError):
         raise typer.BadParameter(f"{bridge} holds no readable package.json") from None
     if name != BRIDGE_PACKAGE:
         raise typer.BadParameter(f"{bridge} is {name!r}, not {BRIDGE_PACKAGE!r}")
@@ -204,7 +209,7 @@ def install(
     target_home = dsh_home(home)
     config_path = hooks_file(target_home)
     config_path.parent.mkdir(parents=True, exist_ok=True)
-    config_path.write_text(json.dumps(hooks_document(url), indent=2) + "\n")
+    config_path.write_text(hooks_document(url).model_dump_json(indent=2) + "\n")
 
     patch = patch_file(target_home)
     text = patch.read_text() if patch.exists() else "[]\n"

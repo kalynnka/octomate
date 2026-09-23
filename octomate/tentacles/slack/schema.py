@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal, NotRequired, TypeAlias
+from typing import Annotated, Literal, NotRequired
 from uuid import UUID
 
-from pydantic import Field, Json
+from pydantic import ConfigDict, Field, Json, TypeAdapter, with_config
 from typing_extensions import TypedDict
 
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
@@ -12,15 +12,17 @@ from octomate.schemas.user import UserProfile
 from octomate.types.json import JsonObject
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
-SlackBlock: TypeAlias = JsonObject
+type SlackBlock = JsonObject
 
 
+@with_config(ConfigDict(extra="allow"))
 class SlackFileInfo(TypedDict, total=False):
     mimetype: str
     url_private: str
     name: str
 
 
+@with_config(ConfigDict(extra="allow"))
 class SlackMessageEvent(TypedDict, total=False):
     type: Literal["message"]
     subtype: str
@@ -35,6 +37,9 @@ class SlackMessageEvent(TypedDict, total=False):
     thread_ts: str
     text: str
     files: list[SlackFileInfo]
+
+
+slack_message_adapter = TypeAdapter(SlackMessageEvent)
 
 
 class SlackAssistantThread(TypedDict, total=False):

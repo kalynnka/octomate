@@ -3,6 +3,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
+from octomate_protocol.deepseek import (
+    OkResult,
+)
 from openai_codex.generated.v2_all import (
     ConfigReadResponse,
     ModelListResponse,
@@ -21,7 +24,6 @@ from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
-from octomate.tentacles.deepseek.wire import OkResult
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.test_deepseek_tentacle import (

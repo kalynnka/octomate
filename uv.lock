@@ -1952,6 +1952,7 @@ version = "0.0.2"
 source = { editable = "cli" }
 dependencies = [
     { name = "octomate-protocol" },
+    { name = "openai-codex" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
@@ -1966,6 +1967,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "octomate-protocol", editable = "protocol" },
+    { name = "openai-codex", specifier = ">=0.147.0" },
     { name = "pydantic", specifier = ">=2.12.5" },
     { name = "pydantic-settings", specifier = ">=2.14.1" },
     { name = "pyyaml", specifier = ">=6" },

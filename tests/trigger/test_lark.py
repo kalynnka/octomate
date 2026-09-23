@@ -51,28 +51,21 @@ def lark_run_thread(
             "lark channel/trigger target not configured in tentacles.yaml/trigger.yaml"
         )
     target = trigger_targets.lark
-    channel = LarkTentacle("lark", Octomate(), config=config)
+    channel = LarkTentacle("lark", Octomate(config=live_config), config=config)
     main_key = ChannelAddress(
         channel_tentacle_id="lark",
         chat_type=target.chat_type,
         chat_id=target.chat_id,
         user_id=target.user_id,
     )
-    root_id = asyncio.run(
-        channel.feelers.markdown.present(
+    address = asyncio.run(
+        channel.start_sub_thread(
             main_key,
             run_banner("replays follow in this thread."),
         )
     )
-    if root_id is None:
-        pytest.fail("could not post the lark run notice (no message id returned)")
-    address = ChannelAddress(
-        channel_tentacle_id="lark",
-        chat_type=target.chat_type,
-        chat_id=target.chat_id,
-        user_id=target.user_id,
-        channel_thread_id=root_id,
-    )
+    if address.chat_type != "thread" or not address.channel_thread_id:
+        pytest.fail("could not create the lark replay thread")
     return channel, address
 
 
