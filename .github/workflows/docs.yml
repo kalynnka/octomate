@@ -25,6 +25,7 @@ jobs:
           version: "0.8.13"
           python-version: "3.13"
           enable-cache: true
+          cache-suffix: docs
       - name: Install documentation dependencies
         run: uv sync --locked --only-group docs
       - name: Build guide and API reference

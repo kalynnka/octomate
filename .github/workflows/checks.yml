@@ -57,6 +57,7 @@ jobs:
           version: "0.8.13"
           python-version: "3.12"
           enable-cache: true
+          cache-suffix: checks
       - run: uv sync --locked
       - name: Check changed Python files
         env:
@@ -80,9 +81,10 @@ jobs:
           version: "0.8.13"
           python-version: ${{ matrix.python }}
           enable-cache: true
+          cache-suffix: checks
       - run: uv sync --locked
       - name: Run unit tests
-        run: uv run --no-sync pytest -q
+        run: uv run --no-sync pytest -q -n 2 --dist worksteal --durations=25
 
   trunkline:
     if: inputs.ref != '' || github.event_name == 'workflow_dispatch'
@@ -107,6 +109,7 @@ jobs:
           version: "0.8.13"
           python-version: ${{ matrix.python }}
           enable-cache: true
+          cache-suffix: checks
       - run: uv sync --locked
       - name: Build all distributions
         run: uv build --all-packages --no-sources

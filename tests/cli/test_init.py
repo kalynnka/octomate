@@ -551,7 +551,7 @@ def test_failed_preparation_reports_that_service_was_not_activated(
     )
     assert result.exit_code == 1
     assert "No service was activated" in result.output
-    assert "incomplete preparation files" in result.output
+    assert "incomplete preparation files" in " ".join(result.output.split())
     assert not (root / "control/io.octomate.server.plist").exists()
     assert not (root / "octomate.db").exists()
     assert commands.call_count == 1

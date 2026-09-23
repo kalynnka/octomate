@@ -5,6 +5,12 @@ or the checks workflow change. They test and build all three distributions
 together: the server depends on the CLI and protocol, and the CLI depends on the
 protocol. This catches compatibility problems in their consumers too.
 
+CI runs pytest with two worker processes and reports the 25 slowest test phases.
+Use `uv run pytest -n 2 --dist worksteal --durations=25` to reproduce that run
+locally; plain `uv run pytest` remains sequential. Docs and Python checks use
+separate uv cache keys so a docs-only installation cannot occupy the package
+checks' cache.
+
 Trunkline has a separate workflow for changes under `trunkline/` or its workflow
 file. Docs build on every pull request targeting `main` and every push to `main`.
 Manually running Checks, or calling it for a release, runs both Python and
