@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, NotRequired, Protocol, TypeAlias, runtime_checkable
+from typing import Annotated, NotRequired, Protocol, runtime_checkable
 from uuid import UUID
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from typing_extensions import TypedDict
 
 from octomate.schemas.deferred import DeferredQuestion
@@ -19,8 +19,8 @@ class LarkAvatar(Protocol):
     avatar_origin: str | None
 
 
-LarkProfileValue: TypeAlias = str | int | bool | None | JsonObject | LarkAvatar
-LarkProfileData: TypeAlias = dict[str, LarkProfileValue]
+type LarkProfileValue = str | int | bool | JsonObject | LarkAvatar | None
+type LarkProfileData = dict[str, LarkProfileValue]
 
 
 class LarkApprovalActionValue(TypedDict):
@@ -54,6 +54,16 @@ class LarkOutboundMessage:
 class LarkStreamCard:
     card_id: str
     element_id: str
+
+
+class LarkBotInfo(BaseModel):
+    open_id: NonEmptyStr
+    app_name: str = ""
+    avatar_url: str = ""
+
+
+class LarkBotInfoResponse(BaseModel):
+    bot: LarkBotInfo
 
 
 class LarkUserProfile(UserProfile):
