@@ -539,7 +539,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
                         else None,
                         httpx_client_factory=self.httpx_client_factory,
                     ),
-                    mode="2026-07-28",
+                    mode="auto",
                     cache=False,
                 )
                 await client.__aenter__()

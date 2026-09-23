@@ -288,6 +288,71 @@ def test_endpoint_rejects_insecure_or_secret_urls(url: str) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "upstream_instructions", [None, "Use the provider's workspace."]
+)
+@pytest.mark.parametrize("legacy", [False, True])
+async def test_catalog_preserves_upstream_instructions(
+    manager: McpManager, upstream_instructions: str | None, legacy: bool
+) -> None:
+    user = await a_user()
+    instance = await manager.install(user.id, install_request())
+    instance.instructions = "Use the installed account."
+    async with async_session() as session:
+        session.add(instance)
+        await session.commit()
+    scope = a_turn(UserProfile(user_id=user.id))
+    server = tentacles_mcp(fixed_session(scope), manager=manager)
+    upstream, _ = an_upstream("answer")
+    upstream.instructions = upstream_instructions
+    async with connected(manager, upstream) as requests:
+        transport = requests.upstream
+
+        async def legacy_transport(request: httpx2.Request) -> httpx2.Response:
+            if request.method == "POST":
+                body = TypeAdapter(dict[str, JsonValue]).validate_json(
+                    await request.aread()
+                )
+                if body.get("method") == "server/discover":
+                    return httpx2.Response(
+                        200,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "error": {"code": -32601, "message": "Method not found"},
+                        },
+                    )
+                if body.get("method") == "tools/list":
+                    return httpx2.Response(
+                        200,
+                        json={
+                            "jsonrpc": "2.0",
+                            "id": body["id"],
+                            "result": {
+                                "tools": [
+                                    {
+                                        "name": "answer",
+                                        "inputSchema": {"type": "object"},
+                                    }
+                                ]
+                            },
+                        },
+                    )
+            return await transport.handle_async_request(request)
+
+        if legacy:
+            requests.upstream = httpx2.MockTransport(legacy_transport)
+        for _ in range(2):
+            catalog = await discover(server, instance.namespace)
+            expected = instance.instructions
+            if upstream_instructions:
+                expected += "\n" + upstream_instructions
+            assert catalog.instructions == expected
+            assert [tool.name for tool in catalog.tools] == ["answer"]
+        assert requests.methods.count("server/discover") == 1
+        assert requests.methods.count("initialize") == int(legacy)
+
+
 async def test_client_is_reused_across_turns_and_closed_at_shutdown(
     manager: McpManager,
 ) -> None:
@@ -317,7 +382,7 @@ async def test_client_is_reused_across_turns_and_closed_at_shutdown(
                         "arguments": {},
                     },
                 )
-        assert requests.methods.count("server/discover") == 0
+        assert requests.methods.count("server/discover") == 1
         assert requests.methods.count("initialize") == 0
         assert requests.methods.count("tools/list") == 4
         assert requests.methods.count("tools/call") == 4
@@ -704,8 +769,8 @@ async def test_fatal_network_failure_evicts_without_replaying_tool_call(
                 raise error_type("upstream connection failed", request=request)
             return await transport.handle_async_request(request)
 
-        requests.upstream = httpx2.MockTransport(fail_once)
         async with manager.acquire(scope, instance.namespace) as client:
+            requests.upstream = httpx2.MockTransport(fail_once)
             cleanup = manager.sweaps[key]
             with pytest.raises((MCPError, httpx2.TransportError)):
                 await client.call_tool_mcp("answer", {})
@@ -736,9 +801,9 @@ async def test_http_error_preserves_usable_client(
         async def refuse(request: httpx2.Request) -> httpx2.Response:
             return httpx2.Response(status, headers={"Retry-After": "0"})
 
-        requests.upstream = httpx2.MockTransport(refuse)
-        with pytest.raises(MCPError):
-            async with manager.acquire(scope, instance.namespace) as client:
+        async with manager.acquire(scope, instance.namespace) as client:
+            requests.upstream = httpx2.MockTransport(refuse)
+            with pytest.raises(MCPError):
                 await client.call_tool_mcp("answer", {})
         assert requests.methods.count("tools/call") == 1
         assert manager.clients[key] is client
