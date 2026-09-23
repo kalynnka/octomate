@@ -55,6 +55,7 @@ from octomate.tentacles.lark.chromo import LARK_STREAM_ELEMENT_ID, LarkChromo
 from octomate.tentacles.lark.feelers import cards
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.tentacles.lark.schema import (
+    LarkCard,
     LarkImageContent,
     LarkOutboundMessage,
     LarkStreamCard,
@@ -137,9 +138,8 @@ class LarkMarkdownFeeler:
 
 
 def answer_stream_card_data() -> str:
-    payload = {
-        "schema": "2.0",
-        "config": {
+    payload = LarkCard(
+        config={
             "streaming_mode": True,
             "summary": {"content": ""},
             "streaming_config": {
@@ -153,9 +153,13 @@ def answer_stream_card_data() -> str:
                 "print_strategy": "fast",
             },
         },
-        "body": {"elements": [cards.markdown("", element_id=LARK_STREAM_ELEMENT_ID)]},
-    }
-    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        body={
+            "elements": [
+                {"tag": "markdown", "content": "", "element_id": LARK_STREAM_ELEMENT_ID}
+            ]
+        },
+    )
+    return payload.model_dump_json(by_alias=True, exclude_none=True)
 
 
 @dataclass

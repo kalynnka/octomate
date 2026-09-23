@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 
 import lark_oapi
@@ -19,7 +18,11 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.channel import Chromo
-from octomate.tentacles.lark.schema import LarkCardReference, LarkOutboundMessage
+from octomate.tentacles.lark.schema import (
+    LarkCard,
+    LarkCardReference,
+    LarkOutboundMessage,
+)
 from octomate.types.conversations import ChatType
 from octomate.types.json import JsonObject
 
@@ -101,12 +104,12 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
     def outbound_markdown(self, text: str) -> list[LarkOutboundMessage]:
         if not text:
             return []
-        payload = {
-            "schema": "2.0",
-            "body": {"elements": [{"tag": "markdown", "content": text}]},
-        }
+        payload = LarkCard(body={"elements": [{"tag": "markdown", "content": text}]})
         return [
-            LarkOutboundMessage(msg_type="interactive", content=json.dumps(payload))
+            LarkOutboundMessage(
+                msg_type="interactive",
+                content=payload.model_dump_json(by_alias=True, exclude_none=True),
+            )
         ]
 
     async def outbound_segments(
@@ -129,9 +132,8 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
         *,
         element_id: str = LARK_STREAM_ELEMENT_ID,
     ) -> str:
-        payload = {
-            "schema": "2.0",
-            "config": {
+        payload = LarkCard(
+            config={
                 "streaming_mode": True,
                 "summary": {"content": ""},
                 "streaming_config": {
@@ -150,7 +152,7 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                     "print_strategy": "fast",
                 },
             },
-            "body": {
+            body={
                 "elements": [
                     {
                         "tag": "markdown",
@@ -159,8 +161,8 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
                     }
                 ]
             },
-        }
-        return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+        )
+        return payload.model_dump_json(by_alias=True, exclude_none=True)
 
     def make_stream_card_message(self, card_id: str) -> LarkOutboundMessage:
         return LarkOutboundMessage(

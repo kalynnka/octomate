@@ -73,12 +73,47 @@ class LarkCardReference(BaseModel):
     data: LarkCardReferenceData
 
 
+class LarkCardSummary(TypedDict):
+    content: str
+
+
+class LarkPrintSettings(TypedDict):
+    default: int
+    android: int
+    ios: int
+    pc: int
+
+
+class LarkStreamingOptions(TypedDict):
+    print_frequency_ms: LarkPrintSettings
+    print_step: LarkPrintSettings
+    print_strategy: Literal["fast"]
+
+
 class LarkStreamingConfig(TypedDict):
     streaming_mode: bool
+    summary: NotRequired[LarkCardSummary]
+    streaming_config: NotRequired[LarkStreamingOptions]
 
 
 class LarkCardSettings(BaseModel):
     config: LarkStreamingConfig
+
+
+class LarkMarkdownElement(TypedDict):
+    tag: Literal["markdown"]
+    content: str
+    element_id: NotRequired[str]
+
+
+class LarkCardBody(TypedDict):
+    elements: list[LarkMarkdownElement]
+
+
+class LarkCard(BaseModel):
+    schema_version: Literal["2.0"] = Field(default="2.0", alias="schema")
+    config: LarkStreamingConfig | None = None
+    body: LarkCardBody
 
 
 class LarkBotInfo(BaseModel):
