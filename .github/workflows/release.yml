@@ -3,6 +3,22 @@ name: Release
 on:
   push:
     branches: [main]
+    paths:
+      - "octomate/**"
+      - "cli/**"
+      - "protocol/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "LICENSE"
+      - "CHANGELOG.md"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - "alembic.ini"
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:

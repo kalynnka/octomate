@@ -144,8 +144,13 @@ what is outside the group. The `site/` output is ignored by git.
 
 ## Publishing
 
-`.github/workflows/docs.yml` builds strictly on every pull request and, on a push
-to `main`, uploads the site and deploys it through GitHub's Pages API, the same
+Docs build on every pull request targeting `main` and every push to `main`,
+including changes to Python source. This keeps generated API documentation,
+signatures and embedded source current without a separate change detector or
+custom templates. Manual workflow runs can rebuild the site too.
+
+`.github/workflows/docs.yml` builds strictly and, on a push to `main`, uploads the
+site and deploys it through GitHub's Pages API, the same
 shape as Arcanus's workflow. No `gh-pages` branch, no deploy token. Publication
 needs **Settings → Pages → Source: GitHub Actions** set once by an administrator.
 The site is `https://kalynnka.github.io/octomate/`.

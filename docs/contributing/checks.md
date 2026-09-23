@@ -1,5 +1,15 @@
 # Checks and tests
 
+Python checks run when `octomate/`, `cli/`, `protocol/`, shared tests, build inputs
+or the checks workflow change. They test and build all three distributions
+together: the server depends on the CLI and protocol, and the CLI depends on the
+protocol. This catches compatibility problems in their consumers too.
+
+Trunkline has a separate workflow for changes under `trunkline/` or its workflow
+file. Docs build on every pull request targeting `main` and every push to `main`.
+Manually running Checks, or calling it for a release, runs both Python and
+Trunkline validation regardless of the changed paths.
+
 ```sh
 uv run pytest                                  # everything except live replays
 uv run ruff format <paths> && uv run ruff check <paths>

@@ -8,9 +8,12 @@ Three distributions release independently through one Release Please pull reques
 | `octomate-cli` | `cli/` | `octomate-cli-vX.Y.Z` |
 | `octomate-protocol` | `protocol/` | `octomate-protocol-vX.Y.Z` |
 
-Pushes to `main` update the release pull request. Release Please assigns commits by
-path and bumps only the affected packages; the server's detection excludes `cli/`,
-`protocol/`, `tests/` and `docs/`. Commit subjects follow Conventional Commits, and
+Pushes to `main` that change package sources, metadata, deployment files or release
+configuration update the release pull request. Release Please assigns commits by
+path and bumps only the affected packages. The server's detection excludes the
+CLI and protocol packages, tests, docs, Trunkline, CI and editor configuration, and
+agent instructions; see `exclude-paths` in `release-please-config.json`.
+Commit subjects follow Conventional Commits, and
 before 1.0 a breaking change bumps the minor version while features and fixes bump
 the patch.
 
