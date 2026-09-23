@@ -45,8 +45,11 @@ from octomate.tentacles.channel import DownloadedImage, Ink
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.schema import (
     LarkBotInfoResponse,
+    LarkCardReference,
+    LarkCardSettings,
     LarkOutboundMessage,
     LarkStreamCard,
+    LarkTextContent,
     LarkUserProfile,
 )
 
@@ -338,9 +341,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
             [
                 LarkOutboundMessage(
                     msg_type="text",
-                    content=json.dumps(
-                        {"text": text}, ensure_ascii=False, separators=(",", ":")
-                    ),
+                    content=LarkTextContent(text=text).model_dump_json(),
                 )
             ],
             reply_to=reply_to,
@@ -385,11 +386,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
     ) -> IMMessageID | None:
         msg = LarkOutboundMessage(
             msg_type="interactive",
-            content=json.dumps(
-                {"type": "card", "data": {"card_id": card.card_id}},
-                ensure_ascii=False,
-                separators=(",", ":"),
-            ),
+            content=LarkCardReference(data={"card_id": card.card_id}).model_dump_json(),
         )
         return await self.send_message(
             chat_id,
@@ -446,11 +443,7 @@ class LarkInk(Ink[LarkOutboundMessage]):
         """Disable streaming_mode so the card settles (typewriter stops, the
         card becomes interactive). Best-effort: a failure only leaves the card
         locked until Lark's ~10 minute auto-timeout."""
-        settings = json.dumps(
-            {"config": {"streaming_mode": False}},
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        settings = LarkCardSettings(config={"streaming_mode": False}).model_dump_json()
         request = (
             SettingsCardRequest.builder()
             .card_id(card.card_id)

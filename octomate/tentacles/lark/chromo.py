@@ -19,7 +19,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.channel import Chromo
-from octomate.tentacles.lark.schema import LarkOutboundMessage
+from octomate.tentacles.lark.schema import LarkCardReference, LarkOutboundMessage
 from octomate.types.conversations import ChatType
 from octomate.types.json import JsonObject
 
@@ -163,10 +163,9 @@ class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
         return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
     def make_stream_card_message(self, card_id: str) -> LarkOutboundMessage:
-        content = {"type": "card", "data": {"card_id": card_id}}
         return LarkOutboundMessage(
             msg_type="interactive",
-            content=json.dumps(content, ensure_ascii=False, separators=(",", ":")),
+            content=LarkCardReference(data={"card_id": card_id}).model_dump_json(),
         )
 
     def parse_segments(

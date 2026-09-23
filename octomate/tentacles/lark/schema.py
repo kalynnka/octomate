@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, NotRequired, Protocol, runtime_checkable
+from typing import Annotated, Literal, NotRequired, Protocol, runtime_checkable
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -54,6 +54,31 @@ class LarkOutboundMessage:
 class LarkStreamCard:
     card_id: str
     element_id: str
+
+
+class LarkTextContent(BaseModel):
+    text: str
+
+
+class LarkImageContent(BaseModel):
+    image_key: str
+
+
+class LarkCardReferenceData(TypedDict):
+    card_id: str
+
+
+class LarkCardReference(BaseModel):
+    type: Literal["card"] = "card"
+    data: LarkCardReferenceData
+
+
+class LarkStreamingConfig(TypedDict):
+    streaming_mode: bool
+
+
+class LarkCardSettings(BaseModel):
+    config: LarkStreamingConfig
 
 
 class LarkBotInfo(BaseModel):

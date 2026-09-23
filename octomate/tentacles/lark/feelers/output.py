@@ -54,7 +54,11 @@ from octomate.tentacles.feelers.output import (
 from octomate.tentacles.lark.chromo import LARK_STREAM_ELEMENT_ID, LarkChromo
 from octomate.tentacles.lark.feelers import cards
 from octomate.tentacles.lark.ink import LarkInk
-from octomate.tentacles.lark.schema import LarkOutboundMessage, LarkStreamCard
+from octomate.tentacles.lark.schema import (
+    LarkImageContent,
+    LarkOutboundMessage,
+    LarkStreamCard,
+)
 
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
@@ -423,7 +427,9 @@ class LarkRunStateCards(TimelineState):
                     [
                         LarkOutboundMessage(
                             msg_type="image",
-                            content=json.dumps({"image_key": image_key}),
+                            content=LarkImageContent(
+                                image_key=image_key
+                            ).model_dump_json(),
                         )
                     ],
                     reply_to=self.reply_to,
