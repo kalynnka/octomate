@@ -3,8 +3,36 @@ name: Checks
 on:
   pull_request:
     branches: [main]
+    paths:
+      - "octomate/**"
+      - "cli/**"
+      - "protocol/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - "README.md"
+      - "LICENSE"
+      - "alembic.ini"
+      - "docker-compose.yml"
+      - ".github/checks/**"
+      - ".github/workflows/checks.yml"
   push:
     branches: [main]
+    paths:
+      - "octomate/**"
+      - "cli/**"
+      - "protocol/**"
+      - "tests/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".python-version"
+      - "README.md"
+      - "LICENSE"
+      - "alembic.ini"
+      - "docker-compose.yml"
+      - ".github/checks/**"
+      - ".github/workflows/checks.yml"
   workflow_dispatch:
   workflow_call:
     inputs:
@@ -29,6 +57,7 @@ jobs:
           version: "0.8.13"
           python-version: "3.12"
           enable-cache: true
+          cache-suffix: checks
       - run: uv sync --locked
       - name: Check changed Python files
         env:
@@ -52,36 +81,14 @@ jobs:
           version: "0.8.13"
           python-version: ${{ matrix.python }}
           enable-cache: true
+          cache-suffix: checks
       - run: uv sync --locked
       - name: Run unit tests
-        run: uv run --no-sync pytest -q
-
-  trunkline:
-    name: Trunkline TypeScript tests
-    needs: lint
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: trunkline
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.ref || github.sha }}
-      - uses: pnpm/action-setup@v6
-        with:
-          version: "10.32.1"
-      - uses: actions/setup-node@v7
-        with:
-          node-version: "24"
-          cache: pnpm
-          cache-dependency-path: trunkline/pnpm-lock.yaml
-      - run: pnpm install --frozen-lockfile
-      - name: Run TypeScript tests
-        run: pnpm test
+        run: uv run --no-sync pytest -q -n 2 --dist worksteal --durations=25
 
   packages:
     name: Packages (Python ${{ matrix.python }})
-    needs: [lint, test, trunkline]
+    needs: [lint, test]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -96,6 +103,7 @@ jobs:
           version: "0.8.13"
           python-version: ${{ matrix.python }}
           enable-cache: true
+          cache-suffix: checks
       - run: uv sync --locked
       - name: Build all distributions
         run: uv build --all-packages --no-sources

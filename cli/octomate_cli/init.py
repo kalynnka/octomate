@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated
+from typing import Annotated
 
 import typer
 from pydantic import TypeAdapter
@@ -17,15 +17,13 @@ from rich.prompt import Confirm, IntPrompt, Prompt
 from rich.table import Table
 from rich.text import Text
 
+from octomate_cli.installation import DeploymentTarget, Installation
 from octomate_cli.mcp import McpPreset
 from octomate_cli.wizard import tentacles_step
 from octomate_cli.wizard.agents import AGENTS
 from octomate_cli.wizard.base import brand_color, console
 from octomate_cli.wizard.channels import CHANNELS
 from octomate_cli.wizard.mcp import MCPS
-
-if TYPE_CHECKING:
-    from octomate_cli.service import PlistService
 
 
 def init(
@@ -66,6 +64,12 @@ def init(
             help="Channel template: slack, lark, discord, trunkline or none. Repeat for multiple channels; fill credentials in config later.",
         ),
     ] = None,
+    target: Annotated[
+        DeploymentTarget | None,
+        typer.Option(
+            help="Deployment target; defaults to launchd on macOS and systemd on Linux."
+        ),
+    ] = None,
     yes: Annotated[
         bool,
         typer.Option(
@@ -74,23 +78,39 @@ def init(
         ),
     ] = False,
 ) -> None:
-    """Prepare a new macOS service through an interactive setup wizard.
+    """Prepare a macOS, Linux or Docker installation through the same wizard.
 
     Currently requires --prepare. Creates a private installation and a reviewable
-    LaunchAgent definition inside it. Database initialization, account creation,
-    service activation and live Claude verification are separate, unfinished steps.
+    service definition inside it. Database initialization, account creation,
+    service activation and live agent verification remain explicit operator steps.
     """
     if not prepare:
         raise typer.BadParameter(
             "Use --prepare; service activation is not implemented yet."
         )
-    if sys.platform != "darwin":
-        raise typer.BadParameter("The deployment wizard currently supports macOS.")
+    if sys.platform not in {"darwin", "linux"}:
+        raise typer.BadParameter(
+            "Deployment preparation supports macOS and Linux hosts. Windows support is deferred."
+        )
+    if target is None:
+        target = (
+            DeploymentTarget.launchd
+            if sys.platform == "darwin"
+            else DeploymentTarget.systemd
+        )
+    if (target == DeploymentTarget.launchd and sys.platform != "darwin") or (
+        target == DeploymentTarget.systemd and sys.platform != "linux"
+    ):
+        raise typer.BadParameter(
+            f"The {target} target cannot run on this host; choose docker or manual instead."
+        )
     # pwd is unavailable on Windows; client CLI imports must remain portable.
     import pwd
 
     if os.getuid() == 0:
-        raise typer.BadParameter("Run as the desktop account, without sudo.")
+        raise typer.BadParameter(
+            "Run as the account that will own the installation, without sudo."
+        )
     account = pwd.getpwuid(os.getuid())
     console.print(
         Panel(
@@ -101,7 +121,10 @@ def init(
         )
     )
     root = installation_step(root, account.pw_dir, yes)
-    if (root / "control/io.octomate.server.plist").exists():
+    service = Installation(
+        root, build_environment(root, account.pw_dir, account.pw_name, target), target
+    )
+    if service.draft.exists():
         if (
             source is not None
             or port is not None
@@ -111,16 +134,18 @@ def init(
             raise typer.BadParameter(
                 "Prepared installations retain their settings. Omit --source, --port, --agent and --channel to validate again."
             )
-        validate_existing(root, account.pw_dir)
+        validate_existing(service, account.pw_dir)
         return
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise typer.BadParameter(
             "Choose an empty installation directory. Existing files will not be overwritten."
         )
     git = shutil.which("git")
-    uv = shutil.which("uv")
-    if git is None or uv is None:
-        raise typer.BadParameter("Install Git and uv before preparing a service.")
+    installer = shutil.which("docker" if target == DeploymentTarget.docker else "uv")
+    if git is None or installer is None:
+        raise typer.BadParameter(
+            "Install Git and Docker (with Compose) for Docker, or Git and uv for a native service."
+        )
     source, revision = select_source(root, source, git)
     if yes and (port is None or agent is None or channel is None):
         raise typer.BadParameter(
@@ -128,7 +153,10 @@ def init(
         )
     port = network_step(port)
     tentacles = tentacles_step(agent, channel, interactive=not yes, console=console)
-    service = build_service(root, account.pw_dir, account.pw_name)
+    if target == DeploymentTarget.docker and "deepseek" in tentacles.agents:
+        raise typer.BadParameter(
+            "The Docker image includes Claude and Codex. DSH needs a custom image; add it after preparation."
+        )
     review_step(
         service,
         source,
@@ -144,7 +172,7 @@ def init(
         source,
         revision,
         git,
-        uv,
+        installer,
         port,
         tentacles.agents,
         tentacles.channels,
@@ -160,7 +188,14 @@ def installation_step(root: Path | None, home: str, yes: bool) -> Path:
         root = Path(
             Prompt.ask(
                 "Installation directory",
-                default=str(Path(home) / "Library/Application Support/Octomate"),
+                default=str(
+                    Path(home)
+                    / (
+                        "Library/Application Support/Octomate"
+                        if sys.platform == "darwin"
+                        else ".local/share/octomate-server"
+                    )
+                ),
                 console=console,
             )
         )
@@ -171,14 +206,27 @@ def installation_step(root: Path | None, home: str, yes: bool) -> Path:
     return root
 
 
-def validate_existing(root: Path, home: str) -> None:
+def validate_existing(installation: Installation, home: str) -> None:
     # Imported here because service owns this model and registers the init command.
     from octomate_cli.service import PlistService
 
-    draft = root / "control/io.octomate.server.plist"
+    root = installation.directory
+    draft = installation.draft
     try:
         if draft.is_symlink():
             raise ValueError("The prepared definition must not be a symlink.")
+        if installation.target != DeploymentTarget.launchd:
+            subprocess.run(
+                installation.maintenance_command("check"),
+                cwd=root,
+                env=installation.environment,
+                check=True,
+            )
+            console.print(
+                "Configuration structure is valid; files and credentials are unchanged.",
+                style="green",
+            )
+            return
         service = PlistService.model_validate(plistlib.loads(draft.read_bytes()))
         if (
             service.directory != root
@@ -256,10 +304,9 @@ def network_step(port: int | None) -> int:
     return port
 
 
-def build_service(root: Path, home: str, username: str) -> PlistService:
-    # Imported here because service owns this model and registers the init command.
-    from octomate_cli.service import PlistService
-
+def build_environment(
+    root: Path, home: str, username: str, target: DeploymentTarget
+) -> dict[str, str]:
     environment = {
         "HOME": home,
         "USER": username,
@@ -268,36 +315,38 @@ def build_service(root: Path, home: str, username: str) -> PlistService:
         "OCTOMATE_HOME": str(root / "config"),
         "OCTOMATE_DB_URL": f"sqlite+aiosqlite:///{root / 'octomate.db'}",
     }
-    for key in (
-        "CLAUDE_CONFIG_DIR",
-        "CODEX_HOME",
-        "HTTPS_PROXY",
-        "HTTP_PROXY",
-        "ALL_PROXY",
-        "NO_PROXY",
-        "SSL_CERT_FILE",
-        "SSL_CERT_DIR",
-        "REQUESTS_CA_BUNDLE",
-    ):
+    forwarded = (
+        (
+            "CLAUDE_CONFIG_DIR",
+            "CODEX_HOME",
+            "HTTPS_PROXY",
+            "HTTP_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+            "SSL_CERT_FILE",
+            "SSL_CERT_DIR",
+            "REQUESTS_CA_BUNDLE",
+        )
+        if target != DeploymentTarget.docker
+        else (
+            "DOCKER_HOST",
+            "DOCKER_CONTEXT",
+            "DOCKER_CONFIG",
+            "DOCKER_TLS_VERIFY",
+            "DOCKER_CERT_PATH",
+        )
+    )
+    for key in forwarded:
         if key in os.environ:
             environment[key] = os.environ[key]
     for key in ("CLAUDE_CONFIG_DIR", "CODEX_HOME"):
         if key in environment:
             environment[key] = str(Path(environment[key]).expanduser().resolve())
-    return PlistService(
-        Label="io.octomate.server",
-        WorkingDirectory=root,
-        ProgramArguments=[str(root / "app/.venv/bin/octomate"), "service", "serve"],
-        EnvironmentVariables=environment,
-        StandardOutPath=root / "logs/stdout.log",
-        StandardErrorPath=root / "logs/stderr.log",
-        LimitLoadToSessionType="Aqua",
-        KeepAlive=True,
-    )
+    return environment
 
 
 def review_step(
-    service: PlistService,
+    service: Installation,
     source: Path | None,
     revision: str,
     port: int,
@@ -308,7 +357,7 @@ def review_step(
 ) -> None:
     root = service.directory
     environment = service.environment
-    draft = root / "control/io.octomate.server.plist"
+    draft = service.draft
     console.print("5/6 · Review", style=f"bold {brand_color}")
     table = Table(box=None, header_style="bold")
     table.add_column("Setting", no_wrap=True, style="dim")
@@ -336,28 +385,49 @@ def review_step(
         ),
         (
             "Claude home",
-            environment.get(
-                "CLAUDE_CONFIG_DIR", str(Path(environment["HOME"]) / ".claude")
+            (
+                str(root / "agent-home/.claude")
+                if service.target == DeploymentTarget.docker
+                else environment.get(
+                    "CLAUDE_CONFIG_DIR", str(Path(environment["HOME"]) / ".claude")
+                )
             )
             if "claude" in agent
             else "Not enabled",
         ),
         (
             "Codex home",
-            environment.get("CODEX_HOME", str(Path(environment["HOME"]) / ".codex"))
+            (
+                str(root / "agent-home/.codex")
+                if service.target == DeploymentTarget.docker
+                else environment.get(
+                    "CODEX_HOME", str(Path(environment["HOME"]) / ".codex")
+                )
+            )
             if "codex" in agent
             else "Not enabled",
         ),
-        ("Launch context", f"{environment['USER']} · {service.domain}"),
-        ("Configuration", str(root / "config")),
-        ("Auth secrets", str(root / ".env")),
-        ("Configuration checklist", str(root / "CONFIGURATION.md")),
-        ("Database (not created)", str(root / "octomate.db")),
-        ("Draft LaunchAgent", str(draft)),
+        ("Launch context", f"{environment['USER']} · {service.target}"),
+        ("Configuration", str(service.state / "config")),
+        ("Auth secrets", str(service.state / ".env")),
+        ("Configuration checklist", str(service.state / "CONFIGURATION.md")),
+        ("Database (not created)", str(service.state / "octomate.db")),
+        ("Prepared definition", str(draft)),
     ):
         table.add_row(key, value)
     console.print(table)
-    console.print("The GUI service will require a desktop login; logging out stops it.")
+    if service.target == DeploymentTarget.launchd:
+        console.print(
+            "The GUI service will require a desktop login; logging out stops it."
+        )
+    elif service.target == DeploymentTarget.docker:
+        console.print(
+            "Agent credentials belong in agent-home/ or explicit container environment variables. Host logins are not copied."
+        )
+    elif service.target == DeploymentTarget.systemd:
+        console.print(
+            "A systemd user unit will be drafted. Boot without a user login requires lingering."
+        )
     if not yes and not Confirm.ask(
         "Prepare these files?", default=True, console=console
     ):
@@ -365,11 +435,11 @@ def review_step(
 
 
 def prepare_step(
-    service: PlistService,
+    service: Installation,
     source: Path | None,
     revision: str,
     git: str,
-    uv: str,
+    installer: str,
     port: int,
     agent: list[str],
     channels: list[str],
@@ -377,7 +447,6 @@ def prepare_step(
 ) -> None:
     root = service.directory
     environment = service.environment
-    draft = root / "control/io.octomate.server.plist"
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     root.chmod(0o700)
     for directory in ("control", "logs", "backups"):
@@ -415,8 +484,22 @@ def prepare_step(
                 )
                 if source is not None:
                     copy_working_tree(source, checkout, git)
+                if service.target == DeploymentTarget.docker:
+                    service.state.mkdir(mode=0o700)
+                    (root / "agent-home").mkdir(mode=0o700)
+                    service.write_definition(port)
+                    install_command = [installer, "compose", "build"]
+                else:
+                    install_command = [
+                        installer,
+                        "sync",
+                        "--locked",
+                        "--no-default-groups",
+                        "--project",
+                        str(checkout),
+                    ]
                 subprocess.run(
-                    [uv, "sync", "--locked", "--no-dev", "--project", str(checkout)],
+                    install_command,
                     cwd=root,
                     env=build_env,
                     stdout=log,
@@ -426,10 +509,7 @@ def prepare_step(
             with console.status("Generating private configuration and validating it…"):
                 subprocess.run(
                     [
-                        str(checkout / ".venv/bin/python"),
-                        "-m",
-                        "octomate_cli.deployment",
-                        "prepare",
+                        *service.maintenance_command("prepare"),
                         "--port",
                         str(port),
                         *(argument for name in agent for argument in ("--agent", name)),
@@ -439,6 +519,11 @@ def prepare_step(
                             for argument in ("--channel", name)
                         ),
                         *(["--mcp-presets"] if mcps else []),
+                        *(
+                            ["--target", service.target.value]
+                            if service.target != DeploymentTarget.launchd
+                            else []
+                        ),
                     ],
                     input=TypeAdapter(list[McpPreset]).dump_json(mcps)
                     if mcps
@@ -449,12 +534,14 @@ def prepare_step(
                     stderr=subprocess.STDOUT,
                     check=True,
                 )
-                service.maintenance("check")
-        payload = service.model_dump(mode="json", by_alias=True, exclude_none=True)
-        payload.update(RunAtLoad=True, ThrottleInterval=10, Umask=63)
-        with draft.open("xb") as output:
-            draft.chmod(0o600)
-            plistlib.dump(payload, output)
+                subprocess.run(
+                    service.maintenance_command("check"),
+                    cwd=root,
+                    env=environment,
+                    check=True,
+                )
+        if service.target != DeploymentTarget.docker:
+            service.write_definition(port)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         console.print(f"Preparation failed: {error}", style="red")
         console.print(
@@ -469,10 +556,10 @@ def prepare_step(
                 ("\n\nNext steps\n", f"bold {brand_color}"),
                 "Paths below are relative to the installation.\n",
                 "1. Complete ",
-                ("CONFIGURATION.md", "bold"),
+                (str((service.state / "CONFIGURATION.md").relative_to(root)), "bold"),
                 " to finish your configuration.\n",
                 "2. Review ",
-                ("control/io.octomate.server.plist", "bold"),
+                (str(service.draft.relative_to(root)), "bold"),
                 ".\n",
                 ("\nStill pending\n", "bold"),
                 "Database and account creation; service installation and startup.\n",

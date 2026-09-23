@@ -29,7 +29,9 @@ from octomate_cli.users import user_typer
 
 RELEASE_URL = "https://api.github.com/repos/kalynnka/octomate/releases"
 console = Console(stderr=True, markup=False, highlight=False)
-service_typer = typer.Typer(help="Run the server and manage its macOS GUI service.")
+service_typer = typer.Typer(
+    help="Prepare macOS, Linux or Docker deployments; run the server and manage its macOS GUI service."
+)
 service_typer.command()(init)
 service_typer.add_typer(user_typer, name="user")
 

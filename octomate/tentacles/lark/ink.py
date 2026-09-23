@@ -1,3 +1,5 @@
+"""Lark Open API client: messages, images and CardKit streaming cards."""
+
 from __future__ import annotations
 
 import asyncio
@@ -123,6 +125,9 @@ async def pooled_aexecute(
 
 
 class LarkInk(Ink[LarkOutboundMessage]):
+    """Lark Open API transport, routing the SDK's requests through this ink's own
+    pooled httpx client while it is entered."""
+
     app_id: str
     app_secret: SecretStr
     client: lark.Client

@@ -1,3 +1,5 @@
+"""Discord channel tentacle."""
+
 from octomate.tentacles.discord.base import DiscordTentacle
 from octomate.tentacles.discord.chromo import DiscordChromo
 from octomate.tentacles.discord.ink import DiscordInk

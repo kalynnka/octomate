@@ -1,3 +1,6 @@
+"""The `octomate user` commands: create an account from an invitation, reset a
+password."""
+
 import asyncio
 from importlib.util import find_spec
 from typing import Annotated

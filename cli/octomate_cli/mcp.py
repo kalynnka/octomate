@@ -19,6 +19,8 @@ mcp_typer = typer.Typer(help="Configure MCP tentacles.", no_args_is_help=True)
 
 
 class McpPreset(BaseModel):
+    """A provider preset rendered into an MCP tentacle's configuration."""
+
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
 
     provider: Literal["github"]

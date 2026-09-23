@@ -1,3 +1,6 @@
+"""Agent runs: one per `agent.run()`, driven by Octomate or replayed from an
+external transcript."""
+
 from __future__ import annotations
 
 import uuid

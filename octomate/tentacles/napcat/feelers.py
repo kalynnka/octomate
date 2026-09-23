@@ -1,3 +1,5 @@
+"""NapCat's plain-text OAuth feeler."""
+
 from __future__ import annotations
 
 from octomate.capabilities.harness.events import (

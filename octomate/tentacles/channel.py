@@ -86,6 +86,9 @@ class ChannelSurfaces:
 
 @dataclass(frozen=True)
 class DownloadedImage:
+    """An inbound image an ink fetched from the platform: its bytes and file name,
+    with the content type and source URL when known."""
+
     data: bytes
     file_name: str
     content_type: str = ""

@@ -1,3 +1,5 @@
+"""Channel addresses and agent conversations."""
+
 from __future__ import annotations
 
 import uuid
@@ -20,6 +22,9 @@ from octomate.types.permissions import AgentPermissionMode
 
 @dataclass(frozen=True)
 class ChannelAddress:
+    """One surface on a channel — a DM, a group, a thread — and the user spoken to
+    on it."""
+
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
@@ -70,6 +75,9 @@ class ConversationKey(NamedTuple):
 
 @sqlalchemy_materia.bless(ConversationModel)
 class Conversation(BaseTransmuter):
+    """One agent's model context within a thread, keyed by thread, agent and
+    subagent."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)

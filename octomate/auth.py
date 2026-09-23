@@ -1,3 +1,6 @@
+"""The local account HTTP API: registration, sign-in and session refresh, password
+and API-key management, and channel profile linking."""
+
 import uuid
 from typing import Annotated, NotRequired
 

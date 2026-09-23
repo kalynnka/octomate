@@ -241,6 +241,10 @@ refine or extend that work instead of commissioning a new accomplice.
 
 @dataclass
 class GatewayCapability(AbstractCapability[None]):
+    """The gateway spells as one turn's toolset: scry, summon, teleport, scheme,
+    send and dispel, plus the accomplice spells when there is a thread to run
+    them in."""
+
     # The turn's policy and decision slot, shared with the graph that acts on it.
     session: OctomateSession
     # What running an accomplice takes, beyond the session's own deps. None on a

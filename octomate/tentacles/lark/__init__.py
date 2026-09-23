@@ -1,3 +1,5 @@
+"""Lark channel tentacle."""
+
 from octomate.tentacles.lark.base import LarkTentacle
 from octomate.tentacles.lark.chromo import LarkChromo
 from octomate.tentacles.lark.ink import LarkInk

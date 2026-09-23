@@ -1,3 +1,9 @@
+"""Lark channel tentacle.
+
+Runs the lark-oapi WebSocket client, hands received messages to the ingest
+pipeline and answers card-action callbacks with the redrawn card.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -74,6 +80,9 @@ def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
 
 
 class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
+    """Lark channel: a long-lived WebSocket event connection translated into core
+    events, with card actions answered by the callback's own response."""
+
     brand_color: ClassVar[Style | None] = Style(color="#666D82", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(

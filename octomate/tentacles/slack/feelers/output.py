@@ -1,3 +1,5 @@
+"""Slack timeline rendering: a run as plan streams and streamed text messages."""
+
 from __future__ import annotations
 
 import asyncio
@@ -679,6 +681,9 @@ class SlackTimelineFeeler(TimelineFeeler):
 
 @dataclass
 class SlackSubagentTimelineState(SubagentTimelineState):
+    """A commissioned child run rendered as its own plan stream, its response
+    folded into the root task when it settles."""
+
     ink: SlackInk
     activity: SubagentActivity
     channel: str

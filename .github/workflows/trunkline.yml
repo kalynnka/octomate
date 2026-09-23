@@ -1,0 +1,45 @@
+name: Trunkline
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "trunkline/**"
+      - ".github/workflows/trunkline.yml"
+  push:
+    branches: [main]
+    paths:
+      - "trunkline/**"
+      - ".github/workflows/trunkline.yml"
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  trunkline:
+    name: Trunkline TypeScript tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trunkline
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+      - uses: pnpm/action-setup@v6
+        with:
+          version: "10.32.1"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: trunkline/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - name: Run TypeScript tests
+        run: pnpm test

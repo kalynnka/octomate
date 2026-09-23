@@ -1,3 +1,5 @@
+"""Lark approval cards: one interactive card per approval, redrawn once decided."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -25,6 +27,8 @@ ACTION_CARD_JSON_LIMIT = 2000
 
 
 class LarkApprovalFeeler(ApprovalFeeler):
+    """One interactive card per approval with Approve and Deny buttons."""
+
     def __init__(self, ink: LarkInk) -> None:
         self.ink = ink
 

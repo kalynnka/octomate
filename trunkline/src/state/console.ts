@@ -176,7 +176,6 @@ export interface ConsoleActions {
   setTheme(theme: ThemeMode): void
   setInterfaceSize(size: InterfaceSize): void
   toggleSidebar(): void
-  toggleChannelFold(id: string): void
   toggleChannelPin(id: string): void
   focusChannel(id: string, all: string[]): void
   toggleControl(): void
@@ -616,10 +615,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     /* ---------------------------------------------------- panels --------- */
     toggleSidebar: () => set((s) => ({ sbFold: !s.sbFold })),
-    toggleChannelFold(id: string) {
-      set((s) => ({ chFold: { ...s.chFold, [id]: !s.chFold[id] } }))
-      saveChannelPrefs()
-    },
     toggleChannelPin(id: string) {
       set((s) => ({
         chPins: s.chPins.includes(id) ? s.chPins.filter((p) => p !== id) : [...s.chPins, id],

@@ -16,11 +16,15 @@ from octomate.tentacles.slack.schema import SlackUserProfile
 
 
 class SlackAuthedUser(BaseModel):
+    """The `authed_user` block of a Slack user-token response."""
+
     id: str
     scope: str = ""
 
 
 class SlackUserToken(OAuthToken):
+    """Slack's user-token response, its `token_type` normalized to `Bearer`."""
+
     ok: Literal[True]
     authed_user: SlackAuthedUser | None = None
 
@@ -32,11 +36,15 @@ class SlackUserToken(OAuthToken):
 
 
 class SlackErrorResponse(BaseModel):
+    """Slack's `ok: false` envelope and its error code."""
+
     ok: Literal[False]
     error: str
 
 
 class SlackAuthTestResponse(BaseModel):
+    """A successful `auth.test`: the user and workspace a token belongs to."""
+
     ok: Literal[True]
     user: str
     user_id: str = Field(min_length=1)
@@ -51,6 +59,8 @@ SLACK_AUTH_TEST_ADAPTER: TypeAdapter[SlackAuthTestResponse | SlackErrorResponse]
 
 
 class SlackOAuthGrant(OAuthGrant):
+    """A grant pinned to the workspace `auth.test` verified it for."""
+
     team_id: str = Field(
         min_length=1,
         description="Workspace verified by auth.test with the granted token.",
@@ -58,6 +68,9 @@ class SlackOAuthGrant(OAuthGrant):
 
 
 class SlackOAuthConnector(OAuthConnector):
+    """The Slack MCP's connector for one workspace; linking a profile checks that
+    the grant's workspace is this channel's and its user is not the bot."""
+
     ink: SlackInk
 
     async def resolve_profile(self, grant: OAuthGrant) -> SlackUserProfile:
@@ -75,6 +88,9 @@ class SlackOAuthConnector(OAuthConnector):
 
 
 class SlackTokenExchange(OAuthTokenExchange):
+    """Slack's token exchange: reads the user scopes off the response and names
+    the account, and its workspace, via `auth.test`."""
+
     token_model: ClassVar[type[OAuthToken]] = SlackUserToken
 
     async def grant(

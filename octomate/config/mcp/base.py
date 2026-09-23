@@ -38,6 +38,8 @@ class DiscoveredOAuthMcpConfig(McpConfig):
 
 
 class DeviceFlowConfig(BaseModel):
+    """A provider's device authorization flow: its endpoints and client auth."""
+
     type: Literal["device"] = "device"
     device_authorization_endpoint: HttpsUrl
     token_endpoint: HttpsUrl
@@ -47,6 +49,8 @@ class DeviceFlowConfig(BaseModel):
 
 
 class AuthorizationCodeFlowConfig(BaseModel):
+    """A provider's authorization-code flow: its endpoints and client auth."""
+
     type: Literal["authorization_code"] = "authorization_code"
     authorization_endpoint: HttpsUrl
     token_endpoint: HttpsUrl

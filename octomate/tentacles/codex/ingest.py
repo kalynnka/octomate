@@ -1,3 +1,9 @@
+"""Hook-driven ingest of a native Codex session.
+
+The hooks write the session skeleton and the prompt/answer sketch of each turn
+ahead of the streamed rollout, which replaces the sketch.
+"""
+
 from __future__ import annotations
 
 import logging

@@ -1,3 +1,5 @@
+"""NapCat wire shapes: OneBot frames, segments and senders, and their decoding."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -33,10 +35,14 @@ from octomate.types.json import JsonObject
 
 @dataclass(frozen=True)
 class NapcatOutboundMessage:
+    """One OneBot message: its segment array."""
+
     segments: list[JsonObject]
 
 
 class ActionResponse[DataT](BaseModel):
+    """A typed OneBot action response from HTTP or the event socket."""
+
     model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
 
     status: str = ""
@@ -64,6 +70,8 @@ class SentMessage(BaseModel):
 
 
 class NapcatUserProfile(UserProfile):
+    """A QQ user as `get_stranger_info` reports them, normalized onto `UserProfile`."""
+
     model_config = ConfigDict(
         alias_generator=AliasGenerator(validation_alias=to_camel),
         validate_by_alias=True,
@@ -108,6 +116,8 @@ class NapcatUserProfile(UserProfile):
 
 
 class NapcatSender(UserProfile):
+    """The `sender` block of a OneBot message event."""
+
     model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
 
     nickname: str | None = None
@@ -128,12 +138,16 @@ class NapcatSender(UserProfile):
 
 
 class NapcatAtData(AtData):
+    """`AtData` read from OneBot's `qq` key."""
+
     model_config = ConfigDict(populate_by_name=True)
 
     user_id: str = Field(validation_alias="qq")
 
 
 class NapcatAtSegment(Segment):
+    """OneBot's `at` segment, whose target is `qq`."""
+
     type: Literal["at"] = "at"
     data: NapcatAtData
 
@@ -156,21 +170,29 @@ class VideoData(TypedDict):
 
 
 class GenericSegment(Segment):
+    """Any segment type this channel does not model."""
+
     type: str
     data: JsonObject = Field(default_factory=dict)
 
 
 class FaceSegment(Segment):
+    """OneBot's `face` segment."""
+
     type: Literal["face"] = "face"
     data: FaceData
 
 
 class RecordSegment(Segment):
+    """OneBot's `record` (voice) segment."""
+
     type: Literal["record"] = "record"
     data: RecordData
 
 
 class VideoSegment(Segment):
+    """OneBot's `video` segment."""
+
     type: Literal["video"] = "video"
     data: VideoData
 
@@ -199,6 +221,8 @@ NapcatMessageSegment = Annotated[
 
 
 class NapcatMessageEvent(BaseModel):
+    """A OneBot `message` event, private or group."""
+
     model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
 
     post_type: Literal["message"] = "message"

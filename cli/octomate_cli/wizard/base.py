@@ -1,3 +1,5 @@
+"""Console styling and the tentacle setup record the wizard steps share."""
+
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -39,6 +41,9 @@ selection_style = questionary.Style(
 
 @dataclass(frozen=True)
 class TentacleSetup[T]:
+    """One tentacle the wizard offers: its label, capabilities, and the step that
+    configures it."""
+
     label: str
     capabilities: tuple[Literal["Agent", "Channel", "MCP"], ...]
     configure: Callable[[Console], T]

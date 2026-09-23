@@ -1,3 +1,5 @@
+"""Inkling, the native pydantic-ai agent tentacle."""
+
 from octomate.tentacles.inkling.base import InklingTentacle
 from octomate.tentacles.inkling.build import build_inkling
 

@@ -3,6 +3,22 @@ name: Release
 on:
   push:
     branches: [main]
+    paths:
+      - "octomate/**"
+      - "cli/**"
+      - "protocol/**"
+      - "pyproject.toml"
+      - "uv.lock"
+      - "README.md"
+      - "LICENSE"
+      - "CHANGELOG.md"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - ".dockerignore"
+      - "alembic.ini"
+      - "release-please-config.json"
+      - ".release-please-manifest.json"
+      - ".github/workflows/release.yml"
   workflow_dispatch:
 
 permissions:
@@ -85,9 +101,16 @@ jobs:
     with:
       ref: ${{ needs.release.outputs.sha }}
 
+  trunkline:
+    needs: release
+    if: needs.release.outputs.created == 'true'
+    uses: ./.github/workflows/trunkline.yml
+    with:
+      ref: ${{ needs.release.outputs.sha }}
+
   publish:
     name: Publish ${{ matrix.package }}
-    needs: [release, checks]
+    needs: [release, checks, trunkline]
     if: needs.release.outputs.created == 'true'
     runs-on: ubuntu-latest
     strategy:

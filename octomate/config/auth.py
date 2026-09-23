@@ -1,3 +1,5 @@
+"""Local account credentials and token lifetimes."""
+
 from datetime import timedelta
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr

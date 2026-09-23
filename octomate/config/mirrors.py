@@ -1,3 +1,5 @@
+"""How project mirrors are synced, and the identity on the commits Octomate makes."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, EmailStr, Field

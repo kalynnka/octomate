@@ -1,3 +1,5 @@
+"""The database-backed spill store for oversized tool output."""
+
 from __future__ import annotations
 
 import zlib

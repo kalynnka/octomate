@@ -1,3 +1,6 @@
+"""Thread literals and the native pseudo-tentacle ids, shared by the ORM model and
+the schema."""
+
 from __future__ import annotations
 
 from typing import Literal

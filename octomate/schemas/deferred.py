@@ -1,3 +1,6 @@
+"""Deferred actions: the questions and approvals a run parks for a human, and the
+batch they are presented and resolved as."""
+
 from __future__ import annotations
 
 import uuid
@@ -49,6 +52,8 @@ MAX_QUESTION_CHOICES = 3
 
 
 class QuestionRequest(TypedDict):
+    """One question's arguments: the text, optional choices, and a hint."""
+
     question: str
     choices: NotRequired[
         Annotated[
@@ -66,6 +71,9 @@ class QuestionRequest(TypedDict):
 
 
 class ApprovalRequest(BaseModel):
+    """What an approval card shows: the tool, its arguments, a title and a
+    description."""
+
     tool_name: str
     args: JsonObject = Field(default_factory=dict)
     title: str = "Permission Required"
@@ -104,6 +112,9 @@ type DeferredApprovalResult = bool | None
 
 @sqlalchemy_materia.bless(deferred_models.DeferredAction)
 class DeferredAction(BaseTransmuter):
+    """One pending action in a batch — a question or an approval — and how it
+    resolved."""
+
     model_config = ConfigDict(
         from_attributes=True,
         populate_by_name=True,
@@ -139,6 +150,8 @@ class DeferredAction(BaseTransmuter):
 # arcanus column attribute) for these to shadow.
 @sqlalchemy_materia.bless(deferred_models.DeferredQuestionAction)
 class DeferredQuestion(DeferredAction):
+    """A question the run asked, answered with text."""
+
     kind: Literal["question"] = "question"
     args: QuestionRequest
 
@@ -151,6 +164,8 @@ class DeferredQuestion(DeferredAction):
 
 @sqlalchemy_materia.bless(deferred_models.DeferredApprovalAction)
 class DeferredApproval(DeferredAction):
+    """A tool call awaiting approval, resolved to allow or deny."""
+
     kind: Literal["approval"] = "approval"
     args: ApprovalRequest
 
@@ -216,6 +231,9 @@ DeferredActionCollection = TypeAdapter(
 
 @sqlalchemy_materia.bless(deferred_models.DeferredActionBatch)
 class DeferredActionBatch(BaseTransmuter):
+    """A run's deferred requests as one unit: persisted, presented, and rebuilt
+    into results once every action is resolved."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)

@@ -1,3 +1,6 @@
+"""Project mirrors: the pristine checkouts workspaces fork from, and the git
+plumbing that syncs them."""
+
 from __future__ import annotations
 
 import asyncio

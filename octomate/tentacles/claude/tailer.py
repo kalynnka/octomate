@@ -1,3 +1,9 @@
+"""Assembly of native Claude Code turns from a streamed transcript.
+
+Lines streamed in by `octomate claude tail` feed `ClaudeTranscriptTailer`, which
+commits each completed turn as an `ExternalAgentRun`.
+"""
+
 from __future__ import annotations
 
 import asyncio

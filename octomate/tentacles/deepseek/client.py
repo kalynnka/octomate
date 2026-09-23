@@ -56,6 +56,8 @@ JSON_HEADERS = {"content-type": "application/json"}
 
 @dataclass
 class DeepseekApiClient:
+    """One dsh harness's `/api` gateway: unary calls, event replies, the mux socket."""
+
     base_url: HttpUrl
     http_client: httpx.AsyncClient
     client_id: str | None = field(default=None, init=False)

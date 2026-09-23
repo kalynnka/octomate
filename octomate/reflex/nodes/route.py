@@ -1,3 +1,6 @@
+"""The node that decides which agent takes an inbound message: the thread's owner,
+the flat-thread agent, or the channel's entry agent."""
+
 from __future__ import annotations
 
 import logging
@@ -20,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
+    """Picks the agent for an inbound message — the chat's pinned owner, the
+    flat-thread agent, or the channel's entry agent — and enters `React`."""
+
     @reflex_logfire.instrument("reflex.route", extract_args=False)
     async def run(
         self,

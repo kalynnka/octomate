@@ -1,3 +1,5 @@
+"""Agent conversations and their model message history."""
+
 from __future__ import annotations
 
 import uuid

@@ -1,3 +1,5 @@
+"""The conversations table: one agent's context within a thread."""
+
 from __future__ import annotations
 
 import uuid
@@ -18,6 +20,8 @@ if TYPE_CHECKING:
 
 
 class Conversation(Base, TransmuterProxiedMixin):
+    """One agent's context within a thread, unique per (thread, agent, subagent)."""
+
     __tablename__ = "conversations"
     __table_args__ = (
         UniqueConstraint(

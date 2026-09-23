@@ -1,3 +1,6 @@
+"""The Octomate host: the FastAPI application that owns the managers, tentacles
+and routers, plus the console log styling it dispatches to each tentacle."""
+
 from __future__ import annotations
 
 import asyncio

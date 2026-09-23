@@ -12,8 +12,6 @@
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "preLaunchTask": "Octomate: debug attachment on",
-      "postDebugTask": "Octomate: debug attachment off",
       "console": "integratedTerminal",
       "justMyCode": false
     },
@@ -29,10 +27,18 @@
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "preLaunchTask": "Octomate: debug attachment on",
-      "postDebugTask": "Octomate: debug attachment off",
       "console": "integratedTerminal",
       "justMyCode": false
+    },
+    {
+      "name": "MkDocs (reload)",
+      "type": "debugpy",
+      "request": "launch",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "module": "mkdocs",
+      "args": ["serve", "--dev-addr", "127.0.0.1:8001"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
     },
     {
       "name": "Trunkline (reload)",

@@ -1,3 +1,5 @@
+"""The node that continues a run after a human answered its deferred batch."""
+
 from __future__ import annotations
 
 import logging
@@ -24,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
+    """Resolves a batch from the user's reply and, once it is whole, resumes the
+    suspended run through `React`."""
+
     awake: DeferredActionBatchResponse
 
     @reflex_logfire.instrument("reflex.resume_deferred", extract_args=False)

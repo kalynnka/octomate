@@ -1,3 +1,5 @@
+"""The MCP presets the init wizard offers, and the prompts that configure them."""
+
 from __future__ import annotations
 
 import typer

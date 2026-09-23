@@ -1,3 +1,5 @@
+"""Slack question wizard: one Block Kit message paged through a batch of questions."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -37,6 +39,9 @@ SlackQuestionActionValueAdapter = TypeAdapter(SlackQuestionActionValue)
 
 
 class SlackAskQuestionFeeler(QuestionFeeler):
+    """The wizard as one Block Kit message: radio choices or a text input per
+    page, the navigation state carried in the Back, Next and Submit buttons."""
+
     def __init__(self, ink: SlackInk) -> None:
         self.ink = ink
 

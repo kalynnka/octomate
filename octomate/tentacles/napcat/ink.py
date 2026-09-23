@@ -1,3 +1,5 @@
+"""NapCat OneBot HTTP API client."""
+
 from __future__ import annotations
 
 import logging
@@ -22,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class NapcatInk(Ink[NapcatOutboundMessage]):
+    """OneBot HTTP transport: private and group sends, stranger lookups and image
+    fetches."""
+
     http_url: str
     access_token: SecretStr | None
     httpx: httpx.AsyncClient

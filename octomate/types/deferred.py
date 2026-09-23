@@ -1,3 +1,5 @@
+"""Status and kind literals for deferred actions and their batches."""
+
 from __future__ import annotations
 
 from typing import Literal

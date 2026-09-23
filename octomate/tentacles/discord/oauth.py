@@ -1,3 +1,5 @@
+"""Discord's token exchange and account identity handling."""
+
 from __future__ import annotations
 
 from typing import Literal
@@ -12,6 +14,8 @@ from octomate.schemas.user import UserProfile
 
 
 class DiscordIdentity(BaseModel):
+    """The user `/users/@me` names for a token; a bot account fails validation."""
+
     id: str = Field(pattern=r"^[1-9][0-9]*$")
     username: str = Field(min_length=1)
     global_name: str | None = None
@@ -19,12 +23,17 @@ class DiscordIdentity(BaseModel):
 
 
 class DiscordOAuthGrant(OAuthGrant):
+    """A grant carrying the Discord identity verified for its token."""
+
     identity: DiscordIdentity = Field(
         description="User verified by Discord's /users/@me with the granted token."
     )
 
 
 class DiscordOAuthConnector(OAuthConnector):
+    """The Discord connector; linking a profile reads the identity already
+    verified on the grant."""
+
     async def resolve_profile(self, grant: OAuthGrant) -> UserProfile:
         if not isinstance(grant, DiscordOAuthGrant):
             raise ValueError(
@@ -38,6 +47,9 @@ class DiscordOAuthConnector(OAuthConnector):
 
 
 class DiscordTokenExchange(OAuthTokenExchange):
+    """Discord's token exchange: requires an `identify` bearer token and names
+    the account via `/users/@me`."""
+
     async def grant(self, response: httpx2.Response) -> DiscordOAuthGrant:
         grant = await super().grant(response)
         if "identify" not in grant.scopes or grant.token_type.lower() != "bearer":

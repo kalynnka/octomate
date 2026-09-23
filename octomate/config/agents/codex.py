@@ -32,10 +32,10 @@ type CodexReasoningSummary = Literal[
 
 
 class CodexConfig(AgentConfig):
-    """OpenAI Codex SDK runner, registered as the `codex` agent tentacle.
+    """OpenAI Codex SDK runner, selected by `type: codex`.
 
-    Opt-in: `agents.codex` is null by default, so the agent is absent unless a
-    block is supplied. The app-server supplies the model catalog. Most fields below
+    Opt-in: the agent is absent unless a `tentacles.<id>` block with `type: codex`
+    is supplied. The app-server supplies the model catalog. Most fields below
     are default arguments for Codex SDK calls; the tentacle may compose them with
     per-run overrides before calling the SDK.
     """

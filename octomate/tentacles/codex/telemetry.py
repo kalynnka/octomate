@@ -1,3 +1,5 @@
+"""A Codex SDK client that propagates the current trace context on each request."""
+
 from __future__ import annotations
 
 from openai_codex.client import CodexClient

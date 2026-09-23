@@ -72,6 +72,8 @@ class HarnessOptionUnsupportedError(RuntimeError):
 
 @dataclass
 class DeepseekProcess:
+    """The owned `dsh web` child, from spawn through readiness to shutdown."""
+
     executable: str
     port: int
     extra_args: list[str]

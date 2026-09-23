@@ -1,3 +1,5 @@
+"""Todo status literals and their plaintext markers."""
+
 from __future__ import annotations
 
 from typing import Literal

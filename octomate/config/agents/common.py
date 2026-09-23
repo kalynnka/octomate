@@ -22,6 +22,8 @@ ThinkingEfforts: tuple[ThinkingEffort, ...] = (
 
 @dataclass(frozen=True)
 class Claim:
+    """What one route advertises: its ability and the effort levels it accepts."""
+
     # What this route is for — per-route, not per-agent, so two models of one
     # agent can advertise differently.
     ability: str

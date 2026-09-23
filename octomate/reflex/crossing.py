@@ -1,3 +1,6 @@
+"""The sequence both crossing spells share: open a sub-thread of a person's direct
+messages on another channel and announce the move at the origin."""
+
 from __future__ import annotations
 
 import logging

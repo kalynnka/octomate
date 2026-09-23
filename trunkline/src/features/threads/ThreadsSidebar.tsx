@@ -3,8 +3,8 @@
  * the channel/thread tree, and the index footer. Ported from the comp's
  * "SIDEBAR: THREADS × CHANNELS" aside.
  */
-import { useState } from 'react'
-import { Disclose, Fold } from '@/components/Fold'
+import { useEffect, useRef, useState } from 'react'
+import { Disclose } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
@@ -60,7 +60,6 @@ export function ThreadsSidebar() {
   const railDrag = useConsole((s) => s.railDrag)
   const {
     toggleSidebar,
-    toggleChannelFold,
     toggleChannelPin,
     focusChannel,
     selectThread,
@@ -71,6 +70,7 @@ export function ThreadsSidebar() {
   // Per channel, how many rows are on show. Local because it is a property of
   // this rail's scrolling and nothing else reads it.
   const [shown, setShown] = useState<Record<string, number>>({})
+  const channelList = useRef<HTMLDivElement>(null)
   // Scrolling to the end of a channel asks for its next page, and so does the
   // row that says how many are left — a page short enough not to overflow its
   // own box would otherwise have no way to ask.
@@ -93,6 +93,13 @@ export function ThreadsSidebar() {
   const focusId = unfolded.length === 1 ? unfolded[0].id : null
   const threadTotal = Object.values(threadsByCh).flat().length
 
+  useEffect(() => {
+    if (sbFold || !focusId) return
+    channelList.current
+      ?.querySelector<HTMLElement>(`[data-channel-id="${CSS.escape(focusId)}"]`)
+      ?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
+  }, [focusId, sbFold])
+
   return (
     <aside
       id="trk-sb-panel"
@@ -110,6 +117,19 @@ export function ThreadsSidebar() {
         position: 'relative',
       }}
     >
+      <div
+        aria-hidden="true"
+        style={{
+          position: 'absolute',
+          inset: 'var(--trk-head-h, 44px) auto 0 0',
+          width: 'var(--trk-rail-w, 26px)',
+          background: 'var(--card-bg-hover)',
+          borderRight: '1px solid var(--line-divider)',
+          borderBottom: '1px solid var(--info)',
+          boxSizing: 'border-box',
+          pointerEvents: 'none',
+        }}
+      />
       {/* On a phone the folded rail is a 36px strip: any touch on it opens
           the drawer, whose own rail then answers the letters and the gear. */}
       {sbFold && <span className="trk-rail-tap" onClick={toggleSidebar} />}
@@ -119,6 +139,7 @@ export function ThreadsSidebar() {
           alignItems: 'center',
           gap: 10,
           padding: sbFold ? 0 : '0 14px',
+          position: 'relative',
           height: 'var(--trk-head-h, 44px)',
           boxSizing: 'border-box',
           borderBottom: '1px solid var(--line-divider)',
@@ -189,138 +210,27 @@ export function ThreadsSidebar() {
           </span>
         )}
       </div>
-      <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
-        <span style={{ position: 'relative', width: 'var(--trk-rail-w, 26px)', flexShrink: 0 }}>
-          <span
-            className="trk-chrail"
-            style={{
-              position: 'absolute',
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: 'var(--trk-rail-w, 26px)',
-              zIndex: 100,
-              display: 'flex',
-              flexDirection: 'column',
-              gap: 'var(--trk-rail-gap, 2px)',
-              padding: 'var(--trk-rail-pad, 8px 0 8px 3px)',
-              background: 'var(--card-bg-hover)',
-              borderRight: '1px solid var(--line-divider)',
-              overflow: 'hidden',
-              boxSizing: 'border-box',
-            }}
-          >
-            {orderedCh.map((c) => {
-              const on = focusId === c.id
-              return (
-                <span
-                  key={c.id}
-                  onClick={() =>
-                    focusChannel(
-                      c.id,
-                      channels.map((x) => x.id),
-                    )
-                  }
-                  title={`Expand only ${c.label}`}
-                  className="hov-wash"
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 7,
-                    cursor: 'pointer',
-                    flexShrink: 0,
-                    padding: 'var(--trk-rail-row-pad, 1px 8px 1px 2px)',
-                  }}
-                >
-                  <span
-                    style={{
-                      width: 'var(--trk-rail-letter, 18px)',
-                      height: 'var(--trk-rail-letter, 18px)',
-                      flexShrink: 0,
-                      display: 'inline-flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      ...mono(8, 700),
-                      fontSize: 'var(--trk-rail-fs, 8px)',
-                      color: on ? 'var(--trk-on-fill)' : c.brand,
-                      background: on ? c.brand : 'transparent',
-                      border: `1px solid ${on ? c.brand : 'transparent'}`,
-                      boxSizing: 'border-box',
-                    }}
-                  >
-                    {c.id === 'codex' ? 'X' : c.label[0].toUpperCase()}
-                  </span>
-                  <span
-                    style={{
-                      ...label(8, '.12em'),
-                      color: c.brand,
-                      whiteSpace: 'nowrap',
-                      flex: 1,
-                      textAlign: 'left',
-                    }}
-                  >
-                    {c.label}
-                  </span>
-                  <span
-                    style={{
-                      ...mono(7.5),
-                      color: 'var(--fg-3)',
-                      whiteSpace: 'nowrap',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {(threadsByCh[c.id] ?? []).length}
-                  </span>
-                </span>
-              )
-            })}
-            <span style={{ flex: 1 }} />
-            <span
-              onClick={toggleControl}
-              title="Control"
-              className="hov-wash"
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 7,
-                cursor: 'pointer',
-                flexShrink: 0,
-                padding: 'var(--trk-rail-row-pad, 1px 8px 1px 2px)',
-              }}
-            >
-              <span
-                style={{
-                  width: 'var(--trk-rail-letter, 18px)',
-                  height: 'var(--trk-rail-letter, 18px)',
-                  flexShrink: 0,
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  color: mgmtOpen ? 'var(--color-accent)' : 'var(--fg-2)',
-                }}
-              >
-                <Icon name="gear" size={13} />
-              </span>
-              <span
-                style={{ ...label(8, '.12em'), color: 'var(--fg-2)', whiteSpace: 'nowrap', flex: 1 }}
-              >
-                Control
-              </span>
-            </span>
-          </span>
-        </span>
+      {!sbFold && (
         <div
-          className="trk-quiet-scroll"
+          aria-hidden="true"
           style={{
-            display: sbFold ? 'none' : 'block',
-            flex: 1,
-            overflowY: 'auto',
-            minHeight: 0,
-            padding: '4px 0 10px',
+            margin: '8px 14px 4px calc(var(--trk-rail-w, 26px) + 14px)',
+            height: 8,
+            backgroundImage:
+              'repeating-linear-gradient(115deg, var(--color-accent) 0 2px, transparent 2px 9px)',
+            opacity: 0.45,
+            flexShrink: 0,
           }}
-        >
+        />
+      )}
+      <div
+        ref={channelList}
+        className="trk-quiet-scroll"
+        style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '4px 0 10px', position: 'relative' }}
+      >
           {orderedCh.map((c) => {
             const folded = !!chFold[c.id]
+            const focused = focusId === c.id
             const pinned = chPins.includes(c.id)
             const ths = threadsByCh[c.id] ?? []
             // `selThreadId` is a row id when a thread was picked from this list, and a
@@ -357,16 +267,98 @@ export function ThreadsSidebar() {
               })),
             ]
             return (
-              <div key={c.id}>
+              <div
+                key={c.id}
+                style={{ display: 'grid', gridTemplateColumns: 'var(--trk-rail-w, 26px) minmax(0, 1fr)' }}
+              >
+                <div style={{ position: 'relative', height: 'var(--trk-channel-row-h, 32px)' }}>
+                  <button
+                    type="button"
+                    aria-label={`Focus ${c.label}`}
+                    aria-pressed={focused}
+                    onClick={() =>
+                      focusChannel(
+                        c.id,
+                        channels.map((x) => x.id),
+                      )
+                    }
+                    title={`Expand only ${c.label}`}
+                    className="trk-chrail hov-wash"
+                    style={{
+                      position: 'absolute',
+                      inset: '0 auto auto 0',
+                      width: 'var(--trk-rail-w, 26px)',
+                      zIndex: 2,
+                      border: 0,
+                      borderRight: '1px solid var(--line-divider)',
+                      background: 'var(--card-bg-hover)',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 7,
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                      height: 'var(--trk-channel-row-h, 32px)',
+                      boxSizing: 'border-box',
+                      padding: 'var(--trk-rail-row-pad, 0 8px 0 2px)',
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 'var(--trk-rail-letter, 22px)',
+                        height: 'var(--trk-rail-letter, 22px)',
+                        flexShrink: 0,
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        ...mono(10, 700),
+                        fontSize: 'var(--trk-rail-fs, 10px)',
+                        color: focused ? 'var(--trk-on-fill)' : c.brand,
+                        background: focused ? c.brand : 'transparent',
+                        border: `1px solid ${focused ? c.brand : 'transparent'}`,
+                        boxSizing: 'border-box',
+                      }}
+                    >
+                      {c.id === 'codex' ? 'X' : c.label[0].toUpperCase()}
+                    </span>
+                    <span
+                      style={{
+                        ...label(8, '.12em'),
+                        color: c.brand,
+                        whiteSpace: 'nowrap',
+                        flex: 1,
+                        textAlign: 'left',
+                      }}
+                    >
+                      {c.label}
+                    </span>
+                    <span
+                      style={{
+                        ...mono(7.5),
+                        color: 'var(--fg-3)',
+                        whiteSpace: 'nowrap',
+                        textAlign: 'right',
+                      }}
+                    >
+                      {(threadsByCh[c.id] ?? []).length}
+                    </span>
+                  </button>
+                </div>
                 <div
-                  onClick={() => toggleChannelFold(c.id)}
+                  data-channel-id={c.id}
+                  onClick={() => focusChannel(c.id, channels.map((channel) => channel.id))}
                   className="hov-wash"
                   style={{
-                    display: 'flex',
+                    display: sbFold ? 'none' : 'flex',
+                    gridColumn: 2,
                     alignItems: 'center',
                     gap: 7,
-                    padding: 'var(--trk-ch-pad, 11px 14px 5px)',
+                    height: 'var(--trk-channel-row-h, 32px)',
+                    boxSizing: 'border-box',
+                    padding: '0 14px',
                     cursor: 'pointer',
+                    background: focused ? `color-mix(in srgb, ${c.brand} 12%, transparent)` : undefined,
+                    boxShadow: focused ? `inset 3px 0 0 ${c.brand}` : undefined,
                   }}
                 >
                   <Disclose
@@ -398,132 +390,136 @@ export function ThreadsSidebar() {
                     <Icon name="pin" size={10} />
                   </span>
                 </div>
-                <Fold open={!folded}>
-                  {c.id === 'trunkline' && (
-                    <span
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        startNewThread()
-                      }}
-                      title="New trunkline thread"
-                      className="hov-accent-border-wash"
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: 5,
-                        margin: '3px 14px 3px 30px',
-                        height: 20,
-                        boxSizing: 'border-box',
-                        border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
-                        color: 'var(--color-accent)',
-                        ...label(8, '.14em'),
-                        cursor: 'pointer',
-                      }}
-                    >
-                      + new thread
-                    </span>
-                  )}
-                  {/* Each channel scrolls under its own header, so a channel with
-                      a hundred threads still leaves the ones below it reachable —
-                      and gives out its rows a page at a time as one scrolls it. */}
-                  <div
-                    className="trk-quiet-scroll"
-                    style={{ maxHeight: 300, overflowY: 'auto' }}
-                    onScroll={(e) => {
-                      const el = e.currentTarget
-                      if (el.scrollHeight - el.scrollTop - el.clientHeight > 40) return
-                      reveal(c.id, rows.length)
-                    }}
-                  >
-                  {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
-                    <div
-                      key={t.id}
-                      onClick={t.pick}
-                      className="hov-wash"
-                      style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px 7px 30px)', cursor: 'pointer' }}
-                    >
-                      {t.on && (
-                        <>
-                          <span
-                            style={{
-                              position: 'absolute',
-                              inset: 0,
-                              background: 'var(--hover)',
-                              pointerEvents: 'none',
-                            }}
-                          />
-                          <span
-                            style={{
-                              position: 'absolute',
-                              left: 0,
-                              top: 0,
-                              bottom: 0,
-                              width: 3,
-                              background: c.brand,
-                            }}
-                          />
-                        </>
-                      )}
-                      <div
-                        style={{ display: 'flex', alignItems: 'center', gap: 7, position: 'relative' }}
-                      >
-                        <i
-                          style={{
-                            width: 5,
-                            height: 5,
-                            borderRadius: 9999,
-                            background: t.stColor,
-                            flexShrink: 0,
-                          }}
-                        />
-                        <span style={{ fontSize: 12, color: 'var(--fg-1)', ...ellipsis, flex: 1 }}>
-                          {t.title}
-                        </span>
-                      </div>
-                      <div
+                {!sbFold && !folded && (
+                  <div style={{ gridColumn: 2, minWidth: 0 }}>
+                    {c.id === 'trunkline' && (
+                      <span
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          startNewThread()
+                        }}
+                        title="New trunkline thread"
+                        className="hov-accent-border-wash"
                         style={{
                           display: 'flex',
                           alignItems: 'center',
-                          gap: 7,
-                          marginTop: 3,
-                          paddingLeft: 12,
-                          position: 'relative',
+                          justifyContent: 'center',
+                          gap: 5,
+                          margin: '3px 14px 3px 30px',
+                          height: 20,
+                          boxSizing: 'border-box',
+                          border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
+                          color: 'var(--color-accent)',
+                          ...label(8, '.14em'),
+                          cursor: 'pointer',
                         }}
                       >
-                        <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
-                          {t.tag}
-                        </span>
-                        <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
-                          {t.agent}
-                        </span>
-                      </div>
-                    </div>
-                  ))}
-                  {rows.length > (shown[c.id] ?? THREAD_PAGE) && (
+                        + new thread
+                      </span>
+                    )}
+                    {/* Each channel scrolls under its own header, so a channel with
+                        a hundred threads still leaves the ones below it reachable —
+                        and gives out its rows a page at a time as one scrolls it. */}
                     <div
-                      onClick={() => reveal(c.id, rows.length)}
-                      className="hov-wash"
-                      style={{ padding: '6px 14px 8px 30px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
+                      className="trk-quiet-scroll"
+                      style={{ maxHeight: 300, overflowY: 'auto' }}
+                      onScroll={(e) => {
+                        const el = e.currentTarget
+                        if (el.scrollHeight - el.scrollTop - el.clientHeight > 40) return
+                        reveal(c.id, rows.length)
+                      }}
                     >
-                      ↓ {rows.length - (shown[c.id] ?? THREAD_PAGE)} more
+                    {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
+                      <div
+                        key={t.id}
+                        onClick={t.pick}
+                        className="hov-wash"
+                        style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px 7px 30px)', cursor: 'pointer' }}
+                      >
+                        {t.on && (
+                          <>
+                            <span
+                              style={{
+                                position: 'absolute',
+                                inset: 0,
+                                background: 'var(--hover)',
+                                pointerEvents: 'none',
+                              }}
+                            />
+                            <span
+                              style={{
+                                position: 'absolute',
+                                left: 0,
+                                top: 0,
+                                bottom: 0,
+                                width: 3,
+                                background: c.brand,
+                              }}
+                            />
+                          </>
+                        )}
+                        <div
+                          style={{ display: 'flex', alignItems: 'center', gap: 7, position: 'relative' }}
+                        >
+                          <i
+                            style={{
+                              width: 5,
+                              height: 5,
+                              borderRadius: 9999,
+                              background: t.stColor,
+                              flexShrink: 0,
+                            }}
+                          />
+                          <span style={{ fontSize: 12, color: 'var(--fg-1)', ...ellipsis, flex: 1 }}>
+                            {t.title}
+                          </span>
+                        </div>
+                        <div
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 7,
+                            marginTop: 3,
+                            paddingLeft: 12,
+                            position: 'relative',
+                          }}
+                        >
+                          <span style={{ ...mono(8.5, 700), color: c.brand, whiteSpace: 'nowrap', flexShrink: 0 }}>
+                            {t.tag}
+                          </span>
+                          <span style={{ ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
+                            {t.agent}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                    {rows.length > (shown[c.id] ?? THREAD_PAGE) && (
+                      <div
+                        onClick={() => reveal(c.id, rows.length)}
+                        className="hov-wash"
+                        style={{ padding: '6px 14px 8px 30px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
+                      >
+                        ↓ {rows.length - (shown[c.id] ?? THREAD_PAGE)} more
+                      </div>
+                    )}
                     </div>
-                  )}
                   </div>
-                </Fold>
+                )}
               </div>
             )
           })}
-        </div>
       </div>
       <div
         style={{
           flexShrink: 0,
           borderTop: '1px solid var(--line-divider)',
+          borderBottom: '1px solid var(--info)',
           height: 30,
           boxSizing: 'border-box',
           padding: '0 16px',
-          display: sbFold ? 'none' : 'flex',
+          display: 'flex',
+          visibility: sbFold ? 'hidden' : undefined,
+          marginLeft: 'var(--trk-rail-w, 26px)',
           alignItems: 'center',
           gap: 8,
         }}
@@ -544,6 +540,33 @@ export function ThreadsSidebar() {
           {'// end of index'}
         </span>
       </div>
+      <button
+        type="button"
+        onClick={toggleControl}
+        title="Control"
+        aria-label="Control"
+        aria-pressed={mgmtOpen}
+        className="hov-wash"
+        style={{
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          width: 'var(--trk-rail-w, 26px)',
+          height: 30,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 0,
+          border: 0,
+          borderTop: '1px solid var(--line-divider)',
+          borderBottom: '1px solid var(--info)',
+          background: 'var(--card-bg-hover)',
+          color: mgmtOpen ? 'var(--color-accent)' : 'var(--fg-2)',
+          cursor: 'pointer',
+        }}
+      >
+        <Icon name="gear" size={13} />
+      </button>
       {!sbFold && (
         <span
           onMouseDown={dragStart}

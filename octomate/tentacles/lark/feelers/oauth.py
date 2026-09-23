@@ -27,6 +27,9 @@ from octomate.types.json import JsonObject
 
 
 class LarkOAuthFeeler(OAuthFeeler[LarkOutboundMessage]):
+    """Sends the authorization card: a link button and, for a device flow, the
+    one-time code."""
+
     @lark_logfire.instrument("lark.oauth.send", extract_args=False)
     async def send(
         self,

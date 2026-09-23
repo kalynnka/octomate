@@ -1,3 +1,9 @@
+"""Assembly of native Codex turns from a streamed rollout.
+
+Lines streamed in by `octomate codex tail` feed `CodexTranscriptTailer`, which
+commits each completed turn as an `ExternalAgentRun`.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -65,6 +71,12 @@ def assembled(conversation: Conversation) -> set[str]:
 
 @dataclass
 class OpenTurn:
+    """The turn being assembled off the stream.
+
+    Opened by a `task_started` line, closed by the `task_complete` or `turn_aborted`
+    naming the same turn id.
+    """
+
     turn_id: str
     start_offset: int
     end_offset: int
@@ -81,6 +93,12 @@ class OpenTurn:
 
 @dataclass(frozen=True)
 class SubagentCall:
+    """One `sub_agent_activity` line of the parent rollout.
+
+    The parent turn and tool call that started or prompted a child thread, and
+    when, so the child's runs can be linked back to it.
+    """
+
     parent_run_id: str
     parent_tool_call_id: str
     occurred_at_ms: int
@@ -88,6 +106,12 @@ class SubagentCall:
 
 @dataclass
 class SubagentTail:
+    """One child thread's rollout within a session's tail.
+
+    Its own cursor, conversation, and open turn, plus the parent calls already
+    linked to its committed runs.
+    """
+
     thread_id: str
     path: Path
     cwd: str = ""  # from the child rollout's own session metadata

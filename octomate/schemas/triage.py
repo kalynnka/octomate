@@ -1,3 +1,6 @@
+"""The gateway's vocabulary: spell names, the places a spell can name, the
+landings they resolve to, and the decisions a run leaves."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -46,6 +49,8 @@ TELEPORT_DEFER_KIND = "teleport"
 
 
 class AgentRouteKey(NamedTuple):
+    """An agent and a model, or None for the agent's native default."""
+
     agent_id: str
     model: AgentRouteModelName | None  # None preserves the harness's native default.
 

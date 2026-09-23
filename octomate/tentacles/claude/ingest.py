@@ -1,3 +1,9 @@
+"""Hook-driven ingest of a native Claude Code session.
+
+The hooks write the live ledger sketch of each turn and start and finalize the
+session's transcript tailer.
+"""
+
 from __future__ import annotations
 
 import logging

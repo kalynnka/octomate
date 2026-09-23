@@ -1,3 +1,6 @@
+"""Permission modes: each runtime's own scale, and the selectable mode a channel
+shows."""
+
 from __future__ import annotations
 
 from typing import Literal, get_args
@@ -28,6 +31,9 @@ AgentPermissionMode = str
 
 
 class PermissionMode(BaseModel):
+    """A selectable permission mode in an agent's own vocabulary: the id sent to
+    it, and what it is shown as."""
+
     model_config = ConfigDict(frozen=True)
 
     value: str = Field(min_length=1, description="The mode id sent to the agent.")

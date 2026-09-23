@@ -7,14 +7,17 @@ import plistlib
 import pwd
 import subprocess
 from pathlib import Path
+from typing import TextIO
 from unittest.mock import Mock
 
 import pytest
 import typer
+import yaml
 from click import unstyle
 from octomate_cli import init as init_cli
 from octomate_cli import service as service_cli
 from octomate_cli import wizard
+from octomate_cli.installation import DeploymentTarget, Installation
 from octomate_cli.mcp import McpPreset
 from octomate_cli.service import PlistService, Release, service_typer
 from prompt_toolkit.application import create_app_session
@@ -25,6 +28,176 @@ from rich.console import Console
 from typer.testing import CliRunner
 
 runner = CliRunner()
+
+
+@pytest.mark.parametrize("target", ["systemd", "manual"])
+def test_linux_prepares_without_launchd_or_activation(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    monkeypatch.setattr(init_cli.sys, "platform", "linux")
+    root = tmp_path / "service with spaces % $"
+    args = [
+        "init",
+        "--prepare",
+        "--root",
+        str(root),
+        "--yes",
+        "--port",
+        "8123",
+        "--agent",
+        "codex",
+        "--channel",
+        "none",
+    ]
+    if target == "manual":
+        args.extend(["--target", target])
+    result = runner.invoke(service_typer, args)
+    assert result.exit_code == 0, result.output
+    assert not (root / "control/io.octomate.server.plist").exists()
+    assert not (root / "octomate.db").exists()
+    calls = [call.args[0] for call in commands.call_args_list]
+    assert calls[2][-2:] == ["--target", target]
+    assert all("systemctl" not in call and "launchctl" not in call for call in calls)
+    if target == "systemd":
+        unit = root / "control/octomate.service"
+        contents = unit.read_text()
+        assert 'ExecStart="' in contents
+        assert ' %% $$/app/.venv/bin/octomate" service serve' in contents
+        assert "WantedBy=default.target" in contents
+        assert "UMask=0077" in contents
+        assert unit.stat().st_mode & 0o777 == 0o600
+        commands.reset_mock()
+        repeat = runner.invoke(
+            service_typer, ["init", "--prepare", "--root", str(root)]
+        )
+        assert repeat.exit_code == 0, repeat.output
+        assert commands.call_count == 1
+        assert commands.call_args.args[0][-1] == "check"
+        assert unit.read_text() == contents
+
+
+def test_docker_prepares_in_image_without_host_agent_credentials(
+    tmp_path: Path, commands: Mock, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "container"
+    compose_template = Path(__file__).parents[2] / "docker-compose.yml"
+
+    def clone_template(
+        arguments: list[str],
+        *,
+        env: dict[str, str],
+        check: bool,
+        cwd: Path | None = None,
+        stdout: TextIO | None = None,
+        stderr: int | None = None,
+        input: bytes | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        if "clone" in arguments:
+            checkout = root / "app"
+            checkout.mkdir()
+            (checkout / "docker-compose.yml").write_text(compose_template.read_text())
+        return subprocess.CompletedProcess(arguments, 0, "")
+
+    commands.side_effect = clone_template
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/private/host-login")
+    monkeypatch.setenv("CODEX_HOME", "/private/host-codex")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-copy")
+    monkeypatch.setattr(
+        init_cli.shutil,
+        "which",
+        lambda name: None if name == "uv" else f"/tools/{name}",
+    )
+    result = runner.invoke(
+        service_typer,
+        [
+            "init",
+            "--prepare",
+            "--target",
+            "docker",
+            "--root",
+            str(root),
+            "--yes",
+            "--port",
+            "8123",
+            "--agent",
+            "codex",
+            "--channel",
+            "trunkline",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    compose = yaml.safe_load((root / "compose.yaml").read_text())
+    service = compose["services"]["octomate"]
+    assert service["build"] == {
+        "context": "./app",
+        "args": {"OCTOMATE_UID": str(os.getuid()), "OCTOMATE_GID": str(os.getgid())},
+    }
+    assert service["user"] == f"{os.getuid()}:{os.getgid()}"
+    assert "ports" not in service
+    assert service["volumes"] == ["./state:/data", "./agent-home:/home/octomate"]
+    frontend = compose["services"]["trunkline"]
+    assert frontend["build"] == {
+        "context": "./app",
+        "dockerfile": "trunkline/Dockerfile",
+    }
+    assert frontend["ports"] == ["127.0.0.1:8123:8080"]
+    assert "volumes" not in frontend
+    assert "env_file" not in frontend
+    assert "napcat" not in compose["services"]
+    calls = [call.args[0] for call in commands.call_args_list]
+    assert calls[1] == ["/tools/docker", "compose", "build"]
+    assert calls[2][:9] == [
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "--no-deps",
+        "-T",
+        "octomate",
+        "python",
+        "-m",
+    ]
+    assert calls[2][-2:] == ["--target", "docker"]
+    assert calls[3][-1] == "check"
+    for call in commands.call_args_list:
+        assert "ANTHROPIC_API_KEY" not in call.kwargs["env"]
+        assert "CLAUDE_CONFIG_DIR" not in call.kwargs["env"]
+        assert "CODEX_HOME" not in call.kwargs["env"]
+    assert not list(root.rglob("*.db"))
+    assert (root / "agent-home").stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize(
+    ("platform", "target"),
+    [("win32", "docker"), ("linux", "launchd"), ("darwin", "systemd")],
+)
+def test_unsupported_target_fails_before_preparation(
+    tmp_path: Path,
+    commands: Mock,
+    monkeypatch: pytest.MonkeyPatch,
+    platform: str,
+    target: str,
+) -> None:
+    monkeypatch.setattr(init_cli.sys, "platform", platform)
+    root = tmp_path / "service"
+    result = runner.invoke(
+        service_typer, ["init", "--prepare", "--target", target, "--root", str(root)]
+    )
+    assert result.exit_code != 0
+    assert not root.exists()
+    commands.assert_not_called()
+
+
+def test_systemd_escapes_environment_specifiers(tmp_path: Path) -> None:
+    (tmp_path / "control").mkdir()
+    installation = Installation(
+        tmp_path,
+        {"PATH": '/tools/100%/"bin"\\extra', "HOME": str(tmp_path)},
+        DeploymentTarget.systemd,
+    )
+    installation.write_definition(8000)
+    contents = installation.draft.read_text()
+    assert r'Environment="PATH=/tools/100%%/\"bin\"\\extra"' in contents
 
 
 @pytest.fixture
@@ -289,7 +462,14 @@ def test_prepared_draft_keeps_desktop_identity_without_token_credentials(
             "https://github.com/kalynnka/octomate.git",
             str(root / "app"),
         ],
-        ["/tools/uv", "sync", "--locked", "--no-dev", "--project", str(root / "app")],
+        [
+            "/tools/uv",
+            "sync",
+            "--locked",
+            "--no-default-groups",
+            "--project",
+            str(root / "app"),
+        ],
         [
             str(root / "app/.venv/bin/python"),
             "-m",
@@ -371,7 +551,7 @@ def test_failed_preparation_reports_that_service_was_not_activated(
     )
     assert result.exit_code == 1
     assert "No service was activated" in result.output
-    assert "incomplete preparation files" in result.output
+    assert "incomplete preparation files" in " ".join(result.output.split())
     assert not (root / "control/io.octomate.server.plist").exists()
     assert not (root / "octomate.db").exists()
     assert commands.call_count == 1

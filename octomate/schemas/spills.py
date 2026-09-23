@@ -1,3 +1,5 @@
+"""The persisted tool-output spill."""
+
 from __future__ import annotations
 
 import uuid
@@ -15,6 +17,8 @@ from octomate.schemas.base import sqlalchemy_materia
 
 @sqlalchemy_materia.bless(spills_models.ToolOutputSpill)
 class ToolOutputSpill(BaseTransmuter):
+    """One oversized tool return, kept by handle until retention closes over it."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)

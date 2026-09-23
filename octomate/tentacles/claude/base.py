@@ -1,3 +1,9 @@
+"""The Claude Code agent tentacle.
+
+Driven runs go over the Claude Agent SDK; native sessions arrive through the hook
+and stream routes mounted here, into `ClaudeHookIngest` and `ClaudeTranscriptTailer`.
+"""
+
 from __future__ import annotations
 
 import asyncio

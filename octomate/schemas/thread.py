@@ -1,3 +1,5 @@
+"""The thread ledger: threads, their messages, message bindings and handoffs."""
+
 from __future__ import annotations
 
 import uuid
@@ -60,6 +62,9 @@ ChannelThreadId = Annotated[
 
 @dataclass(frozen=True)
 class ThreadKey:
+    """The channel's identity for a thread: channel, chat type, chat id, and the
+    platform's thread id."""
+
     channel_tentacle_id: str
     chat_type: ChatType
     chat_id: str
@@ -90,6 +95,8 @@ class ThreadKey:
 
 @sqlalchemy_materia.bless(thread_models.ThreadMessageFTS)
 class ThreadMessageFTS(BaseTransmuter):
+    """A row of the ledger's full-text index, with its search rank."""
+
     model_config = ConfigDict(from_attributes=True)
 
     rowid: Annotated[int, Identity]
@@ -100,6 +107,9 @@ class ThreadMessageFTS(BaseTransmuter):
 
 @sqlalchemy_materia.bless(thread_models.ThreadMessage)
 class ThreadMessage(BaseTransmuter):
+    """One line of the thread ledger: who said what, when, and the model messages
+    it is bound to."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -144,6 +154,8 @@ class ThreadMessage(BaseTransmuter):
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
 class MessageBinding(BaseTransmuter):
+    """A link between a ledger message and a model message, by kind and run."""
+
     model_config = ConfigDict(from_attributes=True)
 
     thread_message_id: Annotated[uuid.UUID, Identity]
@@ -157,6 +169,8 @@ class MessageBinding(BaseTransmuter):
 
 @sqlalchemy_materia.bless(thread_models.Handoff)
 class Handoff(BaseTransmuter):
+    """A recorded change of the agent owning a thread, and where it came from."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -182,6 +196,9 @@ class Handoff(BaseTransmuter):
 
 @sqlalchemy_materia.bless(thread_models.Thread)
 class Thread(BaseTransmuter):
+    """One chat surface in the ledger: its kind and channel key, the project its
+    work is in, and the handoffs that say which agent owns it."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)

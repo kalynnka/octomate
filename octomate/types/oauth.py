@@ -1,3 +1,5 @@
+"""OAuth flow and connection literals, and the HTTPS-only URL type."""
+
 from typing import Annotated, Literal
 
 from pydantic import AnyUrl, UrlConstraints

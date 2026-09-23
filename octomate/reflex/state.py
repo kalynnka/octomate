@@ -54,6 +54,9 @@ RECAP_HEADER = (
 
 @dataclass(frozen=True)
 class ResponseTarget:
+    """Where a turn answers: the channel, the address on it, and how the reply is
+    placed."""
+
     channel_id: str
     address: ChannelAddress | None = None
     # Routing only — how an inbound threaded message is handled (`Route`). What this
@@ -91,6 +94,9 @@ class PendingHandoff:
 
 @dataclass
 class ReflexResult:
+    """A finished turn: the decision it ran on, where it answered, and the agent's
+    result."""
+
     decision: SummonDecision | None
     target: ResponseTarget
     result: AgentRunResult[ChannelOutput] | None = None
@@ -98,6 +104,9 @@ class ReflexResult:
 
 @dataclass
 class DeferredResult:
+    """A turn that stopped on deferred requests, and the batch they were parked
+    as."""
+
     requests: DeferredToolRequests
     target: ResponseTarget
     # The name of the run that deferred — carried for observability. `str`, not
@@ -141,6 +150,8 @@ class ReflexState:
 
 @dataclass
 class ReflexDeps:
+    """The host's registries and managers a reflex run reaches through."""
+
     channels: dict[str, ChannelTentacle]
     # No defaults for the managers: a deps object must carry the host's own — the
     # ledger, the conversations, the deferred actions, the gateway's live-session

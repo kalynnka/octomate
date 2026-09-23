@@ -8,6 +8,8 @@ from pydantic import BaseModel, Field
 
 
 class DatabaseBackup(BaseModel):
+    """The database path and the snapshot taken of it before an update."""
+
     database: Path = Field(
         description="Absolute database path resolved before the update."
     )

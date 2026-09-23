@@ -1,3 +1,5 @@
+"""Slack approval cards: one Block Kit message paged through a batch of approvals."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -40,6 +42,8 @@ SlackApprovalActionValueAdapter = TypeAdapter(SlackApprovalActionValue)
 
 
 class SlackApprovalFeeler(ApprovalFeeler):
+    """One Block Kit message per batch, paged by its Approve and Deny buttons."""
+
     def __init__(self, ink: SlackInk) -> None:
         self.ink = ink
 

@@ -1,3 +1,9 @@
+"""Discord's message for a pending OAuth authorization.
+
+A link button opens the provider's page; a device flow also shows the one-time
+code to enter there.
+"""
+
 from __future__ import annotations
 
 import discord
@@ -18,6 +24,8 @@ from octomate.tentacles.feelers.output import IMMessageID
 
 
 class DiscordOAuthFeeler(OAuthFeeler[DiscordOutboundMessage]):
+    """Sends the authorization as a message with a link button."""
+
     @channel_logfire.instrument("discord.oauth.send", extract_args=False)
     async def send(
         self,

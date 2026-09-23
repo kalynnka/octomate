@@ -1,3 +1,6 @@
+"""The reflex graph: how an inbound signal becomes an agent turn, and the state,
+deps and results that run carries. Re-exports what callers need."""
+
 from octomate.reflex.graph import (
     Awake,
     DeferredResult,

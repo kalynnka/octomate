@@ -79,6 +79,9 @@ def config_files() -> tuple[Path, ...]:
 
 
 class OctomateConfig(BaseSettings):
+    """The deployment's settings: what the config home's files and the `OCTOMATE__`
+    environment validate into."""
+
     model_config = SettingsConfigDict(
         env_prefix="OCTOMATE__",
         env_nested_delimiter="__",

@@ -1,3 +1,5 @@
+"""The inbound message event a channel's chromo produces."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -14,6 +16,9 @@ from octomate.types.conversations import ChatType
 
 
 class MessageEvent(BaseModel):
+    """An inbound platform message as a channel's chromo translated it: who sent
+    it, on which surface, and the segments it carries."""
+
     model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
 
     tentacle_id: str = ""

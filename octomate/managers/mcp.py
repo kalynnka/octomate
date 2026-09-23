@@ -1,3 +1,6 @@
+"""Per-user MCP installations: install, enable and authorize them, and pool their
+clients."""
+
 from __future__ import annotations
 
 import asyncio
@@ -57,16 +60,24 @@ logger = logging.getLogger(__name__)
 
 
 class McpUnavailable(LookupError):
+    """The MCP instance or tentacle named is unknown, not the caller's, or not
+    serving."""
+
     def __init__(self) -> None:
         super().__init__("MCP instance unavailable")
 
 
 class McpClientKey(NamedTuple):
+    """The (user, mcp) pair a pooled client is cached under."""
+
     user_id: uuid.UUID
     mcp_id: uuid.UUID
 
 
 class McpManager(Manager, Locks[uuid.UUID]):
+    """A user's MCP installations: install, enable, authorize and remove them, and
+    pool their clients."""
+
     def __init__(
         self,
         users: UserManager,
@@ -528,7 +539,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
                         else None,
                         httpx_client_factory=self.httpx_client_factory,
                     ),
-                    mode="2026-07-28",
+                    mode="auto",
                     cache=False,
                 )
                 await client.__aenter__()

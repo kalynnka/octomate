@@ -1,3 +1,6 @@
+"""MCP installations: their auth variants, install requests, authorization results
+and summaries."""
+
 from __future__ import annotations
 
 import uuid
@@ -24,28 +27,41 @@ from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
 
 
 class NoAuth(BaseModel):
+    """No authentication."""
+
     kind: Literal["none"] = "none"
 
 
 class BearerAuth(BaseModel):
+    """A static bearer token."""
+
     kind: Literal["bearer"] = "bearer"
     token: SecretStr = Field(min_length=1, max_length=16384, repr=False)
 
 
 class OAuth(BaseModel):
+    """OAuth, authorized by the installing user."""
+
     model_config = ConfigDict(extra="forbid")
     kind: Literal["oauth"] = "oauth"
 
 
 class McpAuthorizationStatus(BaseModel):
+    """The stored grant's status, or null when there is none."""
+
     status: OAuthConnectionStatus | Literal[None]
 
 
 class McpBrowserAuthorizationPending(BaseModel):
+    """A browser authorization is waiting on the user."""
+
     status: Literal["pending_browser"] = "pending_browser"
 
 
 class McpDeviceAuthorizationPending(BaseModel):
+    """A device authorization is waiting on the user; poll again after the
+    interval."""
+
     status: Literal["pending_device"] = "pending_device"
     retry_after_seconds: int = Field(ge=1)
 
@@ -59,6 +75,9 @@ type McpAuthorizationResult = Annotated[
 
 
 class McpInstallRequest(BaseModel):
+    """What installing an MCP takes: a name, a namespace, an HTTPS endpoint, and
+    either an auth choice or the tentacle that supplies it."""
+
     name: str = Field(min_length=1, max_length=100)
     namespace: str = Field(pattern=r"^[a-z][a-z0-9_-]{0,63}$")
     url: Annotated[HttpsUrl, UrlConstraints(max_length=2083)]
@@ -89,6 +108,8 @@ class McpInstallRequest(BaseModel):
 
 @sqlalchemy_materia.bless(mcp_models.Mcp)
 class Mcp(BaseTransmuter):
+    """A user's MCP installation, polymorphic on how it authenticates."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -120,21 +141,29 @@ class Mcp(BaseTransmuter):
 
 @sqlalchemy_materia.bless(mcp_models.NoAuthMcp)
 class NoAuthMcp(Mcp):
+    """An installation that sends no credentials."""
+
     auth_kind: Literal["none"] = "none"
 
 
 @sqlalchemy_materia.bless(mcp_models.BearerMcp)
 class BearerMcp(Mcp):
+    """An installation authenticating with an encrypted bearer token."""
+
     auth_kind: Literal["bearer"] = "bearer"
     encrypted_token: bytes = Field(min_length=1, exclude=True, repr=False)
 
 
 @sqlalchemy_materia.bless(mcp_models.OAuthMcp)
 class OAuthMcp(Mcp):
+    """An installation authenticating with the user's OAuth grant."""
+
     auth_kind: Literal["oauth"] = "oauth"
 
 
 class McpTentacleInfo(BaseModel):
+    """A configured MCP tentacle as offered for installation."""
+
     id: str
     name: str
     url: str
@@ -142,6 +171,8 @@ class McpTentacleInfo(BaseModel):
 
 
 class McpOAuthSummary(BaseModel):
+    """An OAuth installation's grant status and the flows it supports."""
+
     status: (
         OAuthConnectionStatus | Literal["pending_browser", "pending_device", None]
     ) = Field(
@@ -151,6 +182,8 @@ class McpOAuthSummary(BaseModel):
 
 
 class McpServerSummary(BaseModel):
+    """An installation as listed: identity, state and auth kind."""
+
     id: uuid.UUID
     namespace: str
     name: str
@@ -160,6 +193,8 @@ class McpServerSummary(BaseModel):
 
 
 class McpToolCatalog(BaseModel):
+    """The tools and instructions an installation currently serves."""
+
     instructions: str = Field(description="The selected provider's tool instructions.")
     tools: list[Tool] = Field(description="The selected provider's MCP tool schemas.")
 

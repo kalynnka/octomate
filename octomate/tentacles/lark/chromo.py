@@ -1,3 +1,5 @@
+"""Lark translation: received messages to `MessageEvent`, markdown to cards."""
+
 from __future__ import annotations
 
 import logging
@@ -33,6 +35,9 @@ LARK_STREAM_ELEMENT_ID = "octomate_answer"
 
 
 class LarkChromo(Chromo[P2ImMessageReceiveV1, LarkOutboundMessage]):
+    """Lark translation: text, image and post messages decoded with their
+    mentions; outbound markdown wrapped in an interactive card."""
+
     async def sip(self, raw: P2ImMessageReceiveV1) -> MessageEvent | None:
         try:
             event = raw.event

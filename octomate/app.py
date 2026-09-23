@@ -1,3 +1,6 @@
+"""The application factory: builds the host from the deployment config, configures
+Logfire and logging, and registers the tentacles the config declares."""
+
 from __future__ import annotations
 
 import logging

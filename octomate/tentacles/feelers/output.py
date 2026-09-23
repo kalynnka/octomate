@@ -1,3 +1,7 @@
+"""Output rendering shared by every channel: markdown chunking, stream batching,
+the timeline state a run is rendered onto, and the default feelers for channels
+with no live transport."""
+
 from __future__ import annotations
 
 import asyncio
@@ -93,6 +97,9 @@ type IMMessageID = str
 
 @dataclass(frozen=True)
 class MarkdownChunker:
+    """Splits markdown into chunks under a platform's message limit, preferring
+    paragraph, line, sentence and word boundaries in that order."""
+
     DEFAULT_LIMIT: ClassVar[int] = 12_000
 
     limit: int = DEFAULT_LIMIT
@@ -161,6 +168,8 @@ StreamBlockStatus = Literal["streaming", "done", "error"]
 
 @dataclass(frozen=True)
 class StreamBlock:
+    """One block of a streamed reply — answer, thinking, tool call — by id."""
+
     id: str
     type: StreamBlockType = "answer"
     title: str = ""
@@ -170,6 +179,9 @@ class StreamBlock:
 
 @dataclass(frozen=True)
 class BatchedTextUpdate:
+    """A flushed edit to one block: the new delta, the full text so far, and
+    whether the block is final."""
+
     block_id: str
     block_type: StreamBlockType
     title: str
@@ -183,12 +195,16 @@ class BatchedTextUpdate:
 
 @dataclass(frozen=True)
 class StreamEventDelta:
+    """A stream event reduced to text, tagged with the block it belongs to."""
+
     block: StreamBlock
     text: str
 
 
 @dataclass
 class TextStreamBuffer:
+    """Text accumulated for one block between flushes."""
+
     block: StreamBlock
     full_text: str = ""
     pending_delta: str = ""
@@ -197,6 +213,9 @@ class TextStreamBuffer:
 
 
 class TextStreamBatcher:
+    """Coalesces streamed text per block into paced updates, by interval and
+    size."""
+
     def __init__(
         self,
         *,
@@ -561,6 +580,9 @@ class SubagentTimelineState:
 
 @dataclass
 class OpenSubagentTimeline:
+    """A subagent timeline held open: its context manager and the state its events
+    land on."""
+
     context: AbstractAsyncContextManager[SubagentTimelineState]
     state: SubagentTimelineState
 
@@ -929,11 +951,11 @@ class TimelineState:
 
 class TimelineFeeler(Protocol):
     """Opens a per-run `TimelineState` for a channel. The per-channel `Feelers.timeline`
-    is a single stateless instance: `ChannelTentacle.consume` does
-    `async with feelers.timeline.open(address) as state:` — entering acquires the platform
-    resource and yields the per-run hook (a card, a stream session, …), or the feeler
-    itself when there is nothing to set up; `drive_timeline` then renders each event onto
-    it; exiting releases the resource and sets `message_id`."""
+    is a single stateless instance: the `React` node does
+    `async with feelers.timeline.open(address) as state:` — entering acquires the
+    platform resource and yields the per-run hook (a card, a stream session, …), or
+    the feeler itself when there is nothing to set up; `state.drive(events)` then
+    renders each event onto it; exiting releases the resource and sets `message_id`."""
 
     def open(
         self, address: ChannelAddress
@@ -1024,6 +1046,8 @@ async def present_markdown[MessageT, RawT](
 
 
 class DefaultMarkdownFeeler[RawT, MessageT]:
+    """Sends markdown through a channel's chromo and ink as plain messages."""
+
     def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
         self.ink = ink
         self.chromo = chromo
@@ -1056,6 +1080,9 @@ class SegmentsFeeler(Protocol):
 
 
 class DefaultSegmentsFeeler[RawT, MessageT]:
+    """Sends output segments through a channel's chromo and ink, one message per
+    payload."""
+
     def __init__(self, *, ink: Ink[MessageT], chromo: Chromo[RawT, MessageT]) -> None:
         self.ink = ink
         self.chromo = chromo
@@ -1092,6 +1119,9 @@ class DefaultSegmentsFeeler[RawT, MessageT]:
 
 @dataclass
 class DefaultTimelineState[RawT, MessageT](TimelineState):
+    """The timeline for a channel with no live transport: collects the answer and
+    todos, and sends them as one message when the run ends."""
+
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
     address: ChannelAddress

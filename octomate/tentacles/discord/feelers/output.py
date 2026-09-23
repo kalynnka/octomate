@@ -1,3 +1,5 @@
+"""Discord timeline rendering: the answer streamed by editing a message in place."""
+
 from __future__ import annotations
 
 import asyncio
@@ -49,6 +51,10 @@ DISCORD_STREAM_PLACEHOLDER = "…"
 
 @dataclass
 class DiscordTimelineState(TimelineState):
+    """Renders a run's answer by editing one placeholder message in place, moving
+    to a new message at Discord's length limit; thinking and tool events render
+    nothing."""
+
     ink: DiscordInk
     chromo: DiscordChromo
     address: ChannelAddress
@@ -241,6 +247,9 @@ class DiscordTimelineState(TimelineState):
 
 
 class DiscordTimelineFeeler(TimelineFeeler):
+    """Opens a `DiscordTimelineState` under a typing indicator, or the answer-only
+    default timeline when streaming is disabled."""
+
     def __init__(
         self,
         *,
@@ -311,6 +320,9 @@ class DiscordTimelineFeeler(TimelineFeeler):
 
 @dataclass
 class DiscordSubagentTimelineState(SubagentTimelineState):
+    """A commissioned child run rendered as one message, edited with its response
+    and terminal status when it settles."""
+
     ink: DiscordInk
     chromo: DiscordChromo
     activity: SubagentActivity

@@ -102,6 +102,9 @@ class OAuthFeeler[MessageT](ABC):
 
 
 class PlainTextOAuthFeeler[MessageT](OAuthFeeler[MessageT]):
+    """Presents an authorization as a markdown link, with the device code when
+    there is one."""
+
     def __init__(self, ink: Ink[MessageT], markdown: MarkdownFeeler) -> None:
         super().__init__(ink)
         self.markdown = markdown

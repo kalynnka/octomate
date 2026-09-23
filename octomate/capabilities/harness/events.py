@@ -141,28 +141,38 @@ class DisplayEvent(BaseModel):
 
 
 class TodoCreatedEvent(DisplayEvent):
+    """A todo was created."""
+
     event_kind: Literal["todo_created"] = "todo_created"
     todo: Todo
 
 
 class TodoUpdatedEvent(DisplayEvent):
+    """A todo's content or placement changed."""
+
     event_kind: Literal["todo_updated"] = "todo_updated"
     todo: Todo
     previous: Todo | None = None
 
 
 class TodoStatusChangedEvent(DisplayEvent):
+    """A todo moved to another status."""
+
     event_kind: Literal["todo_status_changed"] = "todo_status_changed"
     todo: Todo
     previous: Todo | None = None
 
 
 class TodoCompletedEvent(DisplayEvent):
+    """A todo was completed."""
+
     event_kind: Literal["todo_completed"] = "todo_completed"
     todo: Todo
 
 
 class TodoDeletedEvent(DisplayEvent):
+    """A todo was deleted."""
+
     event_kind: Literal["todo_deleted"] = "todo_deleted"
     todo: Todo
 

@@ -1,3 +1,7 @@
+"""Channel tentacle configuration: one variant per platform, the streaming and
+chat-recap settings they share, and the OAuth clients a channel authorizes users
+with."""
+
 from __future__ import annotations
 
 from typing import Annotated, Literal, Self
@@ -8,6 +12,8 @@ from octomate.config.agents import AgentRouteModelName, ConfigPath
 
 
 class AgentModelConfig(BaseModel):
+    """An agent id paired with a model selection."""
+
     agent: str
     model: AgentRouteModelName | None = Field(
         description="Selected model, or null to use the harness's native default."
@@ -15,6 +21,9 @@ class AgentModelConfig(BaseModel):
 
 
 class ChannelStreamConfig(BaseModel):
+    """How a channel paces streamed text: whether it streams, the flush cadence,
+    the size bounds, and when a block folds."""
+
     enabled: bool = False
     flush_interval: float = 0.5
     min_chars: int = 20
@@ -23,6 +32,8 @@ class ChannelStreamConfig(BaseModel):
 
 
 class SlackStreamConfig(ChannelStreamConfig):
+    """Streaming defaults for Slack."""
+
     # Slack streams via `chat.appendStream`, one API call per flush. `flush_interval`
     # alone paces the edits (~2/s) — keep `min_chars` low so short answers stream on
     # that cadence instead of being held until they reach 120 chars.
@@ -32,17 +43,23 @@ class SlackStreamConfig(ChannelStreamConfig):
 
 
 class LarkStreamConfig(ChannelStreamConfig):
+    """Streaming defaults for Lark."""
+
     enabled: bool = True
     flush_interval: float = 0.2
     min_chars: int = 20
 
 
 class DiscordStreamConfig(ChannelStreamConfig):
+    """Streaming defaults for Discord."""
+
     # discord.py follows Discord's dynamic route buckets; this only coalesces edits.
     flush_interval: float = 0.2
 
 
 class NapcatStreamConfig(ChannelStreamConfig):
+    """Streaming defaults for NapCat: off."""
+
     enabled: bool = False
 
 
@@ -75,6 +92,9 @@ class ChatRecapConfig(BaseModel):
 
 
 class ChannelConfig(BaseModel):
+    """What every channel tentacle's block declares: its type, the agents bound to
+    it, and how it streams and recaps."""
+
     type: str
     mention_only: bool = True
     enabled: bool = True
@@ -192,6 +212,8 @@ class SlackOAuthClientConfig(BaseModel):
 
 
 class SlackChannelConfig(ChannelConfig):
+    """A Slack app, selected by `type: slack`."""
+
     type: Literal["slack"] = "slack"
     app_id: str
     bot_token: SecretStr
@@ -216,6 +238,8 @@ class SlackChannelConfig(ChannelConfig):
 
 
 class LarkChannelConfig(ChannelConfig):
+    """A Lark app, selected by `type: lark`."""
+
     type: Literal["lark"] = "lark"
     app_id: str
     app_secret: SecretStr
@@ -223,6 +247,8 @@ class LarkChannelConfig(ChannelConfig):
 
 
 class DiscordOAuthClientConfig(BaseModel):
+    """The Discord application's OAuth2 client, used to link profiles by identity."""
+
     client_id: str = Field(
         min_length=1, description="The Discord application's OAuth2 client id."
     )
@@ -233,6 +259,8 @@ class DiscordOAuthClientConfig(BaseModel):
 
 
 class DiscordChannelConfig(ChannelConfig):
+    """A Discord bot, selected by `type: discord`."""
+
     type: Literal["discord"] = "discord"
     bot_token: SecretStr
     stream: DiscordStreamConfig = Field(default_factory=DiscordStreamConfig)
@@ -256,6 +284,8 @@ class VercelChannelConfig(ChannelConfig):
 
 
 class TrunklineStreamConfig(ChannelStreamConfig):
+    """Streaming defaults for the console: every event straight through."""
+
     # The console renders tokens as it receives them; stream every event
     # straight through (the timeline feeler forwards raw events, so batching
     # is moot).
@@ -283,6 +313,8 @@ class TrunklineChannelConfig(ChannelConfig):
 
 
 class NapcatChannelConfig(ChannelConfig):
+    """A NapCat connection over WebSocket and HTTP, selected by `type: napcat`."""
+
     type: Literal["napcat"] = "napcat"
     stream: NapcatStreamConfig = Field(default_factory=NapcatStreamConfig)
     ws_url: str

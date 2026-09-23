@@ -1,3 +1,5 @@
+"""The model messages table, polymorphic on request and response."""
+
 from __future__ import annotations
 
 import uuid
@@ -18,6 +20,9 @@ if TYPE_CHECKING:
 
 
 class ModelMessage(Base, TransmuterProxiedMixin):
+    """The polymorphic base of the model messages table; every row is a request
+    or a response."""
+
     __tablename__ = "model_messages"
     __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_on": "kind",
@@ -84,8 +89,12 @@ class ModelMessage(Base, TransmuterProxiedMixin):
 
 
 class ModelRequest(ModelMessage):
+    """A request row."""
+
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "request"}
 
 
 class ModelResponse(ModelMessage):
+    """A response row."""
+
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "response"}
