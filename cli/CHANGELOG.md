@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.2...octomate-cli-v0.0.3) (2026-09-23)
+
+
+### Features
+
+* add agent tracing and reduce response latency ([a3904b3](https://github.com/kalynnka/octomate/commit/a3904b3fbe4323d5727812337f04a2c60d2ab3ea))
+* add documentation site and cross-platform deployment setup ([a55e043](https://github.com/kalynnka/octomate/commit/a55e043b3802715a3c206858ca47d3898a7cc085))
+* add invite-only user accounts and API token authentication ([05cbc80](https://github.com/kalynnka/octomate/commit/05cbc80c78794c52ba7569de96e39175dfbe8a59))
+* add invite-only user accounts and Trunkline authentication ([93d4269](https://github.com/kalynnka/octomate/commit/93d426904dac9930a29fe0fada719c4a66c42f4e))
+* add macOS GUI service CLI management ([2e3890d](https://github.com/kalynnka/octomate/commit/2e3890db275d2c5d4806b2d8f2544ae9b4f309d9))
+* add macOS service initialization and GUI management ([eebffdc](https://github.com/kalynnka/octomate/commit/eebffdcefd658d013385c44c96d217edf9975f70))
+* add password recovery and fix account sign-out ([16c42f3](https://github.com/kalynnka/octomate/commit/16c42f3eaee98a9f6ab6c7f5a7e13fa37f7a4a36))
+* add user-scoped MCPs, unified tentacles, and live control panels ([1336420](https://github.com/kalynnka/octomate/commit/1336420c097ff8cdbac7866e0a419c309af5e7ea))
+* bundle Claude MCP and hooks as a plugin ([174b5a5](https://github.com/kalynnka/octomate/commit/174b5a585e86b050fd17c2d713979c972f87ccc1))
+* bundle Codex MCP and hooks as a plugin ([a413907](https://github.com/kalynnka/octomate/commit/a413907b2b0b3fb265d6983fc102cc472c112f93))
+* collect Codex session names and type JSON boundaries ([439f85d](https://github.com/kalynnka/octomate/commit/439f85d36faaa61f71814cfaf32551372693f2e4))
+* collect Codex session names through the SDK ([3aead13](https://github.com/kalynnka/octomate/commit/3aead1367c82461efc3bbc0deab09c0cbb19d8c6))
+* configure MCP presets through tentacle setup wizard ([a00e82b](https://github.com/kalynnka/octomate/commit/a00e82b8df1545237d854aec5b93ec5ccfef8ba3))
+* discover harness models and bind channels to agents ([904ee07](https://github.com/kalynnka/octomate/commit/904ee07ef66cf24644b4f024d6bde5f0d20de2af))
+* expose agent-owned permission modes and Codex presets ([fbeaf5a](https://github.com/kalynnka/octomate/commit/fbeaf5a516aafccb4ee1d6d8f34e57d2194e6215))
+* expose agent-specific permission modes and picker ([86ef03b](https://github.com/kalynnka/octomate/commit/86ef03b455c7d5181405c751d04da7920f51fbf5))
+* install configured MCP tentacles per user ([fedc307](https://github.com/kalynnka/octomate/commit/fedc30741324a7ee03187e1a534980b2822854f3))
+* link channel profiles to Octomate accounts ([6c31698](https://github.com/kalynnka/octomate/commit/6c31698f6abbf57a3554a446fc118db63865dfb1))
+* prepare Linux and Docker deployments with separate Trunkline container ([f2bcbc8](https://github.com/kalynnka/octomate/commit/f2bcbc89ca57963e58a253fb09664c73ad124c46))
+* scaffold macOS service installations with init wizard ([e8a57d8](https://github.com/kalynnka/octomate/commit/e8a57d841c6f43964d7a0d233aba9842c02e927b))
+* select tentacles by capability before wizard setup ([90bfc72](https://github.com/kalynnka/octomate/commit/90bfc72d918bbd31ba806c5ce798a8dc2ed82642))
+* unify tentacle configuration and OAuth flows ([931f10e](https://github.com/kalynnka/octomate/commit/931f10e6eaff6354767eba7c2f02e8f6d2ed0335))
+
+
+### Bug Fixes
+
+* align driven agent MCP and telemetry ([09308f7](https://github.com/kalynnka/octomate/commit/09308f739c7f9e973afa1308baee9093c7e5e25a))
+* clarify password errors and correct debug entry points ([4914d01](https://github.com/kalynnka/octomate/commit/4914d01ac28b2e1fa061fce29cf096cef7f99d98))
+* ignore unknown configuration keys ([0d00b94](https://github.com/kalynnka/octomate/commit/0d00b9450a2396218cae66a4aaecc723242381cd))
+* isolate driven Claude and Codex extensions ([2271b97](https://github.com/kalynnka/octomate/commit/2271b973ac83e9bc53e77484be6dabf0075863f4))
+* isolate driven DSH runtime and remove ingest exclusions ([3fc6d5e](https://github.com/kalynnka/octomate/commit/3fc6d5ee6c2a4826218d6baeda7cecedf8aa9262))
+* isolate tail runtime files by config scope ([e9d7c75](https://github.com/kalynnka/octomate/commit/e9d7c75d898cd3d7ea1195049d68d89fe1c39b65))
+* keep hooks reachable throughout tentacle lifecycle ([7bac7f3](https://github.com/kalynnka/octomate/commit/7bac7f35bfc7c5d205c427eaa3eade5cbc42632a))
+* support authenticated dsh Remote API ([0d80882](https://github.com/kalynnka/octomate/commit/0d808825d4b4cb94796c95f16e005fb060224b9c))
+* update DSH Remote API and isolate driven harness extensions ([64d7e9e](https://github.com/kalynnka/octomate/commit/64d7e9e8d0e675a741c1d2f8e0bc10abaf266181))
+
+
+### Performance Improvements
+
+* reduce conversation and channel startup latency ([e464a17](https://github.com/kalynnka/octomate/commit/e464a17dd556a7b7045c4aaf81e2d557a6f87299))
+
+
+### Documentation
+
+* add module and class docstrings across the package ([6b9d7b4](https://github.com/kalynnka/octomate/commit/6b9d7b4a31a3e8adc564045bbec98ad1f3bcac06))
+
 ## [0.0.2](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.1...octomate-cli-v0.0.2) (2026-09-06)
 
 
