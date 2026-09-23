@@ -1,0 +1,156 @@
+site_name: Octomate
+site_description: Relay and collect every chat you have with a coding agent, then spread it to where you already work.
+site_url: https://kalynnka.github.io/octomate/
+repo_url: https://github.com/kalynnka/octomate
+repo_name: kalynnka/octomate
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; Octomate contributors
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: purple
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.tabs.link
+    - search.highlight
+    - search.suggest
+    - toc.follow
+  icon:
+    repo: fontawesome/brands/github
+
+nav:
+  - Home: index.md
+  - Installation:
+      - installation/index.md
+      - TL;DR for your agent: installation/agent-setup.md
+      - Server:
+          - Server setup: installation/server.md
+          - macOS: installation/macos.md
+          - Linux: installation/linux.md
+          - Windows: installation/windows.md
+          - Docker: installation/docker.md
+      - Configuration: installation/configuration.md
+      - Accounts and tokens: installation/accounts.md
+      - Hooks and MCP: installation/clients.md
+      - Networking: installation/networking.md
+      - Observability: installation/observability.md
+      - Upgrades and backups: installation/upgrading.md
+  - Usage:
+      - usage/index.md
+      - Agents:
+          - usage/agents/index.md
+          - Claude Code: usage/agents/claude.md
+          - Codex: usage/agents/codex.md
+          - DeepSeek Harness: usage/agents/deepseek.md
+          - Inkling: usage/agents/inkling.md
+      - Channels:
+          - usage/channels/index.md
+          - Slack: usage/channels/slack.md
+          - Lark / Feishu: usage/channels/lark.md
+          - Discord: usage/channels/discord.md
+          - QQ through NapCat: usage/channels/napcat.md
+          - Trunkline: usage/channels/trunkline.md
+      - Threads and chat rooms: usage/threads.md
+      - Moving a conversation: usage/gateway.md
+      - Approvals and questions: usage/actions.md
+      - Projects and workspaces: usage/workspaces.md
+      - History: usage/history.md
+      - MCP:
+          - Octomate MCP: usage/mcp/index.md
+          - MCP proxy: usage/mcp/proxy.md
+  - Concepts:
+      - concepts/index.md
+      - The reflex graph: concepts/reflex.md
+      - Feelers: concepts/feelers.md
+      - The tentacle model: concepts/tentacles.md
+      - Persistence: concepts/persistence.md
+      - Workspace design: concepts/workspaces.md
+  - Contributing:
+      - contributing/index.md
+      - Adding a channel tentacle: contributing/channel-tentacle.md
+      - Adding an agent tentacle: contributing/agent-tentacle.md
+      - Adding an MCP tentacle: contributing/mcp-tentacle.md
+      - Documentation: contributing/documentation.md
+      - Releases: contributing/releases.md
+      - Plans and issues: contributing/planning.md
+  - API Reference:
+      - api/index.md
+      - octomate.config: api/config.md
+      - octomate.tentacles: api/tentacles.md
+      - octomate.reflex: api/reflex.md
+      - octomate.managers: api/managers.md
+      - octomate.schemas: api/schemas.md
+      - octomate.capabilities: api/capabilities.md
+      - octomate.mcp: api/mcp.md
+      - octomate_cli: api/cli.md
+      - octomate_protocol: api/protocol.md
+
+validation:
+  nav:
+    omitted_files: warn
+  links:
+    not_found: warn
+    unrecognized_links: warn
+    anchors: warn
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [., cli, protocol]
+          options:
+            allow_inspection: false
+            show_root_heading: true
+            show_source: true
+            show_signature_annotations: true
+            separate_signature: true
+            docstring_style: google
+            members_order: source
+            show_if_no_docstring: true
+            filters: ["!^_"]
+            extensions:
+              - griffe_pydantic:
+                  schema: false
+
+extra_css:
+  - stylesheets/code.css
