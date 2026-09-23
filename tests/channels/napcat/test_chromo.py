@@ -58,6 +58,8 @@ async def test_napcat_chromo_decodes_group_message_segments() -> None:
     assert event.self_id == "42"
     assert event.message_id == "1001"
     assert event.reply_id == "999"
+    assert event.channel_thread_id is None
+    assert event.shared is True
     assert [type(seg) for seg in event.segments] == [
         ReplySegment,
         TextSegment,
@@ -94,6 +96,8 @@ async def test_napcat_chromo_decodes_private_message() -> None:
     assert event.chat_type == "dm"
     assert event.chat_id == "3003"
     assert event.user_id == "3003"
+    assert event.channel_thread_id is None
+    assert event.shared is False
     assert [type(seg) for seg in event.segments] == [TextSegment]
 
 

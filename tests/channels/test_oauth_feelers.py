@@ -98,7 +98,9 @@ async def test_napcat_authorizations_keep_literal_urls_in_private_messages(
 
     def respond(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        return httpx.Response(200, json={"data": {"message_id": "msg-1"}})
+        return httpx.Response(
+            200, json={"status": "ok", "retcode": 0, "data": {"message_id": "msg-1"}}
+        )
 
     await channel.ink.httpx.aclose()
     async with httpx.AsyncClient(

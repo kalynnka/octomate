@@ -5,7 +5,11 @@ from octomate.types.json import JsonObject
 
 class FakeNapcatResponse:
     def __init__(self, data: JsonObject | None = None) -> None:
-        self._data = data or {"data": {"message_id": "msg-1"}}
+        self._data = data or {
+            "status": "ok",
+            "retcode": 0,
+            "data": {"message_id": "msg-1"},
+        }
 
     def raise_for_status(self) -> None:
         return None
