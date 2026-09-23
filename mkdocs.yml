@@ -46,6 +46,8 @@ nav:
           - Quickstart: installation/quickstart.md
           - Requirements: installation/requirements.md
           - macOS: installation/macos.md
+          - Linux: installation/linux.md
+          - Docker: installation/docker.md
           - Manual setup: installation/server.md
       - Configuration:
           - The config home: installation/configuration.md

@@ -18,6 +18,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
 from octomate_cli import deployment
+from octomate_cli.installation import DeploymentTarget
 from octomate_cli.mcp import McpPreset
 from octomate_protocol.deployment import DatabaseBackup
 from pydantic import SecretStr, TypeAdapter
@@ -30,6 +31,7 @@ from octomate.config.agents import AgentConfig, CodexConfig, DeepseekConfig
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.config.database import database_settings
 from octomate.mcp.base import KnownBearers
+from octomate.schemas.oauth import OAuthCipher
 
 
 @pytest.fixture
@@ -40,6 +42,35 @@ def preparation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(database_settings, "db_url", url)
     monkeypatch.setitem(OctomateConfig.model_config, "env_file", ".env")
     return tmp_path
+
+
+@pytest.mark.parametrize(
+    "target",
+    [DeploymentTarget.systemd, DeploymentTarget.docker, DeploymentTarget.manual],
+)
+def test_platform_templates_use_runtime_paths_and_target_checklist(
+    preparation: Path, target: DeploymentTarget
+) -> None:
+    deployment.prepare(8123, ["trunkline"], ["codex"], target=target)
+    config = OctomateConfig()
+    trunkline = config.tentacles["trunkline"]
+    assert isinstance(trunkline, TrunklineChannelConfig)
+    checklist = (preparation / "CONFIGURATION.md").read_text()
+    assert "LaunchAgent" not in checklist
+    if target == DeploymentTarget.docker:
+        assert config.host == IPv4Address("0.0.0.0")
+        assert config.port == 8000
+        assert trunkline.static_dir is None
+        assert "separate Trunkline container" in checklist
+        assert "docker compose run" in checklist
+        assert "systemctl" not in checklist
+    else:
+        assert config.host == IPv4Address("127.0.0.1")
+        assert config.port == 8123
+        assert trunkline.static_dir is None
+        assert f"--target {target.value}" in checklist
+        assert "compose.yaml" not in checklist
+    assert not (preparation / "octomate.db").exists()
 
 
 @pytest.mark.parametrize("console", [True, False])
@@ -204,7 +235,10 @@ def test_checklist_and_templates_only_include_selected_components(
         assert (f"tentacles.{name}." in checklist) == (name in channels)
     assert "template structure only" in checklist
     assert "schema check does not verify credentials" in checklist
-    assert f"octomate service init --prepare --root {preparation}" in checklist
+    assert (
+        f"octomate service init --prepare --target launchd --root {preparation}"
+        in checklist
+    )
     assert "without source or selection flags" in checklist
     assert "connector tool call" in checklist
     assert "restart the GUI service" in checklist
@@ -705,11 +739,7 @@ def test_maintenance_requires_an_explicit_bind_address(
     config.tentacles["trunkline"] = TrunklineChannelConfig(agents=["codex"])
     monkeypatch.setattr(sys, "argv", ["maintenance", "check"])
     monkeypatch.setattr(deployment, "OctomateConfig", lambda: config)
-    if host == "0.0.0.0":
-        with pytest.raises(ValueError, match="explicit IPv4 bind address"):
-            deployment.main()
-    else:
-        deployment.main()
+    deployment.main()
     assert not database.exists()
 
 
@@ -763,7 +793,12 @@ def test_prepare_reads_mcp_presets_and_saves_private_oauth_configuration(
     assert str(config.oauth.callback_base_uri) == "http://localhost:8123/"
     assert config.oauth.encryption_key is not None
     key = config.oauth.encryption_key.get_secret_value()
-    assert len(key) == 43
+    assert len(key) == 44
+    cipher = OAuthCipher(config.oauth.encryption_key)
+    assert (
+        cipher.decrypt(cipher.encrypt("test-grant", context="test"), context="test")
+        == "test-grant"
+    )
     assert (
         f"OCTOMATE__OAUTH__ENCRYPTION_KEY={key}" in (preparation / ".env").read_text()
     )

@@ -11,7 +11,9 @@ from octomate_cli.wizard.base import TentacleSetup
 
 def configure_channel(name: str, console: Console) -> str:
     if name == "trunkline":
-        console.print("Trunkline's API is enabled; its frontend is built separately.")
+        console.print(
+            "Trunkline's API is enabled. Docker builds a separate frontend container; native installations build the frontend separately."
+        )
     else:
         console.print(
             f"{CHANNELS[name].label}: fill credentials in config/tentacles.yaml, then enable tentacles.{name}.enabled."
