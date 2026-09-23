@@ -18,6 +18,7 @@ from pydantic import (
     ValidationError,
 )
 from pydantic.alias_generators import to_camel
+from typing_extensions import TypedDict
 
 from octomate.types.json import JsonValue
 from octomate.types.permissions import PermissionMode
@@ -175,6 +176,58 @@ class RemoteItem(BaseModel):
     type: Literal["item"]
     stream_id: str
     value: JsonValue = None
+
+
+class SessionAddress(TypedDict):
+    kind: Literal["session"]
+    sessionId: str
+
+
+class SessionFollowRequest(TypedDict):
+    address: SessionAddress
+    maxMessages: int
+    assistantStream: bool
+
+
+class SessionFollowArgs(TypedDict):
+    request: SessionFollowRequest
+
+
+class SessionFollowPayload(TypedDict):
+    args: SessionFollowArgs
+
+
+class EventStreamArgs(TypedDict):
+    pass
+
+
+class EventStreamPayload(TypedDict):
+    args: EventStreamArgs
+
+
+class RemoteEventsOpen(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["open"] = "open"
+    stream_id: Literal["$events"] = "$events"
+    endpoint: Literal["$events"] = "$events"
+    payload: EventStreamPayload = Field(default_factory=lambda: {"args": {}})
+
+
+class RemoteSessionFollow(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["open"] = "open"
+    stream_id: str
+    endpoint: Literal["session/follow"] = "session/follow"
+    payload: SessionFollowPayload
+
+
+class RemoteCancel(BaseModel):
+    model_config = PERMISSIVE
+
+    type: Literal["cancel"] = "cancel"
+    stream_id: str
 
 
 class RemoteError(BaseModel):
