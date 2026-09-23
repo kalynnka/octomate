@@ -2,23 +2,28 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import typer
+from pydantic import ValidationError
 
-from octomate_cli.tentacles.types import JsonObject
-
-
-def load_settings(path: Path) -> JsonObject:
-    if not path.exists() or not path.read_text().strip():
-        return {}
-    data = json.loads(path.read_text())
-    if not isinstance(data, dict):
-        raise typer.BadParameter(f"{path} is not a JSON object")
-    return data
+from octomate_cli.tentacles.claude.schema import McpSettings
 
 
-def write_settings(path: Path, settings: JsonObject) -> None:
+def load_settings(path: Path) -> McpSettings:
+    if not path.exists():
+        return McpSettings()
+    content = path.read_bytes()
+    if not content.strip():
+        return McpSettings()
+    try:
+        return McpSettings.model_validate_json(content)
+    except ValidationError as error:
+        raise typer.BadParameter(f"Invalid MCP settings in {path}: {error}") from error
+
+
+def write_settings(path: Path, settings: McpSettings) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(settings, indent=2) + "\n")
+    path.write_text(
+        settings.model_dump_json(indent=2, by_alias=True, exclude_unset=True) + "\n"
+    )

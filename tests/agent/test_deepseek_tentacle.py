@@ -16,6 +16,12 @@ import anyio
 import pytest
 from logfire.testing import CaptureLogfire
 from logfire.testing import capfire as capfire
+from octomate_protocol.deepseek import (
+    ErrResult,
+    OkResult,
+    RpcError,
+    RpcResult,
+)
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
 from pydantic import HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
@@ -39,13 +45,9 @@ from octomate.tentacles.deepseek import base as deepseek_base
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
-    ErrResult,
     MuxFrame,
-    OkResult,
     QuestionRequestedFrame,
-    RpcError,
     RpcReceipt,
-    RpcResult,
     SessionAssistantFrame,
     SessionEventFrame,
     StreamErrorFrame,

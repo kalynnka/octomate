@@ -33,7 +33,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import fcntl
-import json
 import os
 import sys
 import time
@@ -45,6 +44,14 @@ from time import monotonic
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 from uuid import uuid4
 
+from octomate_protocol.deepseek import (
+    ClientRequest,
+    ErrResult,
+    RemoteItem,
+    RemoteSessionFollow,
+    ServerResponse,
+    remote_message_adapter,
+)
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -121,28 +128,24 @@ class DshHistoryClient:
                 )
 
     def rpc(self, method: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
-        body = {
-            "type": "client-request",
-            "rpcId": str(uuid4()),
-            "method": method,
-            "payload": {"args": args},
-        }
+        body = ClientRequest(rpc_id=str(uuid4()), method=method, payload={"args": args})
         request = urllib.request.Request(
             f"{self.url}/api/{method}",
-            data=json.dumps(body).encode(),
+            data=body.model_dump_json(by_alias=True).encode(),
             headers={"Content-Type": "application/json"},
         )
         try:
             with self.opener.open(request, timeout=RPC_TIMEOUT) as response:
-                answer = json_object_adapter.validate_json(response.read())
+                answer = ServerResponse.model_validate_json(response.read())
         except urllib.error.HTTPError as error:
             raise DshCompatibilityError(
                 f"dsh Remote API {method} returned HTTP {error.code}; set DSH_LAUNCH_TOKEN for authentication and update dsh and Octomate together"
             ) from None
-        result = answer.get("result")
-        if not isinstance(result, dict) or result.get("ok") is not True:
-            raise DshCompatibilityError(f"dsh Remote API {method} failed: {result}")
-        return json_object_adapter.validate_python(result.get("value"))
+        if isinstance(answer.result, ErrResult):
+            raise DshCompatibilityError(
+                f"dsh Remote API {method} failed: {answer.result.error.message}"
+            )
+        return json_object_adapter.validate_python(answer.result.value)
 
     def snapshot(self, session_id: str) -> dict[str, JsonValue]:
         request = urllib.request.Request(f"{self.url}/api/remote.mux")
@@ -159,31 +162,24 @@ class DshHistoryClient:
             url, additional_headers=headers, open_timeout=RPC_TIMEOUT
         ) as socket:
             socket.send(
-                json.dumps(
-                    {
-                        "type": "open",
-                        "streamId": session_id,
-                        "endpoint": "session/follow",
-                        "payload": {
-                            "args": {
-                                "request": {
-                                    "address": {
-                                        "kind": "session",
-                                        "sessionId": session_id,
-                                    },
-                                    "maxMessages": PAGE_MESSAGES,
-                                }
+                RemoteSessionFollow(
+                    stream_id=session_id,
+                    payload={
+                        "args": {
+                            "request": {
+                                "address": {"kind": "session", "sessionId": session_id},
+                                "maxMessages": PAGE_MESSAGES,
                             }
-                        },
-                    }
-                )
+                        }
+                    },
+                ).model_dump_json(by_alias=True)
             )
-            message = json_object_adapter.validate_json(
+            message = remote_message_adapter.validate_json(
                 socket.recv(timeout=RPC_TIMEOUT)
             )
-            value = message.get("value")
+            value = message.value if isinstance(message, RemoteItem) else None
             if (
-                message.get("type") != "item"
+                not isinstance(message, RemoteItem)
                 or not isinstance(value, dict)
                 or value.get("type") != "snapshot"
             ):
@@ -357,7 +353,7 @@ async def stream_session(
                         agent_id=None,
                         start=seq,
                         end=seq + 1,
-                        line=json.dumps(entry, separators=(",", ":")),
+                        line=json_object_adapter.dump_json(entry).decode(),
                     ).model_dump_json()
                 )
                 cursor = seq + 1

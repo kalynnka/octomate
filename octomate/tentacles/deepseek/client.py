@@ -10,36 +10,38 @@ from types import TracebackType
 from uuid import uuid4
 
 import httpx
+from octomate_protocol.deepseek import (
+    ClientRequest,
+    ErrResult,
+    OkResult,
+    RemoteEnd,
+    RemoteError,
+    RemoteItem,
+    RemoteSessionFollow,
+    RpcError,
+    RpcResult,
+    ServerResponse,
+    remote_message_adapter,
+)
 from pydantic import HttpUrl, SecretStr, ValidationError
 from websockets.asyncio.client import ClientConnection, connect
 
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
-    ClientRequest,
-    ErrResult,
     MuxFrame,
-    OkResult,
     QuestionRequestedFrame,
     RemoteCancel,
     RemoteCancellation,
-    RemoteEnd,
-    RemoteError,
     RemoteEventsOpen,
     RemoteInvocation,
-    RemoteItem,
     RemoteReady,
-    RemoteSessionFollow,
-    RpcError,
     RpcReceipt,
-    RpcResult,
-    ServerResponse,
     SessionAssistantFrame,
     SessionEventFrame,
     SessionRecord,
     SessionSnapshot,
     StreamErrorFrame,
     remote_event_adapter,
-    remote_message_adapter,
     session_follow_adapter,
 )
 from octomate.types.json import JsonObject, JsonValue

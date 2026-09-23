@@ -4,6 +4,40 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import discord
+from pydantic import BaseModel
+from typing_extensions import TypedDict
+
+
+class DiscordMessageReference(TypedDict):
+    message_id: str | None
+    channel_id: str
+    guild_id: str | None
+    author_id: str | None
+
+
+class DiscordMention(TypedDict):
+    id: str
+    name: str
+
+
+class DiscordAttachment(TypedDict):
+    id: str
+    filename: str
+    url: str
+    content_type: str | None
+    size: int
+
+
+class DiscordMessageSnapshot(BaseModel):
+    id: str
+    type: str
+    content: str
+    author_id: str
+    channel_id: str
+    guild_id: str | None
+    reference: DiscordMessageReference | None
+    mentions: list[DiscordMention]
+    attachments: list[DiscordAttachment]
 
 
 @dataclass(frozen=True)

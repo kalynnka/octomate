@@ -4,6 +4,11 @@ from typing import get_args
 
 import pytest
 from claude_agent_sdk import PermissionMode as ClaudePermissionMode
+from octomate_protocol.deepseek import (
+    ErrResult,
+    OkResult,
+    RpcError,
+)
 from pydantic import ValidationError
 
 from octomate import Octomate
@@ -11,7 +16,6 @@ from octomate.config.agents import CodexConfig, DeepseekConfig
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
-from octomate.tentacles.deepseek.wire import ErrResult, OkResult, RpcError
 from tests.agent.test_deepseek_tentacle import FakeDeepseekApi, patch_gateway
 
 

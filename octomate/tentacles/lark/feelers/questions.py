@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from typing import TYPE_CHECKING
 from uuid import UUID
 
@@ -14,6 +13,7 @@ from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.feelers import cards
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.lark.schema import (
+    LarkInteractiveCard,
     LarkOutboundMessage,
     LarkQuestionActionValue,
     LarkQuestionFormValue,
@@ -75,14 +75,13 @@ def ask_question_card(
     page: int = 0,
     answers: dict[UUID, str] | None = None,
 ) -> str:
-    return json.dumps(
+    return LarkInteractiveCard.model_validate(
         ask_question_card_data(
             actions=actions,
             page=page,
             answers=answers,
-        ),
-        ensure_ascii=False,
-    )
+        )
+    ).model_dump_json(by_alias=True, exclude_unset=True)
 
 
 def ask_question_card_data(

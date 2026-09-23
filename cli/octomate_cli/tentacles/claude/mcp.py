@@ -10,6 +10,7 @@ import typer
 
 from octomate_cli.config import CLISettings
 from octomate_cli.tentacles.claude.config import load_settings, write_settings
+from octomate_cli.tentacles.claude.schema import McpContainer, McpServer
 from octomate_cli.tentacles.mcp import (
     CLAUDE_NATIVE_CLIENT,
     CLIENT_HEADER,
@@ -88,27 +89,19 @@ def mcp_install(
     path = mcp_config_file(scope, file)
     document = load_settings(path)
     if scope is McpScope.local:
-        projects = document.setdefault("projects", {})
-        if not isinstance(projects, dict):
-            raise typer.BadParameter(f"{path} has a non-object 'projects' section")
-        container = projects.setdefault(str(Path.cwd()), {})
-        if not isinstance(container, dict):
-            raise typer.BadParameter(
-                f"{path} has a non-object entry for project {Path.cwd()}"
-            )
+        container = document.projects.setdefault(str(Path.cwd()), McpContainer())
+        document.model_fields_set.add("projects")
     else:
         container = document
-    servers = container.setdefault("mcpServers", {})
-    if not isinstance(servers, dict):
-        raise typer.BadParameter(f"{path} has a non-object 'mcpServers' section")
-    servers[OCTOMATE_SERVER_KEY] = {
-        "type": "http",
-        "url": target,
-        "headers": {
+    container.mcp_servers[OCTOMATE_SERVER_KEY] = McpServer(
+        type="http",
+        url=target,
+        headers={
             "Authorization": f"Bearer {secret}",
             CLIENT_HEADER: CLAUDE_NATIVE_CLIENT,
         },
-    }
+    )
+    container.model_fields_set.add("mcp_servers")
     write_settings(path, document)
     typer.echo(f"Installed the Octomate MCP entry → {target}")
     typer.echo(f"  file:   {path}")
@@ -129,25 +122,17 @@ def mcp_uninstall(
     path = mcp_config_file(scope, file)
     document = load_settings(path)
     key = str(Path.cwd())
-    projects = document.get("projects")
-    if scope is McpScope.local:
-        entry = projects.get(key) if isinstance(projects, dict) else None
-        container = entry if isinstance(entry, dict) else None
-    else:
-        container = document
-    servers = container.get("mcpServers") if container is not None else None
-    if not isinstance(servers, dict) or OCTOMATE_SERVER_KEY not in servers:
+    container = document.projects.get(key) if scope is McpScope.local else document
+    if container is None or OCTOMATE_SERVER_KEY not in container.mcp_servers:
         typer.echo(f"No Octomate MCP entry in {path}")
         raise typer.Exit()
-    del servers[OCTOMATE_SERVER_KEY]
-    if not servers and container is not None:
-        del container["mcpServers"]
-        # A local install into a fresh file created the project entry too; an
-        # entry emptied by this removal goes with it, a lived-in one stays.
-        if scope is McpScope.local and not container and isinstance(projects, dict):
-            del projects[key]
-            if not projects:
-                del document["projects"]
+    del container.mcp_servers[OCTOMATE_SERVER_KEY]
+    if not container.mcp_servers:
+        container.model_fields_set.discard("mcp_servers")
+        if scope is McpScope.local and not container.model_dump(exclude_unset=True):
+            del document.projects[key]
+            if not document.projects:
+                document.model_fields_set.discard("projects")
     write_settings(path, document)
     typer.echo(f"Removed the Octomate MCP entry from {path}")
 
@@ -159,21 +144,19 @@ def mcp_show(
     """Show the Octomate MCP entry, credential masked."""
     path = mcp_config_file(scope, file)
     document = load_settings(path)
-    if scope is McpScope.local:
-        projects = document.get("projects")
-        container = (
-            projects.get(str(Path.cwd())) if isinstance(projects, dict) else None
-        )
-    else:
-        container = document
-    servers = container.get("mcpServers") if isinstance(container, dict) else None
-    entry = servers.get(OCTOMATE_SERVER_KEY) if isinstance(servers, dict) else None
-    if not isinstance(entry, dict):
+    container = (
+        document.projects.get(str(Path.cwd())) if scope is McpScope.local else document
+    )
+    entry = (
+        container.mcp_servers.get(OCTOMATE_SERVER_KEY)
+        if container is not None
+        else None
+    )
+    if entry is None:
         typer.echo(f"No Octomate MCP entry in {path}")
         raise typer.Exit()
-    headers = entry.get("headers")
-    client = headers.get(CLIENT_HEADER) if isinstance(headers, dict) else None
+    client = entry.headers.get(CLIENT_HEADER) if entry.headers is not None else None
     typer.echo(f"Octomate MCP entry in {path}:")
-    typer.echo(f"  url:    {entry.get('url')}")
+    typer.echo(f"  url:    {entry.url}")
     typer.echo(f"  client: {client}")
     typer.echo("  auth:   Bearer ***")

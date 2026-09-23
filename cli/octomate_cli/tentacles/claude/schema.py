@@ -106,3 +106,23 @@ class HookSettings(HookConfigModel):
             )
             + "\n"
         )
+
+
+class McpServer(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    type: str | None = None
+    url: str | None = None
+    headers: dict[str, str] | None = None
+
+
+class McpContainer(BaseModel):
+    model_config = ConfigDict(extra="allow", populate_by_name=True)
+
+    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    mcp_servers: dict[str, McpServer] = Field(default_factory=dict, alias="mcpServers")
+
+
+class McpSettings(McpContainer):
+    projects: dict[str, McpContainer] = Field(default_factory=dict)

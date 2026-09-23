@@ -8,16 +8,18 @@ from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
+from octomate_protocol.deepseek import (
+    ClientRequest,
+    ErrResult,
+    OkResult,
+    RpcError,
+    RpcResult,
+)
 from pydantic import HttpUrl, SecretStr
 
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.wire import (
-    ClientRequest,
-    ErrResult,
     MuxFrame,
-    OkResult,
-    RpcError,
-    RpcResult,
     SessionAssistantFrame,
 )
 from octomate.types.json import JsonObject

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from pathlib import Path
@@ -21,7 +20,10 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.tentacles.channel import Chromo
-from octomate.tentacles.discord.schema import DiscordOutboundMessage
+from octomate.tentacles.discord.schema import (
+    DiscordMessageSnapshot,
+    DiscordOutboundMessage,
+)
 from octomate.tentacles.feelers.output import MarkdownChunker
 
 logger = logging.getLogger(__name__)
@@ -151,7 +153,7 @@ class DiscordChromo(Chromo[discord.Message, DiscordOutboundMessage]):
                 chat_type=chat_type,
                 shared=shared,
                 segments=segments,
-                raw=json.dumps(snapshot, ensure_ascii=False, separators=(",", ":")),
+                raw=DiscordMessageSnapshot.model_validate(snapshot).model_dump_json(),
             )
         except Exception:
             logger.warning("DiscordChromo: failed to decode message", exc_info=True)

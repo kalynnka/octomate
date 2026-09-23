@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from collections.abc import AsyncGenerator, Sequence
@@ -57,7 +56,9 @@ from octomate.tentacles.lark.ink import LarkInk
 from octomate.tentacles.lark.schema import (
     LarkCard,
     LarkImageContent,
+    LarkInteractiveCard,
     LarkOutboundMessage,
+    LarkRawCard,
     LarkStreamCard,
 )
 
@@ -68,7 +69,6 @@ if TYPE_CHECKING:
         QuestionFeeler,
     )
     from octomate.tentacles.feelers.oauth import OAuthFeeler
-from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 OutputT = TypeVar(
@@ -220,8 +220,8 @@ class LarkRunStateCards(TimelineState):
         await state.start()
         yield state
 
-    async def post(self, card: JsonObject) -> str | None:
-        raw_card = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+    async def post(self, card: LarkInteractiveCard | LarkRawCard) -> str | None:
+        raw_card = card.model_dump_json(by_alias=True, exclude_unset=True)
         message_id = await self.ink.send_message(
             self.chat_id,
             self.chat_type,
@@ -278,7 +278,9 @@ class LarkRunStateCards(TimelineState):
         self.thinking_patched_len = 0
         self.thinking_started_at = time.monotonic()
         self.thinking_card_id = await self.post(
-            cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**")])
+            LarkInteractiveCard.model_validate(
+                cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**")])
+            )
         )
 
     async def thinking_delta(self, text: str) -> None:
@@ -303,7 +305,10 @@ class LarkRunStateCards(TimelineState):
         self.thinking_patched_len = len(text)
         live = cards.card_v2([cards.markdown(f"**{THINKING_HEADER}…**\n\n{text}")])
         await self.ink.patch_card(
-            card_id, json.dumps(live, ensure_ascii=False, separators=(",", ":"))
+            card_id,
+            LarkInteractiveCard.model_validate(live).model_dump_json(
+                by_alias=True, exclude_unset=True
+            ),
         )
 
     async def fold_thinking(self) -> None:
@@ -320,7 +325,10 @@ class LarkRunStateCards(TimelineState):
             [cards.collapsible_panel(f"Thought for {elapsed}s", [cards.markdown(body)])]
         )
         await self.ink.patch_card(
-            card_id, json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
+            card_id,
+            LarkInteractiveCard.model_validate(folded).model_dump_json(
+                by_alias=True, exclude_unset=True
+            ),
         )
 
     async def tool_start(
@@ -341,7 +349,9 @@ class LarkRunStateCards(TimelineState):
         body = f"**{title}**\n\n**Tool**\n`{tool.tool_name}`"
         if args_text:
             body += f"\n\n**Arguments**\n{args_text}"
-        message_id = await self.post(cards.card_v2([cards.markdown(body)]))
+        message_id = await self.post(
+            LarkInteractiveCard.model_validate(cards.card_v2([cards.markdown(body)]))
+        )
         slot = tool.tool_call_id or f"tool-{len(self.tool_cards)}"
         self.tool_cards[slot] = (message_id, title, args_text)
 
@@ -374,11 +384,13 @@ class LarkRunStateCards(TimelineState):
                 )
             ]
         )
-        payload = json.dumps(folded, ensure_ascii=False, separators=(",", ":"))
+        card = LarkInteractiveCard.model_validate(folded)
         if message_id is not None:
-            await self.ink.patch_card(message_id, payload)
+            await self.ink.patch_card(
+                message_id, card.model_dump_json(by_alias=True, exclude_unset=True)
+            )
         else:
-            await self.post(folded)
+            await self.post(card)
 
     async def answer_start(self) -> None:
         # Start creating the card while the drive loop continues receiving text.
@@ -442,7 +454,7 @@ class LarkRunStateCards(TimelineState):
                 )
             case CardSegment():
                 await self.fold_thinking()
-                await self.post(segment.data.payload)
+                await self.post(LarkRawCard(segment.data.payload))
             case _:
                 await self.answer_delta(str(segment))
 
@@ -457,11 +469,15 @@ class LarkRunStateCards(TimelineState):
         body = "**Tasks**\n" + "\n".join(render_todo_lines(self.todos.values()))
         card = cards.card_v2([cards.markdown(body)])
         if self.todo_card_id is None:
-            self.todo_card_id = await self.post(card)
+            self.todo_card_id = await self.post(
+                LarkInteractiveCard.model_validate(card)
+            )
         else:
             await self.ink.patch_card(
                 self.todo_card_id,
-                json.dumps(card, ensure_ascii=False, separators=(",", ":")),
+                LarkInteractiveCard.model_validate(card).model_dump_json(
+                    by_alias=True, exclude_unset=True
+                ),
             )
 
     async def ensure_answer_card(self) -> LarkStreamCard:
@@ -621,9 +637,9 @@ class LarkSubagentTimelineState(SubagentTimelineState):
         )
 
     async def start(self) -> None:
-        payload = json.dumps(
-            self.card(expanded=True), ensure_ascii=False, separators=(",", ":")
-        )
+        payload = LarkInteractiveCard.model_validate(
+            self.card(expanded=True)
+        ).model_dump_json(by_alias=True, exclude_unset=True)
         self.card_id = await self.ink.send_message(
             self.chat_id,
             self.chat_type,
@@ -645,11 +661,9 @@ class LarkSubagentTimelineState(SubagentTimelineState):
     async def render(self, *, expanded: bool) -> None:
         if self.card_id is None:
             raise RuntimeError("subagent card was not created")
-        payload = json.dumps(
-            self.card(expanded=expanded),
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
+        payload = LarkInteractiveCard.model_validate(
+            self.card(expanded=expanded)
+        ).model_dump_json(by_alias=True, exclude_unset=True)
         await self.ink.patch_card(self.card_id, payload)
 
     async def append_response(self, delta: str) -> None:

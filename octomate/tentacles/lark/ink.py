@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 from typing import Self
 
@@ -36,7 +35,7 @@ from lark_oapi.core.http import Transport
 from lark_oapi.core.http.transport import _build_header, _build_url
 from lark_oapi.core.json import JSON
 from lark_oapi.core.model import BaseRequest, Config, RawResponse, RequestOption
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
@@ -52,11 +51,13 @@ from octomate.tentacles.lark.schema import (
     LarkTextContent,
     LarkUserProfile,
 )
+from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 
 
 SDK_AEXECUTE = Transport.aexecute
+multipart_data_adapter = TypeAdapter(JsonObject)
 
 # Each entered ink's own pooled client, keyed by the `Config` its `lark.Client`
 # dispatches with — the one argument `Transport.aexecute` receives that
@@ -96,19 +97,20 @@ async def pooled_aexecute(
     # the SDK transport does before sending.
     _build_header(req, option, conf)
     body_json = JSON.marshal(req.body) if req.body is not None else None
-    json_, files, data = None, None, None
+    content, files, data = None, None, None
     if req.files:
         files = req.files
         if body_json is not None:
-            data = json.loads(body_json)
+            data = multipart_data_adapter.validate_json(body_json)
     elif body_json is not None:
-        json_ = json.loads(body_json)
+        content = body_json.encode()
+        req.headers.setdefault("Content-Type", "application/json")
     response = await client.request(
         str(req.http_method.name),
         url,
         headers=req.headers,
         params=tuple(req.queries),
-        json=json_,
+        content=content,
         data=data,
         files=files,
         timeout=conf.timeout,

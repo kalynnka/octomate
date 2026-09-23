@@ -16,6 +16,12 @@ import anyio
 import httpx
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from octomate_protocol.deepseek import (
+    ErrResult,
+    OkResult,
+    RpcError,
+    RpcResult,
+)
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -81,14 +87,10 @@ from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     CommandExecutionValue,
-    ErrResult,
     ModelCatalog,
-    OkResult,
     PermissionCatalog,
     QuestionRequestedFrame,
     RemoteCancellation,
-    RpcError,
-    RpcResult,
     SessionAssistantFrame,
     SessionCreateValue,
     SessionEventFrame,

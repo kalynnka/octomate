@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from base64 import b64encode
 from datetime import UTC, datetime, timedelta
-from typing import ClassVar, Literal, Protocol
+from typing import Annotated, ClassVar, Literal, Protocol
 from urllib.parse import quote_plus
 
 import httpx2
@@ -12,7 +12,16 @@ from mcp.client.auth.oauth2 import PKCEParameters, check_registration_usable
 from mcp.shared._httpx_utils import McpHttpClientFactory
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.shared.auth_utils import calculate_token_expiry
-from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, TypeAdapter
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    Discriminator,
+    Field,
+    JsonValue,
+    SecretStr,
+    Tag,
+    TypeAdapter,
+)
 
 from octomate.schemas.oauth import (
     AuthorizationRequest,
@@ -45,8 +54,16 @@ class TokenError(BaseModel):
     interval: int | None = Field(default=None, ge=1)
 
 
+def token_response_kind(value: OAuthToken | TokenError | JsonValue) -> str:
+    # Some OAuth servers return protocol errors with HTTP 200.
+    if isinstance(value, TokenError) or (isinstance(value, dict) and "error" in value):
+        return "error"
+    return "token"
+
+
 class OAuthTokenExchange:
     token_model: ClassVar[type[OAuthToken]] = OAuthToken
+    response_adapter: TypeAdapter[OAuthToken | TokenError]
     authorization_endpoint: HttpsUrl | None
     token_endpoint: HttpsUrl
     client: OAuthClientInformationFull
@@ -68,6 +85,13 @@ class OAuthTokenExchange:
         httpx_client_factory: McpHttpClientFactory,
         discovery_state: OAuthDiscoveryState | None = None,
     ) -> None:
+        self.response_adapter = TypeAdapter(
+            Annotated[
+                Annotated[self.token_model, Tag("token")]
+                | Annotated[TokenError, Tag("error")],
+                Discriminator(token_response_kind),
+            ]
+        )
         self.authorization_endpoint = authorization_endpoint
         self.token_endpoint = token_endpoint
         self.client = client
@@ -129,20 +153,24 @@ class OAuthTokenExchange:
                 client.build_request("POST", str(url), data=data, headers=headers),
             )
 
-    async def grant(self, response: httpx2.Response) -> OAuthGrant:
+    def parse_response(self, response: httpx2.Response) -> OAuthToken | TokenError:
         if response.status_code not in (200, 400, 401):
             response.raise_for_status()
-        # Some OAuth servers return protocol errors with HTTP 200.
-        if "error" in response.json():
-            error = TokenError.model_validate_json(response.content)
-            if error.error in self.invalid_credentials_errors:
+        return self.response_adapter.validate_json(response.content)
+
+    async def grant(
+        self, response: httpx2.Response, token: OAuthToken | TokenError | None = None
+    ) -> OAuthGrant:
+        if token is None:
+            token = self.parse_response(response)
+        if isinstance(token, TokenError):
+            if token.error in self.invalid_credentials_errors:
                 raise OAuthRefreshRejected(
                     "OAuth credentials were rejected; reconnect this provider"
                 )
             response.raise_for_status()
-            raise ValueError(f"OAuth token request failed: {error.error}")
+            raise ValueError(f"OAuth token request failed: {token.error}")
         response.raise_for_status()
-        token = self.token_model.model_validate_json(response.content)
         if token.expires_in is not None and token.expires_in < 0:
             raise ValueError("OAuth token lifetime cannot be negative")
         expires_at = calculate_token_expiry(token.expires_in)
@@ -320,15 +348,15 @@ class DeviceAuthorizationFlow:
                 "device_code": device_code.get_secret_value(),
             },
         )
-        if "error" in response.json():
-            error = TokenError.model_validate_json(response.content)
-            interval = max(context.interval_seconds or 5, error.interval or 5)
-            match error.error:
+        token = self.tokens.parse_response(response)
+        if isinstance(token, TokenError):
+            interval = max(context.interval_seconds or 5, token.interval or 5)
+            match token.error:
                 case "authorization_pending":
                     return OAuthPending(retry_after_seconds=interval)
                 case "slow_down":
                     return OAuthPending(retry_after_seconds=interval + 5)
-        return await self.tokens.grant(response)
+        return await self.tokens.grant(response, token)
 
     async def refresh(self, refresh_token: SecretStr) -> OAuthGrant:
         return await self.tokens.refresh(refresh_token)
