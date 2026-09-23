@@ -36,15 +36,31 @@ class NapcatOutboundMessage:
     segments: list[JsonObject]
 
 
-class ActionResponse(BaseModel):
+class ActionResponse[DataT](BaseModel):
     model_config = ConfigDict(extra="ignore", coerce_numbers_to_str=True)
 
     status: str = ""
     retcode: int = 0
-    data: JsonObject | None = None
+    data: DataT | None = None
     echo: str | None = None
     message: str | None = None
     wording: str | None = None
+
+
+class LoginInfo(BaseModel):
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
+    user_id: str = ""
+
+
+class ImageInfo(BaseModel):
+    url: str | None = None
+
+
+class SentMessage(BaseModel):
+    model_config = ConfigDict(coerce_numbers_to_str=True)
+
+    message_id: str | None = None
 
 
 class NapcatUserProfile(UserProfile):
@@ -205,7 +221,7 @@ def _inbound_discriminator(raw: JsonObject) -> str:
 
 InboundFrame = Annotated[
     Annotated[NapcatMessageEvent, Tag("message")]
-    | Annotated[ActionResponse, Tag("response")],
+    | Annotated[ActionResponse[JsonObject], Tag("response")],
     Discriminator(_inbound_discriminator),
 ]
 
