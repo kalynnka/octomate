@@ -94,12 +94,10 @@ blocks that declare an OAuth client. Stored bearer tokens also need encryption.
 An MCP using an authorization-code flow needs `callback_base_uri` as well.
 Keep the key with the database backup: stored grants cannot be decrypted without it.
 
-The current wizard's optional MCP preset writes a key without base64 padding,
-which the OAuth cipher rejects. In a new installation, before any credentials
-have been stored, replace that generated value with the padded output above.
-For an existing key, preserve its decoded bytes; do not generate a replacement
-to fix its formatting. The configuration check does not validate the cipher key;
-verify an actual connector authorisation after configuration.
+The wizard includes the base64 padding required by the OAuth cipher. If an older
+installation has an unpadded key, preserve its decoded bytes when correcting the
+format; do not generate a replacement for a key that already protects stored
+grants. Verify an actual connector authorisation after configuration.
 
 ## Everything else
 

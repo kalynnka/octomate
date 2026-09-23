@@ -5,8 +5,10 @@ use. It covers the server, your account, and the hooks and MCP entry on your cli
 
 !!! info "Deployment support"
     **macOS is the only deployment flow tested end to end.** To do the setup
-    yourself, follow [Install on macOS](macos.md). [Manual setup](server.md)
-    explains the configuration and foreground server setup for other hosts.
+    yourself, follow [macOS](macos.md), [Linux](linux.md), [Docker](docker.md) or
+    [Manual setup](server.md). **Windows users should use
+    [Docker Compose](docker.md#windows).** Sorry, we don't have a native Windows
+    deployment option yet.
 
 ## Agent TL;DR
 
@@ -28,7 +30,8 @@ Establish the choices you cannot infer from this machine:
 Start with my chosen agent and Trunkline, the web console. Add external chat
 channels and MCP connectors after the first working session, if I want them.
 
-Install the standalone operator CLI with `uv tool install octomate-cli`.
+On macOS or Linux, install the standalone operator CLI with
+`uv tool install octomate-cli`. Windows server setup uses Docker Compose directly.
 
 macOS (the tested deployment flow):
 - Work as the desktop user who owns the harness login, without sudo.
@@ -40,13 +43,34 @@ macOS (the tested deployment flow):
   then review and install the generated GUI LaunchAgent.
 - Explain that the service needs a logged-in desktop account after reboot.
 
-Other hosts (not tested end to end):
-- Follow Manual setup. The interactive wizard rejects non-macOS hosts.
-- Reuse its configuration generator from the installed checkout as the
-  manual guide describes; it writes files without starting a service.
-- Review the settings one by one using the packaged YAML templates.
-- Verify the foreground server before arranging service supervision.
-- Record any platform-specific steps that remain unverified.
+Linux (verify live operation on this host):
+- Use `octomate service init --prepare --target systemd`.
+- Follow CONFIGURATION.md and the Linux guide. Build Trunkline and verify
+  the foreground server before installing control/octomate.service.
+- Use systemctl --user for service management; explain lingering if I
+  need it to start at boot and run after logout.
+
+Docker on macOS or Linux (verify live operation on this host):
+- Use `octomate service init --prepare --target docker`.
+- Follow state/CONFIGURATION.md and the Docker guide. Compose runs separate
+  server and Trunkline containers; only Trunkline publishes a host port.
+  Leave server static_dir unset. Preserve state/ and agent-home/ on the host.
+- Let me authenticate agents inside the container. Do not copy my host
+  credentials automatically or assume a host Keychain is available.
+- Validate, initialise the new database, then start with Docker Compose.
+
+Windows:
+- Recommend Docker Desktop in Linux-container mode and follow the Docker
+  guide's PowerShell setup. Native Windows deployment is not available yet.
+- Do not invoke the host setup wizard: it currently rejects Windows.
+- Build both images with Docker Compose and run the configuration generator
+  inside the server container, then follow the shared Docker setup steps.
+- Preserve state/ and agent-home/ in the checkout. The Windows flow has
+  not been tested end to end; report the actual checks completed.
+
+For foreground operation on macOS/Linux, use --target manual and Manual setup.
+On macOS/Linux, before a release contains these changes, run the checkout's CLI
+and pass --source with that checkout path, using a separate installation directory.
 
 Keep OCTOMATE_HOME and OCTOMATE_DB_URL explicit. Inspect the resolved paths.
 Preserve existing config, databases, auth salts and OAuth keys. Ask before
@@ -54,7 +78,8 @@ replacing an installation or migrating an existing database.
 Provide secrets in YAML or the service environment; .env is optional.
 Keep secret values out of chat, logs and the final report.
 If using .env, remove matching YAML placeholders: YAML takes precedence.
-Keep loopback binding and the normal approval modes for the first run.
+Keep the host port on loopback and the normal approval modes for the first run.
+In Docker, the server binds 0.0.0.0 internally; only the host port is loopback.
 Do not expose the server to the public internet. Its built-in login is
 intended to accompany private network access.
 Use the service user's harness login; let me complete login and consent.
@@ -95,6 +120,7 @@ Start with [Requirements](requirements.md), then [macOS](macos.md). That walkthr
 uses the same CLI preparation and takes you through configuration, the first run,
 account creation and service activation.
 
-For another host, use [Manual setup](server.md). For access from other devices,
+For another deployment, follow [Linux](linux.md), [Docker](docker.md) or
+[Manual setup](server.md). For access from other devices,
 see [Tailscale](networking.md#tailscale). If the server already exists, go straight to the
 [client quick start](clients/quickstart.md).

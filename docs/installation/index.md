@@ -32,22 +32,14 @@ that opens the quick start is both halves, written for an assistant to carry out
 
 ## Choose a server path
 
-Read the [requirements](requirements.md), then choose:
-
-- **[macOS](macos.md):** prepare with the CLI wizard and run under your desktop
-  account as a GUI LaunchAgent.
-- **[Manual setup](server.md):** prepare a source checkout, configure it with the
-  generator or YAML templates, and run the server in the foreground.
-
-!!! info "Deployment support"
-    **macOS is the only deployment flow tested end to end.** Manual setup
-    describes the shared installation steps; supervision on other hosts is up to
-    you. The interactive wizard and managed service commands require macOS.
+Read the [requirements](requirements.md), then explore the
+[deployments](deployment.md) for macOS, Linux, Docker and manual setup.
+For Windows, we recommend [Docker Compose](docker.md#windows).
 
 ## Follow the setup in order
 
-1. Prepare the server with [Quickstart](quickstart.md), [macOS](macos.md) or
-   [Manual setup](server.md).
+1. Give your agent the [Quickstart](quickstart.md) brief, or choose a
+   [deployment guide](deployment.md) to prepare the server yourself.
 2. Review the [config home](configuration.md), [server settings](settings.md) and
    [tentacle registry](tentacles.md), in that order.
 3. [Create your account and issue a client token](accounts.md).

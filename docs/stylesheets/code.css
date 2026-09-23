@@ -6,6 +6,11 @@
   font-size: 0.75rem;
 }
 
+.md-typeset table:not([class]) :is(th, td) code {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
 .md-typeset .config-home-table table:not([class]) {
   display: table;
   width: 100%;

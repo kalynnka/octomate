@@ -45,15 +45,17 @@ nav:
       - Server:
           - Quickstart: installation/quickstart.md
           - Requirements: installation/requirements.md
+      - Deployments:
+          - Overview: installation/deployment.md
           - macOS: installation/macos.md
           - Linux: installation/linux.md
           - Docker: installation/docker.md
           - Manual setup: installation/server.md
       - Configuration:
-          - The config home: installation/configuration.md
-          - Server settings: installation/settings.md
-          - The tentacle registry: installation/tentacles.md
-          - Register projects: installation/projects.md
+          - Paths: installation/configuration.md
+          - Server: installation/settings.md
+          - Tentacles: installation/tentacles.md
+          - Projects: installation/projects.md
       - Accounts and tokens: installation/accounts.md
       - Client:
           - installation/clients/index.md

@@ -6,8 +6,9 @@ then review each setting. The commands below assume a Unix shell.
 
 !!! info "Deployment support"
     **macOS is the only deployment flow tested end to end.** Its
-    [walkthrough](macos.md) also prepares a LaunchAgent. On other hosts, verify
-    the foreground setup before arranging service supervision.
+    [walkthrough](macos.md) also prepares a LaunchAgent. The shared wizard can
+    prepare a [Linux user service](linux.md) or [Docker installation](docker.md).
+    This page covers foreground operation and configuration by hand.
 
 ## Keep the installation separate
 
@@ -79,13 +80,13 @@ database variable is `OCTOMATE_DB_URL`, with one underscore before `DB`.
 
 ### Use the configuration generator
 
-The interactive `octomate service init --prepare` command checks for macOS before
-doing any work. Its configuration generator is a separate Python entry point that
-can run in the installed server environment:
+The interactive wizard supports macOS and Linux, with `--target manual` for
+foreground operation. If you already created the checkout above, invoke the same
+configuration generator directly from the installed server environment:
 
 ```sh
 "$OCTOMATE_INSTALL_ROOT/app/.venv/bin/python" -m octomate_cli.deployment prepare \
-  --port 8000 --agent claude --channel trunkline
+  --target manual --port 8000 --agent claude --channel trunkline
 ```
 
 Use `--agent codex` instead if that is your harness; repeat `--agent` for several.
@@ -101,8 +102,7 @@ a service. It refuses an existing `.env`, checklist or nonempty config directory
 
 The generator chooses `.env` for salts, but Octomate also accepts them in YAML or
 the service environment. Preserve their values if you move them. The generated
-checklist contains macOS LaunchAgent instructions; for a manual installation,
-continue with the steps below.
+checklist follows the selected deployment target. Continue with the steps below.
 
 ### Or start from the templates
 

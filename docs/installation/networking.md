@@ -1,8 +1,8 @@
 # Networking
 
 Start on `127.0.0.1:8000`. Once the server, your account and the client work
-locally, decide how other devices reach it. The CLI provisions no domain, no TLS, no
-tunnel and no reverse proxy.
+locally, decide how other devices reach it. The CLI provisions no domain, TLS or
+tunnel. Docker includes an internal reverse proxy in the Trunkline container.
 
 !!! warning "Keep Octomate off the public internet"
     Octomate includes a simple user login and API tokens, but public internet
@@ -46,7 +46,9 @@ tailscale serve --bg http://127.0.0.1:8000
 
 Follow Tailscale's prompt to enable HTTPS if needed. Use the HTTPS URL it prints
 for Trunkline and `octomate configure`, set `auth.cookie_secure: true`, and restart
-Octomate. Keep Octomate bound to `127.0.0.1`; Serve forwards requests to it. Use the
+Octomate. Keep a native server bound to `127.0.0.1`. For Docker, keep the published
+Trunkline port on host loopback and the server on `0.0.0.0` inside its container.
+Serve forwards requests to that host port. Use the
 same origin for OAuth callbacks when required. Tailscale Serve is private to your
 tailnet; Tailscale Funnel exposes a service publicly and is unsuitable for this
 setup. See the [Serve command reference](https://tailscale.com/docs/reference/tailscale-cli/serve)

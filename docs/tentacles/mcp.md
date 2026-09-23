@@ -7,7 +7,7 @@ Choose the type that matches the service's authentication.
 ## Built-in presets
 
 The CLI currently ships **GitHub** as its only provider preset. The same preset
-is available in the interactive macOS setup wizard. It has two endpoint options:
+is available in the interactive setup wizard. It has two endpoint options:
 
 | Preset | CLI option | Endpoint | Tools offered |
 |---|---|---|---|
@@ -79,7 +79,7 @@ Configure `oauth.callback_base_uri` and `oauth.encryption_key` as described in
 [Server settings](../installation/settings.md#profile-linking-and-mcp-authorisation).
 Both are needed for the preset's browser flow; the encryption key also protects
 device-flow credentials. Keep an existing encryption key unchanged. The settings
-guide also covers the current setup wizard's generated-key padding issue.
+guide also covers key format and preservation when upgrading older installations.
 
 ??? details "Equivalent YAML for the standard GitHub preset"
 

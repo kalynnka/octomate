@@ -128,7 +128,8 @@ Channel support and restart behaviour vary by agent; see
 !!! info "Deployment support"
     **macOS is the only deployment flow tested end to end.** Start with
     [Quickstart](installation/quickstart.md), or follow
-    [Manual setup](installation/server.md) for another host. These docs follow the
+    [Linux](installation/linux.md), [Docker](installation/docker.md) or
+    [Manual setup](installation/server.md) for another deployment. These docs follow the
     repository; check your installed version with `octomate --version`.
 
 <div class="grid cards" markdown>

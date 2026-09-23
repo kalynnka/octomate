@@ -24,7 +24,7 @@ substance sits in the sections beneath it, which are what the sidebar shows:
 
 | Tab | Sections |
 |---|---|
-| Installation | Server · Configuration · Client · Operations |
+| Installation | Server · Deployments · Configuration · Client · Operations |
 | Tentacles | Agents · Channels · MCP connectors |
 | Usage | Sessions and permissions · Conversations · Projects and workspaces · MCP |
 | Concepts | Design · Storage |
