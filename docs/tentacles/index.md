@@ -39,7 +39,9 @@ and approvals. [Compare channel capabilities](../usage/channels/index.md#what-ea
 | `oauth` | An MCP server using an OAuth app you register | Supply the app credentials, scopes and supported flows |
 | Slack with `mcp: true` | Slack tools acting as the linked person | Enable the channel's MCP option and user OAuth |
 
-[Enable MCP connectors](mcp.md) covers these types and the GitHub CLI preset.
+[Enable MCP connectors](mcp.md) covers these types, the
+[built-in GitHub preset](mcp.md#built-in-presets), and connecting through Trunkline
+or a conversation.
 Each person installs and authorises the connectors they want to use.
 
 ## Enable a tentacle

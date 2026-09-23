@@ -1,10 +1,10 @@
-# `octomate_protocol`
+# Protocol
 
 The contract the server and the client share. It depends on Pydantic alone, and
 both distributions install it.
 
-::: octomate_protocol.config
+## Reference pages
 
-::: octomate_protocol.stream
-
-::: octomate_protocol.deployment
+- [Configuration](protocol/config.md)
+- [Transcript streaming](protocol/stream.md)
+- [Deployment](protocol/deployment.md)

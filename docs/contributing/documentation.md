@@ -29,7 +29,7 @@ substance sits in the sections beneath it, which are what the sidebar shows:
 | Usage | Sessions and permissions · Conversations · Projects and workspaces · MCP |
 | Concepts | Design · Storage |
 | Contributing | Development · Extending Octomate · Project workflow |
-| API Reference | Server · Client and protocol |
+| API Reference | Configuration · Tentacle interfaces · Reflex graph · Managers · Schemas · Capabilities · MCP and OAuth · CLI · Protocol |
 
 The Tentacles tab owns the integration catalog and enablement guides. Existing
 agent and channel pages retain their paths under `usage/agents/` and
@@ -96,14 +96,24 @@ on the site. Link to source outside `docs/` with a full GitHub URL.
 
 ## The API reference
 
-One page per package area under `docs/api/`, each a short introduction followed by
-`:::` directives, one per module, in the order a reader meets them:
+Each package area has a section in the left sidebar and an overview under
+`docs/api/`. Focused pages beneath it group related modules: configuration for
+agents, conversation managers, CLI commands, and so on. Move a new topic into
+its own page rather than expanding a package overview into a long symbol list.
+Keep each module's `:::` directive on exactly one page.
+
+Keep the right-hand TOC available for navigating the current page's modules,
+classes and methods. The left sidebar selects the topic; the TOC locates a symbol
+within it. Generated symbols retain their signatures, source and linkable anchors:
 
 ```markdown
-## Threads
+# Threads and conversations
 
 ::: octomate.managers.thread
 ```
+
+Add every page to its sidebar section in `mkdocs.yml`. When moving a module,
+update any explicit links to its old page and anchor.
 
 mkdocstrings reads the source statically, so the build needs no server
 dependencies and cannot import the application. A Pydantic model renders its

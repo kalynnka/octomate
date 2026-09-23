@@ -122,17 +122,57 @@ nav:
           - Plans and issues: contributing/planning.md
   - API Reference:
       - api/index.md
-      - Server:
-          - octomate.config: api/config.md
-          - octomate.tentacles: api/tentacles.md
-          - octomate.reflex: api/reflex.md
-          - octomate.managers: api/managers.md
-          - octomate.schemas: api/schemas.md
-          - octomate.capabilities: api/capabilities.md
-          - octomate.mcp: api/mcp.md
-      - Client and protocol:
-          - octomate_cli: api/cli.md
-          - octomate_protocol: api/protocol.md
+      - Configuration:
+          - api/config.md
+          - The deployment: api/config/deployment.md
+          - Agents: api/config/agents.md
+          - Channels: api/config/channels.md
+          - MCP connectors: api/config/mcp.md
+          - Accounts and OAuth: api/config/auth.md
+          - Projects and workspaces: api/config/projects.md
+          - Providers and models: api/config/providers.md
+          - Observability: api/config/observability.md
+      - Tentacle interfaces:
+          - api/tentacles.md
+          - Base: api/tentacles/base.md
+          - Native session hooks: api/tentacles/hooks.md
+          - Feelers: api/tentacles/feelers.md
+      - Reflex graph:
+          - api/reflex.md
+          - Graph, state and dependencies: api/reflex/graph.md
+          - Nodes: api/reflex/nodes.md
+      - Managers:
+          - api/managers.md
+          - Base manager: api/managers/base.md
+          - Threads and conversations: api/managers/conversations.md
+          - Users and accounts: api/managers/users.md
+          - Projects and workspaces: api/managers/workspaces.md
+          - MCP and OAuth: api/managers/mcp.md
+      - Schemas:
+          - api/schemas.md
+          - Conversations: api/schemas/conversations.md
+          - The graph’s vocabulary: api/schemas/graph.md
+          - People: api/schemas/users.md
+          - Projects, MCP and the rest: api/schemas/resources.md
+      - Capabilities:
+          - api/capabilities.md
+          - Tools: api/capabilities/tools.md
+          - Harness: api/capabilities/harness.md
+      - MCP and OAuth:
+          - api/mcp.md
+          - The served server: api/mcp/server.md
+          - OAuth: api/mcp/oauth.md
+      - CLI:
+          - api/cli.md
+          - Commands: api/cli/commands.md
+          - Native integrations: api/cli/integrations.md
+          - Hook entry points and streaming: api/cli/streaming.md
+          - Maintenance: api/cli/maintenance.md
+      - Protocol:
+          - api/protocol.md
+          - Configuration: api/protocol/config.md
+          - Transcript streaming: api/protocol/stream.md
+          - Deployment: api/protocol/deployment.md
 
 validation:
   nav:

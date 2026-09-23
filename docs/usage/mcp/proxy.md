@@ -23,6 +23,9 @@ If the service requires setup by the server operator, send them the
 [Tentacles connector guide](../../tentacles/mcp.md). A connector being listed as
 available does not mean it is already connected to your account.
 
+For GitHub, follow the [Trunkline or conversation walkthrough](../../tentacles/mcp.md#connect-it-to-your-account)
+to install the configured preset and connect your account.
+
 ## Sign in and grant access { #authorising }
 
 Follow the authorisation prompt in Trunkline or the private link sent through your

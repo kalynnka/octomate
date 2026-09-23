@@ -1,14 +1,17 @@
 # API reference
 
-Generated from the source by [mkdocstrings](https://mkdocstrings.github.io/), one
-page per package area. The guide says how to use a feature; these pages say
-exactly what a symbol is. The build reads the code statically: no server is
-imported, no database opened.
+Generated from the source by [mkdocstrings](https://mkdocstrings.github.io/).
+Choose a section in the left sidebar, then a topic such as agent settings,
+conversation managers or CLI commands. Each topic has its own reference page.
+Use the page's table of contents to jump to its modules, classes and methods.
+
+The guide says how to use a feature; the reference gives its Python contract.
+The build reads the code statically: no server is imported, no database opened.
 
 The running server also serves its HTTP schema at `/docs`, which reflects the
 tentacles that deployment mounted.
 
-| Page | Contents |
+| Section | Contents |
 |---|---|
 | [`octomate.config`](config.md) | Every setting: the deployment, the tentacle registry, agents, channels, MCP, auth, OAuth, projects, providers, observability |
 | [`octomate.tentacles`](tentacles.md) | The tentacle base classes, the channel split into chromo, ink and feelers, and the hook guard |
