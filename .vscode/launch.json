@@ -12,8 +12,6 @@
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "preLaunchTask": "Octomate: debug attachment on",
-      "postDebugTask": "Octomate: debug attachment off",
       "console": "integratedTerminal",
       "justMyCode": false
     },
@@ -29,8 +27,6 @@
       ],
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
-      "preLaunchTask": "Octomate: debug attachment on",
-      "postDebugTask": "Octomate: debug attachment off",
       "console": "integratedTerminal",
       "justMyCode": false
     },
