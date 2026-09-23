@@ -77,3 +77,20 @@
 1. Web APIs are FastAPI routers owned by the single project-level Octomate instance; do not force web routes into the channel tentacle lifecycle.
 2. Channel tentacles are for long-lived IM platform connections and translation only. They call Octomate directly for dispatch; do not reintroduce nerve or dispatcher-style object streams between channels and agents.
 3. Use the concrete tentacle base class hierarchy for Octomate-managed agents and channels. Do not introduce extra Protocol wrappers for Octomate, tentacle, or channel lifecycle contracts.
+
+## Documentation
+
+1. The manual lives in `docs/` and is published by `.github/workflows/docs.yml`; its
+   structure and the rules for changing it are in `docs/contributing/documentation.md`.
+   Read that page before touching `docs/` or `mkdocs.yml`.
+2. A behaviour change ships with its page. The table on that page says which page a
+   kind of change lands on: a tentacle's behaviour on its usage page, a gateway spell
+   on `usage/gateway.md`, the graph on `concepts/reflex.md`, an extension point on
+   its Contributing page. A config field or CLI option needs no prose unless it
+   changes what a reader does; the API reference renders its description.
+3. Every sentence about behaviour is checked against the code before it is written.
+   Where an older note and the code disagree, the code wins and the note is fixed.
+4. A new page goes into `nav:` in `mkdocs.yml`, and `uv run --no-sync mkdocs build
+   --strict` must pass. Nothing is excluded from the site.
+5. The README is the pitch and the map. Steps and settings live on a docs page and
+   the README links to it, so the two cannot drift.
