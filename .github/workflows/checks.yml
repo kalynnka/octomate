@@ -86,12 +86,6 @@ jobs:
       - name: Run unit tests
         run: uv run --no-sync pytest -q -n 2 --dist worksteal --durations=25
 
-  trunkline:
-    if: inputs.ref != '' || github.event_name == 'workflow_dispatch'
-    uses: ./.github/workflows/trunkline.yml
-    with:
-      ref: ${{ inputs.ref || github.sha }}
-
   packages:
     name: Packages (Python ${{ matrix.python }})
     needs: [lint, test]

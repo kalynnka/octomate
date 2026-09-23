@@ -13,8 +13,10 @@ checks' cache.
 
 Trunkline has a separate workflow for changes under `trunkline/` or its workflow
 file. Docs build on every pull request targeting `main` and every push to `main`.
-Manually running Checks, or calling it for a release, runs both Python and
-Trunkline validation regardless of the changed paths.
+Manual runs of Checks and Trunkline validate their respective parts regardless
+of the changed paths. The release workflow calls both at the release commit
+and requires both to pass before publishing. PRs have no release-only Trunkline
+job or documentation deployment job.
 
 ```sh
 uv run pytest                                  # everything except live replays

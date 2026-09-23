@@ -1,7 +1,7 @@
 # Documentation
 
 The site is MkDocs Material for the guide and mkdocstrings for the API reference,
-built from `docs/` and published from `main` by the `docs.yml` workflow. This page
+built from `docs/` and published from `main` by the `pages.yml` workflow. This page
 is the contract for anyone, person or agent, who changes it.
 
 ## The shape
@@ -149,9 +149,11 @@ including changes to Python source. This keeps generated API documentation,
 signatures and embedded source current without a separate change detector or
 custom templates. Manual workflow runs can rebuild the site too.
 
-`.github/workflows/docs.yml` builds strictly and, on a push to `main`, uploads the
-site and deploys it through GitHub's Pages API, the same
-shape as Arcanus's workflow. No `gh-pages` branch, no deploy token. Publication
+`.github/workflows/docs.yml` owns the strict build and runs directly for PRs.
+`.github/workflows/pages.yml` calls that build on each push to `main`, uploads the
+site and deploys it through GitHub's Pages API. Deployment jobs never appear in
+PR checks. Run Docs manually to check a build, or Pages on `main` to publish it.
+No `gh-pages` branch, no deploy token. Publication
 needs **Settings → Pages → Source: GitHub Actions** set once by an administrator.
 The site is `https://kalynnka.github.io/octomate/`.
 

@@ -80,7 +80,7 @@
 
 ## Documentation
 
-1. The manual lives in `docs/` and is published by `.github/workflows/docs.yml`; its
+1. The manual lives in `docs/` and is published by `.github/workflows/pages.yml`; its
    structure and the rules for changing it are in `docs/contributing/documentation.md`.
    Read that page before touching `docs/` or `mkdocs.yml`.
 2. A behaviour change ships with its page. The table on that page says which page a
