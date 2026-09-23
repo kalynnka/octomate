@@ -1,3 +1,5 @@
+"""Typed lines of a Codex rollout file, and the runtime's own tree."""
+
 from __future__ import annotations
 
 import os
@@ -16,6 +18,8 @@ CODEX_HOME_DIRS: tuple[Path, ...] = (
 
 
 class RolloutLine(BaseModel):
+    """One line of a Codex rollout: its timestamp, record type, and raw payload."""
+
     model_config = ConfigDict(extra="ignore")
 
     timestamp: AwareDatetime
@@ -35,6 +39,8 @@ rollout_line_adapter = TypeAdapter(RolloutLine)
 
 
 class ThreadSpawnMetadata(BaseModel):
+    """A child rollout's `thread_spawn` metadata, naming the parent thread."""
+
     model_config = ConfigDict(extra="ignore")
 
     parent_thread_id: str
@@ -43,18 +49,24 @@ class ThreadSpawnMetadata(BaseModel):
 
 
 class SubagentSource(BaseModel):
+    """The `subagent` block of a session's `source`, present on a spawned child."""
+
     model_config = ConfigDict(extra="ignore")
 
     thread_spawn: ThreadSpawnMetadata | None = None
 
 
 class SessionSource(BaseModel):
+    """A structured `session_meta` `source`, carrying a spawned child's lineage."""
+
     model_config = ConfigDict(extra="ignore")
 
     subagent: SubagentSource | None = None
 
 
 class SessionMetadata(BaseModel):
+    """The payload of a rollout's opening `session_meta` line."""
+
     model_config = ConfigDict(extra="ignore")
 
     session_id: str

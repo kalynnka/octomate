@@ -1,3 +1,6 @@
+"""Local account transmuters — invitations, sessions, profile-link tickets, API
+keys — and the token payloads sign-in returns."""
+
 from __future__ import annotations
 
 import uuid
@@ -24,6 +27,8 @@ from octomate.types.auth import ApiKeyScope
 
 @sqlalchemy_materia.bless(auth_models.UserInvitation)
 class UserInvitation(BaseTransmuter):
+    """A single-use registration invitation, stored by token hash."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -35,6 +40,9 @@ class UserInvitation(BaseTransmuter):
 
 @sqlalchemy_materia.bless(auth_models.UserSession)
 class UserSession(BaseTransmuter):
+    """A signed-in session: hashed access and refresh tokens with their
+    deadlines."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -52,6 +60,8 @@ class UserSession(BaseTransmuter):
 
 @sqlalchemy_materia.bless(auth_models.LinkProfileSession)
 class LinkProfileSession(BaseTransmuter):
+    """One channel profile's pending link ticket, stored by token hash."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -67,6 +77,8 @@ class LinkProfileSession(BaseTransmuter):
 
 @sqlalchemy_materia.bless(auth_models.UserApiKey)
 class UserApiKey(BaseTransmuter):
+    """A personal API key: its hash, public prefix, scopes and lifetime."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -106,5 +118,7 @@ class LinkProfileAuthorization(LinkProfileInfo):
 
 
 class IssuedApiKey(BaseModel):
+    """A freshly issued key with its one-time plaintext token."""
+
     key: UserApiKey
     token: SecretStr = Field(repr=False)

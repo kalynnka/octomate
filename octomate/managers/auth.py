@@ -1,3 +1,5 @@
+"""Invite-only registration, local passwords, sessions and personal API keys."""
+
 from __future__ import annotations
 
 import hashlib
@@ -28,11 +30,16 @@ from octomate.types.auth import ApiKeyScope, NewPasswordAdapter
 
 
 class InvalidCredentials(ValueError):
+    """A sign-in, refresh or password change whose credentials are wrong or
+    expired."""
+
     def __init__(self) -> None:
         super().__init__("Invalid or expired credentials")
 
 
 class UsernameUnavailable(ValueError):
+    """A registration whose username is already taken."""
+
     def __init__(self) -> None:
         super().__init__("This username is already taken")
 

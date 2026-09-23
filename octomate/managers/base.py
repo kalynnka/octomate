@@ -1,3 +1,5 @@
+"""What every manager is built on: the base class and the keyed-lock mixin."""
+
 import asyncio
 from collections.abc import Hashable
 from functools import cached_property

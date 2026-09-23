@@ -1,3 +1,10 @@
+"""The Codex app-server notification stream as pydantic-ai parts and events.
+
+`CodexRunAccumulator` folds each notification into stream events for the channel
+feelers and persisted `ModelMessage`s, keeping the raw notifications as replay
+metadata.
+"""
+
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
@@ -98,6 +105,8 @@ TOOL_ITEM_TYPES: tuple[type[BaseModel], ...] = (
 
 @dataclass
 class StreamingPartState:
+    """A text or thinking part in flight, with the notifications folded into it."""
+
     index: int
     part: TextPart | ThinkingPart
     events: list[JsonValue] = field(default_factory=list)
@@ -105,6 +114,12 @@ class StreamingPartState:
 
 @dataclass
 class NativeToolState:
+    """A Codex tool item in flight.
+
+    Its live and native call parts, and the output and notifications gathered
+    before the item completes.
+    """
+
     live_call: ToolCallPart
     native_call: NativeToolCallPart
     output: str = ""

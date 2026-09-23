@@ -63,17 +63,27 @@ from octomate.types.permissions import AgentPermissionMode, PermissionMode
 
 
 class RouteInfo(BaseModel):
+    """One route a directive may name, as `GET /routes` lists it."""
+
     id: str = Field(description="The route id a directive's `model` field names.")
     agent: str
     model: AgentRouteModelName | None
 
 
 class ChannelInfo(BaseModel):
+    """One connected channel tentacle, as `GET /channels` lists it."""
+
     id: str = Field(description="The connected channel tentacle's id.")
     kind: str = Field(description="The tentacle class name — SlackTentacle, …")
 
 
 class DirectiveBody(BaseModel):
+    """The body of a directive sent to a thread.
+
+    The text, and the route, project, and posture a thread's first directive may
+    pick.
+    """
+
     text: str
     message_id: str | None = None
     model: str | None = Field(
@@ -100,6 +110,8 @@ class DirectiveBody(BaseModel):
 
 
 class AgentPostures(BaseModel):
+    """An agent's approval modes and default, as `GET /permissions` lists them."""
+
     modes: tuple[PermissionMode, ...] = Field(
         description="This agent's whole vocabulary, in the order a picker steps "
         "through it."
@@ -112,6 +124,8 @@ class AgentPostures(BaseModel):
 
 
 class PermissionModeBody(BaseModel):
+    """The body of a PATCH switching a conversation's approval posture."""
+
     permission_mode: AgentPermissionMode | None = Field(
         default=None,
         description="A posture from GET /permissions, in this conversation's "
@@ -121,6 +135,12 @@ class PermissionModeBody(BaseModel):
 
 
 class BatchResponseBody(BaseModel):
+    """The body resolving a deferred-action batch.
+
+    Answers and approvals keyed by action id, and whether an approved tool stays
+    allowed for the rest of the session.
+    """
+
     answers: dict[uuid.UUID, str] = Field(default_factory=dict)
     approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
     allow_session: bool = False

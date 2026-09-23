@@ -1,3 +1,5 @@
+"""Slack translation: message events to `MessageEvent`, markdown to Slack messages."""
+
 from __future__ import annotations
 
 import json
@@ -30,6 +32,9 @@ AT_RE = re.compile(r"<@(U[A-Z0-9]+)>")
 
 
 class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
+    """Slack translation: `<@U…>` mentions mapped both ways, thread replies keyed
+    on `thread_ts`, and an assistant pane read as a private thread."""
+
     async def sip(self, raw: SlackMessageEvent) -> MessageEvent | None:
         try:
             channel_type = raw.get("channel_type", "")

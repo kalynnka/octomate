@@ -1,3 +1,5 @@
+"""Registered users and the channel profiles they own."""
+
 from __future__ import annotations
 
 import uuid
@@ -103,6 +105,8 @@ UserProfile.model_rebuild()
 
 
 class ProfileInfo(BaseModel):
+    """An account with its channel profiles and MCP installations."""
+
     user: User
     profiles: list[UserProfile] = Field(
         description="Every channel identity bound to this account."

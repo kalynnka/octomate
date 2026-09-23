@@ -1,3 +1,5 @@
+"""The declarative base and the column types every model shares."""
+
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
@@ -9,7 +11,8 @@ from sqlalchemy.orm import DeclarativeBase
 from sqlalchemy.types import TypeDecorator
 
 
-class Base(DeclarativeBase): ...
+class Base(DeclarativeBase):
+    """The declarative base every table extends."""
 
 
 type MapperArgs = Mapping[str, Any]

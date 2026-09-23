@@ -1,3 +1,6 @@
+"""OAuth machinery: the cipher, flow payloads, callback transports, and the
+persisted operation and connection."""
+
 from __future__ import annotations
 
 import uuid
@@ -334,6 +337,9 @@ class AuthorizationCodeOperationPayload(BaseModel):
 
 @sqlalchemy_materia.bless(oauth_models.OAuthOperation)
 class OAuthOperation(BaseTransmuter):
+    """An authorization in flight: the encrypted flow state, its expiry, and the
+    poll interval of a device flow."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
@@ -353,6 +359,9 @@ class OAuthOperation(BaseTransmuter):
 
 @sqlalchemy_materia.bless(oauth_models.OAuthConnection)
 class OAuthConnection(BaseTransmuter):
+    """A stored grant: the encrypted tokens, their scopes and expiry, and the
+    account they belong to."""
+
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)

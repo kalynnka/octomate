@@ -1,3 +1,5 @@
+"""The tool output spills table."""
+
 from __future__ import annotations
 
 import uuid

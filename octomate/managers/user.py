@@ -1,3 +1,6 @@
+"""The cross-channel user registry: users, the channel profiles they own, and
+profile linking."""
+
 from __future__ import annotations
 
 import hashlib
@@ -21,20 +24,27 @@ PROFILE_FIELDS = {"name", "nickname", "gender", "age", "title"}
 
 
 class LinkProfileUnavailable(RuntimeError):
-    pass
+    """Profile linking cannot start: local auth or the callback origin is not
+    configured."""
 
 
 class InvalidLinkProfile(ValueError):
+    """A profile-link ticket that is invalid, expired or already used."""
+
     def __init__(self) -> None:
         super().__init__("This profile link is invalid, expired, or already used")
 
 
 class ProfileAlreadyLinked(ValueError):
+    """The channel profile is already linked to an account."""
+
     def __init__(self) -> None:
         super().__init__("This channel profile is already linked")
 
 
 class ProfileNotLinked(ValueError):
+    """The profile is not linked to the requesting account."""
+
     def __init__(self) -> None:
         super().__init__("This profile is not linked to your account")
 

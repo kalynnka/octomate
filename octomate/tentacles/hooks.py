@@ -1,3 +1,6 @@
+"""FastAPI dependencies that authenticate a runtime's hook request and resolve its
+sender."""
+
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable

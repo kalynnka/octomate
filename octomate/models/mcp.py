@@ -1,3 +1,5 @@
+"""The MCP installations table, polymorphic on how each authenticates."""
+
 from __future__ import annotations
 
 import uuid
@@ -13,6 +15,8 @@ from octomate.models.base import Base, MapperArgs, UTCDateTime
 
 
 class Mcp(Base, TransmuterProxiedMixin):
+    """A user's MCP installation; the polymorphic base keyed on `auth_kind`."""
+
     __tablename__ = "mcp"
     __table_args__ = (
         UniqueConstraint("user_id", "namespace", name="uq_mcp_owner_namespace"),
@@ -61,10 +65,14 @@ class Mcp(Base, TransmuterProxiedMixin):
 
 
 class NoAuthMcp(Mcp):
+    """An installation sending no credentials."""
+
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "none"}
 
 
 class BearerMcp(Mcp):
+    """An installation holding an encrypted bearer token."""
+
     __mapper_args__: ClassVar[MapperArgs] = {
         "polymorphic_identity": "bearer",
     }
@@ -77,4 +85,6 @@ class BearerMcp(Mcp):
 
 
 class OAuthMcp(Mcp):
+    """An installation authenticating with the user's OAuth grant."""
+
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "oauth"}

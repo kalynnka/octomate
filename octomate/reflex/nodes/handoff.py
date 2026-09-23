@@ -1,3 +1,6 @@
+"""The node that performs a summon: lands the conversation where the decision
+said, then re-enters `React` there."""
+
 from __future__ import annotations
 
 import logging
@@ -23,6 +26,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
+    """Performs a summon: opens the sub-thread or crossing the decision names, or
+    takes the surface over in place, then re-enters `React` there."""
+
     @reflex_logfire.instrument("reflex.handoff", extract_args=False)
     async def run(
         self,

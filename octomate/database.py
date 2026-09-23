@@ -1,3 +1,6 @@
+"""The async SQLAlchemy engine and session factory every caller shares, with the
+JSON codecs and per-connection pragmas it is built with."""
+
 from functools import cache
 
 from arcanus.materia.sqlalchemy import AsyncSession

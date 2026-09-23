@@ -1,3 +1,9 @@
+"""Discord component routing.
+
+Resolves button and modal interactions into deferred-action responses, with
+one lock per batch so concurrent clicks on it are serialized.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -20,15 +26,22 @@ if TYPE_CHECKING:
 
 
 class DiscordActionUnavailable(ValueError):
-    pass
+    """An interaction on a batch or action that is gone or already handled; the
+    message is what the user sees, ephemerally."""
 
 
 @dataclass(frozen=True)
 class DiscordChoiceAnswer:
+    """A question answered by picking a choice, by index into its choices."""
+
     index: int
 
 
 class DiscordComponentRouter:
+    """Per-client router from component interactions to deferred-action
+    responses, holding one lock per batch and the answers of a wizard still in
+    progress."""
+
     routers: ClassVar[WeakKeyDictionary[discord.Client, DiscordComponentRouter]] = (
         WeakKeyDictionary()
     )

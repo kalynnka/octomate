@@ -1,3 +1,10 @@
+"""The Claude Agent SDK message stream as pydantic-ai parts and events.
+
+`ClaudeRunAccumulator` consumes the live SDK stream and a transcript's typed lines
+alike, projecting each into stream events for the channel feelers and persisted
+`ModelMessage`s.
+"""
+
 from __future__ import annotations
 
 import base64

@@ -1,3 +1,5 @@
+"""The channel tentacles the init wizard offers."""
+
 from __future__ import annotations
 
 from functools import partial

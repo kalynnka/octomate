@@ -1,3 +1,6 @@
+"""The thread chat ledger: threads, their messages, bindings to model messages,
+handoffs, and history search."""
+
 from __future__ import annotations
 
 import uuid

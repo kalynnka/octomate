@@ -1,3 +1,6 @@
+"""The graph's entry node: reads the signal that woke it and picks the first
+transition."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -25,6 +28,9 @@ from octomate.telemetry import reflex_logfire
 
 @dataclass
 class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
+    """The entry node: a batch reply resumes, a native handoff lands, and a user
+    message resolves its thread and goes to `Route`."""
+
     signal: AwakeSignal
 
     @reflex_logfire.instrument("reflex.awake", extract_args=False)

@@ -49,6 +49,9 @@ class QuestionFeeler(ABC):
 
 
 class PlainTextApprovalFeeler(ApprovalFeeler):
+    """Presents approvals as markdown text, for channels without interactive
+    cards."""
+
     def __init__(self, markdown: MarkdownFeeler) -> None:
         self.markdown = markdown
 
@@ -72,6 +75,9 @@ class PlainTextApprovalFeeler(ApprovalFeeler):
 
 
 class PlainTextAskQuestionFeeler(QuestionFeeler):
+    """Presents questions as markdown text, for channels without interactive
+    cards."""
+
     def __init__(self, markdown: MarkdownFeeler) -> None:
         self.markdown = markdown
 

@@ -1,3 +1,6 @@
+"""The ORM models: SQLAlchemy declarations of every table, one module per
+concern."""
+
 from octomate.models.auth import (
     LinkProfileSession,
     UserApiKey,

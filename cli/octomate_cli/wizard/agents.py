@@ -1,3 +1,5 @@
+"""The agent tentacles the init wizard offers, and what each says when selected."""
+
 from __future__ import annotations
 
 from rich.console import Console

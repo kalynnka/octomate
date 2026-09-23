@@ -1,3 +1,6 @@
+"""OAuth connectors and the manager that runs their authorizations for a user,
+stores the resulting grants, and refreshes them."""
+
 from __future__ import annotations
 
 import secrets
@@ -116,11 +119,16 @@ class OAuthConnector(BaseModel):
 
 
 class OAuthCallback(NamedTuple):
+    """What a completed authorization-code callback yields: the grant and the
+    account bound to the operation."""
+
     grant: OAuthGrant
     user: User  # The authenticated account bound to the completed operation.
 
 
 class OAuthLockKey(NamedTuple):
+    """The (user, mcp, connector) triple an authorization is serialized under."""
+
     user_id: uuid.UUID
     mcp_id: uuid.UUID | None
     connector_id: str

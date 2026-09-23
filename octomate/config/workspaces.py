@@ -1,3 +1,6 @@
+"""Workspace reclamation: how long a thread's fork may sit idle, and how often the
+sweep looks."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, Field

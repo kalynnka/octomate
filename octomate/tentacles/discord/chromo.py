@@ -1,3 +1,5 @@
+"""Discord translation: messages to `MessageEvent`, markdown to message chunks."""
+
 from __future__ import annotations
 
 import json
@@ -32,6 +34,10 @@ SUPPORTED_MESSAGE_TYPES = (discord.MessageType.default, discord.MessageType.repl
 
 
 class DiscordChromo(Chromo[discord.Message, DiscordOutboundMessage]):
+    """Discord translation: DM, channel and thread messages decoded with mentions
+    and image attachments; outbound text chunked to the message limit, each chunk
+    carrying the users it may ping."""
+
     async def sip(self, raw: discord.Message) -> MessageEvent | None:
         try:
             if raw.type not in SUPPORTED_MESSAGE_TYPES:

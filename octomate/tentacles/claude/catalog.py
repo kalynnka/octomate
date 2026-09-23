@@ -5,6 +5,8 @@ from pydantic.alias_generators import to_camel
 
 
 class ClaudeModelInfo(BaseModel):
+    """One model in Claude Code's catalog, as its initialize response lists it."""
+
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
     value: str
@@ -15,11 +17,15 @@ class ClaudeModelInfo(BaseModel):
 
 
 class ClaudeAccountInfo(BaseModel):
+    """The account block of Claude Code's initialize response."""
+
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
     api_provider: str | None = None
 
 
 class ClaudeServerInfo(BaseModel):
+    """Claude Code's initialize response: the model catalog and the account."""
+
     models: list[ClaudeModelInfo] = Field(min_length=1)
     account: ClaudeAccountInfo = Field(default_factory=ClaudeAccountInfo)

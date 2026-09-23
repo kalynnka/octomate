@@ -1,3 +1,6 @@
+"""The reflex graph's deferred suspender: where a run's deferrals go — a teleport
+back to the graph, everything else to a human as a persisted batch."""
+
 from __future__ import annotations
 
 import uuid

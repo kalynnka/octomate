@@ -1,3 +1,5 @@
+"""The hook payload POSTed back from a native dsh session, in Claude Code's dialect."""
+
 from __future__ import annotations
 
 from pathlib import Path

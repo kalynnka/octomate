@@ -1,3 +1,6 @@
+"""OAuth authorization lifetimes, the browser-reachable callback origin, and the key
+that encrypts tokens at rest."""
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -15,6 +18,8 @@ from octomate.types.oauth import HttpsUrl
 
 
 class OAuthConfig(BaseModel):
+    """OAuth authorization lifetimes, callback origin and encryption key."""
+
     model_config = ConfigDict(extra="ignore")
     authorization_lifetime: timedelta = Field(
         default=timedelta(minutes=10),

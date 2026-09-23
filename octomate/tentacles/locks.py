@@ -1,3 +1,5 @@
+"""Per-session asyncio locks that clean up after themselves."""
+
 from __future__ import annotations
 
 import asyncio

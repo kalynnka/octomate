@@ -28,6 +28,9 @@ from octomate.tentacles.slack.schema import (
 
 
 class SlackOAuthFeeler(OAuthFeeler[SlackOutboundMessage]):
+    """Sends the authorization blocks: a link button and, for a device flow, the
+    one-time code."""
+
     @slack_logfire.instrument("slack.oauth.send", extract_args=False)
     async def send(
         self,

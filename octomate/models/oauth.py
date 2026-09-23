@@ -1,3 +1,5 @@
+"""OAuth operations in flight and the connections they produce."""
+
 from __future__ import annotations
 
 import uuid

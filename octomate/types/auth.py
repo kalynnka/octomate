@@ -1,3 +1,5 @@
+"""API key scopes and the rules a new password is validated against."""
+
 from typing import Annotated, Literal
 
 from pydantic import AfterValidator, ConfigDict, Field, SecretStr, TypeAdapter

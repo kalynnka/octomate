@@ -16,9 +16,8 @@ logger = logging.getLogger(__name__)
 class ClaudeSSHConfig(BaseModel):
     """Remote-host settings for the Claude tentacle.
 
-    When `ClaudeCodeConfig.ssh` is set, the tentacle spawns `claude` on `host`
-    (via the system `ssh` binary) instead of a local subprocess; leaving it null
-    keeps the run local. Setting it is currently refused — see `ClaudeCodeConfig.ssh`.
+    The SSH transport is parked: nothing constructs it, so a block here is warned
+    about and not honoured — the run stays local. See `ClaudeCodeConfig.ssh`.
     """
 
     host: str
@@ -30,11 +29,9 @@ class ClaudeSSHConfig(BaseModel):
 class ClaudeCodeConfig(AgentConfig):
     """Claude Agent SDK runner, selected by `type: claude`.
 
-    Opt-in: the agent is absent unless a
-    block is supplied. The CLI supplies the model catalog. `ssh` selects where
-    `claude` runs — null is a local subprocess; a block would run it on that
-    remote host over SSH, and is
-    refused while remote runs are disabled.
+    Opt-in: the agent is absent unless a block is supplied. The CLI supplies the
+    model catalog. `claude` runs as a local subprocess; an `ssh` block is warned
+    about and not honoured while the remote transport is parked.
     """
 
     model_config = ConfigDict(extra="ignore")

@@ -38,6 +38,8 @@ PERMISSIVE = ConfigDict(
 
 
 class RpcError(BaseModel):
+    """A Remote call's error: its code, message, and details."""
+
     model_config = PERMISSIVE
 
     code: str
@@ -46,6 +48,8 @@ class RpcError(BaseModel):
 
 
 class OkResult(BaseModel):
+    """A successful Remote result and its value."""
+
     model_config = PERMISSIVE
 
     ok: Literal[True] = True
@@ -53,6 +57,8 @@ class OkResult(BaseModel):
 
 
 class ErrResult(BaseModel):
+    """A failed Remote result and its error."""
+
     model_config = PERMISSIVE
 
     ok: Literal[False] = False
@@ -113,6 +119,8 @@ class SessionEvent(BaseModel):
 
 
 class SessionEventFrame(BaseModel):
+    """A mux frame carrying one session event, plus its render view when present."""
+
     model_config = PERMISSIVE
 
     type: Literal["session/event"]
@@ -122,6 +130,8 @@ class SessionEventFrame(BaseModel):
 
 
 class ApprovalRequestedFrame(BaseModel):
+    """A mux frame asking approval for a tool call mid-turn."""
+
     model_config = PERMISSIVE
 
     type: Literal["approval/requested"]
@@ -133,6 +143,8 @@ class ApprovalRequestedFrame(BaseModel):
 
 
 class AskQuestionOption(BaseModel):
+    """One choice on a dsh `ask()` question."""
+
     model_config = PERMISSIVE
 
     label: str
@@ -154,6 +166,8 @@ class AskQuestionItem(BaseModel):
 
 
 class QuestionRequestedFrame(BaseModel):
+    """A mux frame carrying a dsh `ask()` batch to answer."""
+
     model_config = PERMISSIVE
 
     type: Literal["question/requested"]
@@ -162,6 +176,8 @@ class QuestionRequestedFrame(BaseModel):
 
 
 class StreamErrorFrame(BaseModel):
+    """A mux frame reporting a stream error, for one session when it names one."""
+
     model_config = PERMISSIVE
 
     type: Literal["stream/error"]
@@ -170,6 +186,8 @@ class StreamErrorFrame(BaseModel):
 
 
 class RemoteItem(BaseModel):
+    """One item on a multiplexed Remote stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["item"]
@@ -178,6 +196,8 @@ class RemoteItem(BaseModel):
 
 
 class RemoteError(BaseModel):
+    """An error on a multiplexed Remote stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["error"]
@@ -186,6 +206,8 @@ class RemoteError(BaseModel):
 
 
 class RemoteEnd(BaseModel):
+    """The end of a multiplexed Remote stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["end"]
@@ -198,6 +220,8 @@ remote_message_adapter = TypeAdapter(
 
 
 class RemoteReady(BaseModel):
+    """The `$events` stream's opening item, assigning this client its id."""
+
     model_config = PERMISSIVE
 
     type: Literal["ready"]
@@ -205,6 +229,8 @@ class RemoteReady(BaseModel):
 
 
 class RemoteInvocation(BaseModel):
+    """An event dsh delegates to this client to answer, pushed on `$events`."""
+
     model_config = PERMISSIVE
 
     type: Literal["waterfall"]
@@ -215,6 +241,8 @@ class RemoteInvocation(BaseModel):
 
 
 class RemoteCancellation(BaseModel):
+    """Cancellation of a delegated event, by its id."""
+
     model_config = PERMISSIVE
 
     type: Literal["cancel"]
@@ -236,16 +264,22 @@ remote_event_adapter = TypeAdapter(
 
 
 class SessionSnapshot(BaseModel):
+    """A `session/follow` stream's snapshot marker, after which the follow is live."""
+
     type: Literal["snapshot"]
     cursor: int
 
 
 class SessionRecord(BaseModel):
+    """One session event on a `session/follow` stream."""
+
     type: Literal["event"]
     event: SessionEvent
 
 
 class AssistantStreamChunk(BaseModel):
+    """One chunk of an assistant attempt's live stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["chunk"]
@@ -257,6 +291,8 @@ class AssistantStreamChunk(BaseModel):
 
 
 class AssistantStreamBoundary(BaseModel):
+    """The start or end of an assistant attempt's live stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["start", "end"]
@@ -265,6 +301,8 @@ class AssistantStreamBoundary(BaseModel):
 
 
 class SessionAssistantFrame(BaseModel):
+    """A mux frame relaying an assistant-stream chunk or boundary."""
+
     type: Literal["assistant-stream"]
     frame: Annotated[
         AssistantStreamChunk | AssistantStreamBoundary, Field(discriminator="type")
@@ -303,6 +341,8 @@ class DeepseekUsage(BaseModel):
 
 
 class TextDeltaChunk(BaseModel):
+    """A streamed text delta."""
+
     model_config = PERMISSIVE
 
     type: Literal["text-delta"]
@@ -310,6 +350,8 @@ class TextDeltaChunk(BaseModel):
 
 
 class ReasoningDeltaChunk(BaseModel):
+    """A streamed reasoning delta."""
+
     model_config = PERMISSIVE
 
     type: Literal["reasoning-delta"]
@@ -317,6 +359,8 @@ class ReasoningDeltaChunk(BaseModel):
 
 
 class ToolCallDeltaChunk(BaseModel):
+    """A streamed tool-call delta: the call id and its name or argument fragment."""
+
     model_config = PERMISSIVE
 
     type: Literal["tool-call-delta"]
@@ -326,6 +370,8 @@ class ToolCallDeltaChunk(BaseModel):
 
 
 class UsageChunk(BaseModel):
+    """A streamed usage report."""
+
     model_config = PERMISSIVE
 
     type: Literal["usage"]
@@ -338,6 +384,8 @@ type StreamDelta = (
 
 
 class ChunkEnvelope(BaseModel):
+    """The data of an `assistant/chunk` event: one discriminated stream delta."""
+
     model_config = PERMISSIVE
 
     chunk: Annotated[StreamDelta, Field(discriminator="type")]
@@ -360,6 +408,8 @@ def chunk_delta(event: SessionEvent) -> StreamDelta | None:
 
 
 class ContentBlock(BaseModel):
+    """One block of a message's content; only text blocks are read."""
+
     model_config = PERMISSIVE
 
     type: str = ""
@@ -384,14 +434,20 @@ class ModelRoute(BaseModel):
 
 
 class ModelEffort(BaseModel):
+    """One reasoning effort level a catalog model offers."""
+
     id: str
 
 
 class ModelReasoning(BaseModel):
+    """A catalog model's reasoning effort levels."""
+
     efforts: list[ModelEffort]
 
 
 class CatalogModel(BaseModel):
+    """One model in dsh's catalog."""
+
     id: str
     name: str
     description: str | None = None
@@ -399,24 +455,32 @@ class CatalogModel(BaseModel):
 
 
 class ModelProviderGroup(BaseModel):
+    """One provider's models in dsh's catalog."""
+
     id: str
     name: str
     models: list[CatalogModel]
 
 
 class ModelCatalogFailure(BaseModel):
+    """A provider dsh could not list, and why."""
+
     id: str
     name: str
     message: str
 
 
 class ModelCatalog(BaseModel):
+    """dsh's model catalog: the default route, models by provider, and failures."""
+
     default: ModelRoute
     groups: list[ModelProviderGroup]
     failures: list[ModelCatalogFailure]
 
 
 class MessageBody(BaseModel):
+    """A message's content blocks and provenance `source`."""
+
     model_config = PERMISSIVE
 
     content: list[ContentBlock] = Field(default_factory=list)
@@ -424,6 +488,8 @@ class MessageBody(BaseModel):
 
 
 class AssistantMessageData(BaseModel):
+    """An `assistant/message` event's data: the committed message and its usage."""
+
     model_config = PERMISSIVE
 
     message: MessageBody
@@ -489,6 +555,8 @@ class TurnEndReasonData(BaseModel):
 
 
 class TurnEndData(BaseModel):
+    """A `turn/end` event's data: the turn number and why it ended."""
+
     model_config = PERMISSIVE
 
     turn: int | None = None
@@ -527,6 +595,8 @@ def tool_call_of(event: SessionEvent) -> ToolCallData | None:
 
 
 class ToolResultBlock(BaseModel):
+    """One tool-result block: the call answered, its content, and its error flag."""
+
     model_config = PERMISSIVE
 
     tool_call_id: str
@@ -535,6 +605,8 @@ class ToolResultBlock(BaseModel):
 
 
 class ToolResultData(BaseModel):
+    """A `tool/result` event's raw data, narrowed further by `tool_result_of`."""
+
     model_config = PERMISSIVE
 
     # Only the first block is typed — the rest of the list is whatever dsh put
@@ -548,6 +620,8 @@ tool_result_block_adapter: TypeAdapter[ToolResultBlock] = TypeAdapter(ToolResult
 
 
 class DeepseekToolResult(BaseModel):
+    """A tool result reduced to what a return card shows."""
+
     call_id: str
     # The model-facing result text.
     text: str
@@ -588,6 +662,8 @@ class UserMessageSource(BaseModel):
 
 
 class UserMessageData(BaseModel):
+    """A `user/message` event's data: content blocks and provenance."""
+
     model_config = PERMISSIVE
 
     content: list[ContentBlock] = Field(default_factory=list)
@@ -606,10 +682,14 @@ def user_message_of(event: SessionEvent) -> UserMessageData | None:
 
 
 class PermissionCatalog(BaseModel):
+    """The permission presets dsh offers, as `permissionPresets/catalog` lists them."""
+
     options: tuple[PermissionMode, ...]
 
 
 class PermissionPresetData(BaseModel):
+    """A `permission/preset` event's data: the preset switched to."""
+
     model_config = PERMISSIVE
 
     preset: str
@@ -643,6 +723,8 @@ history_entry_adapter: TypeAdapter[HistoryEntry] = TypeAdapter(HistoryEntry)
 
 
 class SessionCreateValue(BaseModel):
+    """The value `session/create` answers with."""
+
     model_config = PERMISSIVE
 
     session_id: str
@@ -650,10 +732,14 @@ class SessionCreateValue(BaseModel):
 
 
 class SessionPromptValue(BaseModel):
+    """The value `session/prompt` answers with: the prompt was accepted."""
+
     accepted: Literal[True]
 
 
 class CommandResult(BaseModel):
+    """What an executed command produced: its kind and text."""
+
     model_config = PERMISSIVE
 
     kind: str

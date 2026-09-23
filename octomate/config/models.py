@@ -1,3 +1,5 @@
+"""Model selections and the per-provider default settings a model is built with."""
+
 from __future__ import annotations
 
 from functools import cached_property
@@ -37,6 +39,8 @@ class AnthropicModelSettings(ModelSettings, total=False):
 
 
 class BedrockThinkingConfig(TypedDict, total=False):
+    """Bedrock's `thinking` request field."""
+
     type: Literal["adaptive", "enabled", "disabled"]
     # Opus 4.7+ defaults to "omitted": thinking blocks stream with empty text
     # (signature only). "summarized" restores visible thinking deltas.
@@ -44,6 +48,8 @@ class BedrockThinkingConfig(TypedDict, total=False):
 
 
 class BedrockOutputConfig(TypedDict, total=False):
+    """Bedrock's `output_config` request field."""
+
     effort: Literal["low", "medium", "high"]
 
 

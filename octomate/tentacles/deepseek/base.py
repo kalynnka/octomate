@@ -1,3 +1,10 @@
+"""The DeepSeek Harness (dsh) agent tentacle.
+
+Driven runs go to an owned `dsh web` child over its `/api` gateway, with approvals
+and questions bridged to a human; native sessions arrive through the hook and
+stream routes mounted here, into `DeepseekHookIngest` and `DeepseekEventTailer`.
+"""
+
 from __future__ import annotations
 
 import asyncio
@@ -107,6 +114,12 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class DeepseekBridgeContext:
+    """The driven turn a dsh approval or question is answered for.
+
+    Held per session while the turn runs; `interactive` is whether a human exists to
+    ask at all.
+    """
+
     conversation: Conversation
     conversation_address: ChannelAddress
     run_name: str | None

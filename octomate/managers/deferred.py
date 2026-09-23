@@ -1,3 +1,6 @@
+"""Persistence of deferred-action batches — the questions and approvals a run parks
+for a human — and their resolution from replies."""
+
 from __future__ import annotations
 
 import uuid
@@ -24,6 +27,8 @@ from octomate.types.deferred import DeferredBatchStatus
 
 
 class DeferredActionManager(Manager):
+    """Persists deferred-action batches and resolves them from user replies."""
+
     async def create_batch(
         self,
         *,

@@ -1,3 +1,5 @@
+"""Lark channel feelers."""
+
 from octomate.tentacles.lark.feelers.actions import LarkCardAction
 from octomate.tentacles.lark.feelers.approvals import LarkApprovalFeeler
 from octomate.tentacles.lark.feelers.oauth import LarkOAuthFeeler

@@ -1,3 +1,5 @@
+"""Credentials and default settings for each model provider."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, SecretStr
@@ -10,6 +12,8 @@ from octomate.config.models import (
 
 
 class OpenAIProviderConfig(BaseModel):
+    """OpenAI credentials, endpoint and default model settings."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     api_key: SecretStr | None = None
@@ -20,6 +24,8 @@ class OpenAIProviderConfig(BaseModel):
 
 
 class DeepSeekProviderConfig(BaseModel):
+    """DeepSeek credentials."""
+
     api_key: SecretStr | None = None
 
 
@@ -40,6 +46,8 @@ class VertexProviderConfig(BaseModel):
 
 
 class AnthropicProviderConfig(BaseModel):
+    """Anthropic credentials, endpoint and default model settings."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     api_key: SecretStr | None = None
@@ -52,6 +60,8 @@ class AnthropicProviderConfig(BaseModel):
 
 
 class BedrockProviderConfig(BaseModel):
+    """AWS Bedrock credentials, region and default model settings."""
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     region_name: str | None = None
@@ -68,6 +78,8 @@ class BedrockProviderConfig(BaseModel):
 
 
 class ProvidersConfig(BaseModel):
+    """Every provider's credentials, each absent unless configured."""
+
     model_config = ConfigDict(extra="ignore")
 
     openai: OpenAIProviderConfig | None = None

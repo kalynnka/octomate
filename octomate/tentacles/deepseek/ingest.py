@@ -1,3 +1,9 @@
+"""Hook-driven ingest of a native dsh session.
+
+The hooks write only the session skeleton and hand the turn boundary to
+`DeepseekEventTailer`; every durable row comes from the streamed session log.
+"""
+
 from __future__ import annotations
 
 import asyncio

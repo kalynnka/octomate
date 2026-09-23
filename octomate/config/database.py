@@ -1,3 +1,5 @@
+"""Where the database lives, resolved once for the app engine and alembic alike."""
+
 from __future__ import annotations
 
 from pydantic_settings import (

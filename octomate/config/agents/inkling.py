@@ -125,6 +125,9 @@ class ToolOutputConfig(BaseModel):
 
 
 class InklingConfig(AgentConfig):
+    """The in-process pydantic-ai agent, selected by `type: inkling`: its models,
+    request limit, tool-output handling and permission posture."""
+
     type: Literal["inkling"] = "inkling"
 
     models: list[ModelConfig] = Field(min_length=1)

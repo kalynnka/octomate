@@ -1,3 +1,6 @@
+"""An httpx transport for MCP endpoints that connects only to public addresses and
+refuses redirects."""
+
 from __future__ import annotations
 
 import asyncio

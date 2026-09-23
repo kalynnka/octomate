@@ -1,3 +1,6 @@
+"""Persisted model messages: pydantic-ai's request and response, blessed to the
+polymorphic `model_messages` table."""
+
 from __future__ import annotations
 
 import uuid
@@ -93,6 +96,9 @@ class ModelMessage(BaseTransmuter, ABC):
 @sqlalchemy_materia.bless(ModelRequestModel)
 @arcanus_dataclass(config=dataclass_config)
 class ModelRequest(Transmuter, PydanticModelRequest):
+    """A persisted pydantic-ai request; `role` and `message_text` are derived from
+    its parts."""
+
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     timestamp: AwareDatetime | None = None
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
@@ -122,6 +128,9 @@ class ModelRequest(Transmuter, PydanticModelRequest):
 @sqlalchemy_materia.bless(ModelResponseModel)
 @arcanus_dataclass(config=dataclass_config)
 class ModelResponse(Transmuter, PydanticModelResponse):
+    """A persisted pydantic-ai response; `message_text` is its spoken text,
+    including what it delivered through `send`."""
+
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     timestamp: AwareDatetime = Field(default_factory=now_utc)
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
