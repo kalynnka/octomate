@@ -31,6 +31,8 @@ PERMISSIVE = ConfigDict(
 
 
 class RpcError(BaseModel):
+    """A Remote call's error: its code, message, and details."""
+
     model_config = PERMISSIVE
 
     code: str
@@ -39,6 +41,8 @@ class RpcError(BaseModel):
 
 
 class OkResult(BaseModel):
+    """A successful Remote result and its value."""
+
     model_config = PERMISSIVE
 
     ok: Literal[True] = True
@@ -46,6 +50,8 @@ class OkResult(BaseModel):
 
 
 class ErrResult(BaseModel):
+    """A failed Remote result and its error."""
+
     model_config = PERMISSIVE
 
     ok: Literal[False] = False
@@ -79,6 +85,8 @@ class ServerResponse(BaseModel):
 
 
 class RemoteItem(BaseModel):
+    """One item on a multiplexed Remote stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["item"]
@@ -115,6 +123,8 @@ class RemoteSessionFollow(BaseModel):
 
 
 class RemoteError(BaseModel):
+    """An error on a multiplexed Remote stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["error"]
@@ -123,6 +133,8 @@ class RemoteError(BaseModel):
 
 
 class RemoteEnd(BaseModel):
+    """The end of a multiplexed Remote stream."""
+
     model_config = PERMISSIVE
 
     type: Literal["end"]
