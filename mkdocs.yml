@@ -42,24 +42,37 @@ nav:
   - Home: index.md
   - Installation:
       - installation/index.md
-      - TL;DR for your agent: installation/agent-setup.md
+      - Getting started:
+          - Requirements: installation/requirements.md
+          - Quick start: installation/quickstart.md
+          - A brief for your agent: installation/agent-setup.md
       - Server:
           - Server setup: installation/server.md
           - macOS: installation/macos.md
           - Linux: installation/linux.md
           - Windows: installation/windows.md
           - Docker: installation/docker.md
-      - Configuration: installation/configuration.md
+      - Configuration:
+          - The config home: installation/configuration.md
+          - Server settings: installation/settings.md
+          - The tentacle registry: installation/tentacles.md
       - Accounts and tokens: installation/accounts.md
-      - Hooks and MCP: installation/clients.md
-      - Networking: installation/networking.md
-      - Observability: installation/observability.md
-      - Upgrades and backups: installation/upgrading.md
+      - Clients:
+          - installation/clients/index.md
+          - Claude Code: installation/clients/claude-code.md
+          - Codex: installation/clients/codex.md
+          - DeepSeek Harness: installation/clients/deepseek.md
+      - Operations:
+          - Networking: installation/networking.md
+          - Observability: installation/observability.md
+          - Upgrades and backups: installation/upgrading.md
   - Usage:
       - usage/index.md
       - Agents:
           - usage/agents/index.md
-          - Claude Code: usage/agents/claude.md
+          - Permissions and approvals: usage/agents/permissions.md
+          - Driven and native sessions: usage/agents/sessions.md
+          - Claude Code: usage/agents/claude-code.md
           - Codex: usage/agents/codex.md
           - DeepSeek Harness: usage/agents/deepseek.md
           - Inkling: usage/agents/inkling.md
@@ -70,40 +83,54 @@ nav:
           - Discord: usage/channels/discord.md
           - QQ through NapCat: usage/channels/napcat.md
           - Trunkline: usage/channels/trunkline.md
-      - Threads and chat rooms: usage/threads.md
-      - Moving a conversation: usage/gateway.md
-      - Approvals and questions: usage/actions.md
-      - Projects and workspaces: usage/workspaces.md
-      - History: usage/history.md
+      - Conversations:
+          - Threads and chat rooms: usage/threads.md
+          - Moving a conversation: usage/gateway.md
+          - Approvals and questions: usage/actions.md
+          - History: usage/history.md
+      - Projects and workspaces:
+          - Projects: usage/projects.md
+          - Workspaces: usage/workspaces.md
       - MCP:
-          - Octomate MCP: usage/mcp/index.md
+          - Octomate MCP: usage/mcp/octomate.md
           - MCP proxy: usage/mcp/proxy.md
   - Concepts:
       - concepts/index.md
-      - The reflex graph: concepts/reflex.md
-      - Feelers: concepts/feelers.md
-      - The tentacle model: concepts/tentacles.md
-      - Persistence: concepts/persistence.md
-      - Workspace design: concepts/workspaces.md
+      - Design:
+          - The reflex graph: concepts/reflex.md
+          - Feelers: concepts/feelers.md
+          - The tentacle model: concepts/tentacles.md
+      - Storage:
+          - Persistence: concepts/persistence.md
+          - Workspace design: concepts/workspaces.md
+      - Vocabulary: concepts/vocabulary.md
   - Contributing:
       - contributing/index.md
-      - Adding a channel tentacle: contributing/channel-tentacle.md
-      - Adding an agent tentacle: contributing/agent-tentacle.md
-      - Adding an MCP tentacle: contributing/mcp-tentacle.md
-      - Documentation: contributing/documentation.md
-      - Releases: contributing/releases.md
-      - Plans and issues: contributing/planning.md
+      - Development:
+          - Set up: contributing/setup.md
+          - Checks and tests: contributing/checks.md
+          - Repository layout: contributing/layout.md
+      - Extending Octomate:
+          - Adding a channel tentacle: contributing/channel-tentacle.md
+          - Adding an agent tentacle: contributing/agent-tentacle.md
+          - Adding an MCP tentacle: contributing/mcp-tentacle.md
+      - Project workflow:
+          - Documentation: contributing/documentation.md
+          - Releases: contributing/releases.md
+          - Plans and issues: contributing/planning.md
   - API Reference:
       - api/index.md
-      - octomate.config: api/config.md
-      - octomate.tentacles: api/tentacles.md
-      - octomate.reflex: api/reflex.md
-      - octomate.managers: api/managers.md
-      - octomate.schemas: api/schemas.md
-      - octomate.capabilities: api/capabilities.md
-      - octomate.mcp: api/mcp.md
-      - octomate_cli: api/cli.md
-      - octomate_protocol: api/protocol.md
+      - Server:
+          - octomate.config: api/config.md
+          - octomate.tentacles: api/tentacles.md
+          - octomate.reflex: api/reflex.md
+          - octomate.managers: api/managers.md
+          - octomate.schemas: api/schemas.md
+          - octomate.capabilities: api/capabilities.md
+          - octomate.mcp: api/mcp.md
+      - Client and protocol:
+          - octomate_cli: api/cli.md
+          - octomate_protocol: api/protocol.md
 
 validation:
   nav:
