@@ -13,6 +13,7 @@ import pytest
 import yaml
 from octomate_cli.config import CLISettings, user_config_path
 from octomate_cli.main import app
+from octomate_cli.streaming import deepseek as deepseek_stream
 from octomate_cli.tentacles import mcp as cli_mcp
 from octomate_cli.tentacles.claude import claude_typer
 from octomate_cli.tentacles.codex import codex_typer
@@ -334,6 +335,52 @@ def test_configure_does_not_generate_an_api_token(
     assert result.exit_code == 0
     assert "token" not in tomllib.loads(user_config_path().read_text())
     assert "provide --token" in result.output
+
+
+@pytest.mark.parametrize("source", ["file", "environment", "option"])
+def test_deepseek_tail_resolves_gateway_after_hooks_lose_the_environment(
+    monkeypatch: pytest.MonkeyPatch, source: str
+) -> None:
+    configured(monkeypatch, None)
+    monkeypatch.delenv("DSH_API_URL", raising=False)
+    monkeypatch.delenv("DSH_LAUNCH_TOKEN", raising=False)
+    launch_url = "http://127.0.0.1:3080/?token=private-gateway-token"
+    result = runner.invoke(app, ["configure", "--dsh-url", launch_url])
+    assert result.exit_code == 0
+    assert "private-gateway-token" not in result.output
+    assert tomllib.loads(user_config_path().read_text()) == {
+        "deepseek": {"url": launch_url}
+    }
+    assert user_config_path().stat().st_mode & 0o777 == 0o600
+    captured: list[str] = []
+
+    def tail(
+        *,
+        session_id: str,
+        transcript_path: Path,
+        url: str,
+        cwd: str,
+        dsh_url: str,
+    ) -> None:
+        captured.append(dsh_url)
+
+    monkeypatch.setattr(deepseek_stream, "main", tail)
+    args = ["deepseek", "tail", "--session", "native", "--url", "ws://server/stream"]
+    expected = launch_url
+    if source in {"environment", "option"}:
+        monkeypatch.setenv("DSH_API_URL", "http://environment:3080")
+        expected = "http://environment:3080"
+    if source == "option":
+        args += ["--dsh-url", "http://explicit:3080"]
+        expected = "http://explicit:3080"
+    result = runner.invoke(app, args)
+    assert result.exit_code == 0
+    assert captured == [expected]
+
+    result = runner.invoke(app, ["configure", "--url", "http://updated-server"])
+    assert result.exit_code == 0
+    assert CLISettings().deepseek.url == launch_url
+    assert "private-gateway-token" not in result.output
 
 
 def test_configure_carries_an_env_token_into_the_file(

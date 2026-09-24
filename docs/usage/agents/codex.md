@@ -79,6 +79,10 @@ server-side, so nothing duplicates. An aborted turn is still committed as far as
 got. Codex has no session-end event, so a session ends by the tail's own idle
 drain.
 
+Resuming a driven session natively skips already recorded driven turns when their
+runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)
+for where new turns land and the limits for older history.
+
 ## Not yet
 
 - **Structured output** rides the turn's output schema; there is no retry loop.

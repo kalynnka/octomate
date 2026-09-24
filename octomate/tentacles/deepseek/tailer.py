@@ -381,7 +381,7 @@ class DeepseekEventTailer:
                     messages=messages,
                     name=DEEPSEEK_NATIVE_ID,
                     cwd=Path(state.cwd) if state.cwd else None,
-                    external_session_id=session_id,
+                    native_session_id=session_id,
                     source="gateway" if turn.prompt_via_gateway else "local",
                     start_offset=turn.start_seq,
                     end_offset=turn.end_seq,

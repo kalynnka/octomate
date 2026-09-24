@@ -166,6 +166,7 @@ class DeepseekRunAccumulator:
         self.result_text = ""
         self.turn_started = False
         self.turn_ended = False
+        self.turn_number: int | None = None
         self.turn_error: str | None = None
         self.finish_reason: FinishReason | None = None
         self.route: ModelRoute | None = None
@@ -474,6 +475,7 @@ class DeepseekRunAccumulator:
     ) -> Iterator[StreamEvents[str]]:
         self.turn_ended = True
         end = turn_end_of(event)
+        self.turn_number = end.turn if end is not None else None
         reason = end.reason if end is not None else None
         kind = reason.kind if reason is not None else "completed"
         self.finish_reason = DEEPSEEK_FINISH_REASON_MAP.get(kind)

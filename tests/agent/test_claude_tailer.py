@@ -507,7 +507,7 @@ async def test_a_streamed_session_reconstructs_full_fidelity() -> None:
 
     first = (await runs_of(octomate))[0]
     assert first.id == "p1"
-    assert first.external_session_id == SESSION_ID
+    assert first.native_session_id == SESSION_ID
     assert first.source == "cli"
     kinds = [type(message).__name__ for message in first.messages]
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
@@ -765,7 +765,7 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
     assert child_run.id == f"{AGENT_ID}:p1"
     assert child_run.parent_run_id == "p1"
     assert child_run.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
-    assert child_run.external_session_id == AGENT_ID
+    assert child_run.native_session_id == AGENT_ID
     assert child_run.start_offset == 0
     assert child_run.end_offset == total_bytes(SUB_TURN_ONE)
     kinds = [type(message).__name__ for message in child_run.messages]

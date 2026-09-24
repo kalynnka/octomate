@@ -698,11 +698,19 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 }
             }
 
-        # Settle the session id before the CLI exists, so the hook pipe can be told to
-        # leave this session alone (claimed below) before it can fire anything. Resuming
-        # already names the session; a new one is pinned here — the SDK takes one or the
-        # other, never both.
+        # Resuming names the session; a new one is pinned before launching the CLI.
         session_id = conversation.external_id or str(uuid7())
+        prompt_id: str | None = None
+
+        async def remember_prompt(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            nonlocal prompt_id
+            event = ClaudeHookInput.model_validate(hook_input)
+            if not event.prompt_id:
+                raise ValueError("Claude's prompt hook did not provide a prompt_id")
+            prompt_id = event.prompt_id
+            return {}
 
         project = await self.run_project(conversation.thread_id)
         # Settled here, forked when the run enters it below: the options this builds
@@ -766,9 +774,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
             hooks={
+                "UserPromptSubmit": [HookMatcher(hooks=[remember_prompt])],
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
-                ]
+                ],
             },
             mcp_servers=mcp_servers,
             extra_args={"safe-mode": None},
@@ -870,6 +879,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 name=run_name,
                 cwd=Path(run_cwd),
                 external_id=accumulator.session_id,
+                native_id=CLAUDE_NATIVE_ID,
+                native_turn_id=prompt_id,
             )
             if source_thread_message_ids:
                 if recorded_run is None:

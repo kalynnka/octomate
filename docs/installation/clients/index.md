@@ -101,7 +101,7 @@ agent and the CLI inside WSL.
 | MCP gets 401 | `mcp` scope and the embedded token; reinstall after rotation |
 | MCP connected, tools missing in an open session | Restart the runtime; it reads the MCP file at launch |
 | Works in a terminal, not from an editor | Absolute paths in the hook commands, hook trust in Codex, the editor's environment |
-| DeepSeek tail exits at once | `DSH_LAUNCH_TOKEN`, and dsh restarted after the install |
+| DeepSeek tail exits at once | Save the gateway launch URL with `octomate configure --dsh-url`; restart dsh after installing hooks |
 
 A driven session started from a channel is different: it disables the runtime's own
 hooks, plugins and MCP servers and gets Octomate's tools from the server directly.

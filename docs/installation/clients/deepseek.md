@@ -23,9 +23,31 @@ process, the web daemon included**, after installing.
 
 The DeepSeek tail does not read a file. dsh's log is compressed in frames that only
 advance at checkpoints, so the tail polls the local dsh gateway instead, at
-`$DSH_API_URL` or `http://127.0.0.1:3080`. An authenticated dsh needs its launch
-token in the tail's environment: set `DSH_LAUNCH_TOKEN`, or use the complete launch
-URL with its `?token=` as `DSH_API_URL`. The hook process must inherit it too.
+the gateway URL saved as `deepseek.url` in the client configuration. After starting
+your native dsh web gateway, save its complete launch URL, including `?token=`:
+
+```sh
+octomate configure --dsh-url 'http://127.0.0.1:3080/?token=YOUR_DSH_LAUNCH_TOKEN'
+```
+
+Run this from any directory for user-wide configuration. It writes
+`~/.config/octomate/cli.toml` with owner-only permissions and does not print the
+launch URL. Use `--scope project` from the session's working directory to store it
+in `.octomate/cli.toml` instead. Update it when the gateway address or token changes.
+The saved gateway setting is scoped to DeepSeek:
+
+```toml
+[deepseek]
+url = "http://127.0.0.1:3080/?token=YOUR_DSH_LAUNCH_TOKEN"
+```
+
+Keep the gateway running while native sessions stream.
+
+DeepSeek removes `DSH_*` variables from hook subprocesses, so exported
+`DSH_API_URL` and `DSH_LAUNCH_TOKEN` alone do not configure automatic ingestion.
+Manually launched tails still accept those variables and `--dsh-url`. The URL
+precedence is `--dsh-url`, `DSH_API_URL`, the client configuration, then
+`http://127.0.0.1:3080`.
 
 Octomate's own driven dsh child listens on port 3081, separate from the native
 harness on 3080.

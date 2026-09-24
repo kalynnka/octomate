@@ -70,6 +70,10 @@ transcript, subagents included, each subagent as its own conversation under the
 same thread. A session's own title becomes the thread's name. Permission mode
 changes are observed and recorded, never set.
 
+Resuming a driven session natively skips already recorded driven turns when their
+runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)
+for where new turns land and the limits for older history.
+
 What the tail skips: transcript line types it does not model, and inline subagent
 relics from transcripts older than the per-file subagent layout.
 

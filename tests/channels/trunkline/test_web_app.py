@@ -1117,7 +1117,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         name=CLAUDE_NATIVE_ID,
         # A run drifts into a subdirectory of the project it belongs to.
         cwd=Path("/srv/inky/migrations"),
-        external_session_id="session-1",
+        native_session_id="session-1",
     )
 
     transport = httpx.ASGITransport(app=octomate)
@@ -1139,7 +1139,7 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
         [run] = conversation["runs"]
         assert run["kind"] == "external"
         assert run["cwd"] == "/srv/inky/migrations"
-        assert run["external_session_id"] == "session-1"
+        assert run["native_session_id"] == "session-1"
 
 
 async def test_a_thread_no_project_claims_reads_back_without_one(

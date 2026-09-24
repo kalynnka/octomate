@@ -21,6 +21,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    UserPromptSubmitHookInput,
 )
 from claude_agent_sdk.types import Message
 from pydantic import SecretStr, TypeAdapter
@@ -68,6 +69,10 @@ KEY = ChannelAddress(
 
 
 _THREAD = uuid7()
+
+
+class IdentifiedPromptHook(UserPromptSubmitHookInput):
+    prompt_id: str
 
 
 class FakeClaudeClient:
@@ -180,6 +185,37 @@ async def test_run_stream_events_proxies_events_and_persists(
     fake, _label, messages = conversations.runs[0]
     assert fake.external_id == "sess-xyz"
     assert messages  # user prompt + assistant turns
+
+
+async def test_prompt_hook_identity_is_retained_on_the_driven_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class IdentifiedClient(FakeClaudeClient):
+        async def query(self, prompt: str) -> None:
+            options = self.last_options
+            assert isinstance(options, ClaudeAgentOptions)
+            assert options.hooks is not None
+            hook_input: IdentifiedPromptHook = {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": "sess-xyz",
+                "transcript_path": "/client/transcript.jsonl",
+                "cwd": "/repo",
+                "prompt": prompt,
+                "prompt_id": "native-prompt-id",
+            }
+            callback = options.hooks["UserPromptSubmit"][0].hooks[0]
+            assert await callback(hook_input, None, HookContext(signal=None)) == {}
+
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", IdentifiedClient)
+    conversations = FakeConversationManager()
+    await _tentacle(conversations).run(
+        "go", conversation_address=KEY, thread_id=_THREAD
+    )
+    fake, _label, _messages = conversations.runs[0]
+    [run] = fake.runs
+    assert run.native_id == "claude-native"
+    assert run.native_session_id == "sess-xyz"
+    assert run.native_turn_id == "native-prompt-id"
 
 
 async def test_a_run_addressed_by_conversation_id_lands_there(

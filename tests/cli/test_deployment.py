@@ -533,7 +533,7 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
     assert head is not None
-    revision = script.get_revision(head)
+    revision = script.get_revision("9c5cd2f0c70d")
     assert revision is not None
     previous = revision.down_revision
     assert isinstance(previous, str)

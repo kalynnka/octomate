@@ -227,13 +227,23 @@ class FakeConversationManager(ConversationManager):
         name: str | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
+        native_id: str | None = None,
+        native_turn_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
         fake.runs.append(
-            AgentRun(id=run_id, conversation_id=fake.id, name=name, cwd=cwd)
+            AgentRun(
+                id=run_id,
+                conversation_id=fake.id,
+                name=name,
+                cwd=cwd,
+                native_id=native_id,
+                native_session_id=external_id,
+                native_turn_id=native_turn_id,
+            )
         )
         fake.messages.extend(messages)
         if external_id is not None:

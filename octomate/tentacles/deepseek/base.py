@@ -1041,6 +1041,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     name=run_name,
                     cwd=Path(run_cwd),
                     external_id=session_id,
+                    native_id=DEEPSEEK_NATIVE_ID,
+                    native_turn_id=(
+                        f"{session_id}:{accumulator.turn_number}"
+                        if accumulator.turn_number is not None
+                        else None
+                    ),
                 )
                 await self.sync_session_name(conversation, session_id)
         if source_thread_message_ids:

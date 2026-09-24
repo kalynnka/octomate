@@ -193,6 +193,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         name: str | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
+        native_id: str | None = None,
+        native_turn_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
@@ -207,6 +209,9 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         run = AgentRun(
             id=run_id,
             conversation_id=conversation.id,
+            native_id=native_id,
+            native_session_id=external_id,
+            native_turn_id=native_turn_id,
             name=name,
             cwd=cwd,
             parent_run_id=parent_run_id,
@@ -221,6 +226,22 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             run, conversation_id=conversation.id, external_id=external_id
         )
 
+    async def driven_run(
+        self, native_id: str, session_id: str, turn_id: str
+    ) -> AgentRun | None:
+        """Find the driven owner of a native turn without loading its messages."""
+        async with async_session() as session:
+            return await session.one_or_none(
+                AgentRun,
+                expressions=[
+                    AgentRun["kind"] == "octomate",
+                    AgentRun["native_id"] == native_id,
+                    AgentRun["native_session_id"] == session_id,
+                    AgentRun["native_turn_id"] == turn_id,
+                ],
+                options=[noload(AgentRun["messages"])],
+            )
+
     async def record_external_run(
         self,
         conversation: Conversation,
@@ -229,7 +250,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         *,
         name: str | None = None,
         cwd: Path | None = None,
-        external_session_id: str,
+        native_session_id: str,
         source: str | None = None,
         start_offset: int | None = None,
         end_offset: int | None = None,
@@ -239,8 +260,12 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
     ) -> ExternalAgentRun | None:
         """Persist a turn of an external runtime's session (native Claude) as the
         `external` variant. `cwd` is the directory the turn ran in, as the hook or
-        the transcript reported it. `external_session_id` doubles as the
+        the transcript reported it. `native_session_id` doubles as the
         conversation's resumable handle (`external_id`).
+
+        A turn already recorded by the driven runtime keeps its original run and
+        messages. Its runtime identity lets native ingest skip the replay without
+        copying it into the native ledger or saving transcript coordinates on it.
 
         The byte range is what marks a turn finished. A run carrying `end_offset` was
         assembled from the transcript and is final, so recording it again — a recovery
@@ -257,6 +282,11 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         superseding the sketch once the turn closes.
         """
         if not messages:
+            return None
+        driven = await self.driven_run(
+            conversation.agent_tentacle_id, native_session_id, run_id
+        )
+        if driven is not None:
             return None
         async with async_session() as session:
             stored = await session.one_or_none(
@@ -277,20 +307,22 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         run = ExternalAgentRun(
             id=run_id,
             conversation_id=conversation.id,
+            native_id=conversation.agent_tentacle_id,
+            native_turn_id=run_id,
             name=name,
             cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
             started_at=messages[0].timestamp,
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
-            external_session_id=external_session_id,
+            native_session_id=native_session_id,
             source=source,
             start_offset=start_offset,
             end_offset=end_offset,
             last_line_uuid=last_line_uuid,
         )
         return await self.persist_run(
-            run, conversation_id=conversation.id, external_id=external_session_id
+            run, conversation_id=conversation.id, external_id=native_session_id
         )
 
     async def persist_run(
