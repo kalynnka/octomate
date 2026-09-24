@@ -157,13 +157,18 @@ def test_absent_desktop_session_stops_before_service_or_database_mutation(
 
 
 @pytest.mark.parametrize("timeout", [False, True])
+@pytest.mark.parametrize("permission_denied", [False, True])
 def test_stop_waits_for_children_with_a_bounded_deadline(
-    service: service_cli.PlistService, monkeypatch: pytest.MonkeyPatch, timeout: bool
+    service: service_cli.PlistService,
+    monkeypatch: pytest.MonkeyPatch,
+    timeout: bool,
+    permission_denied: bool,
 ) -> None:
     run = Mock(return_value=subprocess.CompletedProcess([], 0, "pid = 123\n"))
     monkeypatch.setattr(service_cli.subprocess, "run", run)
     monkeypatch.setattr(service_cli.os, "getpgid", Mock(return_value=456))
-    killpg = Mock(side_effect=[None, None] if timeout else [None, ProcessLookupError])
+    pending = PermissionError if permission_denied else None
+    killpg = Mock(side_effect=[pending, pending if timeout else ProcessLookupError])
     monkeypatch.setattr(service_cli.os, "killpg", killpg)
     monkeypatch.setattr(service_cli.time, "monotonic", Mock(side_effect=[0, 0, 31]))
 
@@ -179,6 +184,32 @@ def test_stop_waits_for_children_with_a_bounded_deadline(
         ["/bin/launchctl", "print", service.target],
         ["/bin/launchctl", "print", service.target],
         ["/bin/launchctl", "bootout", service.target],
+    ]
+
+
+def test_restart_waits_for_reaping_before_starting(
+    service: service_cli.PlistService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run = Mock(return_value=subprocess.CompletedProcess([], 0, "pid = 123\n"))
+    monkeypatch.setattr(service_cli.subprocess, "run", run)
+    monkeypatch.setattr(service_cli.os, "getpgid", Mock(return_value=456))
+    killpg = Mock(side_effect=[PermissionError, ProcessLookupError])
+    monkeypatch.setattr(service_cli.os, "killpg", killpg)
+    maintenance = Mock(return_value="Verified.")
+    monkeypatch.setattr(service_cli.PlistService, "maintenance", maintenance)
+
+    result = runner.invoke(service_typer, ["restart"])
+
+    assert result.exit_code == 0, result.output
+    assert killpg.call_count == 2
+    assert [call.args for call in maintenance.call_args_list] == [
+        ("ready",),
+        ("stopped",),
+        ("verify",),
+    ]
+    assert [call.args[0] for call in run.call_args_list][-2:] == [
+        ["/bin/launchctl", "enable", service.target],
+        ["/bin/launchctl", "bootstrap", service.domain, str(service.path())],
     ]
 
 
