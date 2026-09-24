@@ -13,7 +13,7 @@ configuration update the release pull request. Release Please assigns commits by
 path and bumps only the affected packages. The server's detection excludes the
 CLI and protocol packages, tests, docs, Trunkline, CI and editor configuration, and
 agent instructions; see `exclude-paths` in `release-please-config.json`.
-Commit subjects follow Conventional Commits, and
+Squash commit titles follow Conventional Commits, and
 before 1.0 a breaking change bumps the minor version while features and fixes bump
 the patch.
 
@@ -24,6 +24,33 @@ tagged commit on Python 3.12 and 3.13, the distributions are built and installed
 into throwaway client and server environments, and one publishing job per released
 package uploads to PyPI through a trusted publisher. Wait for every publishing job
 before announcing a release; a failed one is rerun from the same workflow run.
+
+## Pull requests and squash merges
+
+Merge pull requests with **Squash and merge**. The repository disables merge
+commits and rebase merges. The squash commit title defaults to the PR title, and
+its body defaults to blank. Keep those defaults: each PR should contribute one
+release entry. Including the branch's commit messages can repeat entries in the
+changelog.
+
+The PR title describes the final change and determines its release classification.
+Use `<kind>: <description>` or `<kind>(<scope>): <description>`. Allowed kinds are
+`feat`, `fix`, `docs`, `chore`, `refactor`, `test` and `perf`; the description starts
+with a lowercase letter. The scope is optional. For example:
+
+```text
+fix(cli): wait for macOS process reaping during restart
+```
+
+For a breaking change, add `!` immediately before `:`, with or without a scope:
+`feat(protocol)!: require the new handshake format`. Put the explanation and
+migration steps in the PR description and the relevant documentation; the squash
+commit body stays blank, so the title must carry the breaking-change marker.
+
+The [PR title check](https://github.com/kalynnka/octomate/blob/main/.github/workflows/pr-title.yml)
+enforces this format. Correct the title and wait for that check to pass before
+merging, then confirm the squash commit title still matches the PR title and its
+body is empty.
 
 ## Compatibility
 
