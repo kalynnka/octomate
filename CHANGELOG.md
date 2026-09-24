@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-v0.0.3...octomate-v0.0.4) (2026-09-24)
+
+
+### Features
+
+* collect dsh session names for driven and native sessions ([#99](https://github.com/kalynnka/octomate/issues/99)) ([f9be03a](https://github.com/kalynnka/octomate/commit/f9be03a62144787117040ef416e0c8074ba7ef0c))
+* **inkling:** generate session names alongside agent runs ([#100](https://github.com/kalynnka/octomate/issues/100)) ([5aed19d](https://github.com/kalynnka/octomate/commit/5aed19dacfc6ca3183fc4a57678e996e65fb461a))
+
+
+### Bug Fixes
+
+* deduplicate native resumes and authenticate DeepSeek ingestion ([#101](https://github.com/kalynnka/octomate/issues/101)) ([816622e](https://github.com/kalynnka/octomate/commit/816622e3fd7ce01e7ce3580203bbfc886fbd62ff))
+
 ## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-v0.0.2...octomate-v0.0.3) (2026-09-23)
 
 
