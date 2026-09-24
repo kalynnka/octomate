@@ -61,7 +61,7 @@ def tail(
         str | None,
         typer.Option(
             help="This machine's dsh gateway; defaults to "
-            f"${DSH_URL_ENV} or {DEFAULT_DSH_URL}. Use a launch URL with its "
+            f"${DSH_URL_ENV}, cli.toml's deepseek.url, or {DEFAULT_DSH_URL}. Use a launch URL with its "
             "token, or set DSH_LAUNCH_TOKEN in the tail process environment."
         ),
     ] = None,
@@ -83,7 +83,11 @@ def tail(
             )
         url = stream_url_for(base.rstrip("/") + DEEPSEEK_HOOK_PATH)
     if dsh_url is None:
-        dsh_url = os.environ.get(DSH_URL_ENV) or DEFAULT_DSH_URL
+        dsh_url = (
+            os.environ.get(DSH_URL_ENV)
+            or cli_settings().deepseek.url
+            or DEFAULT_DSH_URL
+        )
     from octomate_cli.streaming.deepseek import main  # websockets; only when tailing
 
     main(
