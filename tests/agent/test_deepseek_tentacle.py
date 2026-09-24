@@ -27,10 +27,12 @@ from pydantic import HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import DeepseekConfig
+from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.workspaces.base import ChatWorkspace
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -59,6 +61,7 @@ from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakePresentedBatch,
+    a_thread,
 )
 
 KEY = ChannelAddress(
@@ -221,6 +224,7 @@ class FakeDeepseekApi:
                 }
             ),
             "session/create": OkResult(value={"sessionId": "sess-1"}),
+            "session/projections": OkResult(value={"values": {}}),
             "session/selectModel": OkResult(value={"selected": {}}),
             "session/prompt": OkResult(value={"accepted": True}),
             "session/cancel": OkResult(value={"accepted": True}),
@@ -383,6 +387,119 @@ def interaction_octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
         tentacles={"im": a_channel(feelers)},
     )
+
+
+@pytest.mark.parametrize("resumed", [False, True])
+async def test_driven_names_are_persisted_and_revised(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    resumed: bool,
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(turn_events())
+    octomate = Octomate()
+    thread_id = await a_thread()
+    conversation = await octomate.conversations.ensure(
+        thread_id, agent_tentacle_id="deepseek"
+    )
+    session_id = "prior-session" if resumed else "sess-1"
+    if resumed:
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            assert stored is not None
+            stored.external_id = session_id
+            await session.commit()
+    tentacle = DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+    names = [None, "", "  ", " First name ", "修复会话名称", "修复会话名称", None, " "]
+    expected = None
+    async with tentacle:
+        for name in names:
+            FakeDeepseekApi.results["session/projections"] = OkResult(
+                value={"asOfSeq": 5, "values": {"title": name}}
+            )
+            result = await tentacle.run(
+                "work", conversation_address=KEY, thread_id=thread_id
+            )
+            assert result.output == "done"
+            if name and name.strip():
+                expected = name.strip()
+            stored = await octomate.conversations.get(
+                conversation.id, with_history=False
+            )
+            thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+            assert thread is not None
+            assert stored.name == expected
+            assert thread.title == expected
+    assert calls_of("session/projections") == [{"sessionId": session_id}] * len(names)
+    assert len(calls_of("session/create")) == (0 if resumed else 1)
+
+
+async def test_driven_child_name_does_not_rename_parent_thread(
+    monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(turn_events())
+    FakeDeepseekApi.results["session/projections"] = OkResult(
+        value={"values": {"title": "Child work"}}
+    )
+    octomate = Octomate()
+    thread_id = await a_thread()
+    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    assert thread is not None
+    await octomate.thread_manager.rename(thread, "Parent work")
+    parent = await octomate.conversations.ensure(
+        thread_id, agent_tentacle_id="deepseek"
+    )
+    await octomate.conversations.set_name(parent, "Parent work")
+    child = await octomate.conversations.ensure(
+        thread_id,
+        agent_tentacle_id="deepseek",
+        subagent_id="child",
+        parent_conversation_id=parent.id,
+    )
+    tentacle = DeepseekTentacle("deepseek", octomate, config=DeepseekConfig())
+    async with tentacle:
+        await tentacle.run(
+            "work",
+            conversation_address=KEY,
+            thread_id=thread_id,
+            conversation_id=child.id,
+        )
+    assert (
+        await octomate.conversations.get(child.id, with_history=False)
+    ).name == "Child work"
+    assert (
+        await octomate.conversations.get(parent.id, with_history=False)
+    ).name == "Parent work"
+    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    assert thread is not None
+    assert thread.title == "Parent work"
+
+
+@pytest.mark.parametrize(
+    "lookup",
+    [
+        ErrResult(error=RpcError(code="internal", message="lookup failed")),
+        OkResult(value={"values": {"title": 42}}),
+        OkResult(value=None),
+    ],
+)
+async def test_driven_name_lookup_failure_or_missing_session_keeps_result(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    lookup: RpcResult,
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(turn_events())
+    FakeDeepseekApi.results["session/projections"] = lookup
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    async with tentacle:
+        result = await tentacle.run("work", conversation_address=KEY, thread_id=_THREAD)
+    assert result.output == "done"
+    assert len(conversations.runs) == 1
+    if isinstance(lookup, ErrResult) or lookup.value is not None:
+        assert "dsh session name lookup failed for sess-1" in caplog.text
 
 
 @pytest.mark.parametrize("instrument", [False, True])

@@ -101,6 +101,7 @@ from octomate.tentacles.deepseek.wire import (
     SessionAssistantFrame,
     SessionCreateValue,
     SessionEventFrame,
+    SessionProjectionsValue,
     SessionPromptValue,
     StreamErrorFrame,
 )
@@ -763,6 +764,36 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         return result.value
 
+    async def sync_session_name(
+        self, conversation: Conversation, session_id: str
+    ) -> None:
+        try:
+            value = self.unwrap(
+                await self.client.remote(
+                    "session/projections", {"request": {"sessionId": session_id}}
+                ),
+                "session/projections",
+            )
+            if value is None:
+                return
+            name = SessionProjectionsValue.model_validate(value).values.title
+        except (AgentRunError, OSError, ValidationError):
+            logger.warning(
+                "dsh session name lookup failed for %s", session_id, exc_info=True
+            )
+            return
+        if not name or not name.strip():
+            return
+        await self.octomate.conversations.set_name(conversation, name)
+        if conversation.parent_conversation_id is not None:
+            return
+        thread = await self.octomate.thread_manager.get(
+            conversation.thread_id, with_messages=False
+        )
+        if thread is None:
+            raise ValueError(f"unknown thread {conversation.thread_id}")
+        await self.octomate.thread_manager.rename(thread, name)
+
     async def _iter_events(
         self,
         user_prompt: str | Sequence[UserContent] | None,
@@ -1011,6 +1042,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     cwd=Path(run_cwd),
                     external_id=session_id,
                 )
+                await self.sync_session_name(conversation, session_id)
         if source_thread_message_ids:
             if recorded_run is None:
                 raise RuntimeError("prompt-source bindings require a persisted dsh run")

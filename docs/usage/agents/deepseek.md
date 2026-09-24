@@ -56,6 +56,13 @@ selected before each prompt, since dsh has no per-turn override, and the posture
 set through the `/permission` command. Run-level instructions are prepended to the
 prompt text; dsh has no separate instructions channel.
 
+After each driven turn, Octomate reads dsh's current session title and stores it as
+the session name and thread title. Child conversations keep their own names without
+renaming the parent thread. Missing or blank titles leave the existing name intact;
+a failed title lookup does not discard the turn's result.
+If dsh finishes generating a title after that lookup, it is collected after a later
+turn.
+
 Approvals and questions arrive on the event socket and are answered through the
 gateway. Questions are matched back by option label, so a multi-select question
 can carry one selection from Octomate. A commissioned run with no user rejects
@@ -71,6 +78,9 @@ end. The tail does the rest: it polls the local dsh gateway, since the log is
 compressed in frames that only advance at checkpoints, and ships each event with
 its sequence number where a byte offset would go. Turns therefore appear when they
 close, not token by token.
+
+The tail also collects dsh's `session/title` events, including revisions and titles
+that arrive outside a turn, and updates the native session name and thread title.
 
 A trailing interrupted turn is withheld until a later event proves its closing
 records are real, because the gateway synthesises closers for a still-open turn.

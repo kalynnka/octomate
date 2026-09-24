@@ -11,7 +11,6 @@ import json
 import logging
 import os
 import socket
-import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -25,26 +24,30 @@ from octomate_protocol.deepseek import (
 from pydantic import HttpUrl
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import FunctionToolResultEvent, PartStartEvent
+from sqlalchemy.ext.asyncio import AsyncEngine
 from websockets.asyncio.client import connect
 from websockets.typing import Origin
 
 from octomate import Octomate
 from octomate.config.agents import DeepseekConfig
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.deepseek.base import DeepseekBridgeContext
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.process import DeepseekProcess
+from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
     QuestionRequestedFrame,
 )
-from tests.support.managers import FakeConversationManager
+from tests.support.managers import a_thread
 
 
 async def test_real_harness_drives_resumes_and_reads_native_history(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
 ) -> None:
     executable = os.environ.get("DSH_TEST_EXECUTABLE")
     if executable is None:
@@ -82,10 +85,11 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     with socket.socket() as reservation:
         reservation.bind(("127.0.0.1", 0))
         port = reservation.getsockname()[1]
-    conversations = FakeConversationManager()
+    octomate = Octomate()
+    conversations = octomate.conversations
     tentacle = DeepseekTentacle(
         "deepseek",
-        Octomate(conversations=conversations),
+        octomate,
         config=DeepseekConfig(
             executable=executable,
             port=port,
@@ -119,7 +123,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     address = ChannelAddress(
         channel_tentacle_id="im", chat_type="dm", chat_id="smoke", user_id="smoke"
     )
-    thread = uuid.uuid4()
+    thread = await a_thread()
     async with asyncio.timeout(90), tentacle:
         async with tentacle.run_stream_events(
             "Test integration",
@@ -133,8 +137,13 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         assert any(isinstance(event, FunctionToolResultEvent) for event in events)
         assert any(isinstance(event, PartStartEvent) for event in events)
         assert events[-1].result.usage.output_tokens == 6
-        first_session = conversations.runs[0][0].external_id
+        conversation = await conversations.ensure(thread, agent_tentacle_id="deepseek")
+        first_session = conversation.external_id
         assert first_session is not None
+        assert conversation.name == "Test integration"
+        stored_thread = await octomate.thread_manager.get(thread, with_messages=False)
+        assert stored_thread is not None
+        assert stored_thread.title == conversation.name
         resumed = await tentacle.run(
             "Continue",
             conversation_address=address,
@@ -142,8 +151,9 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             model="octomate-test:mock",
         )
         assert resumed.output == "Octomate Remote API works"
-        assert conversations.runs[-1][0].external_id == first_session
-        assert len(conversations.runs) == 2
+        conversation = await conversations.get(conversation.id)
+        assert conversation.external_id == first_session
+        assert len(conversation.runs) == 2
         assert len(approvals) == 2
         assert len(questions) == 2
         assert all(frame.session_id == first_session for frame in approvals + questions)
@@ -163,6 +173,18 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         ]
         assert kinds.count("turn/end") == 2
         assert "tool/result" in kinds
+        tailer = DeepseekEventTailer(conversations, octomate.thread_manager)
+        state, _ = await tailer.attach_remote(
+            first_session,
+            home / "session.jsonl",
+            str(tmp_path),
+            UserProfile(channel_user_id="smoke", name="Smoke"),
+        )
+        for record in records:
+            await tailer.feed_remote(state, None, json.dumps(record), 0, 0)
+        assert state.conversation is not None
+        assert state.conversation.name == conversation.name
+        tailer.detach_remote(state)
         reader = DeepseekProcess(
             executable=executable,
             port=0,
@@ -243,7 +265,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             "Continue after restart", conversation_address=address, thread_id=thread
         )
         assert result.output == "Octomate Remote API works"
-        assert conversations.runs[-1][0].external_id == first_session
+        assert (await conversations.get(conversation.id)).external_id == first_session
 
 
 async def test_real_harness_browser_login_through_a_trusted_proxy(
