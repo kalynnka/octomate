@@ -20,6 +20,7 @@ from pydantic_ai.models.google import GoogleModel
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.models.test import TestModel
 
+from octomate import Octomate
 from octomate.config import (
     AnthropicProviderConfig,
     BedrockProviderConfig,
@@ -30,7 +31,9 @@ from octomate.config import (
     ProvidersConfig,
     VertexProviderConfig,
 )
+from octomate.config.agents import InklingConfig
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
+from octomate.tentacles.inkling.build import build_inkling
 
 
 def make_registry() -> ProviderRegistry:
@@ -52,6 +55,47 @@ def make_registry() -> ProviderRegistry:
 def test_unsupported_provider_prefix_is_rejected() -> None:
     with pytest.raises(ValidationError, match="unsupported model provider prefix"):
         ModelConfig(name="xai:grok-3")
+
+
+@pytest.mark.parametrize("configured", [True, False])
+def test_inkling_naming_model_uses_registry_settings_without_adding_a_route(
+    configured: bool,
+) -> None:
+    registry = ProviderRegistry(
+        ProvidersConfig(
+            openai=OpenAIProviderConfig(
+                api_key=SecretStr("sk-test"), base_url="https://naming.example/v1"
+            )
+        )
+    )
+    config = InklingConfig.model_validate(
+        {
+            "models": [{"name": "test"}],
+            **(
+                {
+                    "naming_model": {
+                        "name": "openai:gpt-5-mini",
+                        "settings": {"temperature": 0.2},
+                    }
+                }
+                if configured
+                else {}
+            ),
+        }
+    )
+    tentacle = build_inkling("inkling", config, Octomate(), registry=registry)
+    assert list(tentacle.models) == ["test"]
+    if not configured:
+        assert tentacle.naming_model is None
+        return
+    model = tentacle.naming_model
+    assert isinstance(model, OpenAIChatModel)
+    assert model.model_name == "gpt-5-mini"
+    assert str(model.client.base_url) == "https://naming.example/v1/"
+    assert model.client.api_key == "sk-test"
+    settings = dict(model.settings or {})
+    assert settings["temperature"] == 0.2
+    assert settings["openai_prompt_cache_retention"] == "24h"
 
 
 def test_model_without_provider_uses_pydantic_ai_default() -> None:

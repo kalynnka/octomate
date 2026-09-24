@@ -105,6 +105,11 @@ def build_inkling(
         id,
         octomate,
         models={model.name: registry.build_model(model) for model in config.models},
+        naming_model=(
+            registry.build_model(config.naming_model)
+            if config.naming_model is not None
+            else None
+        ),
         claims=config.claims,
         permission_mode=config.permission_mode,
         request_limit=config.request_limit,
