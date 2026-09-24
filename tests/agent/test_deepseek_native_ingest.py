@@ -163,6 +163,54 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     assert directions == [("inbound", "inspect it"), ("outbound", "done")]
 
 
+@pytest.mark.parametrize("position", ["before", "during", "after"])
+async def test_native_titles_are_persisted_and_revised_outside_turns(
+    position: str,
+) -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    events = turn_events(1, 0, "inspect it", "done")
+    title = ev(
+        0,
+        "session/title",
+        {
+            "title": " First name ",
+            "messageSeqs": [] if position == "before" else [1],
+            "source": {"kind": "user"}
+            if position == "before"
+            else {"kind": "provider", "provider": "test-title"},
+        },
+    )
+    events.insert({"before": 0, "during": 2, "after": 4}[position], title)
+    for seq, event in enumerate(events):
+        event["seq"] = seq
+    await stream_events(tailer, events)
+    conversation = await native_conversation(octomate)
+    assert conversation.name == "First name"
+    assert len(conversation.runs) == 1
+    thread = await octomate.thread_manager.get(conversation.thread_id)
+    assert thread is not None
+    assert thread.title == "First name"
+
+    state, _ = await tailer.attach_remote(SESSION_ID, LOG_LABEL, "/work/repo", SENDER)
+    for seq, name in enumerate(
+        ["修复会话名称", "修复会话名称", None, "", "  ", 42], start=5
+    ):
+        await feed_events(tailer, state, [ev(seq, "session/title", {"title": name})])
+        stored = await octomate.conversations.get(conversation.id, with_history=False)
+        assert stored.name == "修复会话名称"
+        thread = await octomate.thread_manager.get(conversation.thread_id)
+        assert thread is not None
+        assert thread.title == "修复会话名称"
+    tailer.detach_remote(state)
+    conversation = await native_conversation(octomate)
+    assert len(conversation.runs) == 1
+    assert [message.message_text for message in conversation.runs[0].messages] == [
+        "inspect it",
+        "done",
+    ]
+
+
 async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     """dsh logs `agent-instructions` and `plugin` context as user-role
     messages inside the turn; the ledger's prompt is the human's words only —

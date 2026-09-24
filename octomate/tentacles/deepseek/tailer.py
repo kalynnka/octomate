@@ -44,6 +44,7 @@ from octomate.tentacles.deepseek.wire import (
     HistoryEntry,
     SessionEvent,
     SessionEventFrame,
+    SessionTitle,
     history_entry_adapter,
     permission_preset_of,
     text_of,
@@ -273,6 +274,20 @@ class DeepseekEventTailer:
 
     async def process_entry(self, state: TailState, entry: HistoryEntry) -> None:
         event = entry.event
+        if event.type == "session/title":
+            try:
+                name = SessionTitle.model_validate(event.data).title
+            except ValidationError:
+                return
+            if not name or not name.strip():
+                return
+            conversation = state.conversation
+            assert conversation is not None
+            async with self.locks.hold(state.session_id):
+                await self.conversation_manager.set_name(conversation, name)
+                thread = await self.session_thread(state.session_id, state.cwd)
+                await self.thread_manager.rename(thread, name)
+            return
         if state.open_turn is None:
             if event.type == "user/message":
                 prompt = human_prompt(event)

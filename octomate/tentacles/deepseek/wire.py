@@ -643,6 +643,18 @@ class HistoryEntry(BaseModel):
 history_entry_adapter: TypeAdapter[HistoryEntry] = TypeAdapter(HistoryEntry)
 
 
+class SessionTitle(BaseModel):
+    """The title in a `session/title` event or the session's projection values."""
+
+    title: str | None = None
+
+
+class SessionProjectionsValue(BaseModel):
+    """The current values returned by `session/projections`."""
+
+    values: SessionTitle
+
+
 class SessionCreateValue(BaseModel):
     """The value `session/create` answers with."""
 
