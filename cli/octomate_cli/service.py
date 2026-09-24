@@ -217,6 +217,10 @@ class PlistService(BaseModel):
                 os.killpg(group, 0)
             except ProcessLookupError:
                 break
+            except PermissionError:
+                # macOS reports EPERM while a group contains only unreaped zombies.
+                # Keep waiting for ESRCH under the same shutdown deadline.
+                pass
             if time.monotonic() >= deadline:
                 raise TimeoutError(
                     "The service process group did not stop within 30 seconds."

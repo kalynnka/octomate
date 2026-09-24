@@ -75,6 +75,11 @@ A failure after the service stopped leaves it disabled and prints the phase, the
 backup path and the next command. Nothing is retried or rolled back automatically.
 Every step is appended to `logs/server.log`.
 
+Service stop, restart and upgrade wait up to 30 seconds for the old process group
+to disappear, including the brief macOS permission error while exited processes
+await reaping. If the group remains, the command fails and leaves the service
+disabled instead of starting another instance.
+
 The web console is not part of it. After a server upgrade, rebuild Trunkline from
 the new checkout as in [Manual setup](server.md#build-trunkline).
 
