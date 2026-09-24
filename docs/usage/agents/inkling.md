@@ -94,7 +94,7 @@ The title also names the owning thread. Commissioned child conversations keep
 their own names without renaming the parent's thread. Naming uses a separate
 request with no tools; its messages stay out of the conversation history. The
 reply streams independently of naming, and the run waits for both to finish.
-Naming has a 60-second timeout; if it fails, the existing name remains.
+Naming has a 30-second timeout; if it fails, the existing name remains.
 Interrupting the run also cancels its naming request.
 
 ## Postures and deferrals
