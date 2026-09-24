@@ -34,7 +34,7 @@ from pydantic_ai.agent.abstract import (
 )
 from pydantic_ai.capabilities import Toolset
 from pydantic_ai.mcp import MCPToolset
-from pydantic_ai.messages import UserContent
+from pydantic_ai.messages import ModelRequest, UserContent, UserPromptPart
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
 from pydantic_ai.settings import ModelSettings, ThinkingEffort, merge_model_settings
@@ -43,6 +43,9 @@ from pydantic_ai.toolsets import AbstractToolset, ApprovalRequiredToolset
 from pydantic_ai_harness.filesystem import FileSystem
 from pydantic_ai_harness.repo_context import RepoContext
 from pydantic_ai_harness.shell import LLM_API_KEY_ENV_PATTERNS, Shell
+from pydantic_ai_harness.step_persistence.conversations import conversation_text
+from pydantic_ai_harness.step_persistence.naming import generate_name
+from pydantic_graph import GraphRunContext
 from rich.style import Style
 
 from octomate.capabilities import UserScopedCapability
@@ -62,6 +65,7 @@ from octomate.capabilities.harness.react import (
     ResumeTurn,
     StartTurn,
     iter_react_graph_events,
+    resolve_conversation,
 )
 from octomate.capabilities.mcp import tentacles_capability
 from octomate.config.agents import AgentRouteModelName
@@ -171,6 +175,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     # claude and codex, inkling takes no config object, so its default arrives here.
     permission_mode: InklingPermissionMode = "default"
     request_limit: int = 256
+    # Separate auxiliary model; None follows the model chosen for the turn.
+    naming_model: Model | str | None = None
 
     permission_modes: tuple[PermissionMode, ...] = tuple(
         PermissionMode(value=mode, name=mode)
@@ -198,6 +204,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         *,
         agent: Agent[None, InklingOutput] | None = None,
         models: Mapping[AgentRouteModelName, Model | str] | None = None,
+        naming_model: Model | str | None = None,
         name: str = "octomate-inkling",
         toolsets: Sequence[AbstractToolset[None]] | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -215,6 +222,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         self.request_limit = request_limit
         self.gateway = gateway
         self.models = dict(models or {})
+        self.naming_model = naming_model
         self.capabilities = [
             capability
             for capability in (capabilities or [])
@@ -835,9 +843,72 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             run_name=resolved_run_name,
             conversation_address=str(conversation_address),
         ):
-            async for event in iter_react_graph_events(
-                start_node,
-                state=state,
-                deps=graph_deps,
-            ):
-                yield event
+            naming_task: asyncio.Task[None] | None = None
+            if user_prompt and deferred_tool_results is None:
+                naming_model = self.naming_model or model or self.agent.model
+                if naming_model is None:
+                    raise ValueError("session naming requires a model")
+                conversation = await resolve_conversation(
+                    GraphRunContext(state=state, deps=graph_deps)
+                )
+                naming_task = asyncio.create_task(
+                    self.sync_session_name(
+                        conversation, user_prompt, model=naming_model
+                    )
+                )
+            try:
+                async for event in iter_react_graph_events(
+                    start_node,
+                    state=state,
+                    deps=graph_deps,
+                ):
+                    yield event
+                if naming_task is not None:
+                    await naming_task
+            finally:
+                if naming_task is not None:
+                    naming_task.cancel()
+                    await asyncio.gather(naming_task, return_exceptions=True)
+
+    async def sync_session_name(
+        self,
+        conversation: Conversation,
+        user_prompt: str | Sequence[UserContent],
+        *,
+        model: Model | str,
+    ) -> None:
+        """Name prior context and the new prompt alongside the foreground graph."""
+        messages = [
+            *conversation.messages,
+            ModelRequest(parts=[UserPromptPart(user_prompt)]),
+        ]
+        digest = conversation_text(messages)[-2400:]
+        if not digest.strip():
+            return
+        prompt = (
+            f"Previous title: {conversation.name or ''}\n"
+            f"Current conversation tail:\n{digest}"
+        )
+        try:
+            async with asyncio.timeout(30):
+                named = await generate_name(
+                    model=model,
+                    prompt=prompt,
+                )
+        except Exception:
+            # Naming is decorative; its failure must not fail the foreground run.
+            # Cancellation still propagates to the caller.
+            logger.warning(
+                "Inkling session naming failed for %s", conversation.id, exc_info=True
+            )
+            return
+        title = " ".join(named.name.title.split()[:8])
+        await self.conversation_manager.set_name(conversation, title)
+        if conversation.parent_conversation_id is not None:
+            return
+        thread = await self.octomate.thread_manager.get(
+            conversation.thread_id, with_messages=False
+        )
+        if thread is None:
+            raise ValueError(f"unknown thread {conversation.thread_id}")
+        await self.octomate.thread_manager.rename(thread, title)

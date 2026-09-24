@@ -27,6 +27,8 @@ tentacles:
         ability: General assistant for everyday questions and coordination.
     permission_mode: default        # default | dontAsk | bypassPermissions
     request_limit: 256              # model requests per run
+    naming_model:                   # optional; defaults to the turn's model
+      name: anthropic:claude-haiku-4-5
 ```
 
 `models` is required and its first entry is the default. Every configured model is
@@ -74,6 +76,26 @@ In a thread bound to a [project](../projects.md) it also gets file, shell and
 repository-context tools rooted in the workspace, each behind approval, with the
 provider keys the process runs on hidden from the shell. With no project it has no
 workspace and no file tools at all: it is a conversation.
+
+## Session names
+
+Each new user prompt starts a short session-title request alongside the agent
+graph, using Pydantic AI Harness. It supplies the previous title and the latest
+2,400 characters of prior conversation text plus the incoming prompt. The naming
+prompt keeps the title stable unless the main task changes. Resuming an approval
+or question does not start another naming request.
+
+Set `naming_model` to choose a separate model for titles. It accepts the same
+`name` and optional `settings` as an entry in `models`, and uses the same provider
+credentials and defaults. It does not add a selectable agent route. When omitted,
+naming uses the turn's model.
+
+The title also names the owning thread. Commissioned child conversations keep
+their own names without renaming the parent's thread. Naming uses a separate
+request with no tools; its messages stay out of the conversation history. The
+reply streams independently of naming, and the run waits for both to finish.
+Naming has a 30-second timeout; if it fails, the existing name remains.
+Interrupting the run also cancels its naming request.
 
 ## Postures and deferrals
 

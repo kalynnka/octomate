@@ -132,6 +132,13 @@ class InklingConfig(AgentConfig):
 
     models: list[ModelConfig] = Field(min_length=1)
 
+    naming_model: ModelConfig | None = Field(
+        default=None,
+        description="Model used to name sessions alongside each new user turn. "
+        "Uses the turn's model when omitted. Resolved through the provider registry "
+        "with the same credentials and settings as other models.",
+    )
+
     request_limit: int = Field(
         default=256,
         gt=0,

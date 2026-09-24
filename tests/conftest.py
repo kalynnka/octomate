@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from alembic.config import Config
@@ -17,11 +18,20 @@ import octomate.database as database
 from octomate.config.base import OCTOMATE_HOME_ENV
 from octomate.models import Base
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.tentacles.inkling import InklingTentacle
 from tests.support.config import ISOLATED_HOME, without_dotenv
 
 HISTORY_MIGRATIONS = ScriptDirectory.from_config(
     Config(str(Path(__file__).resolve().parents[1] / "octomate/migrations/alembic.ini"))
 ).get_revisions(("9c5cd2f0c70d",))
+
+
+@pytest.fixture(autouse=True)
+def inkling_session_names(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
+    """Scripted turns supply foreground responses only; naming has its own tests."""
+    naming = AsyncMock()
+    monkeypatch.setattr(InklingTentacle, "sync_session_name", naming)
+    return naming
 
 
 @pytest.fixture(scope="session", autouse=True)
