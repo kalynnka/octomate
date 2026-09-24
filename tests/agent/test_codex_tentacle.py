@@ -631,6 +631,9 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     [recorded] = conversations.runs
     fake, _label, messages = recorded
     assert fake.external_id == "thread-1"
+    assert fake.runs[-1].native_id == "codex-native"
+    assert fake.runs[-1].native_session_id == "thread-1"
+    assert fake.runs[-1].native_turn_id == "turn-1"
     assert messages
 
 

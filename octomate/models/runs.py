@@ -92,6 +92,21 @@ class AgentRun(Base, TransmuterProxiedMixin):
     started_at: Mapped[datetime | None] = mapped_column(
         UTCDateTime, nullable=True, index=True
     )
+    native_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        index=True,
+        comment="The native runtime owning this run's native session and turn IDs.",
+    )
+    native_turn_id: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        index=True,
+        comment="The native ingest turn key, retained on driven runs to recognize replay.",
+    )
+    native_session_id: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
 
     conversation: Mapped[Conversation] = relationship(
         "Conversation", back_populates="runs", lazy="raise_on_sql"
@@ -112,18 +127,12 @@ class ExternalAgentRun(AgentRun):
     """A run rebuilt from an external runtime's transcript (native Claude session) —
     the `external` polymorphic identity.
 
-    Single-table inheritance: SQLAlchemy places these on the shared `agent_runs` table
-    as nullable columns (octomate runs leave them NULL — the STI tradeoff), and the
-    base's `with_polymorphic` loads them on a base-class read. `start_offset` /
-    `end_offset` are a turn's byte range in the transcript, the checkpoint a live tailer
-    and recovery resume from.
+    Single-table inheritance keeps transcript coordinates nullable in the shared
+    table. Only external runs use them to checkpoint native ingestion.
     """
 
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "external"}
 
-    external_session_id: Mapped[str | None] = mapped_column(
-        String, nullable=True, index=True
-    )
     source: Mapped[str | None] = mapped_column(String, nullable=True)
     start_offset: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_offset: Mapped[int | None] = mapped_column(Integer, nullable=True)

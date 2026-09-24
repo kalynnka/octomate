@@ -587,6 +587,9 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     [recorded] = conversations.runs
     fake, _label, messages = recorded
     assert fake.external_id == "sess-1"
+    assert fake.runs[-1].native_id == "deepseek-native"
+    assert fake.runs[-1].native_session_id == "sess-1"
+    assert fake.runs[-1].native_turn_id == "sess-1:1"
     assert messages
 
 
@@ -866,6 +869,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         name: str | None,
         cwd: Path,
         external_id: str,
+        native_id: str,
+        native_turn_id: str | None,
     ) -> None:
         assert tentacle.driven_sessions == {}
         observed.append("record")
@@ -876,6 +881,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
             name=name,
             cwd=cwd,
             external_id=external_id,
+            native_id=native_id,
+            native_turn_id=native_turn_id,
         )
 
     async def call(

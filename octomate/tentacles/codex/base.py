@@ -1486,6 +1486,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             name=run_name,
             cwd=Path(run_cwd),
             external_id=accumulator.thread_id or codex_thread_id,
+            native_id=CODEX_NATIVE_ID,
+            native_turn_id=accumulator.turn_id,
         )
         if source_thread_message_ids:
             if recorded_run is None:

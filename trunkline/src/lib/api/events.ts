@@ -550,7 +550,7 @@ export interface ApiAgentRun {
   parent_run_id: string | null
   parent_tool_call_id: string | null
   started_at: string | null
-  external_session_id?: string | null
+  native_session_id?: string | null
   /** oldest first — what the run actually sent and received */
   messages: ApiModelMessage[]
 }

@@ -292,7 +292,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
         run_id="ext",
         messages=_msgs("ext"),
         name="claude-native",
-        external_session_id="sess-9",
+        native_session_id="sess-9",
         source="claude-vscode",
         start_offset=0,
         end_offset=42,
@@ -309,7 +309,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
 
     external_run = by_id["ext"]
     assert isinstance(external_run, ExternalAgentRun)
-    assert external_run.external_session_id == "sess-9"
+    assert external_run.native_session_id == "sess-9"
     assert external_run.source == "claude-vscode"
     assert (external_run.start_offset, external_run.end_offset) == (0, 42)
     assert external_run.last_line_uuid == "u-last"

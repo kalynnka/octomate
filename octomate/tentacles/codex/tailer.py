@@ -515,7 +515,7 @@ class CodexTranscriptTailer:
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
                     cwd=Path(tail.cwd) if tail.cwd else None,
-                    external_session_id=tail.thread_id,
+                    native_session_id=tail.thread_id,
                     source=turn.source,
                     start_offset=turn.start_offset,
                     end_offset=turn.end_offset,
@@ -565,17 +565,17 @@ class CodexTranscriptTailer:
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
                     cwd=Path(state.cwd) if state.cwd else None,
-                    external_session_id=state.session_id,
+                    native_session_id=state.session_id,
                     source=turn.source,
                     start_offset=turn.start_offset,
                     end_offset=turn.end_offset,
                 )
                 span.set_attribute("committed", run is not None)
-                if run is None:
-                    return
                 state.recorded.add(turn.turn_id)
                 if turn.turn_id == state.drain_turn:
                     state.drain_ready.set()
+                if run is None:
+                    return
                 await self.bind_ledger(
                     state.session_id, run, turn.prompt, turn.answer, state.sender
                 )

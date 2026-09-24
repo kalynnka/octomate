@@ -48,6 +48,15 @@ class AgentRun(BaseTransmuter):
     parent_run_id: str | None = None
     parent_tool_call_id: str | None = None
     started_at: AwareDatetime | None = None
+    native_id: str | None = Field(
+        default=None,
+        description="The native runtime owning the native session and turn IDs.",
+    )
+    native_turn_id: str | None = Field(
+        default=None,
+        description="The native ingest turn key used to recognize a replayed driven run.",
+    )
+    native_session_id: str | None = None
 
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
@@ -58,7 +67,6 @@ class ExternalAgentRun(AgentRun):
     Carries the transcript coordinates its offsets check-point ingest against."""
 
     kind: Literal["external"] = "external"  # pyright: ignore[reportIncompatibleVariableOverride]
-    external_session_id: str | None = None
     source: str | None = None
     start_offset: int | None = None
     end_offset: int | None = None

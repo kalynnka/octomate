@@ -184,7 +184,7 @@ function sessionTag(conversationId: string): string {
  * has a conversation here re-claims that session rather than starting another,
  * because the agent resumes the context it left. A thread nothing routed is a
  * native runtime's session tailed in through the hooks: one conversation, whose
- * `external_session_id` is the runtime's own session id, and no handoff at all.
+ * `native_session_id` is the runtime's own session id, and no handoff at all.
  */
 function liveSessions(
   handoffs: ApiHandoff[],
