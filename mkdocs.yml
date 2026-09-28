@@ -159,6 +159,7 @@ nav:
       - Schemas:
           - api/schemas.md
           - Conversations: api/schemas/conversations.md
+          - Runtime commands: api/schemas/commands.md
           - The graph’s vocabulary: api/schemas/graph.md
           - People: api/schemas/users.md
           - Projects, MCP and the rest: api/schemas/resources.md

@@ -33,6 +33,77 @@ The base class provides claims and routes, model discovery hooks, session
 counters, the project lookup for the run's workspace, `resumed_prompt` for a
 runtime that takes no tool result back, and `subagent_run`.
 
+## Runtime commands
+
+The optional `discover_commands` and `execute_command` hooks use the
+[command schemas](../api/schemas/commands.md). Their defaults report unsupported
+without starting a turn. These are extension hooks only: HTTP endpoints, channel
+entrypoints and runtime adapters are not wired yet.
+
+Both hooks receive a `CommandContext` resolved by the caller: authenticated user,
+originating channel address, effective workspace, conversation, model and approval
+posture. `conversation=None` represents a new composer. Discovery must not send a
+model prompt or create a visible turn. If the runtime requires a session, return
+an unavailable catalog explaining the prerequisite instead of creating one
+silently.
+
+Implement discovery from the running backend's registry. `AgentCommandCatalog`
+contains the owning `agent_id` and one `catalog`, whose state is ready, loading,
+unsupported, unavailable or failed. A ready catalog has one list of `entries`:
+commands and skills share the same channel-facing contract. Its `limitations`
+explain gaps such as Codex exposing skills without a native command catalog.
+A successful discovery with no entries is an empty ready catalog.
+
+Channels use only these `CommandDescriptor` fields:
+
+| Field | Channel use |
+|---|---|
+| `id` | Submit the opaque selection to the owning tentacle. IDs must be unique within the scoped catalog; names may repeat. |
+| `name` | Show and filter the upstream command or skill name. |
+| `description` | Show the upstream description. |
+| `argument_hint` | Show a free-form input hint when supplied; never parse it as an argument schema. |
+| `accepts_attachments` | Offer attachments only for `true`. `false` means unsupported; `None` means unspecified. |
+
+Extend `CommandDescriptor` with typed attributes in the owning tentacle's schema
+module. For example, a Codex adapter can retain the exact skill path:
+
+```python
+class CodexCommandDescriptor(CommandDescriptor):
+    path: Path = Field(description="The upstream skill path used for invocation.")
+```
+
+Claude aliases or a DSH definition ID belong on their respective descriptor
+subclasses in the same way. Map the runtime's invocation identity to the common
+`id`; channels must not construct a runtime path or slash line from the display
+name. Keep all standard fields' meanings unchanged when extending the model.
+
+Construct catalogs with these concrete descriptor instances. The `entries` field
+uses Pydantic's `SerializeAsAny` to preserve declared subclass attributes when
+serializing the catalog. A channel may parse the result using the base contract
+and ignore the additional fields. A tentacle that rehydrates serialized metadata
+must validate it with its own concrete model: base-model parsing intentionally
+does not reconstruct runtime subclasses. Invocation requests carry only the
+selected ID, raw arguments and resolved attachments, not a client-supplied copy
+of the runtime descriptor.
+
+`execute_command` receives explicit intent and raw arguments. It returns a
+`CommandResult` with existing message segments, a `CommandError`, or a lazy
+`ReactEventStream` for an entry that runs the agent. For an agent run, forward the
+supplied suspender and capabilities through the adapter's normal approval and
+streaming implementation. Keep direct controls out of `run` and preserve raw
+arguments without injecting chat context. The default never interprets slash text
+or forwards unsupported commands to the model.
+
+There is no fixed execution-kind field on a descriptor. Decide behavior for each
+invocation: DSH's `/plan off` changes state, while `/plan <message>` also submits
+agent input. If a command produces both control feedback and agent activity, its
+adapter must expose both through the existing stream events.
+
+The caller must authorize the target, revalidate catalog membership and attachment
+support, deduplicate delivery and hold the active-turn guard through stream cleanup.
+These hooks do not enforce those host responsibilities. A native transcript handle
+alone does not authorize control of an external CLI session.
+
 ## A skeleton
 
 ```python

@@ -43,6 +43,14 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.commands import (
+    AgentCommandCatalog,
+    CommandContext,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+    UnavailableCommandCatalog,
+)
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.triage import AgentRoute, Claim
@@ -260,6 +268,53 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         Harnesses call this during entry and install results with set_model_catalog.
         Agents with config-supplied catalogs keep their existing models and claims.
         """
+
+    async def discover_commands(self, context: CommandContext) -> AgentCommandCatalog:
+        """Read runtime entries in the supplied user/session/workspace context.
+
+        Discovery must not send a model prompt or create a visible turn. If a
+        runtime needs a session before it can discover entries, report unavailable
+        and explain that prerequisite; do not silently create one. Adapters with
+        no discovery API retain this explicit unsupported result.
+        """
+        return AgentCommandCatalog(
+            agent_id=self.id,
+            catalog=UnavailableCommandCatalog(
+                status="unsupported",
+                message=f"{self.id} does not expose command discovery.",
+            ),
+        )
+
+    async def execute_command(
+        self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+        *,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+    ) -> CommandOutcome | ReactEventStream[AgentOutputT]:
+        """Invoke a revalidated runtime entry without passing through chat triage.
+
+        Direct controls return a CommandOutcome without invoking `run`. Entries
+        that run the agent return a lazy ReactEventStream: entering and consuming
+        it drives the runtime, with the same events, approvals, persistence and
+        cleanup as `run_stream_events`. The caller must hold the conversation's
+        active-turn guard until that stream closes, and forward the suspender and
+        capabilities for agent runs. Direct controls do not consume those inputs.
+
+        Resolve the opaque invocation id using this tentacle's current catalog.
+        Execution behavior belongs to the invocation, not a fixed descriptor tag:
+        a command may return a control result or run the agent depending on input.
+
+        Preserve invocation arguments verbatim. Never turn an unsupported or
+        unknown invocation into a normal model prompt. Authorization, current
+        catalog validation and delivery deduplication belong to the host caller;
+        these adapter hooks do not establish any of them.
+        """
+        return CommandError(
+            status="unsupported",
+            message=f"{self.id} does not support explicit command execution.",
+        )
 
     def set_model_catalog(
         self, models: dict[str, Model | str], claims: dict[str, Claim]
