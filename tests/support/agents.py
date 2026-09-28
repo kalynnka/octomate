@@ -251,6 +251,12 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # Every `relocate` the graph asked for: the conversation's id and where to.
     relocated: list[tuple[uuid.UUID, Path]] = field(default_factory=list)
 
+    async def fork_session(
+        self, conversation: Conversation, *, cwd: Path
+    ) -> str | None:
+        """The fake has no external runtime session to fork."""
+        return None
+
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         self.relocated.append((conversation.id, cwd))
 

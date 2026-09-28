@@ -330,6 +330,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         target: Conversation,
         *,
         carry_external_id: bool = False,
+        external_id: str | None = None,
     ) -> AgentRun | None:
         """Fork `source`'s full message history into `target` as one new run, so a
         same-agent `teleport` resumes seamlessly against the copy.
@@ -345,7 +346,14 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         to `target` in the same commit, so a driven external session continues in
         the new place — and the handle keeps naming exactly one conversation. The
         move matters even when the mirror history is empty: the runtime holds its
-        own transcript, and the handle is what resumes it."""
+        own transcript, and the handle is what resumes it. `external_id` instead
+        attaches an independently forked runtime session, preserving the source."""
+        if external_id is not None and (
+            carry_external_id or external_id == source.external_id
+        ):
+            raise ValueError(
+                "a fork requires a new external id without carrying the source"
+            )
         if target.messages:
             raise ValueError(
                 f"fork target {target.id} already holds "
@@ -353,7 +361,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             )
         messages = list(source.messages)
         carry_handle = carry_external_id and source.external_id is not None
-        if not messages and not carry_handle:
+        if not messages and not carry_handle and external_id is None:
             return None
 
         forked_run: AgentRun | None = None
@@ -391,11 +399,30 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                     )
                 moving_target.external_id = moving_source.external_id
                 moving_source.external_id = None
+            elif external_id is not None:
+                stored_target = await session.get(Conversation, target.id)
+                if stored_target is None:
+                    raise ValueError(f"unknown conversation {target.id}")
+                stored_target.external_id = external_id
             await session.commit()
         if carry_handle:
             # The caller's transmuter mirrors the committed move.
             source.external_id = None
+        elif external_id is not None:
+            target.external_id = external_id
         return forked_run
+
+    async def set_external_id(
+        self, conversation: Conversation, external_id: str
+    ) -> None:
+        """Bind a conversation to its replacement runtime session."""
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.external_id = external_id
+            await session.commit()
+        conversation.external_id = external_id
 
     async def set_permission_mode(
         self,

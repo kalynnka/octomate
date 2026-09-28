@@ -92,9 +92,10 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
 
         new_address = new_target.address
+        source_conversation = None
         if new_address is None or new_address == origin_address:
-            # Stay put: the current conversation already holds the trailing teleport
-            # deferral, so just resolve it and resume in place — nothing to fork.
+            # The current conversation already holds the trailing teleport
+            # deferral. An explicit workspace move may still fork its runtime.
             state.target = origin
             state.handoff = None
             landed = state.thread
@@ -104,8 +105,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         else:
             # Move: fork the origin conversation into the new sub-thread, claim it
             # for the same agent so follow-ups continue there, and resume against
-            # the fork. The resumable handle moves with it, so an external runtime's
-            # session continues in the new place rather than beside it.
+            # the fork. The runtime prepares its destination handle after the
+            # destination workspace is ready.
             landed = await ctx.deps.thread_manager.enter(
                 new_address, current=state.thread
             )
@@ -114,9 +115,6 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
             target_conversation = await ctx.deps.conversation_manager.ensure(
                 landed.id, agent_tentacle_id=self.agent_id
-            )
-            await ctx.deps.conversation_manager.fork(
-                source_conversation, target_conversation, carry_external_id=True
             )
             conversation = target_conversation
             state.thread = landed
@@ -136,7 +134,27 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         cwd = ctx.deps.workspaces.open(
             state.thread.id, await ctx.deps.workspaces.projects.of(state.thread)
         ).path
-        await ctx.deps.agent(self.agent_id).relocate(conversation, cwd=cwd)
+        agent = ctx.deps.agent(self.agent_id)
+        if source_conversation is not None:
+            external_id = await agent.fork_session(source_conversation, cwd=cwd)
+            carry = (
+                external_id is not None
+                and external_id == source_conversation.external_id
+            )
+            await ctx.deps.conversation_manager.fork(
+                source_conversation,
+                conversation,
+                carry_external_id=carry,
+                external_id=None if carry else external_id,
+            )
+            await agent.relocate(conversation, cwd=cwd)
+        elif self.request.here:
+            external_id = await agent.fork_session(conversation, cwd=cwd)
+            if external_id is not None and external_id != conversation.external_id:
+                await ctx.deps.conversation_manager.set_external_id(
+                    conversation, external_id
+                )
+            await agent.relocate(conversation, cwd=cwd)
         # The pending call resolves into the resumed run, whichever runtime cast it.
         return React(
             resume_results=DeferredToolResults(

@@ -604,6 +604,28 @@ class CodexTentacle(AgentTentacle[str, None]):
         # Omission lets Codex resolve settings and an existing thread's selection.
         return None
 
+    async def fork_session(
+        self, conversation: Conversation, *, cwd: Path
+    ) -> str | None:
+        """Copy Codex's stored history into an independent, durable thread."""
+        if conversation.external_id is None:
+            return None
+        runtime = replace(
+            self.config.runtime,
+            config_overrides=(
+                *self.config.runtime.config_overrides,
+                *DRIVEN_CONFIG_OVERRIDES,
+            ),
+        )
+        async with AsyncCodex(config=runtime) as client:
+            config = await self.thread_config(client, str(cwd), None)
+            forked = await client.thread_fork(
+                conversation.external_id, cwd=str(cwd), config=config, ephemeral=False
+            )
+        if forked.id == conversation.external_id:
+            raise ValueError("Codex fork returned the source thread id")
+        return forked.id
+
     async def discover_models(self) -> None:
         runtime = replace(
             self.config.runtime,
@@ -1402,7 +1424,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             pooled = await self.pool.acquire(conversation.id, user_id=user_id)
             resources.push_async_callback(self.pool.release, conversation.id)
             codex_thread = pooled.thread
-            if codex_thread is None:
+            if codex_thread is None or codex_thread.id != conversation.external_id:
                 # SDK startup can wait on network I/O. Enter after acquiring
                 # the lease so it cannot hold up other conversations' clients.
                 await pooled.client.__aenter__()

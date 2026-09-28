@@ -75,6 +75,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
+from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
 from octomate.tentacles.feelers.output import TimelineState
 from octomate.types.threads import CLAUDE_NATIVE_ID
@@ -1555,8 +1556,11 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
     assert handoff.brief == "Please take this up over here."
 
 
+@pytest.mark.parametrize("fork_supported", [False, True])
 async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     in_memory_engine: None,
+    monkeypatch: pytest.MonkeyPatch,
+    fork_supported: bool,
 ) -> None:
     """The same agent, one channel over. A teleport takes its whole history with it,
     so the fork is what has to land there — not a fresh conversation."""
@@ -1575,17 +1579,31 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         config=ChannelConfig(type="fake", agents=["other"]),
     )
     target = _source_target(address)
-
-    result = await _run(
-        React(),
-        state=ReflexState(
-            source_target=target,
-            target=target,
-            decision=_summon(),
-            thread=_thread(address),
-        ),
-        deps=_summon_deps(im, entry, second, far),
+    if not fork_supported:
+        monkeypatch.setattr(FakeAgent, "fork_session", AgentTentacle.fork_session)
+    expected = (
+        nullcontext()
+        if fork_supported
+        else pytest.raises(
+            NotImplementedError, match="does not support session forking"
+        )
     )
+    with expected:
+        result = await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_summon_deps(im, entry, second, far),
+        )
+
+    if not fork_supported:
+        assert len(entry.turns) == 1
+        assert entry.relocated == []
+        return
 
     assert not isinstance(result, DeferredResult)
     # Their direct messages there, then a sub-thread inside them — and the agent

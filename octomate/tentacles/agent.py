@@ -294,6 +294,12 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 spoken.append("Approved." if verdict else "Denied.")
         return "\n\n".join(spoken)
 
+    async def fork_session(
+        self, conversation: Conversation, *, cwd: Path
+    ) -> str | None:
+        """Fork the runtime session, or stop if this agent cannot fork safely."""
+        raise NotImplementedError(f"Agent {self.id!r} does not support session forking")
+
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         """Relocate the runtime session behind `conversation` to `cwd`, where its next
         run resumes. The graph's call, made once a teleport has settled where the

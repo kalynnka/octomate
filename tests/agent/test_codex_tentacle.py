@@ -5,6 +5,7 @@ import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
+from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock, Mock
@@ -45,6 +46,7 @@ from pydantic import BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_graph import GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -55,6 +57,9 @@ from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces.base import ChatWorkspace, Workspace
+from octomate.reflex.nodes.teleport import Teleport
+from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
+from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -725,6 +730,105 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert turn_call.summary == ReasoningSummary(ReasoningSummaryValue.detailed)
 
 
+@pytest.mark.parametrize("here", [False, True])
+async def test_teleport_forks_codex_and_resumes_the_new_id(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    here: bool,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("before", thread_id="thread-new"))
+    fork = AsyncMock(return_value=SimpleNamespace(id="thread-fork"))
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
+    octomate = Octomate()
+    thread = await octomate.thread_manager.ensure(KEY)
+    tentacle = CodexTentacle(
+        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+    )
+    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["codex"]))
+    origin = ResponseTarget(channel_id="im", address=KEY)
+    state = ReflexState(source_target=origin, target=origin, thread=thread)
+    deps = ReflexDeps(
+        agents={"codex": tentacle},
+        channels={"im": channel},
+        conversation_manager=octomate.conversations,
+        thread_manager=octomate.thread_manager,
+        action_manager=octomate.deferred_actions,
+        gateway=octomate.gateway,
+        workspaces=octomate.workspaces,
+    )
+    async with tentacle:
+        await tentacle.run("before", conversation_address=KEY, thread_id=thread.id)
+        source = await octomate.conversations.ensure(
+            thread.id, agent_tentacle_id="codex"
+        )
+        node = Teleport(
+            request=TeleportRequest(hint="continue", tool_call_id="move", here=here),
+            origin=origin,
+            agent_id="codex",
+        )
+        await node.run(GraphRunContext(state=state, deps=deps))
+        assert state.thread is not None
+        destination = await octomate.conversations.ensure(
+            state.thread.id, agent_tentacle_id="codex"
+        )
+        assert destination.external_id == "thread-fork"
+        assert source.external_id == "thread-new"
+        if not here:
+            assert destination.id != source.id
+            assert (
+                await octomate.conversations.get(source.id)
+            ).external_id == "thread-new"
+            assert len(destination.messages) == len(source.messages)
+        fork.assert_awaited_once_with(
+            "thread-new",
+            cwd=str(octomate.workspaces.open(state.thread.id, None).path),
+            config={"mcp_servers": {}},
+            ephemeral=False,
+        )
+        FakeCodex.script = text_script("after", thread_id="thread-fork")
+        await tentacle.run("after", conversation_address=KEY, thread_id=state.thread.id)
+        assert FakeCodex.thread_calls[-1].kind == "resume"
+        assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
+        if not here:
+            FakeCodex.script = text_script("local continuation", thread_id="thread-new")
+            await tentacle.run(
+                "local continuation", conversation_address=KEY, thread_id=thread.id
+            )
+            original = await octomate.conversations.get(source.id)
+            forked = await octomate.conversations.get(destination.id)
+            assert original.external_id == "thread-new"
+            assert forked.external_id == "thread-fork"
+            assert "local continuation" not in str(list(forked.messages))
+            assert "after" not in str(list(original.messages))
+
+    # A fresh app-server must also select the persisted fork, without forking again.
+    FakeCodex.script = text_script("restarted", thread_id="thread-fork")
+    async with tentacle:
+        await tentacle.run("again", conversation_address=KEY, thread_id=state.thread.id)
+    assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
+    assert fork.await_count == 1
+
+
+async def test_codex_fork_failure_leaves_the_source_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex([])
+    fork = AsyncMock(side_effect=RuntimeError("fork failed"))
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
+    tentacle = _tentacle(FakeConversationManager())
+    source = Conversation(
+        thread_id=uuid7(), agent_tentacle_id="codex", external_id="source"
+    )
+
+    with pytest.raises(RuntimeError, match="fork failed"):
+        await tentacle.fork_session(source, cwd=Path("/destination"))
+
+    assert source.external_id == "source"
+    assert FakeCodex.closed == 1
+
+
 async def test_run_with_output_type_passes_schema_and_validates_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1294,7 +1398,7 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    reset_fake_codex(text_script("done"))
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
     other_thread = uuid7()
     tentacle = _tentacle(FakeConversationManager())
 
@@ -1303,7 +1407,7 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
         await tentacle.run("two", conversation_address=KEY, thread_id=_THREAD)
         # Same thread: one warm client, one thread_start, both turns reuse it.
         assert FakeCodex.builds == 1
-        assert len([c for c in FakeCodex.thread_calls if c.kind == "start"]) == 1
+        assert len(FakeCodex.thread_calls) == 1
         assert len(FakeCodex.turn_calls) == 2
 
         await tentacle.run(
@@ -1401,7 +1505,7 @@ async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
             return self
 
     monkeypatch.setattr(codex_base, "AsyncCodex", SlowStartingCodex)
-    reset_fake_codex(text_script("done"))
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
@@ -1492,7 +1596,7 @@ async def test_a_warm_thread_reapplies_the_selected_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    reset_fake_codex(text_script("done"))
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
     conversation = FakeConversation(thread_id=_THREAD, permission_mode="auto_review")
     conversations.store[(_THREAD, "codex", "")] = conversation

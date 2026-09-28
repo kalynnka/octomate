@@ -860,6 +860,38 @@ async def test_fork_leaves_the_external_handle_by_default() -> None:
     ).external_id is None
 
 
+@pytest.mark.parametrize("empty", [False, True])
+async def test_fork_attaches_an_independent_runtime_without_changing_source(
+    empty: bool,
+) -> None:
+    service, _, _, source, target = await _carry_pair("fork-id")
+    if empty:
+        source = await service.ensure(
+            await a_thread("empty-fork-source"), agent_tentacle_id="codex"
+        )
+        await service.set_external_id(source, "sess-1")
+
+    run = await service.fork(source, target, external_id="sess-fork")
+
+    assert (run is None) == empty
+    assert source.external_id == "sess-1"
+    assert target.external_id == "sess-fork"
+    assert (await service.get(source.id)).external_id == "sess-1"
+    assert (await service.get(target.id)).external_id == "sess-fork"
+
+
+async def test_fork_rejects_reusing_the_source_runtime_id() -> None:
+    service, _, _, source, target = await _carry_pair("duplicate-id")
+
+    with pytest.raises(ValueError, match="new external id"):
+        await service.fork(source, target, external_id=source.external_id)
+
+    assert (await service.get(source.id)).external_id == "sess-1"
+    unchanged = await service.get(target.id)
+    assert unchanged.external_id is None
+    assert list(unchanged.messages) == []
+
+
 async def test_fork_carries_the_handle_even_with_nothing_to_copy() -> None:
     # The runtime holds its own transcript; the handle is what resumes it, so the
     # move matters even when there is no mirror history to fork.
