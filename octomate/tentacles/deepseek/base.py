@@ -35,6 +35,7 @@ from octomate_protocol.stream import (
     StreamEof,
     StreamFinalize,
     StreamHello,
+    StreamLine,
     StreamWelcome,
     client_message_adapter,
 )
@@ -343,6 +344,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     return
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
+                    return
+                if not isinstance(message, StreamLine):
+                    await websocket.close(
+                        code=1008, reason="expected a transcript line"
+                    )
                     return
                 if message.agent_id is not None:
                     # A dsh session streams as one event sequence; there are no

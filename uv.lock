@@ -2095,6 +2095,7 @@ dependencies = [
     { name = "rich" },
     { name = "tomlkit" },
     { name = "typer" },
+    { name = "uuid-utils" },
     { name = "watchfiles" },
     { name = "websockets" },
 ]
@@ -2110,6 +2111,7 @@ requires-dist = [
     { name = "rich", specifier = ">=13" },
     { name = "tomlkit", specifier = ">=0.13.2" },
     { name = "typer", specifier = ">=0.25.1" },
+    { name = "uuid-utils", specifier = ">=0.9" },
     { name = "watchfiles", specifier = ">=1.1.1" },
     { name = "websockets", specifier = ">=15" },
 ]

@@ -47,11 +47,12 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
-    StreamSnapshotRequest,
+    StreamSnapshotStart,
     StreamSnapshotStored,
     StreamWelcome,
     server_message_adapter,
 )
+from uuid_utils.compat import uuid7
 from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
@@ -233,10 +234,12 @@ class SessionTail:
                 remaining -= len(chunk)
                 yield chunk
 
-    async def upload_snapshot(
-        self, websocket: ClientConnection, request: StreamSnapshotRequest
-    ) -> None:
-        """Send a bounded snapshot and require its storage acknowledgment."""
+    async def upload_snapshot(self, websocket: ClientConnection) -> None:
+        """Upload the drained transcript and require its storage acknowledgment."""
+        request = StreamSnapshotStart(
+            transfer_id=uuid7(), end=self.cursor(SESSION_FILE).offset
+        )
+        await websocket.send(request.model_dump_json())
         for chunk in self.snapshot(request.end):
             await websocket.send(chunk)
         async with asyncio.timeout(SNAPSHOT_ACK_TIMEOUT):
@@ -318,8 +321,8 @@ async def stream_session(
             if finalize is None and not idle:
                 return False  # the socket dropped mid-watch: reconnect and resume
             await tail.pump(websocket)  # final drain to EOF
-            if finalize is not None and finalize.snapshot is not None:
-                await tail.upload_snapshot(websocket, finalize.snapshot)
+            if welcome.upload_transcript and tail.cursor(SESSION_FILE).offset:
+                await tail.upload_snapshot(websocket)
             await websocket.send(StreamEof().model_dump_json())
             # Wait out the server's close so the eof is consumed, bounded so a
             # wedged server cannot park this process forever.

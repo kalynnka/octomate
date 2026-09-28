@@ -18,7 +18,7 @@ from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -38,7 +38,6 @@ from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
-    StreamFinalize,
     StreamHello,
     StreamWelcome,
     client_message_adapter,
@@ -113,6 +112,7 @@ from octomate.schemas.messages import ModelRequest
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.streaming.files import FileTransferError, FileTransferSlot
 from octomate.telemetry import (
     agent_input_message_attributes,
     codex_logfire,
@@ -537,12 +537,34 @@ class CodexTentacle(AgentTentacle[str, None]):
             hello.session_id,
             hello.client_version or "unversioned",
         )
-        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+        conversation = state.conversation
+        assert conversation is not None
+        slot = FileTransferSlot(
+            websocket=websocket,
+            persist=(
+                partial(
+                    self.octomate.conversations.store_transcript,
+                    conversation=conversation,
+                    files=self.octomate.files,
+                    owner_id=sender.user_id,
+                )
+                if sender.user_id is not None
+                else None
+            ),
+            filename=Path(hello.transcript_path).name,
+            content_type="application/jsonl",
+            offset=offsets.get(SESSION_FILE, 0),
+        )
+        await websocket.send_text(
+            StreamWelcome(
+                offsets=offsets, upload_transcript=slot.persist is not None
+            ).model_dump_json()
+        )
 
         async def relay_finalize() -> None:
             await state.stop_event.wait()
             try:
-                await websocket.send_text(StreamFinalize().model_dump_json())
+                await slot.finalize()
             except Exception:
                 # The socket died first; the drain this asked for cannot happen, and
                 # the next connect re-streams what it would have shipped.
@@ -558,9 +580,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         clean = False
         try:
             while True:
-                message = client_message_adapter.validate_json(
-                    await websocket.receive_text()
-                )
+                message = await slot.receive()
                 if isinstance(message, StreamEof):
                     clean = True
                     return
@@ -582,8 +602,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
         except WebSocketDisconnect:
             pass
-        except ValidationError:
-            await websocket.close(code=1008, reason="unparseable stream message")
+        except (ValidationError, FileTransferError):
+            await websocket.close(code=1008, reason="invalid stream message")
         except Exception:
             logger.exception(
                 "session %s: remote tail errored; its open turns are left for the "
@@ -594,6 +614,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             relay.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await relay
+            await slot.close()
             self.session_tailer.detach_remote(state)
             if clean:
                 with contextlib.suppress(Exception):

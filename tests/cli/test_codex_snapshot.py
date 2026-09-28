@@ -1,11 +1,10 @@
-"""A native tail uploads only the requested prefix and waits for its receipt."""
+"""A native tail uploads its drained transcript and waits for its receipt."""
 
 from __future__ import annotations
 
 import asyncio
 from pathlib import Path
 from typing import Literal
-from uuid import uuid4
 
 import octomate_cli.streaming.files as tail_mod
 import pytest
@@ -20,11 +19,12 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
-    StreamSnapshotRequest,
+    StreamSnapshotStart,
     StreamSnapshotStored,
     StreamWelcome,
     client_message_adapter,
 )
+from uuid_utils.compat import uuid7
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
@@ -62,15 +62,14 @@ def test_snapshot_refuses_a_truncated_transcript(tmp_path: Path) -> None:
         list(tail.snapshot(8))
 
 
-@pytest.mark.parametrize("snapshot_requested", [False, True])
+@pytest.mark.parametrize("upload_transcript", [False, True])
 async def test_finalize_waits_for_snapshot_receipt_before_eof(
-    tmp_path: Path, snapshot_requested: bool
+    tmp_path: Path, upload_transcript: bool
 ) -> None:
     prefix = b'{"turn":1}\n'
     later = b'{"turn":2}\n'
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(prefix)
-    request = StreamSnapshotRequest(transfer_id=uuid4(), end=len(prefix))
     finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
     async def server(websocket: ServerConnection) -> None:
@@ -80,23 +79,25 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             assert hello.protocol == STREAM_PROTOCOL
             assert websocket.request is not None
             assert websocket.request.headers["Authorization"] == "Bearer test-token"
-            await websocket.send(StreamWelcome(offsets={}).model_dump_json())
-            line = client_message_adapter.validate_json(await websocket.recv())
-            assert isinstance(line, StreamLine)
-            # Appended after the server chooses the transfer boundary. The final
-            # drain observes this line, but the snapshot must exclude it.
-            with transcript.open("ab") as handle:
-                handle.write(later)
             await websocket.send(
-                StreamFinalize(
-                    snapshot=request if snapshot_requested else None
+                StreamWelcome(
+                    offsets={}, upload_transcript=upload_transcript
                 ).model_dump_json()
             )
+            line = client_message_adapter.validate_json(await websocket.recv())
+            assert isinstance(line, StreamLine)
+            # The final drain must include bytes appended just before finalization.
+            with transcript.open("ab") as handle:
+                handle.write(later)
+            await websocket.send(StreamFinalize().model_dump_json())
             drained = client_message_adapter.validate_json(await websocket.recv())
             assert isinstance(drained, StreamLine)
             assert drained.line == later.decode().rstrip("\n")
-            if snapshot_requested:
-                assert await websocket.recv() == prefix
+            if upload_transcript:
+                request = client_message_adapter.validate_json(await websocket.recv())
+                assert isinstance(request, StreamSnapshotStart)
+                assert request.end == len(prefix + later)
+                assert await websocket.recv() == prefix + later
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(websocket.recv(), 0.05)
                 await websocket.send(
@@ -132,19 +133,23 @@ async def test_unacknowledged_snapshot_does_not_send_eof(
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(b"{}\n")
     monkeypatch.setattr(tail_mod, "SNAPSHOT_ACK_TIMEOUT", 0.1)
-    request = StreamSnapshotRequest(transfer_id=uuid4(), end=3)
     finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
     async def server(websocket: ServerConnection) -> None:
         try:
             await websocket.recv()  # hello
-            await websocket.send(StreamWelcome(offsets={}).model_dump_json())
+            await websocket.send(
+                StreamWelcome(offsets={}, upload_transcript=True).model_dump_json()
+            )
             await websocket.recv()  # transcript line
-            await websocket.send(StreamFinalize(snapshot=request).model_dump_json())
+            await websocket.send(StreamFinalize().model_dump_json())
+            request = client_message_adapter.validate_json(await websocket.recv())
+            assert isinstance(request, StreamSnapshotStart)
+            assert request.end == 3
             assert await websocket.recv() == b"{}\n"
             if receipt == "wrong_id":
                 await websocket.send(
-                    StreamSnapshotStored(transfer_id=uuid4()).model_dump_json()
+                    StreamSnapshotStored(transfer_id=uuid7()).model_dump_json()
                 )
             elif receipt == "wrong_message":
                 await websocket.send(StreamFinalize().model_dump_json())

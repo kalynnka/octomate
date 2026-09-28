@@ -82,6 +82,10 @@ class Conversation(BaseTransmuter):
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
     external_id: str | None = None
+    transcript_file_id: uuid.UUID | None = Field(
+        default=None,
+        description="Latest uploaded native transcript; not inherited by forks.",
+    )
 
     thread_id: uuid.UUID = Field(
         frozen=True,

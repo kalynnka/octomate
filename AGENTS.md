@@ -54,6 +54,8 @@
 
 ## Data Modeling
 
+Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests. Do not generate UUIDv4 identifiers.
+
 1. Model real domain concepts directly instead of hiding them in loose metadata dictionaries. If two cases have different fields, statuses, or behavior, represent them as separate typed variants.
 2. Prefer discriminated unions plus `TypeAdapter` at dynamic boundaries. Validate external or serialized payloads once into typed variants, then pass those typed objects through the rest of the code.
 3. When prepared data is ultimately passed to a Pydantic model, schema, or `TypeAdapter`, let that final Pydantic boundary perform validation. Do not eagerly instantiate or validate each nested item first unless the intermediate code must inspect typed fields, branch on the validated shape, or produce a deliberately earlier error.

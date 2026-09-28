@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import opendal
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -27,19 +28,23 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamSnapshotStart,
+    StreamSnapshotStored,
     StreamWelcome,
     server_message_adapter,
 )
 from pydantic import SecretStr
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
-from starlette.testclient import WebSocketDenialResponse
+from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
@@ -314,8 +319,12 @@ async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
     assert run.id == "turn-a"
 
 
-def stream_client() -> tuple[TestClient, CodexTentacle]:
+def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    if storage is not None:
+        octomate.files = FileManager(
+            storage=opendal.AsyncOperator("fs", root=str(storage))
+        )
     tentacle = octomate.connect(
         CodexTentacle(
             "codex",
@@ -354,11 +363,20 @@ def test_the_stream_authenticates_like_the_hook_routers() -> None:
     assert denial.value.status_code == 401
 
 
-def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
+def upload_transcript(websocket: WebSocketTestSession, data: bytes) -> None:
+    start = StreamSnapshotStart(transfer_id=uuid7(), end=len(data))
+    websocket.send_text(start.model_dump_json())
+    websocket.send_bytes(data)
+    stored = server_message_adapter.validate_json(websocket.receive_text())
+    assert isinstance(stored, StreamSnapshotStored)
+    assert stored.transfer_id == start.transfer_id
+
+
+def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) -> None:
     """End to end through the endpoint: hello/welcome, framed lines, eof, and the
     server's close. The next connect is welcomed at byte 0 again — Codex resumes by
     re-streaming, with the committed-turn guard as the dedup."""
-    client, tentacle = stream_client()
+    client, tentacle = stream_client(storage=tmp_path)
 
     # One entered client, so both connects share a portal loop — the in-memory
     # database's connection is loop-bound, and two portals would strand it.
@@ -368,6 +386,7 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
             assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.upload_transcript
             assert tentacle.native_sessions == {SESSION_ID: 1}
             for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
                 websocket.send_text(
@@ -375,6 +394,9 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
                         agent_id=agent_id, start=start, end=end, line=line
                     ).model_dump_json()
                 )
+            upload_transcript(
+                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+            )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -389,12 +411,12 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
         assert tentacle.native_sessions == {}
 
 
-def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
+def test_a_stop_over_the_hook_pipe_drains_the_socket(tmp_path: Path) -> None:
     """End to end: the `Stop` hook's POST waits for the streamed turn to commit,
     reaches the open socket as `finalize`, and the client's `eof` closes the
     connection — the tail process's exit. Codex resumes by re-streaming, so the
     next welcome is byte 0 again; the committed run is the proof of the drain."""
-    client, _ = stream_client()
+    client, _ = stream_client(storage=tmp_path)
 
     with client:
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
@@ -418,6 +440,9 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
             assert posted.status_code == 200
             relayed = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(relayed, StreamFinalize)
+            upload_transcript(
+                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+            )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -529,9 +554,9 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
 
 @pytest.mark.parametrize("eof", [False, True])
 async def test_an_accepted_stream_continues_when_octomate_starts_driving(
-    monkeypatch: pytest.MonkeyPatch, eof: bool
+    monkeypatch: pytest.MonkeyPatch, eof: bool, tmp_path: Path
 ) -> None:
-    client, tentacle = stream_client()
+    client, tentacle = stream_client(storage=tmp_path)
     feed_remote = AsyncMock()
     monkeypatch.setattr(tentacle.session_tailer, "feed_remote", feed_remote)
 
@@ -547,6 +572,7 @@ async def test_an_accepted_stream_continues_when_octomate_starts_driving(
                     websocket.send_text(
                         StreamLine(start=0, end=3, line="{}").model_dump_json()
                     )
+                    upload_transcript(websocket, b"{}\n")
                 websocket.send_text(StreamEof().model_dump_json())
                 with pytest.raises(WebSocketDisconnect) as disconnect:
                     websocket.receive_text()

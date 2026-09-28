@@ -82,11 +82,16 @@ class StreamWelcome(BaseModel):
 
     type: Literal["welcome"] = "welcome"
     offsets: dict[str, int]
+    upload_transcript: bool = Field(
+        default=False,
+        description="Upload the drained session transcript before EOF on every connection.",
+    )
 
 
-class StreamSnapshotRequest(BaseModel):
-    """Request the attached session's exact raw prefix, never an arbitrary file."""
+class StreamSnapshotStart(BaseModel):
+    """Client announces the drained session transcript before sending its bytes."""
 
+    type: Literal["snapshot_start"] = "snapshot_start"
     transfer_id: UUID
     end: int = Field(
         gt=0, description="Exclusive byte offset at a complete-line boundary."
@@ -94,7 +99,7 @@ class StreamSnapshotRequest(BaseModel):
 
 
 class StreamSnapshotStored(BaseModel):
-    """Server acknowledgment after the requested snapshot is durably stored."""
+    """Server acknowledgment after the uploaded snapshot is durably stored."""
 
     type: Literal["snapshot_stored"] = "snapshot_stored"
     transfer_id: UUID
@@ -102,19 +107,19 @@ class StreamSnapshotStored(BaseModel):
 
 class StreamFinalize(BaseModel):
     """Server → client: the session ended (`SessionEnd` arrived on the hook pipe) —
-    drain to EOF, optionally upload a snapshot, answer with `eof`, and exit.
+    drain to EOF, upload if negotiated at welcome, answer with `eof`, and exit.
 
-    A snapshot travels as binary WebSocket messages totaling exactly `snapshot.end`
+    A snapshot starts with `snapshot_start`, followed by binary messages totaling `end`
     bytes. The client waits for the matching `snapshot_stored` before sending `eof`.
     Ordinary transcript lines precede the binary messages; they never interleave.
     """
 
     type: Literal["finalize"] = "finalize"
-    snapshot: StreamSnapshotRequest | None = None
 
 
 StreamClientMessage = Annotated[
-    StreamHello | StreamLine | StreamEof, Field(discriminator="type")
+    StreamHello | StreamLine | StreamSnapshotStart | StreamEof,
+    Field(discriminator="type"),
 ]
 StreamServerMessage = Annotated[
     StreamWelcome | StreamFinalize | StreamSnapshotStored, Field(discriminator="type")

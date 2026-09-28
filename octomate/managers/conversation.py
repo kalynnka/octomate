@@ -10,13 +10,16 @@ from typing import Literal, TypeVar
 
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
+from fastapi import UploadFile
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
+from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.files import FileVariant
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadMessage
@@ -411,6 +414,38 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         elif external_id is not None:
             target.external_id = external_id
         return forked_run
+
+    async def store_transcript(
+        self,
+        file: UploadFile,
+        *,
+        conversation: Conversation,
+        files: FileManager,
+        owner_id: uuid.UUID,
+    ) -> FileVariant:
+        """Replace a native conversation's owner-scoped transcript after upload.
+
+        Commit the file metadata and conversation reference together after the
+        content upload succeeds. Retain previous files for separate cleanup.
+        Return the stored file without mutating the caller's conversation.
+        """
+        async with self.lock(conversation.key):
+            current = await self.get(conversation.id, with_history=False)
+            previous_id = current.transcript_file_id
+            if previous_id is not None:
+                # Refuse to replace another owner's transcript before uploading.
+                await files.get(previous_id, owner_id=owner_id)
+            async with (
+                files.upload(file, owner_id=owner_id) as transcript,
+                async_session() as session,
+            ):
+                stored = await session.get(Conversation, conversation.id)
+                if stored is None:
+                    raise ValueError(f"unknown conversation {conversation.id}")
+                session.add(transcript)
+                stored.transcript_file_id = transcript.id
+                await session.commit()
+            return transcript
 
     async def set_external_id(
         self, conversation: Conversation, external_id: str

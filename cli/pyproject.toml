@@ -18,6 +18,7 @@ dependencies = [
     "rich>=13",
     "tomlkit>=0.13.2",
     "typer>=0.25.1",
+    "uuid-utils>=0.9",
     "watchfiles>=1.1.1",
     "websockets>=15",
 ]

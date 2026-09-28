@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,7 +48,23 @@ class FileManager(Manager):
     async def write(
         self, file: UploadFile, *, owner_id: uuid.UUID | None = None
     ) -> FileVariant:
-        """Store complete content, then publish its validated metadata.
+        """Store complete content, then commit its validated metadata."""
+        async with (
+            self.upload(file, owner_id=owner_id) as stored,
+            async_session() as session,
+        ):
+            session.add(stored)
+            await session.commit()
+        return stored
+
+    @asynccontextmanager
+    async def upload(
+        self, file: UploadFile, *, owner_id: uuid.UUID | None = None
+    ) -> AsyncGenerator[FileVariant]:
+        """Upload content for metadata committed in the caller's transaction.
+
+        The caller must add the yielded metadata and commit before leaving this
+        context. If the block raises, delete the uploaded content.
 
         Filename and MIME type come from the upload; size is measured from its
         complete contents. A missing content type means generic binary content.
@@ -81,13 +99,10 @@ class FileManager(Manager):
         ) as exc:
             raise FileExistsError(stored.key) from exc
         try:
-            async with async_session() as session:
-                session.add(stored)
-                await session.commit()
-        except Exception:
+            yield stored
+        except BaseException:
             await self.storage.delete(stored.key)
             raise
-        return stored
 
     async def get(
         self, file_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
