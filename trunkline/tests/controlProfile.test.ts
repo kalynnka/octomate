@@ -165,14 +165,20 @@ test('the profile card uses the username when the display name is missing and sh
   assert.ok(html.includes('Also known as Ali'))
 })
 
-test('the profile card escapes names and omits a duplicate nickname', () => {
-  const name = '<script>Alice</script>'
-  useConsole.getInitialState().mgmtSec = 'profile'
-  useAuth.getInitialState().user = { ...profile.user, name, nickname: name }
-  const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
-  assert.ok(html.includes('&lt;script&gt;Alice&lt;/script&gt;'))
-  assert.doesNotMatch(html, /<script>|Also known as/)
-})
+for (const [name, escaped] of [
+  ['<script>Alice</script>', '&lt;script&gt;Alice&lt;/script&gt;'],
+  ['<SCRIPT>Alice</SCRIPT>', '&lt;SCRIPT&gt;Alice&lt;/SCRIPT&gt;'],
+  ['<ScRiPt src=x>Alice</sCrIpT>', '&lt;ScRiPt src=x&gt;Alice&lt;/sCrIpT&gt;'],
+]) {
+  test(`the profile card escapes ${name} and omits a duplicate nickname`, () => {
+    useConsole.getInitialState().mgmtSec = 'profile'
+    useAuth.getInitialState().user = { ...profile.user, name, nickname: name }
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ControlPage)))
+    assert.ok(html.includes(escaped))
+    assert.doesNotMatch(html, /<script\b/i)
+    assert.doesNotMatch(html, /Also known as/)
+  })
+}
 
 test('profiles share a fixed decorative stack, with inactive cards inert and hidden from assistive technology', () => {
   useConsole.getInitialState().mgmtSec = 'profile'

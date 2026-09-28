@@ -332,6 +332,7 @@ def prepare(
             )
             path.chmod(0o600)
         dotenv = staging / ".env"
+        dotenv.touch(mode=0o600, exist_ok=False)
         dotenv.write_text(
             "".join(
                 f"OCTOMATE__AUTH__{name.upper()}={salt}\n"
