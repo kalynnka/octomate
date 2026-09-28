@@ -1,12 +1,13 @@
-"""Tracked file lifecycle over interchangeable content providers."""
+"""Tracked file lifecycle over OpenDAL filesystem storage."""
 
-from dataclasses import dataclass, field
 from io import BytesIO
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
+import opendal
 import pytest
+from anyio import Path as AsyncPath
 from arcanus.materia.sqlalchemy import AsyncSession
 from fastapi import UploadFile
 from pydantic import ValidationError
@@ -15,7 +16,7 @@ from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers.files import FileManager, FileProvider, FilesystemProvider
+from octomate.managers.files import FileManager
 from octomate.schemas.files import (
     Binary,
     File,
@@ -28,42 +29,18 @@ from octomate.schemas.files import (
     Png,
     Text,
 )
-from octomate.types.files import FileProviderName
 
 
-@dataclass
-class MemoryFileProvider:
-    """An in-memory stand-in for the S3 provider contract."""
-
-    name: FileProviderName = "s3"
-    contents: dict[str, bytes] = field(default_factory=dict)
-
-    async def write(self, key: str, data: bytes) -> None:
-        if key in self.contents:
-            raise FileExistsError(key)
-        self.contents[key] = data
-
-    async def read(self, key: str) -> bytes:
-        if key not in self.contents:
-            raise FileNotFoundError(key)
-        return self.contents[key]
-
-    async def delete(self, key: str) -> None:
-        self.contents.pop(key, None)
-
-
-@pytest.fixture(params=["filesystem", "memory"])
-def provider(request: pytest.FixtureRequest, tmp_path: Path) -> FileProvider:
-    if request.param == "filesystem":
-        return FilesystemProvider(root=tmp_path / "contents")
-    return MemoryFileProvider()
+@pytest.fixture
+def storage(tmp_path: Path) -> opendal.AsyncOperator:
+    return opendal.AsyncOperator("fs", root=str(tmp_path / "contents"))
 
 
 @pytest.mark.parametrize("data", [b"", bytes(range(256)), "你好".encode()])
 async def test_round_trip_and_metadata(
-    in_memory_engine: AsyncEngine, provider: FileProvider, data: bytes
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator, data: bytes
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(
         UploadFile(
             BytesIO(data),
@@ -72,20 +49,20 @@ async def test_round_trip_and_metadata(
         )
     )
 
-    reloaded = await FileManager(provider).get(stored.id)
+    reloaded = await FileManager(storage=storage).get(stored.id)
     assert reloaded.model_dump() == stored.model_dump()
     assert reloaded.size == len(data)
     assert reloaded.media_type == "application/jsonl"
     assert reloaded.name == "transcript.jsonl"
-    assert reloaded.provider == provider.name
+    assert reloaded.provider == "filesystem"
     assert reloaded.created_at.utcoffset() is not None
-    assert await FileManager(provider).read(stored.id) == data
+    assert await FileManager(storage=storage).read(stored.id) == data
 
 
 async def test_repeated_filenames_have_independent_storage(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     first = await files.write(UploadFile(BytesIO(b"first"), filename="note.txt"))
     second = await files.write(UploadFile(BytesIO(b"second"), filename="note.txt"))
 
@@ -98,7 +75,7 @@ async def test_repeated_filenames_have_independent_storage(
 
 @pytest.mark.parametrize("max_size", [1, 1024])
 async def test_upload_metadata_and_complete_content(
-    in_memory_engine: AsyncEngine, provider: FileProvider, max_size: int
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator, max_size: int
 ) -> None:
     upload = UploadFile(
         # Pyright is wrong about runtime: UploadFile explicitly supports spooled files.
@@ -110,7 +87,7 @@ async def test_upload_metadata_and_complete_content(
     try:
         await upload.write(b"# Complete contents")
         await upload.seek(5)
-        files = FileManager(provider)
+        files = FileManager(storage=storage)
         stored = await files.write(upload)
 
         assert isinstance(stored, Markdown)
@@ -125,33 +102,35 @@ async def test_upload_metadata_and_complete_content(
 
 async def test_missing_upload_filename_is_rejected_before_storage(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
-    monkeypatch: pytest.MonkeyPatch,
+    storage: opendal.AsyncOperator,
 ) -> None:
     write = AsyncMock()
-    monkeypatch.setattr(provider, "write", write)
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.write = write
     with pytest.raises(ValidationError, match="name"):
-        await FileManager(provider).write(UploadFile(BytesIO(b"contents")))
+        await FileManager(storage=mocked_storage).write(
+            UploadFile(BytesIO(b"contents"))
+        )
     write.assert_not_awaited()
 
 
 async def test_delete_removes_content_and_metadata(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
     await files.delete(stored.id)
 
     with pytest.raises(FileNotFoundError):
         await files.get(stored.id)
-    with pytest.raises(FileNotFoundError):
-        await provider.read(stored.key)
+    with pytest.raises(opendal.exceptions.NotFound):
+        await storage.read(stored.key)
 
 
 async def test_missing_file(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     file_id = uuid7()
     with pytest.raises(FileNotFoundError):
         await files.get(file_id)
@@ -162,34 +141,34 @@ async def test_missing_file(
 
 
 async def test_other_provider_cannot_read_or_delete(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
-    other = FileManager(
-        MemoryFileProvider(name="s3" if provider.name == "filesystem" else "filesystem")
-    )
+    async with async_session() as session:
+        row = await session.one(File, expressions=[File["id"] == stored.id])
+        row.provider = "s3"
+        await session.commit()
 
     with pytest.raises(FileNotFoundError):
-        await other.read(stored.id)
+        await files.read(stored.id)
     with pytest.raises(FileNotFoundError):
-        await other.delete(stored.id)
-    assert await files.read(stored.id) == b"contents"
+        await files.delete(stored.id)
+    assert await storage.read(stored.key) == b"contents"
 
 
 async def test_unknown_provider_is_rejected_before_storage(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
+    storage: opendal.AsyncOperator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write = AsyncMock()
-    monkeypatch.setattr(provider, "name", "unknown")
-    monkeypatch.setattr(provider, "write", write)
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.write = AsyncMock()
+    files = FileManager(storage=mocked_storage)
+    monkeypatch.setattr(files, "provider", "unknown")
     with pytest.raises(ValidationError, match="literal_error"):
-        await FileManager(provider).write(
-            UploadFile(BytesIO(b"contents"), filename="note")
-        )
-    write.assert_not_awaited()
+        await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
+    mocked_storage.write.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -210,14 +189,14 @@ async def test_unknown_provider_is_rejected_before_storage(
 )
 async def test_filename_validation_precedes_storage(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
-    monkeypatch: pytest.MonkeyPatch,
+    storage: opendal.AsyncOperator,
     name: str,
 ) -> None:
     write = AsyncMock()
-    monkeypatch.setattr(provider, "write", write)
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.write = write
     with pytest.raises(ValidationError, match="filename"):
-        await FileManager(provider).write(
+        await FileManager(storage=mocked_storage).write(
             UploadFile(BytesIO(b"contents"), filename=name)
         )
     write.assert_not_awaited()
@@ -239,12 +218,12 @@ async def test_filename_validation_precedes_storage(
 )
 async def test_mime_type_restores_concrete_subtype(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
+    storage: opendal.AsyncOperator,
     name: str,
     media_type: str,
     expected: type[File],
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(
         UploadFile(
             BytesIO(b"contents"),
@@ -253,7 +232,7 @@ async def test_mime_type_restores_concrete_subtype(
         )
     )
     assert type(stored) is expected
-    assert type(await FileManager(provider).get(stored.id)) is expected
+    assert type(await FileManager(storage=storage).get(stored.id)) is expected
     async with async_session() as session:
         rows = await session.list(File)
     assert len(rows) == 1
@@ -261,9 +240,9 @@ async def test_mime_type_restores_concrete_subtype(
 
 
 async def test_image_parent_query_selects_only_image_subtypes(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     await files.write(
         UploadFile(
             BytesIO(b"# Title"),
@@ -304,10 +283,10 @@ async def test_image_parent_query_selects_only_image_subtypes(
 )
 async def test_unrecognized_mime_type_round_trips_as_base_file(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
+    storage: opendal.AsyncOperator,
     media_type: str,
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(
         UploadFile(
             BytesIO(b"contents"),
@@ -317,7 +296,7 @@ async def test_unrecognized_mime_type_round_trips_as_base_file(
     )
     assert type(stored) is File
     assert stored.media_type == media_type
-    restored = await FileManager(provider).get(stored.id)
+    restored = await FileManager(storage=storage).get(stored.id)
     assert type(restored) is File
     assert restored.model_dump() == stored.model_dump()
     assert await files.read(stored.id) == b"contents"
@@ -333,28 +312,26 @@ async def test_unrecognized_mime_type_round_trips_as_base_file(
 
 
 async def test_filename_is_preserved(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    stored = await FileManager(provider).write(
+    stored = await FileManager(storage=storage).write(
         UploadFile(
             BytesIO(b"# Notes"),
             filename="项目 notes.md",
             headers=Headers({"content-type": "text/markdown"}),
         )
     )
-    assert (await FileManager(provider).get(stored.id)).name == "项目 notes.md"
+    assert (await FileManager(storage=storage).get(stored.id)).name == "项目 notes.md"
 
 
 async def test_failed_content_write_publishes_no_metadata(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
-    monkeypatch: pytest.MonkeyPatch,
+    storage: opendal.AsyncOperator,
 ) -> None:
-    monkeypatch.setattr(
-        provider, "write", AsyncMock(side_effect=OSError("storage full"))
-    )
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.write = AsyncMock(side_effect=OSError("storage full"))
     with pytest.raises(OSError, match="storage full"):
-        await FileManager(provider).write(
+        await FileManager(storage=mocked_storage).write(
             UploadFile(BytesIO(b"contents"), filename="note")
         )
     async with async_session() as session:
@@ -363,37 +340,35 @@ async def test_failed_content_write_publishes_no_metadata(
 
 async def test_failed_metadata_commit_removes_content(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
+    storage: opendal.AsyncOperator,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    write = AsyncMock(wraps=provider.write)
-    monkeypatch.setattr(provider, "write", write)
+    file_id = uuid7()
+    monkeypatch.setattr("octomate.managers.files.uuid7", lambda: file_id)
     with monkeypatch.context() as patch:
         patch.setattr(
             AsyncSession, "commit", AsyncMock(side_effect=RuntimeError("commit failed"))
         )
         with pytest.raises(RuntimeError, match="commit failed"):
-            await FileManager(provider).write(
+            await FileManager(storage=storage).write(
                 UploadFile(BytesIO(b"contents"), filename="note")
             )
 
-    key = write.call_args.args[0]
-    with pytest.raises(FileNotFoundError):
-        await provider.read(key)
+    with pytest.raises(opendal.exceptions.NotFound):
+        await storage.read(file_id.hex)
     async with async_session() as session:
         assert not await session.list(File)
 
 
 async def test_failed_content_delete_retains_metadata(
     in_memory_engine: AsyncEngine,
-    provider: FileProvider,
-    monkeypatch: pytest.MonkeyPatch,
+    storage: opendal.AsyncOperator,
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
-    monkeypatch.setattr(
-        provider, "delete", AsyncMock(side_effect=OSError("unavailable"))
-    )
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.delete = AsyncMock(side_effect=OSError("unavailable"))
+    files.storage = mocked_storage
     with pytest.raises(OSError, match="unavailable"):
         await files.delete(stored.id)
     assert (await files.get(stored.id)).key == stored.key
@@ -401,40 +376,74 @@ async def test_failed_content_delete_retains_metadata(
 
 
 async def test_delete_can_finish_after_content_is_already_gone(
-    in_memory_engine: AsyncEngine, provider: FileProvider
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
 ) -> None:
-    files = FileManager(provider)
+    files = FileManager(storage=storage)
     stored = await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
-    await provider.delete(stored.key)
+    await storage.delete(stored.key)
     await files.delete(stored.id)
     with pytest.raises(FileNotFoundError):
         await files.get(stored.id)
 
 
-async def test_provider_refuses_overwrite(provider: FileProvider) -> None:
-    key = uuid7().hex
-    await provider.write(key, b"original")
+async def test_write_refuses_existing_key(
+    in_memory_engine: AsyncEngine,
+    storage: opendal.AsyncOperator,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    file_id = uuid7()
+    await storage.write(file_id.hex, b"original")
+    monkeypatch.setattr("octomate.managers.files.uuid7", lambda: file_id)
     with pytest.raises(FileExistsError):
-        await provider.write(key, b"replacement")
-    assert await provider.read(key) == b"original"
+        await FileManager(storage=storage).write(
+            UploadFile(BytesIO(b"replacement"), filename="note")
+        )
+    assert await storage.read(file_id.hex) == b"original"
+    async with async_session() as session:
+        assert not await session.list(File)
 
 
 @pytest.mark.parametrize("key", ["../outside", "/tmp/outside", "", "a/b", ".."])
-async def test_filesystem_refuses_invalid_keys(tmp_path: Path, key: str) -> None:
-    provider = FilesystemProvider(root=tmp_path / "contents")
-    with pytest.raises(ValueError, match="UUID"):
-        await provider.write(key, b"contents")
-    with pytest.raises(ValueError, match="UUID"):
-        await provider.read(key)
-    with pytest.raises(ValueError, match="UUID"):
-        await provider.delete(key)
+def test_metadata_refuses_invalid_storage_keys(key: str) -> None:
+    with pytest.raises(ValidationError, match="key"):
+        File.model_validate(
+            {"name": "note", "size": 0, "provider": "filesystem", "key": key}
+        )
 
 
-async def test_filesystem_survives_new_provider_instance(
+def test_storage_without_conditional_writes_is_rejected() -> None:
+    storage = Mock(spec=opendal.AsyncOperator)
+    storage.capability.return_value.write_with_if_not_exists = False
+    with pytest.raises(ValueError, match="without overwriting"):
+        FileManager(storage=storage)
+
+
+async def test_missing_content_raises_file_not_found(
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
+) -> None:
+    files = FileManager(storage=storage)
+    stored = await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
+    await storage.delete(stored.key)
+    with pytest.raises(FileNotFoundError):
+        await files.read(stored.id)
+
+
+async def test_filesystem_survives_new_operator(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:
-    root = tmp_path / "contents"
-    original = FileManager(FilesystemProvider(root=root))
+    root = str(tmp_path / "contents")
+    original = FileManager(storage=opendal.AsyncOperator("fs", root=root))
     stored = await original.write(UploadFile(BytesIO(b"persistent"), filename="note"))
-    restored = FileManager(FilesystemProvider(root=root))
+    restored = FileManager(storage=opendal.AsyncOperator("fs", root=root))
     assert await restored.read(stored.id) == b"persistent"
+
+
+async def test_default_filesystem_root(
+    in_memory_engine: AsyncEngine, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    files = FileManager()
+    stored = await files.write(UploadFile(BytesIO(b"contents"), filename="note"))
+    root = tmp_path / ".octomate" / "files"
+    assert await AsyncPath(root).is_dir()
+    assert await AsyncPath(root / stored.key).read_bytes() == b"contents"

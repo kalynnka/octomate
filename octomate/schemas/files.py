@@ -34,7 +34,10 @@ class File(BaseTransmuter):
     provider: FileProviderName = Field(
         description="Stable deployment name of the storage provider."
     )
-    key: str = Field(min_length=1, description="Opaque key within the provider.")
+    key: str = Field(
+        pattern=r"^[0-9a-f]{32}$",
+        description="Opaque UUID hex key within the provider.",
+    )
     created_at: AwareDatetime = Field(
         default_factory=lambda: datetime.now(UTC),
         description="When the file was created, in UTC.",
