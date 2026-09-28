@@ -18,13 +18,14 @@ costs a re-stream, never a loss. Lines then flow contiguously per file; `finaliz
 from __future__ import annotations
 
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter
 
 # Bumped when a message's meaning changes. The server refuses a mismatch at hello and
 # names both versions, so a stale client surfaces as one clear line instead of being
 # half-understood; the session still degrades to hooks-only ingest.
-STREAM_PROTOCOL = 1
+STREAM_PROTOCOL = 2
 
 # The key the session transcript itself streams under in per-file maps; a subagent's
 # file streams under its agent id.
@@ -83,18 +84,40 @@ class StreamWelcome(BaseModel):
     offsets: dict[str, int]
 
 
+class StreamSnapshotRequest(BaseModel):
+    """Request the attached session's exact raw prefix, never an arbitrary file."""
+
+    transfer_id: UUID
+    end: int = Field(
+        gt=0, description="Exclusive byte offset at a complete-line boundary."
+    )
+
+
+class StreamSnapshotStored(BaseModel):
+    """Server acknowledgment after the requested snapshot is durably stored."""
+
+    type: Literal["snapshot_stored"] = "snapshot_stored"
+    transfer_id: UUID
+
+
 class StreamFinalize(BaseModel):
     """Server → client: the session ended (`SessionEnd` arrived on the hook pipe) —
-    drain to EOF, answer with `eof`, and exit."""
+    drain to EOF, optionally upload a snapshot, answer with `eof`, and exit.
+
+    A snapshot travels as binary WebSocket messages totaling exactly `snapshot.end`
+    bytes. The client waits for the matching `snapshot_stored` before sending `eof`.
+    Ordinary transcript lines precede the binary messages; they never interleave.
+    """
 
     type: Literal["finalize"] = "finalize"
+    snapshot: StreamSnapshotRequest | None = None
 
 
 StreamClientMessage = Annotated[
     StreamHello | StreamLine | StreamEof, Field(discriminator="type")
 ]
 StreamServerMessage = Annotated[
-    StreamWelcome | StreamFinalize, Field(discriminator="type")
+    StreamWelcome | StreamFinalize | StreamSnapshotStored, Field(discriminator="type")
 ]
 
 client_message_adapter: TypeAdapter[StreamClientMessage] = TypeAdapter(
