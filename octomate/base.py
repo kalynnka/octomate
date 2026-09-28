@@ -28,6 +28,7 @@ from octomate.config.base import OctomateConfig
 from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.files import FileManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
@@ -132,6 +133,7 @@ class Octomate(FastAPI):
     oauth: OAuthManager = field(init=False)
     mcp: McpManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
+    files: FileManager = field(default_factory=FileManager)
 
     # Scoped API tokens, shared by MCP verification and hook guards.
     bearers: KnownBearers = field(init=False)

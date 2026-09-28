@@ -1,0 +1,125 @@
+"""Tracked file metadata; file contents are held by the provider."""
+
+from __future__ import annotations
+
+import uuid
+from datetime import UTC, datetime
+from pathlib import PurePosixPath, PureWindowsPath
+from typing import Annotated, Literal
+
+from arcanus import BaseTransmuter
+from arcanus.base import Identity
+from pydantic import AwareDatetime, ConfigDict, Field, TypeAdapter, field_validator
+from uuid_utils.compat import uuid7
+
+from octomate.models import files as file_models
+from octomate.schemas.base import sqlalchemy_materia
+from octomate.types.files import FileProviderName
+
+
+@sqlalchemy_materia.bless(file_models.File)
+class File(BaseTransmuter):
+    """Metadata for one immutable file, retrieved through its manager by ID."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    name: str = Field(
+        description="Filename including its extension, without directories."
+    )
+    media_type: str = Field(
+        default="application/octet-stream", min_length=1, description="File MIME type."
+    )
+    size: int = Field(ge=0, description="Stored content size in bytes.")
+    provider: FileProviderName = Field(
+        description="Stable deployment name of the storage provider."
+    )
+    key: str = Field(min_length=1, description="Opaque key within the provider.")
+    created_at: AwareDatetime = Field(
+        default_factory=lambda: datetime.now(UTC),
+        description="When the file was created, in UTC.",
+    )
+
+    @field_validator("name")
+    @classmethod
+    def validate_filename(cls, name: str) -> str:
+        if (
+            name in {"", ".", ".."}
+            or "\x00" in name
+            or PurePosixPath(name).name != name
+            or PureWindowsPath(name).name != name
+        ):
+            raise ValueError("name must be a filename without directories")
+        return name
+
+
+@sqlalchemy_materia.bless(file_models.Binary)
+class Binary(File):
+    """Metadata for unclassified binary content."""
+
+    media_type: Literal["application/octet-stream"] = "application/octet-stream"
+
+
+@sqlalchemy_materia.bless(file_models.Text)
+class Text(File):
+    """Metadata for a plain text file."""
+
+    media_type: Literal["text/plain"] = "text/plain"
+
+
+@sqlalchemy_materia.bless(file_models.Markdown)
+class Markdown(File):
+    """Metadata for a Markdown document."""
+
+    media_type: Literal["text/markdown"] = "text/markdown"
+
+
+@sqlalchemy_materia.bless(file_models.Json)
+class Json(File):
+    """Metadata for a JSON document."""
+
+    media_type: Literal["application/json"] = "application/json"
+
+
+@sqlalchemy_materia.bless(file_models.Jsonl)
+class Jsonl(File):
+    """Metadata for newline-separated JSON records."""
+
+    media_type: Literal["application/jsonl"] = "application/jsonl"
+
+
+@sqlalchemy_materia.bless(file_models.Image)
+class Image(File):
+    """The queryable parent of supported image metadata."""
+
+
+@sqlalchemy_materia.bless(file_models.Gif)
+class Gif(Image):
+    """Metadata for a GIF image."""
+
+    media_type: Literal["image/gif"] = "image/gif"
+
+
+@sqlalchemy_materia.bless(file_models.Png)
+class Png(Image):
+    """Metadata for a PNG image."""
+
+    media_type: Literal["image/png"] = "image/png"
+
+
+@sqlalchemy_materia.bless(file_models.Jpeg)
+class Jpeg(Image):
+    """Metadata for a JPEG image, including .jpg files."""
+
+    media_type: Literal["image/jpeg"] = "image/jpeg"
+
+
+type FileVariant = Annotated[
+    Annotated[
+        Binary | Text | Markdown | Json | Jsonl | Gif | Png | Jpeg,
+        Field(discriminator="media_type"),
+    ]
+    | File,
+    Field(union_mode="left_to_right"),
+]
+FileVariantAdapter: TypeAdapter[FileVariant] = TypeAdapter(FileVariant)
