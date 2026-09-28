@@ -92,6 +92,14 @@ not required. If used, `.env` is read from the server's working directory.
 Secret fields use Pydantic's redaction, but the underlying files still contain
 the original values.
 
+The generator creates `.env` with owner-only permissions before writing secrets
+and leaves it at mode `0600` inside the service directory at mode `0700`.
+This protects against other ordinary OS users, but processes running as the
+service owner and administrators can still read the secrets. Keep copies and
+backups private too. When OAuth MCP presets are selected, `.env` also contains
+the encryption key for stored OAuth credentials; access to both that key and the
+database allows those credentials to be decrypted.
+
 YAML does not interpolate `$VARIABLE`. Path fields accept `~`. There is no live
 reload: restart the server after editing configuration.
 
