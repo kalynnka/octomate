@@ -154,6 +154,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     from native ingest because their runs are already recorded here.
     """
 
+    # TODO: Implement fork_session when DSH supports a destination cwd.
+    # Until then, inherit the base rejection to keep teleport/fork blocked.
+
     config: DeepseekConfig = field(init=False)
     default_provider: str | None = field(init=False)
     effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
