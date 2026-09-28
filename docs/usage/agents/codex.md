@@ -30,6 +30,11 @@ The app-server supplies the catalog: every non-hidden model with its supported
 reasoning efforts, keyed as `<provider>:<model>`, `openai` unless the Codex config
 names another provider.
 
+Octomate loads this catalog at startup using the SDK's bundled Codex runtime,
+unless `runtime.codex_bin` selects another executable. Updating a separate Codex
+CLI or IDE extension does not update the bundled runtime. Restart Octomate after
+upgrading its Codex dependency to refresh the available models.
+
 ## Driven runs
 
 Each conversation gets its own app-server process from a pool, evicted after
