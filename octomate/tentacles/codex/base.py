@@ -604,12 +604,10 @@ class CodexTentacle(AgentTentacle[str, None]):
         # Omission lets Codex resolve settings and an existing thread's selection.
         return None
 
-    async def fork_session(
-        self, conversation: Conversation, *, cwd: Path
-    ) -> str | None:
+    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
         """Copy Codex's stored history into an independent, durable thread."""
-        if conversation.external_id is None:
-            return None
+        if not conversation.external_id:
+            raise ValueError("Cannot fork a Codex conversation without a session id")
         runtime = replace(
             self.config.runtime,
             config_overrides=(

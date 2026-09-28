@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
@@ -21,6 +22,7 @@ from claude_agent_sdk import (
     ToolResultBlock,
     ToolUseBlock,
     UserMessage,
+    get_session_messages,
 )
 from claude_agent_sdk.types import Message
 from pydantic import SecretStr, TypeAdapter
@@ -44,6 +46,7 @@ from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversation,
@@ -876,3 +879,72 @@ async def test_relocating_a_conversation_moves_its_session_by_id(
     )
 
     assert relocated == [("prev-sess", Path("/workspaces/t1"))]
+
+
+@pytest.mark.parametrize("same_workspace", [False, True])
+async def test_claude_fork_preserves_source_and_relocates_only_the_new_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, same_workspace: bool
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    source_cwd = tmp_path / "source"
+    destination = source_cwd if same_workspace else tmp_path / "destination"
+    session_id, user_id, assistant_id = (str(uuid7()) for _ in range(3))
+    messages: list[JsonObject] = [
+        {"role": "user", "content": "remember the source"},
+        {"role": "assistant", "content": [{"type": "text", "text": "remembered"}]},
+    ]
+    entries: list[JsonObject] = [
+        {
+            "type": role,
+            "sessionId": session_id,
+            "uuid": message_id,
+            "parentUuid": parent_id,
+            "cwd": str(source_cwd),
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": message,
+        }
+        for role, message_id, parent_id, message in zip(
+            ("user", "assistant"),
+            (user_id, assistant_id),
+            (None, user_id),
+            messages,
+            strict=True,
+        )
+    ]
+    source_path = transcripts_dir(source_cwd) / f"{session_id}.jsonl"
+    source_path.parent.mkdir(parents=True)
+    original = "".join(json.dumps(entry) + "\n" for entry in entries)
+    source_path.write_text(original)
+    source = claude_base.Conversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", external_id=session_id
+    )
+    tentacle = _tentacle(FakeConversationManager())
+
+    fork_id = await tentacle.fork_session(source, cwd=destination)
+    target = claude_base.Conversation(
+        thread_id=uuid7(), agent_tentacle_id="claude", external_id=fork_id
+    )
+    await tentacle.relocate(target, cwd=destination)
+
+    assert fork_id != session_id
+    assert source.external_id == session_id
+    assert source_path.read_text() == original
+    fork_path = transcripts_dir(destination) / f"{fork_id}.jsonl"
+    assert fork_path.is_file()
+    restored = get_session_messages(fork_id, directory=str(destination))
+    assert [message.message for message in restored] == messages
+    assert {message.uuid for message in restored}.isdisjoint({user_id, assistant_id})
+    with fork_path.open("a") as transcript:
+        transcript.write('{"type":"custom-title","customTitle":"fork only"}\n')
+    assert source_path.read_text() == original
+
+
+@pytest.mark.parametrize("external_id", [None, ""])
+async def test_claude_cannot_fork_without_a_session_id(external_id: str | None) -> None:
+    source = claude_base.Conversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
+    )
+    with pytest.raises(ValueError, match="without a session id"):
+        await _tentacle(FakeConversationManager()).fork_session(
+            source, cwd=Path("/new")
+        )

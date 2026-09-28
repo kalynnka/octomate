@@ -829,6 +829,22 @@ async def test_codex_fork_failure_leaves_the_source_unchanged(
     assert FakeCodex.closed == 1
 
 
+@pytest.mark.parametrize("external_id", [None, ""])
+async def test_codex_cannot_fork_without_a_session_id(
+    monkeypatch: pytest.MonkeyPatch, external_id: str | None
+) -> None:
+    client = Mock()
+    monkeypatch.setattr(codex_base, "AsyncCodex", client)
+    source = Conversation(
+        thread_id=_THREAD, agent_tentacle_id="codex", external_id=external_id
+    )
+    with pytest.raises(ValueError, match="without a session id"):
+        await _tentacle(FakeConversationManager()).fork_session(
+            source, cwd=Path("/new")
+        )
+    client.assert_not_called()
+
+
 async def test_run_with_output_type_passes_schema_and_validates_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

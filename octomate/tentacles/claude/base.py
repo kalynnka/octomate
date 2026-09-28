@@ -36,6 +36,7 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     PreToolUseHookInput,
     ToolPermissionContext,
+    fork_session,
 )
 from claude_agent_sdk.types import SystemPromptPreset
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
@@ -378,6 +379,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     await websocket.close()
             else:
                 self.session_tailer.detach_remote(state)
+
+    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
+        """Fork Claude's transcript without changing the source session."""
+        if not conversation.external_id:
+            raise ValueError("Cannot fork a Claude conversation without a session id")
+        forked = await asyncio.to_thread(fork_session, conversation.external_id)
+        return forked.session_id
 
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         """Claude files a session under the cwd it ran in and resumes it only from
