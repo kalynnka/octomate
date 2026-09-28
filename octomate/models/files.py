@@ -4,15 +4,26 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from sqlalchemy import BigInteger, CheckConstraint, String, UniqueConstraint, Uuid, case
-from sqlalchemy.orm import Mapped, column_property, mapped_column
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+    Uuid,
+    case,
+)
+from sqlalchemy.orm import Mapped, column_property, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
 from octomate.models.base import Base, MapperArgs, UTCDateTime
 from octomate.types.files import FileProviderName
+
+if TYPE_CHECKING:
+    from octomate.models.user import User
 
 
 class File(Base, TransmuterProxiedMixin):
@@ -25,6 +36,13 @@ class File(Base, TransmuterProxiedMixin):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    owner_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey("users.id", name="fk_files_owner_id_users", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+        comment="Registered owner; NULL for unowned service files.",
+    )
     name: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -53,29 +71,33 @@ class File(Base, TransmuterProxiedMixin):
         comment="When this file was created, in UTC.",
     )
 
-    mime_kind: Mapped[str] = column_property(
-        case(
-            (
-                media_type.in_(
-                    (
-                        "application/octet-stream",
-                        "text/plain",
-                        "text/markdown",
-                        "application/json",
-                        "application/jsonl",
-                        "image/gif",
-                        "image/png",
-                        "image/jpeg",
-                    )
-                ),
-                media_type,
-            ),
-            else_="file",
-        ),
-        doc="Computed subtype discriminator that preserves the original MIME type.",
-    )
+    owner: Mapped[User | None] = relationship("User", lazy="raise")
+
     __mapper_args__: ClassVar[MapperArgs] = {
-        "polymorphic_on": mime_kind,
+        "polymorphic_on": "mime_kind",
+        # Arcanus needs a named mapped discriminator to restore schema subtypes.
+        "properties": {
+            "mime_kind": column_property(
+                case(
+                    (
+                        media_type.in_(
+                            (
+                                "application/octet-stream",
+                                "text/plain",
+                                "text/markdown",
+                                "application/json",
+                                "application/jsonl",
+                                "image/gif",
+                                "image/png",
+                                "image/jpeg",
+                            )
+                        ),
+                        media_type,
+                    ),
+                    else_="file",
+                )
+            ),
+        },
         "polymorphic_identity": "file",
     }
 

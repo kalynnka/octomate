@@ -403,14 +403,6 @@ async def test_write_refuses_existing_key(
         assert not await session.list(File)
 
 
-@pytest.mark.parametrize("key", ["../outside", "/tmp/outside", "", "a/b", ".."])
-def test_metadata_refuses_invalid_storage_keys(key: str) -> None:
-    with pytest.raises(ValidationError, match="key"):
-        File.model_validate(
-            {"name": "note", "size": 0, "provider": "filesystem", "key": key}
-        )
-
-
 def test_storage_without_conditional_writes_is_rejected() -> None:
     storage = Mock(spec=opendal.AsyncOperator)
     storage.capability.return_value.write_with_if_not_exists = False

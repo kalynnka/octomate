@@ -21,8 +21,9 @@ class FileManager(Manager):
     """Keep file metadata in the database and contents in the injected OpenDAL operator.
 
     Files are immutable: every write gets a fresh ID and key. `get` returns
-    metadata; `read` returns bytes. All lookups are scoped to the provider name.
-    Callers own access control; an ID alone is not authorization to serve a file.
+    metadata; `read` returns bytes. All lookups are scoped to the provider and owner.
+    Callers supply the authenticated owner's ID, never an unverified client claim.
+    Omitting the owner accesses only unowned service files, not every user's files.
 
     Storage and database writes are not one transaction. A failed metadata commit
     triggers content deletion; a failed content deletion retains metadata. Process
@@ -42,7 +43,9 @@ class FileManager(Manager):
         if not self.storage.capability().write_with_if_not_exists:
             raise ValueError("File storage must support writes without overwriting")
 
-    async def write(self, file: UploadFile) -> FileVariant:
+    async def write(
+        self, file: UploadFile, *, owner_id: uuid.UUID | None = None
+    ) -> FileVariant:
         """Store complete content, then publish its validated metadata.
 
         Filename and MIME type come from the upload; size is measured from its
@@ -58,11 +61,16 @@ class FileManager(Manager):
         stored = FileVariantAdapter.validate_python(
             {
                 "id": file_id,
+                "owner_id": owner_id,
                 "name": file.filename,
                 "media_type": media_type.strip().lower(),
                 "size": len(data),
                 "provider": self.provider,
-                "key": file_id.hex,
+                "key": (
+                    f"users/{owner_id.hex}/{file_id.hex}"
+                    if owner_id is not None
+                    else file_id.hex
+                ),
             }
         )
         try:
@@ -81,29 +89,36 @@ class FileManager(Manager):
             raise
         return stored
 
-    async def get(self, file_id: uuid.UUID) -> FileVariant:
-        """Load metadata, or raise `FileNotFoundError` for an unknown file."""
+    async def get(
+        self, file_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+    ) -> FileVariant:
+        """Load metadata, or raise `FileNotFoundError` outside the owner's scope."""
         async with async_session() as session:
             stored = await session.one_or_none(
                 File,
                 expressions=[
                     File["id"] == file_id,
                     File["provider"] == self.provider,
+                    File["owner_id"] == owner_id,
                 ],
             )
         if stored is None:
             raise FileNotFoundError(str(file_id))
         return FileVariantAdapter.validate_python(stored)
 
-    async def read(self, file_id: uuid.UUID) -> bytes:
+    async def read(
+        self, file_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+    ) -> bytes:
         """Read the content addressed by persisted metadata."""
-        stored = await self.get(file_id)
+        stored = await self.get(file_id, owner_id=owner_id)
         try:
             return await self.storage.read(stored.key)
         except opendal.exceptions.NotFound as exc:
             raise FileNotFoundError(stored.key) from exc
 
-    async def delete(self, file_id: uuid.UUID) -> None:
+    async def delete(
+        self, file_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
+    ) -> None:
         """Delete content before removing its tracking record."""
         async with async_session() as session:
             stored = await session.one_or_none(
@@ -111,6 +126,7 @@ class FileManager(Manager):
                 expressions=[
                     File["id"] == file_id,
                     File["provider"] == self.provider,
+                    File["owner_id"] == owner_id,
                 ],
             )
             if stored is None:
