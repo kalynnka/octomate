@@ -698,17 +698,28 @@ class CodexTentacle(AgentTentacle[str, None]):
             data = await self.octomate.files.read(
                 source.transcript_file_id, owner_id=owner_id
             )
-            end = max(
-                (
-                    run.end_offset
-                    for run in source.runs
-                    if isinstance(run, ExternalAgentRun)
-                    and run.external_session_id == source.external_id
-                    and run.end_offset is not None
-                    and 0 < run.end_offset <= len(data)
-                ),
-                default=0,
-            )
+            end = 0
+            for run in source.runs:
+                if (
+                    not isinstance(run, ExternalAgentRun)
+                    or run.external_session_id != source.external_id
+                    or run.end_offset is None
+                    or not end < run.end_offset <= len(data)
+                ):
+                    continue
+                offset = run.end_offset
+                if data[offset - 1 : offset] != b"\n":
+                    raise ValueError(
+                        "Turn offset must end at a transcript line boundary"
+                    )
+                start = data.rfind(b"\n", 0, offset - 1) + 1
+                closing = rollout_line_adapter.validate_json(data[start:offset])
+                if (
+                    closing.type == "event_msg"
+                    and closing.payload.get("type") in {"task_complete", "turn_aborted"}
+                    and closing.payload.get("turn_id") == run.id
+                ):
+                    end = offset
             if not end:
                 raise ValueError("No completed Codex turn has been fully uploaded")
             data = data[:end]

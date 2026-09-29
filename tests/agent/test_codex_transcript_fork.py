@@ -66,6 +66,7 @@ async def case(
         await a_thread("target"), agent_tentacle_id=tentacle.id
     )
     session_id = str(uuid7())
+    completed_id = str(uuid7())
     prefix = (
         json.dumps(
             {
@@ -74,7 +75,15 @@ async def case(
                 "payload": {"id": session_id, "session_id": session_id},
             }
         ).encode()
-        + b'\n{"type":"event_msg","payload":{"type":"task_complete"}}\n'
+        + b"\n"
+        + json.dumps(
+            {
+                "timestamp": "2026-09-29T00:00:01Z",
+                "type": "event_msg",
+                "payload": {"type": "task_complete", "turn_id": completed_id},
+            }
+        ).encode()
+        + b"\n"
     )
     pending = b'{"type":"event_msg","payload":{"type":"task_started"}}\n'
     for label, end in (
@@ -84,7 +93,7 @@ async def case(
     ):
         await octomate.conversations.record_external_run(
             source,
-            str(uuid7()),
+            completed_id if label == "completed" else str(uuid7()),
             [ModelRequest(parts=[UserPromptPart(label)])],
             external_session_id=session_id,
             end_offset=end,
@@ -237,6 +246,97 @@ async def test_no_completed_uploaded_turn_cannot_fork(
             run.end_offset = None
         await session.commit()
     with pytest.raises(ValueError, match="No completed Codex turn"):
+        await case.tentacle.fork_transcript(
+            case.source, case.target, owner_id=case.owner_id, cwd=tmp_path
+        )
+    case.fork.assert_not_awaited()
+    assert not case.home.exists()
+
+
+@pytest.mark.parametrize("previous_completed", [False, True])
+@pytest.mark.parametrize(
+    "event",
+    ["task_complete", "turn_aborted", "user_message", "wrong_turn", "wrong_record"],
+)
+async def test_fork_requires_a_matching_terminal_event(
+    case: ForkCase, tmp_path: Path, event: str, previous_completed: bool
+) -> None:
+    conversations = case.tentacle.octomate.conversations
+    files = case.tentacle.octomate.files
+    run_id = str(uuid7())
+    closing = (
+        json.dumps(
+            {
+                "timestamp": "2026-09-29T00:00:02Z",
+                "type": "response_item" if event == "wrong_record" else "event_msg",
+                "payload": {
+                    "type": "task_complete" if event.startswith("wrong_") else event,
+                    "turn_id": str(uuid7()) if event == "wrong_turn" else run_id,
+                },
+            }
+        ).encode()
+        + b"\n"
+    )
+    content = case.prefix + case.pending + closing
+    assert case.source.external_id is not None
+    assert case.source.transcript_file_id is not None
+    await files.append(
+        case.source.transcript_file_id,
+        BytesIO(closing),
+        offset=len(case.prefix + case.pending),
+        owner_id=case.owner_id,
+    )
+    if not previous_completed:
+        async with async_session() as session:
+            runs = await session.list(
+                ExternalAgentRun,
+                expressions=[ExternalAgentRun["conversation_id"] == case.source.id],
+                limit=None,
+                order_bys=[],
+            )
+            for run in runs:
+                run.end_offset = None
+            await session.commit()
+    await conversations.record_external_run(
+        case.source,
+        run_id,
+        [ModelRequest(parts=[UserPromptPart("later turn")])],
+        external_session_id=case.source.external_id,
+        end_offset=len(content),
+    )
+    terminal = event in {"task_complete", "turn_aborted"}
+    if not terminal and not previous_completed:
+        with pytest.raises(ValueError, match="No completed Codex turn"):
+            await case.tentacle.fork_transcript(
+                case.source, case.target, owner_id=case.owner_id, cwd=tmp_path
+            )
+        case.fork.assert_not_awaited()
+        assert not case.home.exists()
+        return
+    result = await case.tentacle.fork_transcript(
+        case.source, case.target, owner_id=case.owner_id, cwd=tmp_path
+    )
+    assert result.transcript_file_id is not None
+    assert await files.read(result.transcript_file_id, owner_id=case.owner_id) == (
+        content if terminal else case.prefix
+    )
+    assert len(result.messages) == int(previous_completed) + int(terminal)
+
+
+async def test_fork_rejects_an_offset_inside_a_line(
+    case: ForkCase, tmp_path: Path
+) -> None:
+    async with async_session() as session:
+        run = await session.one(
+            ExternalAgentRun,
+            expressions=[
+                ExternalAgentRun["conversation_id"] == case.source.id,
+                ExternalAgentRun["end_offset"] == len(case.prefix),
+            ],
+        )
+        run.end_offset = len(case.prefix) - 1
+        await session.commit()
+    with pytest.raises(ValueError, match="line boundary"):
         await case.tentacle.fork_transcript(
             case.source, case.target, owner_id=case.owner_id, cwd=tmp_path
         )
