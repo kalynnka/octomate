@@ -133,3 +133,7 @@ select.trk-input:open::picker(select) { animation: lt-menu-enter var(--motion-fa
   select.trk-input:open::picker(select) { animation: none; }
   .lt-fade-out { opacity: 0; }
 }
+
+.trk-operation-label { display: inline-flex; align-items: center; justify-content: center; gap: 6px; animation: trk-operation-switch 160ms var(--ease-out); }
+@keyframes trk-operation-switch { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .trk-operation-label { animation: none; } }

@@ -58,6 +58,16 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Answer approvals and questions**, for any channel's thread. A batch already
   resolved is refused rather than resumed twice.
 - **Switch a conversation's permission mode** among the agent's modes.
+- **Teleport or Summon** from the chat header's split button. Use its arrow to
+  choose an action, ordered Teleport, Summon, Fork. The button selects the first
+  available action unless you choose another available one. Your choice stays
+  selected when switching threads; an unavailable choice temporarily falls back
+  to the first available action. Disabled choices show their reason. Teleport
+  asks for a destination. Summon also offers agent rows with model chips, an
+  editable brief, and an effort slider when the selected route supports it.
+  Leave effort at Agent default to use the agent’s setting.
+  Run output streams into the message panel. After the server confirms arrival,
+  the console opens the destination thread if you are still viewing the source.
 - **Account**: change password, issue and revoke API keys, unlink channel profiles,
   start a Slack or Discord profile link.
 - **MCP**: install connectors from the configured offerings or by URL, authorise
@@ -73,7 +83,8 @@ and a sub-thread inside it.
 
 The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
 Teleport destinations and Summon agent/model routes, plus reasons when unavailable.
-The dropdown controls are not connected to these endpoints yet.
+The header uses this response to populate its choices and refreshes it when you
+open the action controls.
 
 `POST /api/trunkline/threads/{id}/teleport` accepts a destination and an opening
 hint. `POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
@@ -86,6 +97,11 @@ Native teleport and harnesses without independent session forking remain
 unavailable. External thread rows do not preserve their parent surface's privacy,
 so the API refuses to export their full history across channels. Summon transfers
 only the supplied brief.
+
+Destination visibility is still incomplete for newly created crossing threads.
+If the move succeeds but the destination is absent from your accessible thread
+list, the console reports that limitation in the message panel instead of
+claiming navigation succeeded.
 
 ## The console surface
 

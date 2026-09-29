@@ -297,13 +297,6 @@ export interface VsCodeTarget {
   session?: string
 }
 
-export interface SurfaceInfo {
-  id: ChannelId
-  label: string
-  sub: string
-  brand: string
-}
-
 export interface ThreadDetail {
   key: string
   /** true when this detail was hydrated from the live trunkline API */

@@ -25,6 +25,9 @@ import type {
   ApiThreadMessage,
   BatchResponseBody,
   DirectiveBody,
+  GatewayEvent,
+  GatewayRequest,
+  ThreadOperations,
   McpInstallBody,
   OAuthFlowKind,
   WireEvent,
@@ -199,9 +202,8 @@ async function streamSse(
   onEvent: (event: WireEvent) => void,
 ): Promise<void> {
   const res = await apiFetch(path, { method: 'POST', json: body })
-  if (!res.ok || res.body == null) {
-    throw new Error(`POST ${path} → ${res.status}`)
-  }
+  if (!res.ok) return refuse(res)
+  if (res.body == null) throw new Error('The relay returned no event stream.')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -239,4 +241,32 @@ export function resolveBatch(
   onEvent: (event: WireEvent) => void,
 ): Promise<void> {
   return streamSse(`/api/trunkline/batches/${batchId}/resolve`, body, onEvent)
+}
+
+export async function fetchThreadOperations(threadId: string): Promise<ThreadOperations> {
+  const res = await apiFetch(`/api/trunkline/threads/${encodeURIComponent(threadId)}/operations`)
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<ThreadOperations>
+}
+
+export async function streamGateway(
+  threadId: string,
+  request: GatewayRequest,
+  onEvent: (event: WireEvent) => void,
+): Promise<GatewayEvent> {
+  const completion: { event?: GatewayEvent; error?: string } = {}
+  await streamSse(
+    `/api/trunkline/threads/${encodeURIComponent(threadId)}/${request.action}`,
+    request.body,
+    (event) => {
+      if (event.event_kind === 'gateway') completion.event = event
+      else if (event.event_kind === 'run_error') completion.error = event.message
+      else onEvent(event)
+    },
+  )
+  if (completion.error) throw new Error(completion.error)
+  if (!completion.event || completion.event.action !== request.action) {
+    throw new Error('The stream closed without confirming a destination. Check the thread before retrying.')
+  }
+  return completion.event
 }

@@ -325,6 +325,21 @@ export interface RunErrorEvent {
   message: string
 }
 
+export interface ChannelAddress {
+  channel_tentacle_id: string
+  chat_type: 'dm' | 'group' | 'thread'
+  chat_id: string
+  user_id: string
+  channel_thread_id: string | null
+  shared: boolean
+}
+
+export interface GatewayEvent {
+  event_kind: 'gateway'
+  action: 'teleport' | 'summon'
+  destination: ChannelAddress
+}
+
 export type WireEvent =
   | PartStartEvent
   | PartDeltaEvent
@@ -347,6 +362,7 @@ export type WireEvent =
   | SubagentSettledEvent
   | RunResultEvent
   | RunErrorEvent
+  | GatewayEvent
 
 // ---- REST payloads ---------------------------------------------------------
 
@@ -641,3 +657,37 @@ export interface BatchResponseBody {
   approvals?: Record<string, boolean>
   allow_session?: boolean
 }
+
+export type GatewayTarget = { kind: 'here' } | { kind: 'thread' } | { kind: 'channel'; channel: string }
+
+export interface OperationDestination {
+  target: GatewayTarget
+  label: string
+  routes: ApiAgentRoute[]
+}
+
+export interface OperationAvailability {
+  destinations: OperationDestination[]
+  reason: string | null
+}
+
+export interface ThreadOperations {
+  teleport: OperationAvailability
+  summon: OperationAvailability
+}
+
+export interface TeleportBody {
+  destination: GatewayTarget
+  hint: string
+}
+
+export interface SummonBody extends TeleportBody {
+  agent_id: string
+  model: string
+  brief: string
+  effort?: EffortStep | null
+}
+
+export type GatewayRequest =
+  | { action: 'teleport'; body: TeleportBody }
+  | { action: 'summon'; body: SummonBody }

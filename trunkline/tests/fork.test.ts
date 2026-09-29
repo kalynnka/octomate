@@ -63,7 +63,7 @@ test('a refused fork surfaces the server reason without retrying', async () => {
 })
 
 for (const kind of ['native', 'child', 'driven', 'claude'] as const) {
-  test(`the ${kind} conversation exposes the appropriate fork action`, () => {
+  test(`the ${kind} conversation falls back to fork only when eligible`, () => {
     const source = { ...conversation }
     if (kind === 'child') source.subagent_id = 'child'
     if (kind === 'driven') source.agent_tentacle_id = 'codex'
@@ -73,10 +73,10 @@ for (const kind of ['native', 'child', 'driven', 'claude'] as const) {
     useConsole.getInitialState().detail = detail
     queryClient.setQueryData(['threads'], {})
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
-    assert.equal(html.includes('>Fork</button>'), kind === 'native')
+    assert.ok(html.includes(kind === 'native' ? '>Fork</span></button>' : '>Teleport</span></button>'))
     assert.ok(html.includes('aria-label="Choose thread operation"'))
     assert.equal(html.includes('aria-disabled="true"'), kind !== 'native')
-    assert.equal(html.includes('title="No other destinations are available."'), kind !== 'native')
+    assert.equal(html.includes('title="Checking available destinations…"'), kind !== 'native')
     assert.ok(!html.includes('title="Start an independent thread'))
   })
 }

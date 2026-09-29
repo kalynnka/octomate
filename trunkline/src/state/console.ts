@@ -15,7 +15,8 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
-import type { BatchResponseBody, WireEvent } from '@/lib/api/events'
+import { fetchThreads, streamGateway } from '@/lib/api/client'
+import type { BatchResponseBody, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
@@ -191,9 +192,8 @@ export interface ConsoleActions {
   setRailDrag(key: RailKey | null): void
   toggleCardOpen(uid: string, def?: boolean): void
   toggleTimelineFold(id: string): void
-  toggleTeleMenu(): void
   reportThreadError(threadId: string, message: string): void
-  teleport(id: string, label: string, fromLabel: string): void
+  gateway(threadId: string, request: GatewayRequest): Promise<void>
   vsOpen(): void
   resolveApproval(uid: string, verdict: 'approved' | 'dismissed'): void
   answerAsk(uid: string, answer: string, via: string): void
@@ -265,10 +265,7 @@ interface ConsoleState {
   widths: Partial<Record<RailKey, number>>
   railDrag: RailKey | null
 
-  // surfaces / teleport
-  surface: string
-  teleOpen: boolean
-  teleporting: boolean
+  gatewayPending: { threadId: string; action: GatewayRequest['action'] } | null
   vsLaunch: boolean
 
   // review panel
@@ -457,6 +454,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const dotsUid = push({ kind: 'dots', label: 'relay · dispatching' } as LedgerItem)
     const clearDots = () => set((s) => ({ live: s.live.filter((it) => it.uid !== dotsUid) }))
     let received = 0
+    let terminal = false
     const fold = new TurnFold({
       push: (item) => {
         clearDots()
@@ -474,6 +472,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     try {
       await request((event) => {
         received++
+        if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
         fold.feed(event)
       })
       fold.abort(
@@ -482,8 +481,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           : 'stream closed without a result — the run continues on the relay',
         received === 0 ? 'info' : 'warning',
       )
+      return true
     } catch (err) {
-      fold.abort(`relay error — ${err instanceof Error ? err.message : String(err)}`, 'error')
+      const message = `relay error — ${err instanceof Error ? err.message : String(err)}`
+      if (terminal) actions.reportThreadError(selId, message)
+      else fold.abort(message, 'error')
+      return false
     } finally {
       openRuns--
       clearDots()
@@ -543,8 +546,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           ntMenu: null,
           ntStarted: false,
           ntRouteId: null,
-          teleOpen: false,
-          surface: ['trunkline', 'slack', 'lark', 'napcat'].includes(chId) ? chId : s.surface,
           mgmtSec: '',
           pvOpen: false,
           sbFold: s.pvOpen ? false : s.sbFold,
@@ -749,32 +750,41 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     },
 
     /* ---------------------------------------------------- surfaces ------- */
-    toggleTeleMenu: () => set((s) => ({ teleOpen: !s.teleOpen })),
     reportThreadError(threadId, message) {
       const s = get()
       if (s.selThreadId !== threadId || s.ntOn) return
       set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error' }] })
       scrollChatBottom(true)
     },
-    teleport(id: string, label: string, fromLabel: string) {
-      const s = get()
-      if (id === s.surface) {
-        set({ teleOpen: false })
-        return
+    async gateway(threadId, request) {
+      if (get().gatewayPending || get().running || get().selThreadId !== threadId) return
+      set({ gatewayPending: { threadId, action: request.action }, running: true })
+      try {
+        const result: { arrived?: GatewayEvent } = {}
+        const completed = await runLive(threadId, async (onEvent) => {
+          result.arrived = await streamGateway(threadId, request, onEvent)
+        })
+        if (!completed || !result.arrived) return
+        await queryClient.invalidateQueries({ queryKey: ['thread-detail', threadId] })
+        const address = result.arrived.destination
+        const landed = (await fetchThreads()).find((thread) =>
+          thread.channel_tentacle_id === address.channel_tentacle_id
+          && thread.chat_type === address.chat_type
+          && thread.chat_id === address.chat_id
+          && (thread.channel_thread_id ?? null) === (address.channel_thread_id ?? null),
+        )
+        if (!landed) {
+          throw new Error(`${request.action} completed, but its destination is not visible in your thread list.`)
+        }
+        await queryClient.invalidateQueries({ queryKey: ['thread-detail', landed.id] })
+        if (get().selThreadId === threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+      } catch (error) {
+        actions.reportThreadError(threadId, error instanceof Error ? error.message : String(error))
+      } finally {
+        set({ gatewayPending: null })
+        void queryClient.invalidateQueries({ queryKey: ['thread-operations', threadId] })
+        refreshThreads()
       }
-      set({ teleOpen: false, teleporting: true })
-      at(900, () => {
-        const hh = new Date().toLocaleTimeString('en-GB', { hour12: false }).slice(0, 5)
-        set((x) => ({
-          teleporting: false,
-          surface: id,
-          notices: [...x.notices, { kind: 'notice', uid: nextUid(), text: `teleport → ${label} — pointer card left in ${fromLabel} · ${hh}` }],
-        }))
-        setTimeout(() => {
-          scrollChatBottom()
-          replayView()
-        }, 40)
-      })
     },
     /**
      * Open this thread's directory in VS Code, then reopen the native session
@@ -1199,7 +1209,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         running: false,
         selChannel: 'trunkline',
         selThreadId: 'THR-NEW',
-        surface: 'trunkline',
         mgmtSec: '',
         pvOpen: false,
         sel: null,
@@ -1364,9 +1373,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     traceOn: null,
     widths: {},
     railDrag: null,
-    surface: 'trunkline',
-    teleOpen: false,
-    teleporting: false,
+    gatewayPending: null,
     vsLaunch: false,
     pvOpen: false,
     tabs: null,
