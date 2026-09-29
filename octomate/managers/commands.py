@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager
 from typing import ClassVar, NamedTuple
 
 from cachetools import LRUCache
@@ -24,8 +24,11 @@ from octomate.schemas.commands import (
     CommandError,
     CommandInvocation,
     CommandOutcome,
+    CommandResult,
 )
-from octomate.schemas.thread import ThreadKey
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.channel import ChannelTentacle
@@ -168,8 +171,8 @@ class CommandManager(Manager):
 
     async def validate(
         self, agent: AgentTentacle, context: CommandContext
-    ) -> CommandError | None:
-        """Authorize an invocation and reject a selection whose context changed.
+    ) -> tuple[Thread, UserProfile] | CommandError:
+        """Return the authorized surface and profile, or refuse a changed selection.
 
         Unlike catalog inspection, execution needs the authenticated user's linked
         profile, access to the chat surface, and the current route. Read persisted
@@ -248,7 +251,7 @@ class CommandManager(Manager):
                 status="stale",
                 message="The command context changed; discover commands again.",
             )
-        return None
+        return surface, profile
 
     @asynccontextmanager
     async def execute[OutputT, DepsT](
@@ -257,6 +260,7 @@ class CommandManager(Manager):
         context: CommandContext,
         invocation: CommandInvocation,
         *,
+        delivery_id: str,
         session: OctomateSession | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: list[AgentCapability[DepsT]] | None = None,
@@ -265,18 +269,21 @@ class CommandManager(Manager):
     ]:
         """Validate and execute under the conversation's active-turn guard.
 
-        The caller supplies context identifying the authenticated user and
-        deduplicates deliveries before entering. Access and current context are
-        checked once after discovery, immediately before dispatch. Execution requires an
+        The caller supplies context identifying the authenticated user and a
+        stable delivery ID. Access and current context are checked once after
+        discovery, before dispatch or replay. Execution requires an
         existing conversation; it never silently creates one. A fresh runtime
         catalog determines command membership and attachment support. Arguments
-        pass through unchanged.
+        pass through unchanged. Accepted deliveries are recorded before dispatch;
+        matching retries return their saved outcome without executing again.
 
         Consume streamed events inside this context: it owns their cleanup and
         holds the guard until they close. Stream failures propagate to the caller's
         transport; direct adapter failures become failed outcomes. Every attempted
         invocation invalidates the conversation's catalogs when this context exits.
         """
+        if not delivery_id:
+            raise ValueError("command deliveries require a delivery_id")
         conversation = context.conversation
         if conversation is None:
             yield CommandError(
@@ -299,6 +306,33 @@ class CommandManager(Manager):
                 self.gateway.driving(session, conversation_id=conversation.id)
             )
             catalog = await self.discover(agent, context, refresh=True)
+            validated = await self.validate(agent, context)
+            if isinstance(validated, CommandError):
+                yield validated
+                return
+            surface, profile = validated
+            recorded = await self.threads.find_message(
+                surface.id, delivery_id, "inbound"
+            )
+            if recorded is not None:
+                if (
+                    not isinstance(recorded, ThreadCommand)
+                    or recorded.sender_id != profile.id
+                    or recorded.conversation_id != conversation.id
+                    or recorded.agent_tentacle_id != agent.id
+                    or recorded.invocation != invocation
+                ):
+                    yield CommandError(
+                        status="failed",
+                        message="This delivery ID already identifies another request.",
+                    )
+                    return
+                yield recorded.outcome or CommandError(
+                    status="failed",
+                    message="This command delivery was already accepted, but no outcome "
+                    "was recorded; its effects may already have occurred.",
+                )
+                return
             if catalog.status != "ready":
                 yield CommandError(
                     status="stale" if catalog.status == "loading" else catalog.status,
@@ -321,11 +355,29 @@ class CommandManager(Manager):
                     message="This command does not declare attachment support.",
                 )
                 return
-            refusal = await self.validate(agent, context)
-            if refusal is not None:
-                yield refusal
-                return
+            text = f"/{descriptor.name}"
+            if invocation.arguments:
+                text += f" {invocation.arguments}"
+            intent = invocation.model_copy(deep=True)
+            receipt = ThreadCommand(
+                thread_id=surface.id,
+                platform_message_id=delivery_id,
+                direction="inbound",
+                actor_kind="human",
+                user_id=context.address.user_id,
+                sender_id=profile.id,
+                agent_tentacle_id=agent.id,
+                conversation_id=conversation.id,
+                invocation=intent,
+                segments=[TextSegment(data={"text": text}), *intent.attachments],
+                message_text=text,
+            )
+            await self.threads.store_message(receipt, surface)
             stack.callback(self.invalidate, conversation_id=conversation.id)
+            interrupted = CommandError(
+                status="failed",
+                message="Command execution did not finish; its effects may already have occurred.",
+            )
             try:
                 result = await agent.execute_command(
                     context,
@@ -333,6 +385,9 @@ class CommandManager(Manager):
                     deferred_suspender=deferred_suspender,
                     capabilities=capabilities,
                 )
+            except asyncio.CancelledError:
+                await self.threads.record_command_outcome(receipt.id, interrupted)
+                raise
             except Exception:
                 logger.exception("Command execution failed for agent %s", agent.id)
                 result = CommandError(
@@ -340,9 +395,43 @@ class CommandManager(Manager):
                     message="Command execution failed; its effects may already have occurred.",
                 )
             if isinstance(result, ReactEventStream):
-                yield await stack.enter_async_context(result)
+                yield await stack.enter_async_context(
+                    self.record_stream(result, receipt.id, interrupted)
+                )
             else:
+                await self.threads.record_command_outcome(receipt.id, result)
                 yield result
+
+    @asynccontextmanager
+    async def record_stream[OutputT](
+        self,
+        stream: ReactEventStream[OutputT],
+        receipt_id: uuid.UUID,
+        interrupted: CommandError,
+    ) -> AsyncGenerator[AsyncGenerator[ReactStreamEvent[OutputT], None]]:
+        """Record completion only after consumption and runtime cleanup both finish.
+
+        Events remain owned by the normal stream consumer; a duplicate delivery
+        receives completion status rather than replayed events. An abandoned or
+        failed stream keeps the failure outcome prepared before dispatch.
+        """
+        completed = asyncio.Event()
+        outcome: CommandOutcome = interrupted
+
+        async def forward(
+            events: AsyncGenerator[ReactStreamEvent[OutputT], None],
+        ) -> AsyncGenerator[ReactStreamEvent[OutputT], None]:
+            async for event in events:
+                yield event
+            completed.set()
+
+        try:
+            async with stream as events, aclosing(forward(events)) as forwarded:
+                yield forwarded
+            if completed.is_set():
+                outcome = CommandResult()
+        finally:
+            await self.threads.record_command_outcome(receipt_id, outcome)
 
     def invalidate(
         self,

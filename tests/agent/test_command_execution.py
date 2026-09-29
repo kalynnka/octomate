@@ -6,6 +6,7 @@ from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import AgentCapability
@@ -17,6 +18,7 @@ from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.database import async_session
+from octomate.managers.commands import CommandManager
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.commands import (
     CommandContext,
@@ -29,6 +31,7 @@ from octomate.schemas.commands import (
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import FileData, FileSegment, TextSegment
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
 from octomate.types.permissions import PermissionMode
@@ -40,7 +43,16 @@ from tests.support.managers import a_project, a_registry
 @dataclass
 class ExecutingAgent(DiscoveringAgent):
     invocations: list[CommandInvocation] = field(default_factory=list)
-    behavior: Literal["direct", "stream", "raise", "cancel"] = "direct"
+    receipts: list[ThreadCommand] = field(default_factory=list)
+    behavior: Literal[
+        "direct",
+        "stream",
+        "stream_complete",
+        "stream_raise",
+        "stream_cleanup_error",
+        "raise",
+        "cancel",
+    ] = "direct"
     stream_closed: bool = False
     suspender: DeferredSuspender | None = None
     capabilities: Sequence[AgentCapability[None]] | None = None
@@ -53,6 +65,8 @@ class ExecutingAgent(DiscoveringAgent):
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> CommandOutcome | ReactEventStream[ChannelOutput]:
+        async with async_session() as session:
+            self.receipts = list(await session.list(ThreadCommand, limit=None))
         self.invocations.append(invocation)
         self.suspender = deferred_suspender
         self.capabilities = capabilities
@@ -60,16 +74,22 @@ class ExecutingAgent(DiscoveringAgent):
             raise RuntimeError("private runtime details")
         if self.behavior == "cancel":
             raise asyncio.CancelledError
-        if self.behavior == "stream":
+        if self.behavior.startswith("stream"):
             return ReactEventStream(self.events())
         return CommandResult(segments=[TextSegment(data={"text": "Done"})])
 
     async def events(self) -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
         try:
             yield MessageSentEvent(segments=[TextSegment(data={"text": "Running"})])
+            if self.behavior == "stream_complete":
+                return
+            if self.behavior == "stream_raise":
+                raise RuntimeError("private stream details")
             await asyncio.Event().wait()
         finally:
             self.stream_closed = True
+            if self.behavior == "stream_cleanup_error":
+                raise RuntimeError("private cleanup details")
 
 
 class Suspender:
@@ -139,15 +159,28 @@ async def test_direct_execution_preserves_input_and_invalidates_catalogs(
         arguments='  "raw argument"\n--flag=✓  ',
         attachments=[FileSegment(data=FileData(file="/resolved/input.txt"))],
     )
-    async with manager.execute(agent, context, invocation) as result:
+    async with manager.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as result:
         assert isinstance(result, CommandResult)
         assert context.conversation is not None
         assert context.conversation.id in app.gateway.sessions
-        async with manager.execute(agent, context, invocation) as busy:
+        async with manager.execute(
+            agent, context, invocation, delivery_id="command-1"
+        ) as busy:
             assert isinstance(busy, CommandError)
             assert busy.status == "busy"
     assert agent.invocations == [invocation]
     assert agent.invocations[0].arguments == invocation.arguments
+    assert len(agent.receipts) == 1
+    assert agent.receipts[0].invocation == invocation
+    assert agent.receipts[0].outcome is None
+    assert agent.receipts[0].conversation_id == context.conversation.id
+    recorded = await app.threads.find_message(
+        agent.receipts[0].thread_id, "command-1", "inbound"
+    )
+    assert isinstance(recorded, ThreadCommand)
+    assert recorded.outcome == result
     assert len(agent.calls) == 2
     assert not manager.catalogs
     assert not app.gateway.sessions
@@ -162,7 +195,7 @@ async def test_execution_uses_injected_managers_without_an_agent_host(
 ) -> None:
     agent.octomate = None
     async with app.commands.execute(
-        agent, context, CommandInvocation(command_id="skill")
+        agent, context, CommandInvocation(command_id="skill"), delivery_id="command-1"
     ) as result:
         assert isinstance(result, CommandResult)
     assert len(agent.invocations) == 1
@@ -185,7 +218,7 @@ async def test_current_catalog_state_controls_execution(
     agent.status = status
     agent.failure = status == "failed"
     async with manager.execute(
-        agent, context, CommandInvocation(command_id="skill")
+        agent, context, CommandInvocation(command_id="skill"), delivery_id="command-1"
     ) as result:
         assert isinstance(result, CommandError)
         assert result.status == {"ready": "unknown", "loading": "stale"}.get(
@@ -194,6 +227,9 @@ async def test_current_catalog_state_controls_execution(
         assert "private runtime details" not in result.message
     assert not agent.invocations
     assert not app.gateway.sessions
+
+    async with async_session() as session:
+        assert await session.count(ThreadCommand) == 0
 
 
 @pytest.mark.parametrize("accepts", [None, False])
@@ -209,7 +245,9 @@ async def test_execution_requires_declared_attachment_support(
         command_id="skill",
         attachments=[FileSegment(data=FileData(file="/resolved/input.txt"))],
     )
-    async with app.commands.execute(agent, context, invocation) as result:
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as result:
         assert isinstance(result, CommandError)
         assert result.status == "unsupported"
     assert not agent.invocations
@@ -222,6 +260,7 @@ async def test_composer_execution_does_not_create_a_session(
         agent,
         replace(context, conversation=None),
         CommandInvocation(command_id="skill"),
+        delivery_id="command-1",
     ) as result:
         assert isinstance(result, CommandError)
         assert result.status == "unavailable"
@@ -241,7 +280,10 @@ async def test_active_chat_turn_prevents_command_execution(
     )
     async with app.gateway.driving(session):
         async with app.commands.execute(
-            agent, context, CommandInvocation(command_id="skill")
+            agent,
+            context,
+            CommandInvocation(command_id="skill"),
+            delivery_id="command-1",
         ) as result:
             assert isinstance(result, CommandError)
             assert result.status == "busy"
@@ -261,18 +303,31 @@ async def test_backend_failure_releases_guard_and_invalidates_catalog(
     if behavior == "cancel":
         with pytest.raises(asyncio.CancelledError):
             async with app.commands.execute(
-                agent, context, CommandInvocation(command_id="skill")
+                agent,
+                context,
+                CommandInvocation(command_id="skill"),
+                delivery_id="command-1",
             ):
                 pytest.fail("cancellation was swallowed")
     else:
         async with app.commands.execute(
-            agent, context, CommandInvocation(command_id="skill")
+            agent,
+            context,
+            CommandInvocation(command_id="skill"),
+            delivery_id="command-1",
         ) as result:
             assert isinstance(result, CommandError)
             assert result.status == "failed"
             assert "private runtime details" not in result.message
     assert not app.gateway.sessions
     assert not app.commands.catalogs
+    assert len(agent.invocations) == 1
+
+    async with app.commands.execute(
+        agent, context, CommandInvocation(command_id="skill"), delivery_id="command-1"
+    ) as repeated:
+        assert isinstance(repeated, CommandError)
+        assert repeated.status == "failed"
     assert len(agent.invocations) == 1
 
 
@@ -297,6 +352,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
             session=session,
             deferred_suspender=suspender,
             capabilities=capabilities,
+            delivery_id="command-1",
         ) as events:
             assert not isinstance(events, CommandResult | CommandError)
             assert isinstance(await anext(events), MessageSentEvent)
@@ -317,6 +373,13 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
     assert not app.gateway.sessions
     assert not app.commands.catalogs
 
+    async with app.commands.execute(
+        agent, context, CommandInvocation(command_id="skill"), delivery_id="command-1"
+    ) as repeated:
+        assert isinstance(repeated, CommandError)
+        assert repeated.status == "failed"
+    assert len(agent.invocations) == 1
+
 
 @pytest.mark.parametrize("during_probe", [False, True])
 @pytest.mark.parametrize(
@@ -335,7 +398,10 @@ async def test_execution_checks_access_and_selection_after_discovery(
 
     async def invoke() -> CommandOutcome:
         async with app.commands.execute(
-            agent, context, CommandInvocation(command_id="skill")
+            agent,
+            context,
+            CommandInvocation(command_id="skill"),
+            delivery_id="command-1",
         ) as result:
             assert isinstance(result, CommandResult | CommandError)
             return result
@@ -426,9 +492,220 @@ async def test_execution_rejects_foreign_or_unavailable_conversations(
         )
         context = replace(context, conversation=child)
     async with app.commands.execute(
-        agent, context, CommandInvocation(command_id="skill")
+        agent, context, CommandInvocation(command_id="skill"), delivery_id="command-1"
     ) as result:
         assert isinstance(result, CommandError)
         assert result.status == ("stale" if selection == "subagent" else "unavailable")
     assert len(agent.calls) == 1
     assert not agent.invocations
+
+
+@pytest.mark.parametrize("missing_outcome", [False, True])
+async def test_delivery_replay_uses_the_ledger_after_manager_recreation(
+    app: Octomate, agent: ExecutingAgent, context: CommandContext, missing_outcome: bool
+) -> None:
+    invocation = CommandInvocation(command_id="skill")
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as original:
+        assert isinstance(original, CommandResult)
+    if missing_outcome:
+        async with async_session() as session:
+            receipt = await session.get(ThreadCommand, agent.receipts[0].id)
+            assert receipt is not None
+            receipt.outcome = None
+            await session.commit()
+    manager = CommandManager(
+        tentacles=app.tentacles,
+        users=app.users,
+        conversations=app.conversations,
+        threads=app.threads,
+        workspaces=app.workspaces,
+        gateway=app.gateway,
+    )
+    agent.failure = True
+    async with manager.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as repeated:
+        if missing_outcome:
+            assert isinstance(repeated, CommandError)
+            assert "already accepted" in repeated.message
+        else:
+            assert repeated == original
+    assert len(agent.invocations) == 1
+    async with async_session() as session:
+        assert await session.count(ThreadCommand) == 1
+
+
+async def test_concurrent_duplicate_is_busy_and_a_new_delivery_can_run(
+    app: Octomate, agent: ExecutingAgent, context: CommandContext
+) -> None:
+    agent.release = asyncio.Event()
+    invocation = CommandInvocation(command_id="skill")
+
+    async def invoke(delivery_id: str) -> CommandOutcome:
+        async with app.commands.execute(
+            agent, context, invocation, delivery_id=delivery_id
+        ) as result:
+            assert isinstance(result, CommandResult | CommandError)
+            return result
+
+    async with asyncio.TaskGroup() as tasks:
+        first = tasks.create_task(invoke("command-1"))
+        await agent.entered.wait()
+        busy = await invoke("command-1")
+        assert busy.status == "busy"
+        agent.release.set()
+    assert (await invoke("command-1")) == first.result()
+    assert len(agent.invocations) == 1
+    assert (await invoke("command-2")).status == "completed"
+    assert len(agent.invocations) == 2
+    async with async_session() as session:
+        assert await session.count(ThreadCommand) == 2
+
+
+@pytest.mark.parametrize("conflict", ["arguments", "sender", "conversation"])
+async def test_delivery_id_cannot_be_reused_for_another_request(
+    app: Octomate, agent: ExecutingAgent, context: CommandContext, conflict: str
+) -> None:
+    invocation = CommandInvocation(command_id="skill")
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ):
+        pass
+    other = await app.users.ensure_profile("im", UserProfile(channel_user_id="bob"))
+    async with async_session() as session:
+        receipt = await session.get(ThreadCommand, agent.receipts[0].id)
+        assert receipt is not None
+        if conflict == "sender":
+            receipt.sender_id = other.id
+        if conflict == "conversation":
+            receipt.conversation_id = None
+        await session.commit()
+    if conflict == "arguments":
+        invocation.arguments = "a different action"
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as repeated:
+        assert isinstance(repeated, CommandError)
+        assert "another request" in repeated.message
+    assert len(agent.invocations) == 1
+
+
+async def test_replay_still_requires_current_access(
+    app: Octomate, agent: ExecutingAgent, context: CommandContext
+) -> None:
+    invocation = CommandInvocation(command_id="skill")
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ):
+        pass
+    async with async_session() as session:
+        user = await session.get(User, context.user_id)
+    assert user is not None
+    await app.users.unlink_profile(user, agent.receipts[0].sender_id)
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as repeated:
+        assert isinstance(repeated, CommandError)
+        assert repeated.status == "unavailable"
+    assert len(agent.invocations) == 1
+
+
+@pytest.mark.parametrize("stage", ["receipt", "outcome"])
+async def test_persistence_failure_never_repeats_runtime_effects(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    invocation = CommandInvocation(command_id="skill")
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            app.threads,
+            "store_message" if stage == "receipt" else "record_command_outcome",
+            AsyncMock(side_effect=RuntimeError("storage unavailable")),
+        )
+        with pytest.raises(RuntimeError, match="storage"):
+            async with app.commands.execute(
+                agent, context, invocation, delivery_id="command-1"
+            ):
+                pytest.fail("a failed write was ignored")
+    assert not app.gateway.sessions
+    assert len(agent.invocations) == (0 if stage == "receipt" else 1)
+    if stage == "outcome":
+        async with app.commands.execute(
+            agent, context, invocation, delivery_id="command-1"
+        ) as repeated:
+            assert isinstance(repeated, CommandError)
+            assert "already accepted" in repeated.message
+        assert len(agent.invocations) == 1
+
+
+@pytest.mark.parametrize(
+    "behavior", ["stream_complete", "stream_raise", "stream_cleanup_error"]
+)
+async def test_stream_outcome_is_recorded_after_consumption_and_cleanup(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    behavior: Literal["stream_complete", "stream_raise", "stream_cleanup_error"],
+) -> None:
+    agent.behavior = behavior
+    invocation = CommandInvocation(command_id="skill")
+    with (
+        nullcontext() if behavior == "stream_complete" else pytest.raises(RuntimeError)
+    ):
+        async with app.commands.execute(
+            agent, context, invocation, delivery_id="command-1"
+        ) as events:
+            assert not isinstance(events, CommandResult | CommandError)
+            if behavior == "stream_cleanup_error":
+                await anext(events)
+            else:
+                assert len([event async for event in events]) == 1
+    assert agent.stream_closed
+    assert not app.gateway.sessions
+    assert not app.commands.catalogs
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as repeated:
+        assert isinstance(repeated, CommandResult | CommandError)
+        assert repeated.status == (
+            "completed" if behavior == "stream_complete" else "failed"
+        )
+        if isinstance(repeated, CommandError):
+            assert "private" not in repeated.message
+    assert len(agent.invocations) == 1
+
+
+@pytest.mark.parametrize("behavior", ["direct", "stream_complete"])
+async def test_recording_outcomes_does_not_mutate_the_callers_receipt(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    monkeypatch: pytest.MonkeyPatch,
+    behavior: Literal["direct", "stream_complete"],
+) -> None:
+    agent.behavior = behavior
+    receipts: list[ThreadCommand] = []
+    store = app.threads.store_message
+
+    async def capture(message: ThreadMessage, thread: Thread) -> None:
+        assert isinstance(message, ThreadCommand)
+        receipts.append(message)
+        await store(message, thread)
+
+    monkeypatch.setattr(app.threads, "store_message", capture)
+    async with app.commands.execute(
+        agent, context, CommandInvocation(command_id="skill"), delivery_id="command-1"
+    ) as result:
+        if not isinstance(result, CommandResult | CommandError):
+            assert len([event async for event in result]) == 1
+    assert len(receipts) == 1
+    assert receipts[0].outcome is None
+    async with async_session() as session:
+        stored = await session.get(ThreadCommand, receipts[0].id)
+        assert stored is not None
+        assert isinstance(stored.outcome, CommandResult)

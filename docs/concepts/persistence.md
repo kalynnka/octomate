@@ -60,7 +60,9 @@ conversation, raw invocation and optional outcome, and use the same delivery key
 as other ledger messages. A missing outcome means no terminal result was recorded;
 it does not make re-execution safe. Command rows remain visible in history but are
 excluded from pending chat prompts, without advancing the prompt cursor.
-Execution does not write these receipts yet.
+The command manager commits a receipt before runtime dispatch and records the
+outcome afterward. Repeated delivery IDs reuse the receipt, so a missing outcome
+cannot cause another invocation.
 
 ## Migrations
 

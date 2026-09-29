@@ -167,13 +167,13 @@ invocation: DSH's `/plan off` changes state, while `/plan <message>` also submit
 agent input. If a command produces both control feedback and agent activity, its
 adapter must expose both through the existing stream events.
 
-The host's `octomate.commands.execute(agent, context, invocation, ...)` is an async
+The host's `octomate.commands.execute(agent, context, invocation, delivery_id=..., ...)` is an async
 context manager for execution. The caller supplies context identifying the
-authenticated user and deduplicates delivery before entering it. Execution requires
+authenticated user and a stable, nonempty delivery ID. Execution requires
 that user's linked profile and access to the addressed chat surface. The selected
 agent must still be enabled on the channel and own the conversation's route;
 subagent conversations are not execution targets. These checks run once after
-discovery, immediately before dispatch. A changed workspace, external session, model
+discovery, before dispatch or replay. A changed workspace, external session, model
 or approval posture returns `stale`; missing access returns `unavailable`.
 
 Execution requires an existing conversation, refreshes the runtime catalog, validates
@@ -181,10 +181,23 @@ command membership and declared attachment support, and holds the conversation's
 cleanup. Normal chat turns use the same guard even when gateway spells are disabled.
 Busy conversations are refused immediately; execution never queues or retries.
 
+Before runtime dispatch, the manager commits a command receipt on the addressed
+chat surface. Its delivery ID must be unique among inbound messages on that surface;
+use the same ID when retrying the same request. After checking current access and
+context, matching deliveries return their recorded outcome even if the command is
+no longer in the catalog. An ID belonging to another sender, conversation, agent
+or invocation is refused. A receipt without an outcome is also refused: its runtime
+effects may already have occurred. Pre-dispatch refusals do not create receipts.
+
 The context manager yields a direct outcome or an async event generator. Consume
 events inside the context so closing it also closes the stream. Pass the run's
 gateway session, suspender and capabilities when available. Direct adapter errors
 become failed outcomes; cancellation and stream errors propagate to the caller.
+Direct outcomes are saved before being yielded. Streams record completion only
+after full consumption and cleanup; interruption or failure records a failed outcome.
+Repeated streamed deliveries return that status, without replaying events. Stream
+consumers still own event presentation and native run history. A failed receipt write
+prevents dispatch; a failed outcome write leaves the receipt to prevent re-execution.
 Attempted invocations invalidate that conversation's catalogs after cleanup, including
 failures whose side effects may already have occurred. A native transcript handle
 alone does not authorize control of an external CLI session.

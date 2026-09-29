@@ -13,6 +13,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
+from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -25,6 +26,7 @@ from octomate.schemas.thread import (
     MessageBinding,
     MessageBindingKind,
     Thread,
+    ThreadCommand,
     ThreadKey,
     ThreadMessage,
     ThreadMessageDirection,
@@ -394,6 +396,20 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                     and message.actor_kind == "human"
                 ):
                     row.title = thread_title(message.message_text)
+            await session.commit()
+
+    async def record_command_outcome(
+        self, receipt_id: uuid.UUID, outcome: CommandOutcome
+    ) -> None:
+        """Persist an outcome without mutating a caller's receipt snapshot."""
+        async with async_session() as session:
+            receipt = await session.get(ThreadCommand, receipt_id)
+            if receipt is None:
+                raise ValueError(f"command receipt {receipt_id} does not exist")
+            receipt.outcome = outcome
+            thread = await session.get(Thread, receipt.thread_id)
+            if thread is not None:
+                thread.updated_at = datetime.now(UTC)
             await session.commit()
 
     async def record_inbound(
