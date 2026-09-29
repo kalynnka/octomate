@@ -143,6 +143,7 @@ class OpenTurn:
     # The prompt arrived through the /api gateway (it carries the gateway's
     # rpcId) rather than being typed into a local CLI/TUI.
     prompt_via_gateway: bool
+    permission_mode: str | None  # Observed permission preset for this turn.
     accumulator: DeepseekRunAccumulator = field(default_factory=DeepseekRunAccumulator)
 
 
@@ -288,13 +289,17 @@ class DeepseekEventTailer:
                 thread = await self.session_thread(state.session_id, state.cwd)
                 await self.thread_manager.rename(thread, name)
             return
+        if event.type == "permission/preset":
+            preset = permission_preset_of(event)
+            await self.record_permission_mode(state, preset)
+            if state.open_turn is not None and preset is not None:
+                state.open_turn.permission_mode = preset
+            return
         if state.open_turn is None:
             if event.type == "user/message":
                 prompt = human_prompt(event)
                 if prompt is not None:
                     state.prompts.append(prompt)
-            elif event.type == "permission/preset":
-                await self.record_permission_mode(state, permission_preset_of(event))
             elif event.type == "turn/start":
                 prompts = state.prompts
                 state.prompts = []
@@ -305,6 +310,11 @@ class DeepseekEventTailer:
                     prompt_text="\n\n".join(prompt.text for prompt in prompts),
                     prompt_time=prompts[0].time if prompts else None,
                     prompt_via_gateway=any(prompt.via_gateway for prompt in prompts),
+                    permission_mode=(
+                        state.conversation.permission_mode
+                        if state.conversation is not None
+                        else None
+                    ),
                 )
                 self.fold(state.open_turn, state.session_id, entry)
             return
@@ -380,6 +390,12 @@ class DeepseekEventTailer:
                     run_id=run_id,
                     messages=messages,
                     name=DEEPSEEK_NATIVE_ID,
+                    model_name=(
+                        turn.accumulator.route.model
+                        if turn.accumulator.route is not None
+                        else None
+                    ),
+                    permission_mode=turn.permission_mode,
                     cwd=Path(state.cwd) if state.cwd else None,
                     external_session_id=session_id,
                     source="gateway" if turn.prompt_via_gateway else "local",

@@ -637,13 +637,31 @@ async def test_without_a_model_the_session_selection_is_left_alone(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     patch_gateway(monkeypatch)
-    FakeDeepseekApi.reset(turn_events())
-    tentacle = _tentacle(FakeConversationManager())
+    script = turn_events()
+    message_data: JsonObject = {
+        "message": {
+            "content": [{"type": "text", "text": "done"}],
+            "source": {
+                "kind": "model",
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-flash",
+            },
+        }
+    }
+    message = script[2]
+    assert isinstance(message, dict)
+    message["data"] = message_data
+    FakeDeepseekApi.reset(script)
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
 
     async with tentacle:
         await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
     assert not calls_of("session/selectModel")
+    [run] = conversations.store[(_THREAD, "deepseek", "")].runs
+    assert run.model_name == "deepseek-v4-flash"
+    assert run.permission_mode == tentacle.config.permission_mode
 
 
 @pytest.mark.parametrize("mode", ["danger-full-access", "audit-only"])
@@ -652,7 +670,21 @@ async def test_the_conversations_posture_overrides_the_configured_one(
     mode: str,
 ) -> None:
     patch_gateway(monkeypatch)
-    FakeDeepseekApi.reset(turn_events())
+    script = turn_events()
+    message_data: JsonObject = {
+        "message": {
+            "content": [{"type": "text", "text": "done"}],
+            "source": {
+                "kind": "model",
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-flash",
+            },
+        }
+    }
+    message = script[2]
+    assert isinstance(message, dict)
+    message["data"] = message_data
+    FakeDeepseekApi.reset(script)
     FakeDeepseekApi.results["permissionPresets/catalog"] = OkResult(
         value={
             "options": [
@@ -677,6 +709,9 @@ async def test_the_conversations_posture_overrides_the_configured_one(
         "line": f"/permission {mode}",
         "submittedAttachments": [],
     }
+    [run] = conversations.store[(_THREAD, "deepseek", "")].runs
+    assert run.model_name == "deepseek-v4-flash"
+    assert run.permission_mode == mode
 
 
 async def test_an_unavailable_posture_fails_before_prompting(

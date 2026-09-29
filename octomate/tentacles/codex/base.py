@@ -47,6 +47,7 @@ from octomate_protocol.stream import (
     client_message_adapter,
 )
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
+from openai_codex._approval_mode import _approval_mode_settings
 from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.async_client import AsyncCodexClient
@@ -150,7 +151,8 @@ logger = logging.getLogger(__name__)
 # The public openai_codex API can't express two things the `user` approval bridge
 # needs: an approval-handler callback on the async client, and the
 # `approvals_reviewer=user` option. The human bridge uses the SDK's raw thread/turn
-# params and sandbox conversions; automatic review uses its public API.
+# params and sandbox conversions. Raw start/resume responses also report the model
+# selected by the runtime, which the public thread handle omits.
 
 
 # How a driven turn's Codex process is told to reach Octomate's MCP server: the
@@ -178,6 +180,7 @@ class PooledCodexClient:
     # The live SDK thread handle for this Octomate thread; created on first turn and
     # reused so later turns continue the same Codex thread on the warm process.
     thread: AsyncThread | None = None
+    model_name: str | None = None  # Runtime model, updated by explicit turn selections.
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
@@ -1302,26 +1305,20 @@ class CodexTentacle(AgentTentacle[str, None]):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
-        if approval_mode is not None:
-            return await client.thread_start(
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=ephemeral,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
+    ) -> tuple[AsyncThread, str]:
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
-        # `user` reviewer has no public thread_start knob; go through the raw params.
+        )
         await client._ensure_initialized()
         started = await client._client.thread_start(
             ThreadStartParams(
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
+                approval_policy=approval_policy,
+                approvals_reviewer=reviewer,
                 base_instructions=base_instructions,
                 config=config,
                 cwd=cwd,
@@ -1333,7 +1330,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 sandbox=_sandbox_mode(sandbox),
             )
         )
-        return AsyncThread(client, started.thread.id)
+        return AsyncThread(client, started.thread.id), started.model
 
     async def resume_codex_thread(
         self,
@@ -1349,27 +1346,22 @@ class CodexTentacle(AgentTentacle[str, None]):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
-        if approval_mode is not None:
-            return await client.thread_resume(
-                thread_id,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
+    ) -> tuple[AsyncThread, str]:
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
+        )
         await client._ensure_initialized()
         resumed = await client._client.thread_resume(
             thread_id,
             ThreadResumeParams(
                 thread_id=thread_id,
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
+                approval_policy=approval_policy,
+                approvals_reviewer=reviewer,
                 base_instructions=base_instructions,
                 config=config,
                 cwd=cwd,
@@ -1380,7 +1372,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 sandbox=_sandbox_mode(sandbox),
             ),
         )
-        return AsyncThread(client, resumed.thread.id)
+        return AsyncThread(client, resumed.thread.id), resumed.model
 
     async def turn_codex_thread(
         self,
@@ -1640,7 +1632,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     pooled.api_key.token if pooled.api_key is not None else None,
                 )
                 if conversation.external_id:
-                    codex_thread = await self.resume_codex_thread(
+                    codex_thread, pooled.model_name = await self.resume_codex_thread(
                         pooled.client,
                         thread_id=conversation.external_id,
                         approval_mode=approval_mode,
@@ -1654,7 +1646,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         sandbox=sandbox,
                     )
                 else:
-                    codex_thread = await self.start_codex_thread(
+                    codex_thread, pooled.model_name = await self.start_codex_thread(
                         pooled.client,
                         approval_mode=approval_mode,
                         base_instructions=self.config.base_instructions,
@@ -1668,6 +1660,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                         sandbox=sandbox,
                     )
                 pooled.thread = codex_thread
+            elif sdk_model is not None:
+                pooled.model_name = sdk_model
             codex_thread_id = codex_thread.id
             await resources.enter_async_context(self.driving(codex_thread_id))
             self.bridge_contexts[conversation.id] = CodexBridgeContext(
@@ -1705,6 +1699,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     interrupted = True
                     await turn.interrupt()
             await self.sync_session_name(conversation, codex_thread)
+            model_name = pooled.model_name
 
         run_id = str(uuid7())
         recorded_run = await self.octomate.conversations.record_agent_run(
@@ -1712,7 +1707,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_id=run_id,
             messages=accumulator.messages,
             name=run_name,
-            model_name=sdk_model,
+            model_name=model_name,
             permission_mode=permission_mode,
             cwd=Path(run_cwd),
             external_id=accumulator.thread_id or codex_thread_id,

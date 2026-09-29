@@ -116,6 +116,7 @@ class OpenTurn:
     end_offset: int  # byte offset past the last line folded in
     accumulator: ClaudeRunAccumulator
     last_line_uuid: str | None
+    permission_mode: str | None  # Permission mode on the turn's opening prompt.
 
 
 @dataclass
@@ -541,6 +542,7 @@ class ClaudeTranscriptTailer:
             end_offset=end,
             accumulator=accumulator,
             last_line_uuid=line.uuid,
+            permission_mode=line.permission_mode,
         )
 
     async def close_turn(self, state: TailState) -> None:
@@ -579,6 +581,8 @@ class ClaudeTranscriptTailer:
                     run_id=turn.prompt_id,
                     messages=turn.accumulator.messages,
                     name=CLAUDE_NATIVE_ID,
+                    model_name=turn.accumulator.model_name,
+                    permission_mode=turn.permission_mode,
                     cwd=Path(turn.cwd) if turn.cwd else None,
                     external_session_id=state.session_id,
                     source=turn.source,
@@ -731,6 +735,7 @@ class ClaudeTranscriptTailer:
             end_offset=end,
             accumulator=accumulator,
             last_line_uuid=line.uuid,
+            permission_mode=line.permission_mode,
         )
 
     def fold_subagent(
@@ -782,6 +787,8 @@ class ClaudeTranscriptTailer:
                     run_id=run_id,
                     messages=turn.accumulator.messages,
                     name=CLAUDE_NATIVE_ID,
+                    model_name=turn.accumulator.model_name,
+                    permission_mode=turn.permission_mode,
                     cwd=Path(turn.cwd) if turn.cwd else None,
                     external_session_id=tail.agent_id,
                     source=turn.source,

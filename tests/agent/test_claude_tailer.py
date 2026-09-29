@@ -280,6 +280,11 @@ async def test_the_posture_a_session_runs_under_is_read_off_its_transcript() -> 
     )
     await tailer.finish_remote(state)
     assert await posture() == "acceptEdits"
+    assert [run.permission_mode for run in await runs_of(octomate)] == [
+        "plan",
+        "acceptEdits",
+        "hyperdrive",
+    ]
 
 
 async def test_streams_live_events_to_a_consumer() -> None:
@@ -509,6 +514,8 @@ async def test_a_streamed_session_reconstructs_full_fidelity() -> None:
     assert first.id == "p1"
     assert first.external_session_id == SESSION_ID
     assert first.source == "cli"
+    assert first.model_name == "claude-opus-4-8"
+    assert first.permission_mode is None
     kinds = [type(message).__name__ for message in first.messages]
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
 

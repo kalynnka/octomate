@@ -29,6 +29,7 @@ from openai_codex.generated.v2_all import (
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
+    SandboxMode,
     ThreadItem,
     ThreadReadResponse,
     ThreadResumeParams,
@@ -261,6 +262,7 @@ class FakeThread:
 class FakeCodex:
     script: ClassVar[list[Notification]] = []
     thread_name: ClassVar[str | None] = None
+    model_name: ClassVar[str] = "runtime-model"
     read_calls: ClassVar[list[tuple[str, bool]]] = []
     last_config: ClassVar[CodexSdkConfig | None] = None
     thread_calls: ClassVar[list[ThreadCall]] = []
@@ -280,6 +282,8 @@ class FakeCodex:
         # handler-bearing sync client into it for every client it builds.
         self._client = SimpleNamespace(
             _sync=None,
+            thread_start=self.thread_start,
+            thread_resume=self.thread_resume,
             request=AsyncMock(
                 return_value=ConfigReadResponse.model_validate(
                     {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
@@ -298,69 +302,69 @@ class FakeCodex:
     ) -> None:
         FakeCodex.closed += 1
 
-    async def thread_start(
-        self,
-        *,
-        approval_mode: ApprovalMode = ApprovalMode.auto_review,
-        base_instructions: str | None = None,
-        config: JsonObject | None = None,
-        cwd: str | None = None,
-        developer_instructions: str | None = None,
-        ephemeral: bool | None = None,
-        model: str | None = None,
-        model_provider: str | None = None,
-        personality: Personality | None = None,
-        sandbox: Sandbox | None = None,
-    ) -> FakeThread:
-        FakeCodex.thread_calls.append(
-            ThreadCall(
-                kind="start",
-                thread_id=None,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=ephemeral,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
-            )
+    async def _ensure_initialized(self) -> None:
+        return
+
+    async def thread_start(self, params: ThreadStartParams) -> SimpleNamespace:
+        self.record_thread(params)
+        return SimpleNamespace(
+            thread=FakeThread("thread-new"), model=params.model or self.model_name
         )
-        return FakeThread("thread-new")
 
     async def thread_resume(
-        self,
-        thread_id: str,
-        *,
-        approval_mode: ApprovalMode | None = None,
-        base_instructions: str | None = None,
-        config: JsonObject | None = None,
-        cwd: str | None = None,
-        developer_instructions: str | None = None,
-        model: str | None = None,
-        model_provider: str | None = None,
-        personality: Personality | None = None,
-        sandbox: Sandbox | None = None,
-    ) -> FakeThread:
+        self, thread_id: str, params: ThreadResumeParams
+    ) -> SimpleNamespace:
+        self.record_thread(params)
+        return SimpleNamespace(
+            thread=FakeThread(thread_id), model=params.model or self.model_name
+        )
+
+    def record_thread(self, params: ThreadStartParams | ThreadResumeParams) -> None:
+        assert params.approval_policy is not None
+        assert params.sandbox is not None
+        approval = {
+            ApprovalsReviewer.user: None,
+            ApprovalsReviewer.auto_review: ApprovalMode.auto_review,
+            None: ApprovalMode.deny_all,
+        }[params.approvals_reviewer]
+        sandbox = {
+            SandboxMode.read_only: Sandbox.read_only,
+            SandboxMode.workspace_write: Sandbox.workspace_write,
+            SandboxMode.danger_full_access: Sandbox.full_access,
+        }[params.sandbox]
         FakeCodex.thread_calls.append(
             ThreadCall(
-                kind="resume",
-                thread_id=thread_id,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=None,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
+                kind="start" if isinstance(params, ThreadStartParams) else "resume",
+                thread_id=params.thread_id
+                if isinstance(params, ThreadResumeParams)
+                else None,
+                approval_mode=approval,
+                base_instructions=params.base_instructions,
+                config=params.config,
+                cwd=params.cwd,
+                developer_instructions=params.developer_instructions,
+                ephemeral=params.ephemeral
+                if isinstance(params, ThreadStartParams)
+                else None,
+                model=params.model,
+                model_provider=params.model_provider,
+                personality=params.personality,
                 sandbox=sandbox,
             )
         )
-        return FakeThread(thread_id)
+
+
+@pytest.fixture(autouse=True)
+def fake_thread_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        codex_base,
+        "AsyncThread",
+        lambda client, thread_id: (
+            FakeThread(thread_id)
+            if isinstance(client, FakeCodex)
+            else AsyncThread(client, thread_id)
+        ),
+    )
 
 
 class ApprovalFakeTurn(FakeTurn):
@@ -425,6 +429,7 @@ class StructuredCodexResult(BaseModel):
 def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.script = script
     FakeCodex.thread_name = None
+    FakeCodex.model_name = "runtime-model"
     FakeCodex.read_calls = []
     FakeCodex.last_config = None
     FakeCodex.thread_calls = []
@@ -918,7 +923,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> FakeThread:
+    ) -> tuple[FakeThread, str]:
         # `user_review` is the one posture with no public SDK knob, so it is the
         # reviewer path the bridge exists for.
         assert approval_mode is None
@@ -926,7 +931,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         assert config == {"mcp_servers": {}}
         assert isinstance(client, FakeCodex)
         client._client.turn_start = AsyncMock()
-        return FakeThread("thread-new")
+        return FakeThread("thread-new"), "runtime-model"
 
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     monkeypatch.setattr(codex_base, "CodexClient", capture_handler)
@@ -1612,6 +1617,33 @@ async def test_the_conversations_preset_overrides_the_configured_one(
     assert turn_call.approval_mode is approval
     assert turn_call.sandbox is sandbox
     assert turn_call.model is None
+    [recorded] = conversations.store[(_THREAD, "codex", "")].runs
+    assert recorded.model_name == "runtime-model"
+    assert recorded.permission_mode == mode
+
+
+async def test_a_warm_thread_retains_the_reported_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+
+    async with tentacle:
+        for model in (None, "requested-model", None):
+            FakeCodex.script = text_script("done", thread_id="thread-new")
+            await tentacle.run(
+                "go", conversation_address=KEY, thread_id=_THREAD, model=model
+            )
+
+    assert len(FakeCodex.thread_calls) == 1
+    runs = conversations.store[(_THREAD, "codex", "")].runs
+    assert [run.model_name for run in runs] == [
+        "runtime-model",
+        "requested-model",
+        "requested-model",
+    ]
 
 
 async def test_a_warm_thread_reapplies_the_selected_preset(
@@ -1631,6 +1663,11 @@ async def test_a_warm_thread_reapplies_the_selected_preset(
 
     assert FakeCodex.builds == 1
     assert len(FakeCodex.thread_calls) == 1
+    assert [run.permission_mode for run in conversation.runs] == [
+        "auto_review",
+        "full_access",
+        "auto_review",
+    ]
     assert [(call.approval_mode, call.sandbox) for call in FakeCodex.turn_calls] == [
         (ApprovalMode.auto_review, Sandbox.workspace_write),
         (ApprovalMode.deny_all, Sandbox.full_access),
@@ -2063,7 +2100,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> BindingFakeThread:
+    ) -> tuple[BindingFakeThread, str]:
         assert config["mcp_servers"] == {
             "octomate_driven": {
                 "enabled": True,
@@ -2074,7 +2111,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
                 },
             }
         }
-        return BindingFakeThread("thread-new")
+        return BindingFakeThread("thread-new"), "runtime-model"
 
     monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_binding_thread)
     tentacle = CodexTentacle(
@@ -2142,17 +2179,36 @@ async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
 
 
 @pytest.mark.parametrize("resume", [False, True])
-async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
+@pytest.mark.parametrize(
+    ("approval_mode", "reviewer", "policy"),
+    [
+        (None, ApprovalsReviewer.user, AskForApprovalValue.on_request),
+        (
+            ApprovalMode.auto_review,
+            ApprovalsReviewer.auto_review,
+            AskForApprovalValue.on_request,
+        ),
+        (ApprovalMode.deny_all, None, AskForApprovalValue.never),
+    ],
+)
+async def test_thread_settings_preserve_reviewer_and_report_model(
+    resume: bool,
+    approval_mode: ApprovalMode | None,
+    reviewer: ApprovalsReviewer | None,
+    policy: AskForApprovalValue,
+) -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = AsyncMock(spec=AsyncCodex)
     client._client = AsyncMock()
     client._client.thread_start.return_value.thread.id = "new-thread"
+    client._client.thread_start.return_value.model = "runtime-model"
+    client._client.thread_resume.return_value.model = "runtime-model"
     client._client.thread_resume.return_value.thread.id = "previous-thread"
     if resume:
-        thread = await tentacle.resume_codex_thread(
+        thread, model_name = await tentacle.resume_codex_thread(
             client,
             thread_id="previous-thread",
-            approval_mode=None,
+            approval_mode=approval_mode,
             base_instructions=None,
             config={},
             cwd="/workspace",
@@ -2167,9 +2223,9 @@ async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
         assert thread.id == "previous-thread"
         client.thread_resume.assert_not_awaited()
     else:
-        thread = await tentacle.start_codex_thread(
+        thread, model_name = await tentacle.start_codex_thread(
             client,
-            approval_mode=None,
+            approval_mode=approval_mode,
             base_instructions=None,
             config={},
             cwd="/workspace",
@@ -2184,9 +2240,10 @@ async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
         assert isinstance(params, ThreadStartParams)
         assert thread.id == "new-thread"
         client.thread_start.assert_not_awaited()
+    assert model_name == "runtime-model"
     assert params.approval_policy is not None
-    assert params.approval_policy.root is AskForApprovalValue.on_request
-    assert params.approvals_reviewer is ApprovalsReviewer.user
+    assert params.approval_policy.root is policy
+    assert params.approvals_reviewer is reviewer
 
 
 async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> None:

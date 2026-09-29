@@ -485,20 +485,31 @@ async def test_run_rejects_deferred_output_type(
         )
 
 
-async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("permission_mode", [None, "plan", "bypassPermissions"])
+@pytest.mark.parametrize("model", [None, "opus"])
+async def test_run_honors_per_run_model(
+    monkeypatch: pytest.MonkeyPatch, permission_mode: str | None, model: str | None
+) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "claude", "")] = FakeConversation(
+        thread_id=_THREAD, permission_mode=permission_mode
+    )
     tentacle = _tentacle(
         conversations,
         config=ClaudeCodeConfig(),
     )
 
-    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model="opus")
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model=model)
 
-    assert getattr(FakeClaudeClient.last_options, "model", None) == "opus"
+    assert getattr(FakeClaudeClient.last_options, "model", None) == model
     [run] = conversations.store[(_THREAD, "claude", "")].runs
     assert run.model_name == "claude-opus-4-8"
-    assert run.permission_mode == tentacle.config.permission_mode
+    assert run.permission_mode == (permission_mode or tentacle.config.permission_mode)
+    assert (
+        getattr(FakeClaudeClient.last_options, "permission_mode", None)
+        == run.permission_mode
+    )
 
 
 async def test_local_transport_passes_no_custom_transport(

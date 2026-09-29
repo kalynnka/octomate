@@ -52,7 +52,7 @@ from octomate.tentacles.inkling import (
 )
 from octomate.tentacles.inkling.base import InklingDeferrals, InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
-from octomate.types.permissions import AgentPermissionMode
+from octomate.types.permissions import AgentPermissionMode, InklingPermissionMode
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,
@@ -147,6 +147,32 @@ def _boom_agent() -> Agent[None, ScriptedOutput]:
         capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
+
+
+@pytest.mark.parametrize("configured", ["default", "bypassPermissions"])
+@pytest.mark.parametrize("override", [None, "dontAsk"])
+async def test_run_records_its_model_and_effective_permission(
+    configured: InklingPermissionMode, override: InklingPermissionMode | None
+) -> None:
+    agent, _ = build_scripted_agent(["done"])
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(
+        thread_id=_THREAD, agent_tentacle_id="inkling", permission_mode=override
+    )
+    conversations.store[(_THREAD, "inkling", "")] = conversation
+    tentacle = _tentacle(agent, conversations)
+    tentacle.permission_mode = configured
+
+    await tentacle.run(
+        "go",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+    )
+
+    [run] = conversation.runs
+    assert run.model_name == "scripted"
+    assert run.permission_mode == (override or configured)
 
 
 async def test_inkling_loop_emits_deferred_question_batch() -> None:
