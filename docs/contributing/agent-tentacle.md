@@ -39,7 +39,8 @@ The optional `probe_commands` and `execute_command` hooks use the
 [command schemas](../api/schemas/commands.md). Their defaults report unsupported
 without starting a turn. Each agent exposes `discover_commands` for cached discovery,
 refresh and command-name completion, backed by the host's command manager and an HTTP
-endpoint. Execution, channel command controls and runtime adapters are not wired yet.
+endpoint. The host also provides guarded execution through its command manager;
+HTTP execution, channel command controls and runtime adapters are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval
@@ -160,9 +161,20 @@ invocation: DSH's `/plan off` changes state, while `/plan <message>` also submit
 agent input. If a command produces both control feedback and agent activity, its
 adapter must expose both through the existing stream events.
 
-The caller must authorize the target, revalidate catalog membership and attachment
-support, deduplicate delivery and hold the active-turn guard through stream cleanup.
-These hooks do not enforce those host responsibilities. A native transcript handle
+The host's `octomate.commands.execute(agent, context, invocation, ...)` is an async
+context manager for execution. The caller must authorize the target, resolve fresh
+context and deduplicate delivery before entering it. It requires an existing
+conversation, refreshes the runtime catalog, validates command membership and
+declared attachment support, and holds the conversation's turn guard through stream
+cleanup. Normal chat turns use the same guard even when gateway spells are disabled.
+Busy conversations are refused immediately; execution never queues or retries.
+
+The context manager yields a direct outcome or an async event generator. Consume
+events inside the context so closing it also closes the stream. Pass the run's
+gateway session, suspender and capabilities when available. Direct adapter errors
+become failed outcomes; cancellation and stream errors propagate to the caller.
+Attempted invocations invalidate that conversation's catalogs after cleanup, including
+failures whose side effects may already have occurred. A native transcript handle
 alone does not authorize control of an external CLI session.
 
 ## A skeleton

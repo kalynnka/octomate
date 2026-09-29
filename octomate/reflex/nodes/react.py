@@ -183,7 +183,15 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         # Registered before anything is presented: a second turn racing this
         # conversation is refused here, loudly, not after it has started streaming.
-        async with ctx.deps.gateway.driving(octomate_session):
+        conversation_id = None
+        if octomate_session is None and thread_id is not None:
+            conversation = await ctx.deps.conversation_manager.ensure(
+                thread_id, agent_tentacle_id=agent.id, with_history=False
+            )
+            conversation_id = conversation.id
+        async with ctx.deps.gateway.driving(
+            octomate_session, conversation_id=conversation_id
+        ):
             with reflex_logfire.span(
                 "react",
                 channel_id=target_address.channel_tentacle_id,

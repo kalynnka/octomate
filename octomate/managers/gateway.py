@@ -760,7 +760,8 @@ class GatewayManager(Manager):
     driving it."""
 
     def __init__(self) -> None:
-        self.sessions: dict[uuid.UUID, OctomateSession] = {}
+        # None holds a turn whose agent does not expose gateway spells.
+        self.sessions: dict[uuid.UUID, OctomateSession | None] = {}
 
     def register(self, session: OctomateSession) -> None:
         """Hold the conversation for `session`, first arrival only.
@@ -773,7 +774,7 @@ class GatewayManager(Manager):
         if session.conversation_id is None:
             raise ValueError("a registered Octomate session needs its conversation id")
         holder = self.sessions.get(session.conversation_id)
-        if holder is not None and holder is not session:
+        if session.conversation_id in self.sessions and holder is not session:
             raise RuntimeError(
                 f"conversation {session.conversation_id} already has a turn at the "
                 "gateway; a second run on it is refused until that turn ends"
@@ -817,16 +818,40 @@ class GatewayManager(Manager):
         }
 
     @asynccontextmanager
-    async def driving(self, session: OctomateSession | None) -> AsyncGenerator[None]:
+    async def driving(
+        self,
+        session: OctomateSession | None,
+        *,
+        conversation_id: uuid.UUID | None = None,
+    ) -> AsyncGenerator[None]:
         """The registration span of one driven turn: external tool calls reach
         `session` only while the run that mounted it is in flight, and a second
-        turn of the same conversation is refused at the door. Tolerates a gateway
-        that was never built (disabled connection) or never got a conversation id
-        (no thread), which is simply not registered."""
+        turn of the same conversation is refused at the door. A caller without
+        gateway spells supplies its conversation id to hold the same guard
+        without exposing a gateway session. Calls with neither remain untracked.
+        """
         if session is not None and session.conversation_id is not None:
+            if (
+                conversation_id is not None
+                and conversation_id != session.conversation_id
+            ):
+                raise ValueError("gateway session belongs to another conversation")
+            conversation_id = session.conversation_id
             self.register(session)
+        elif conversation_id is not None:
+            if conversation_id in self.sessions:
+                raise RuntimeError(
+                    f"conversation {conversation_id} already has a turn at the "
+                    "gateway; a second run on it is refused until that turn ends"
+                )
+            self.sessions[conversation_id] = None
         try:
             yield
         finally:
-            if session is not None:
+            if session is not None and session.conversation_id is not None:
                 self.unregister(session)
+            elif (
+                conversation_id is not None
+                and self.sessions.get(conversation_id) is None
+            ):
+                self.sessions.pop(conversation_id, None)

@@ -898,6 +898,35 @@ async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
         assert manager.sessions == {}
 
 
+async def test_driving_without_gateway_spells_still_holds_the_conversation() -> None:
+    manager = GatewayManager()
+    session = _registered_session()
+    assert session.conversation_id is not None
+    async with manager.driving(None, conversation_id=session.conversation_id):
+        assert manager.get(session.conversation_id) is None
+        with pytest.raises(RuntimeError, match="already has a turn"):
+            manager.register(session)
+        with pytest.raises(RuntimeError, match="already has a turn"):
+            async with manager.driving(None, conversation_id=session.conversation_id):
+                pytest.fail("a second turn acquired the guard")
+        assert session.conversation_id in manager.sessions
+    assert manager.sessions == {}
+    async with manager.driving(session):
+        with pytest.raises(RuntimeError, match="already has a turn"):
+            async with manager.driving(None, conversation_id=session.conversation_id):
+                pytest.fail("a second turn acquired the guard")
+        assert manager.get(session.conversation_id) is session
+    assert manager.sessions == {}
+
+
+async def test_driving_rejects_mismatched_session_identity() -> None:
+    manager = GatewayManager()
+    with pytest.raises(ValueError, match="another conversation"):
+        async with manager.driving(_registered_session(), conversation_id=uuid7()):
+            pytest.fail("a mismatched session acquired the guard")
+    assert manager.sessions == {}
+
+
 async def test_summon_refuses_a_brief_over_the_cap() -> None:
     """Refused, never trimmed, and before the spell runs: the cap is the tool's own
     argument schema, which the model sees and pydantic-ai validates by, so nothing

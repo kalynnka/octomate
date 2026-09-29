@@ -740,14 +740,17 @@ class SlowAgent(FakeAgent):
         return await super().run(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
-async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts() -> (
-    None
-):
+@pytest.mark.parametrize("gateway", [True, False])
+async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts(
+    gateway: bool,
+) -> None:
     """Nothing serialises two turns of one conversation, so the registry refuses
     the second at the door: the first arrival keeps its session, the second run
     raises before anything is presented, and the slot frees when the first ends."""
     address = _key()
-    agent = SlowAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = SlowAgent(
+        id="other", allow_reception_run=True, reception_output="done", gateway=gateway
+    )
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     registry = GatewayManager()
