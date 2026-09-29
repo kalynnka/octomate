@@ -109,16 +109,15 @@ function sessionLink(channel: string, chatId: string): string | undefined {
 }
 
 /**
- * The route that owns the thread: the last handoff's, since handoffs arrive
- * oldest first. A thread nothing has routed yet has none.
+ * The current conversation owns a fork; explicit handoffs can change its agent.
  */
-function activeRoute(handoffs: ApiHandoff[]): {
+function activeRoute(thread: ApiThread): {
   agent: string | null
   model: string | null
 } {
-  const last = handoffs.at(-1)
+  const last = thread.handoffs.at(-1)
   return {
-    agent: last?.to_agent_tentacle_id ?? null,
+    agent: last?.to_agent_tentacle_id ?? thread.active_agent_tentacle_id ?? null,
     model: last?.to_model ?? null,
   }
 }
@@ -136,7 +135,7 @@ function threadLabel(t: ApiThread): string {
 
 export function liveThreadSummary(t: ApiThread): ThreadSummary {
   const channel = channelMeta(t.channel_tentacle_id)
-  const { agent, model } = activeRoute(t.handoffs)
+  const { agent, model } = activeRoute(t)
   return {
     id: t.id,
     channelId: t.channel_tentacle_id,
@@ -210,6 +209,8 @@ function liveSessions(
     .sort((a, b) => (a.when ? Date.parse(a.when) : 0) - (b.when ? Date.parse(b.when) : 0))
     .map(({ conversation, handoff, when }, index) => {
       const turns = conversation.runs.length
+      const latest = conversation.runs.at(-1)
+      const model = conversation.runs.findLast((run) => run.model_name)?.model_name ?? null
       // An ingest is a session nothing claimed whose turns were rebuilt from a
       // runtime's own transcript. Unclaimed alone is not enough: a channel that
       // dispatches by config records no handoff either, and that session was
@@ -220,11 +221,12 @@ function liveSessions(
         id: sessionTag(conversation.id),
         name: conversation.name ?? undefined,
         conversationId: conversation.id,
-        route: handoff
-          ? routeLabel(handoff.to_agent_tentacle_id, handoff.to_model)
-          : conversation.agent_tentacle_id,
+        route: routeLabel(
+          conversation.agent_tentacle_id,
+          handoff?.to_model ?? model,
+        ),
         agent: conversation.agent_tentacle_id,
-        mode: conversation.permission_mode,
+        mode: conversation.permission_mode ?? latest?.permission_mode ?? null,
         kind: ingested ? 'ingest' : index === 0 ? 'entry' : 'summon',
         t: when ? clock(when) : '',
         reason: ingested
@@ -407,11 +409,12 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const read = usage.input + usage.cacheRead + usage.cacheWrite
   usage.cacheRate = read > 0 ? usage.cacheRead / read : null
 
-  const { agent } = activeRoute(thread.handoffs)
+  const { agent } = activeRoute(thread)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
     live: true,
     channel: thread.channel_tentacle_id,
+    canFork: agent === 'codex-native' && own.some((conversation) => conversation.agent_tentacle_id === agent),
     project:
       project === null
         ? undefined

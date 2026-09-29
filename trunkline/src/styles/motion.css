@@ -30,6 +30,48 @@
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
+@keyframes lt-error-reveal {
+  from { clip-path: inset(0 50%); }
+  to { clip-path: inset(0); }
+}
+@keyframes lt-error-divider {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+.lt-error-notice > span:nth-child(2) { animation: lt-error-reveal 350ms var(--ease-out) both; }
+.lt-error-notice > span:first-child,
+.lt-error-notice > span:last-child { animation: lt-error-divider 350ms var(--ease-out) 250ms both; }
+.lt-error-notice > span:first-child { transform-origin: right center; }
+.lt-error-notice > span:last-child { transform-origin: left center; }
+
+@keyframes lt-fork-dot {
+  0%, 70%, 100% { opacity: 0.3; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-2px); }
+}
+.lt-fork-dots { display: inline-flex; }
+.lt-fork-dots > span { animation: lt-fork-dot 900ms ease-in-out infinite; }
+.lt-fork-dots > span:nth-child(2) { animation-delay: 120ms; }
+.lt-fork-dots > span:nth-child(3) { animation-delay: 240ms; }
+
+@keyframes lt-thread-lift-out {
+  to { opacity: 0; transform: translateY(-28px) scale(0.98); }
+}
+@keyframes lt-thread-lift-in {
+  from { opacity: 0; transform: translateY(48px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes lt-thread-drop-out {
+  to { opacity: 0; transform: translateY(28px) scale(0.98); }
+}
+@keyframes lt-thread-drop-in {
+  from { opacity: 0; transform: translateY(-48px); }
+  to { opacity: 1; transform: none; }
+}
+::view-transition-old(thread-lift) { animation: lt-thread-lift-out 260ms var(--ease-out) both; }
+::view-transition-new(thread-lift) { animation: lt-thread-lift-in 420ms var(--ease-out) both; }
+::view-transition-old(thread-drop) { animation: lt-thread-drop-out 260ms var(--ease-out) both; }
+::view-transition-new(thread-drop) { animation: lt-thread-drop-in 420ms var(--ease-out) both; }
+
 /* --- Fold / expand: folders, collapsible sections, sidebar rails. --------
    Wrap the collapsible content in exactly ONE child; toggle [data-folded]
    on the wrapper. .lt-fold folds vertically, .lt-fold-x horizontally. */
@@ -78,7 +120,10 @@
 
 @media (prefers-reduced-motion: reduce) {
   .lt-entry, .lt-fade-in, .lt-fade-out, .lt-skeleton::after, .lt-rec-dot,
-  .lt-dots i, .lt-scanbar::after, .lt-spin, .lt-caret, .lt-wave i { animation: none; }
+  .lt-dots i, .lt-scanbar::after, .lt-spin, .lt-caret, .lt-wave i,
+  .lt-error-notice, .lt-error-notice > span, .lt-fork-dots > span,
+  ::view-transition-old(thread-drop), ::view-transition-new(thread-drop),
+  ::view-transition-old(thread-lift), ::view-transition-new(thread-lift) { animation: none; }
   .lt-fold, .lt-fold-x, .lt-menu, .lt-disclose { transition: none; }
   .lt-fade-out { opacity: 0; }
 }

@@ -1068,10 +1068,10 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       )
     case 'notice':
       return (
-        <div className="lt-fade-in" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
-          <span style={{ flex: 1, borderTop: '1px dashed var(--color-teal)', opacity: 0.6 }} />
-          <span style={{ ...label(9, '.14em'), color: 'var(--color-teal)' }}>⇄ {item.text}</span>
-          <span style={{ flex: 1, borderTop: '1px dashed var(--color-teal)', opacity: 0.6 }} />
+        <div className={item.tone === 'error' ? 'lt-error-notice' : 'lt-fade-in'} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0', color: item.tone === 'error' ? 'var(--color-red)' : item.tone === 'warning' ? 'var(--color-gold)' : 'var(--color-teal)' }}>
+          <span style={{ flex: 1, borderTop: '1px dashed currentColor', opacity: 0.6 }} />
+          <span style={{ ...label(9, '.14em') }}>⇄ {item.text}</span>
+          <span style={{ flex: 1, borderTop: '1px dashed currentColor', opacity: 0.6 }} />
         </div>
       )
   }

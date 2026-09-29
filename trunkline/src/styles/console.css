@@ -494,8 +494,13 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-rail[data-folded] {
   width: 0 !important;
 }
+@property --trk-rail-w {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 26px;
+}
 .trk-sb {
-  transition: width var(--motion-base) var(--ease-out);
+  transition: width var(--motion-base) var(--ease-out), --trk-rail-w 240ms var(--ease-out);
 }
 .trk-rail[data-dragging],
 .trk-sb[data-dragging] {
@@ -838,13 +843,25 @@ select.trk-input option:is(:hover, :focus-visible) {
 select.trk-input option::checkmark { color: var(--color-accent); }
 select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 
-/* Channel letter-rail expands on hover */
-.trk-chrail {
-  transition: width 0.18s ease;
+/* The full channel rail widens together, including its background and controls. */
+.trk-control-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
 }
-.trk-chrail:hover {
-  width: 122px !important;
-  box-shadow: var(--shadow-card);
+.trk-sb[data-rail-expanded] .trk-control-label {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .trk-control-label { transition: none; }
+}
+@media (hover: hover) and (pointer: fine) {
+  .trk-sb[data-rail-expanded] {
+    --trk-rail-w: 122px;
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -922,6 +939,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   :root {
     --trk-interface-scale: 1;
     --trk-rail-w: 36px;
+    --trk-rail-base-w: 36px;
     --trk-rail-letter: 28px;
     --trk-rail-fs: 10px;
     --trk-rail-row-pad: 2px 8px 2px 4px;
@@ -987,9 +1005,8 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   #mdv-panel:not([data-folded]) {
     width: calc(100% - var(--trk-rail-w)) !important;
   }
-  .trk-chrail:hover {
-    width: var(--trk-rail-w) !important;
-    box-shadow: none;
+  .trk-sb[data-rail-expanded] {
+    --trk-rail-w: 36px;
   }
   .trk-head-title {
     flex-direction: column;
@@ -1007,6 +1024,16 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     padding: 14px 12px;
   }
 }
+@media (pointer: coarse) {
+  :root { --trk-rail-w: 44px; --trk-rail-base-w: 44px; }
+  .trk-sb {
+    --trk-btn: 44px;
+    --trk-channel-row-h: 44px;
+    --trk-rail-letter: 32px;
+    --trk-control-h: 44px;
+  }
+}
+
 /* A phone on its side: the sign-in card must still fit without a scroll. */
 @media (max-height: 519px) and (max-width: 999px) {
   :root {

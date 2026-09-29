@@ -494,6 +494,8 @@ export interface ApiHandoff {
 }
 
 export interface ApiThread {
+  /** Derived from an explicit handoff or the thread’s own conversation. */
+  active_agent_tentacle_id?: string | null
   /** thread row id (uuid) — the read key for every /threads/{id} read */
   id: string
   kind: 'dm' | 'group' | 'thread' | 'native_thread'
@@ -545,6 +547,8 @@ export interface ApiAgentRun {
   kind: 'octomate' | 'external'
   conversation_id: string
   name: string | null
+  model_name: string | null
+  permission_mode: string | null
   /** the directory this run ran in; null when its source reported none */
   cwd: string | null
   parent_run_id: string | null

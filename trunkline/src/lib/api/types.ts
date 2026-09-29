@@ -203,7 +203,7 @@ export type LedgerItem =
   | { kind: 'dots'; uid: string; label: string }
   | { kind: 'stream'; uid: string; text: string; streaming: boolean }
   | { kind: 'end'; uid: string; label: string }
-  | { kind: 'notice'; uid: string; text: string }
+  | { kind: 'notice'; uid: string; text: string; tone?: 'error' | 'warning' | 'info' }
 
 /** `Omit<LedgerItem, 'uid'>` distributed over the union, so a draft keeps its
  * per-kind shape (plain Omit would collapse to the common keys only). */
@@ -312,6 +312,8 @@ export interface ThreadDetail {
   channel?: string
   /** trunkline directive key; absent = read-only (another channel's thread) */
   sendKey?: string
+  /** Whether this thread can be forked into a new Trunkline thread. */
+  canFork?: boolean
   msgCount: number
   sessions: SessionInfo[]
   ledger: LedgerItem[]

@@ -531,7 +531,7 @@ export class TurnFold {
         if (this.ended) break
         this.closeThink()
         this.closeStream()
-        this.sink.push({ kind: 'notice', text: `run failed — ${event.message}` })
+        this.sink.push({ kind: 'notice', text: `run failed — ${event.message}`, tone: 'error' })
         this.ended = true
         this.sink.done()
         break
@@ -546,13 +546,12 @@ export class TurnFold {
   }
 
   /** The stream closed without a terminal event (transport drop). */
-  abort(message: string) {
+  abort(message: string, tone?: Extract<LedgerItem, { kind: 'notice' }>['tone']) {
     if (this.ended) return
     this.closeThink()
     this.closeStream()
-    this.sink.push({ kind: 'notice', text: message })
+    this.sink.push({ kind: 'notice', text: message, tone })
     this.ended = true
     this.sink.done()
   }
 }
-

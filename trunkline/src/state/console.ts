@@ -167,7 +167,7 @@ export const replayView = () => {
 }
 
 export interface ConsoleActions {
-  selectThread(chId: string, thId: string): Promise<void>
+  selectThread(chId: string, thId: string, direction?: 'up' | 'down'): Promise<void>
   loadOlder(): void
   onChatScroll(scrollTop: number): void
   setSysDark(dark: boolean): void
@@ -191,6 +191,7 @@ export interface ConsoleActions {
   toggleCardOpen(uid: string, def?: boolean): void
   toggleTimelineFold(id: string): void
   toggleTeleMenu(): void
+  reportThreadError(threadId: string, message: string): void
   teleport(id: string, label: string, fromLabel: string): void
   vsOpen(): void
   resolveApproval(uid: string, verdict: 'approved' | 'dismissed'): void
@@ -245,7 +246,7 @@ interface ConsoleState {
   running: boolean
   /** how many trailing ledger items are rendered; scroll-top reveals more */
   ledgerN: number
-  notices: string[]
+  notices: Extract<LedgerItem, { kind: 'notice' }>[]
 
   // theme
   theme: ThemeMode
@@ -355,6 +356,8 @@ const operator = () => useAuth.getState().user?.name ?? 'operator'
 
 export const useConsole = create<ConsoleState>()((set, get) => {
   const prefs = loadChannelPrefs()
+  let threadSelection = 0
+  let threadTransition: ViewTransition | undefined
 
   const saveChannelPrefs = () => {
     const { chFold, chPins } = get()
@@ -475,9 +478,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         received === 0
           ? quietClose
           : 'stream closed without a result — the run continues on the relay',
+        received === 0 ? 'info' : 'warning',
       )
     } catch (err) {
-      fold.abort(`relay error — ${err instanceof Error ? err.message : String(err)}`)
+      fold.abort(`relay error — ${err instanceof Error ? err.message : String(err)}`, 'error')
     } finally {
       openRuns--
       clearDots()
@@ -515,43 +519,67 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   const actions: ConsoleActions = {
     /* ---------------------------------------------------- selection ------ */
-    async selectThread(chId: string, thId: string) {
-      clearTurnTimers()
-      set((s) => ({
-        selChannel: chId,
-        selThreadId: thId,
-        detail: null,
-        live: [],
-        running: false,
-        ledgerN: LEDGER_PAGE,
-        notices: [],
-        ntOn: false,
-        ntMenu: null,
-        ntStarted: false,
-        ntRouteId: null,
-        teleOpen: false,
-        surface: ['trunkline', 'slack', 'lark', 'napcat'].includes(chId) ? chId : s.surface,
-        mgmtSec: '',
-        pvOpen: false,
-        sbFold: s.pvOpen ? false : s.sbFold,
-        tabs: null,
-        activeFile: 'REGISTRY_CUTOVER.md',
-        view: 'diff',
-        docs: null,
-        cmts: null,
-        cmtOpen: {},
-        sel: null,
-        draft: null,
-        queue: [],
-        open: { ...defaultOpen },
-        tlFold: {},
-        composer: '',
-      }))
-      const detail = await api.getThreadDetail(thId)
-      if (get().selThreadId !== thId) return
-      set({ detail })
-      scrollChatBottom()
-      replayView()
+    async selectThread(chId: string, thId: string, direction = 'down') {
+      const selection = ++threadSelection
+      threadTransition?.skipTransition()
+      const panel = document.getElementById('trk-chathead')?.closest('main')
+      panel?.style.removeProperty('view-transition-name')
+      const animate = panel && get().selThreadId !== thId && !get().mgmtSec
+        && typeof document.startViewTransition === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const update = async () => {
+        if (selection !== threadSelection) return
+        clearTurnTimers()
+        set((s) => ({
+          selChannel: chId,
+          selThreadId: thId,
+          detail: null,
+          live: [],
+          running: false,
+          ledgerN: LEDGER_PAGE,
+          notices: [],
+          ntOn: false,
+          ntMenu: null,
+          ntStarted: false,
+          ntRouteId: null,
+          teleOpen: false,
+          surface: ['trunkline', 'slack', 'lark', 'napcat'].includes(chId) ? chId : s.surface,
+          mgmtSec: '',
+          pvOpen: false,
+          sbFold: s.pvOpen ? false : s.sbFold,
+          tabs: null,
+          activeFile: 'REGISTRY_CUTOVER.md',
+          view: 'diff',
+          docs: null,
+          cmts: null,
+          cmtOpen: {},
+          sel: null,
+          draft: null,
+          queue: [],
+          open: { ...defaultOpen },
+          tlFold: {},
+          composer: '',
+        }))
+        const detail = await api.getThreadDetail(thId)
+        if (selection !== threadSelection || get().selThreadId !== thId) return
+        set({ detail })
+        scrollChatBottom()
+        if (!animate) replayView()
+      }
+      if (!animate) {
+        await update()
+        return
+      }
+      panel.style.viewTransitionName = direction === 'up' ? 'thread-lift' : 'thread-drop'
+      const transition = document.startViewTransition(update)
+      threadTransition = transition
+      try {
+        await transition.finished
+      } finally {
+        if (threadTransition === transition) {
+          threadTransition = undefined
+          panel.style.removeProperty('view-transition-name')
+        }
+      }
     },
 
     loadOlder() {
@@ -699,6 +727,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     /* ---------------------------------------------------- surfaces ------- */
     toggleTeleMenu: () => set((s) => ({ teleOpen: !s.teleOpen })),
+    reportThreadError(threadId, message) {
+      const s = get()
+      if (s.selThreadId !== threadId || s.ntOn) return
+      set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error' }] })
+      scrollChatBottom(true)
+    },
     teleport(id: string, label: string, fromLabel: string) {
       const s = get()
       if (id === s.surface) {
@@ -711,7 +745,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         set((x) => ({
           teleporting: false,
           surface: id,
-          notices: [...x.notices, `teleport → ${label} — pointer card left in ${fromLabel} · ${hh}`],
+          notices: [...x.notices, { kind: 'notice', uid: nextUid(), text: `teleport → ${label} — pointer card left in ${fromLabel} · ${hh}` }],
         }))
         setTimeout(() => {
           scrollChatBottom()
@@ -1013,6 +1047,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           push({
             kind: 'notice',
             text: `read-only view — this thread lives on ${s.detail.channel ?? 'another channel'}; reply there`,
+            tone: 'warning',
           } as LedgerItem)
         }
         return
