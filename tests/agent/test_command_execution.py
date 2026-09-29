@@ -10,12 +10,13 @@ from typing import Literal
 import pytest
 from pydantic_ai import AgentCapability
 from pydantic_ai.tools import DeferredToolRequests
-from uuid_utils.compat import uuid7
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
+from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.commands import (
     CommandContext,
@@ -26,9 +27,14 @@ from octomate.schemas.commands import (
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import FileData, FileSegment, TextSegment
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
+from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_manager import DiscoveringAgent
+from tests.support.channels import FakeChannelTentacle
+from tests.support.managers import a_project, a_registry
 
 
 @dataclass
@@ -73,7 +79,9 @@ class Suspender:
 
 @pytest.fixture
 def app() -> Octomate:
-    return Octomate()
+    app = Octomate()
+    app.connect(FakeChannelTentacle(octomate=app))
+    return app
 
 
 @pytest.fixture
@@ -82,13 +90,37 @@ def agent(app: Octomate) -> ExecutingAgent:
 
 
 @pytest.fixture
-def context(agent: ExecutingAgent, tmp_path: Path) -> CommandContext:
+async def context(
+    app: Octomate, agent: ExecutingAgent, in_memory_engine: AsyncEngine
+) -> CommandContext:
+    user = User(username="alice")
+    async with async_session() as session:
+        session.add(user)
+        await session.commit()
+    address = ChannelAddress("im", "thread", "chat", "user", "thread")
+    thread = await app.threads.ensure(address)
+    await app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id=address.channel_tentacle_id,
+            chat_type=address.chat_type,
+            chat_id=address.chat_id,
+            channel_thread_id=address.channel_thread_id,
+            user_id=address.user_id,
+            sender=UserProfile(channel_user_id=address.user_id, user_id=user.id),
+        )
+    )
+    conversation = await app.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
+    await app.threads.record_handoff(
+        thread, to_agent_tentacle_id=agent.id, to_model="test"
+    )
     return CommandContext(
         agent_id=agent.id,
-        user_id=uuid7(),
-        address=ChannelAddress("im", "thread", "chat", "user", "thread"),
-        cwd=tmp_path / "unprepared",
-        conversation=Conversation(thread_id=uuid7(), agent_tentacle_id=agent.id),
+        user_id=user.id,
+        address=address,
+        cwd=app.workspaces.open(thread.id, None).path,
+        conversation=conversation,
+        model="test",
+        permission_mode=agent.default_permission_mode,
     )
 
 
@@ -123,6 +155,18 @@ async def test_direct_execution_preserves_input_and_invalidates_catalogs(
     assert not agent.streams
     assert context.cwd is not None
     assert not context.cwd.exists()
+
+
+async def test_execution_uses_injected_managers_without_an_agent_host(
+    app: Octomate, agent: ExecutingAgent, context: CommandContext
+) -> None:
+    agent.octomate = None
+    async with app.commands.execute(
+        agent, context, CommandInvocation(command_id="skill")
+    ) as result:
+        assert isinstance(result, CommandResult)
+    assert len(agent.invocations) == 1
+    assert not app.gateway.sessions
 
 
 @pytest.mark.parametrize(
@@ -272,3 +316,119 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
     assert agent.stream_closed
     assert not app.gateway.sessions
     assert not app.commands.catalogs
+
+
+@pytest.mark.parametrize("during_probe", [False, True])
+@pytest.mark.parametrize(
+    "change",
+    ["profile", "channel", "route", "session", "workspace", "model", "permission"],
+)
+async def test_execution_checks_access_and_selection_after_discovery(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    tmp_path: Path,
+    change: str,
+    during_probe: bool,
+) -> None:
+    assert context.conversation is not None
+
+    async def invoke() -> CommandOutcome:
+        async with app.commands.execute(
+            agent, context, CommandInvocation(command_id="skill")
+        ) as result:
+            assert isinstance(result, CommandResult | CommandError)
+            return result
+
+    task = None
+    if during_probe:
+        agent.release = asyncio.Event()
+        task = asyncio.create_task(invoke())
+        await agent.entered.wait()
+    if change == "profile":
+        profile = await app.users.profile("im", context.address.user_id)
+        assert profile is not None
+        async with async_session() as session:
+            user = await session.get(User, context.user_id)
+        assert user is not None
+        await app.users.unlink_profile(user, profile.id)
+    elif change == "channel":
+        app.channels["im"].config.agents = ["other"]
+    elif change == "route":
+        await app.threads.record_handoff(context.address, to_agent_tentacle_id="other")
+    elif change == "model":
+        await app.threads.record_handoff(
+            context.address, to_agent_tentacle_id=agent.id, to_model="opus"
+        )
+    elif change == "permission":
+        agent.permission_modes = (PermissionMode(value="plan", name="Plan"),)
+        await app.conversations.set_permission_mode(
+            context.conversation.model_copy(), "plan"
+        )
+    elif change == "workspace":
+        project = a_project(tmp_path / "project")
+        app.workspaces.projects = await a_registry(project)
+        await app.threads.bind(context.conversation.thread_id, project)
+    else:
+        async with async_session() as session:
+            conversation = await session.get(Conversation, context.conversation.id)
+            assert conversation is not None
+            conversation.external_id = "replacement-session"
+            await session.commit()
+    if task is not None:
+        assert agent.release is not None
+        agent.release.set()
+        result = await task
+    else:
+        result = await invoke()
+    assert isinstance(result, CommandError)
+    assert result.status == (
+        "unavailable" if change in {"profile", "channel"} else "stale"
+    )
+    assert not agent.invocations
+    assert len(agent.calls) == 1
+    assert not app.gateway.sessions
+
+
+@pytest.mark.parametrize("selection", ["user", "address", "missing", "subagent"])
+async def test_execution_rejects_foreign_or_unavailable_conversations(
+    app: Octomate, agent: ExecutingAgent, context: CommandContext, selection: str
+) -> None:
+    assert context.conversation is not None
+    if selection == "user":
+        other = User(username="bob")
+        async with async_session() as session:
+            session.add(other)
+            await session.commit()
+        await app.users.ensure_profile(
+            "im", UserProfile(channel_user_id="bob", user_id=other.id)
+        )
+        context = replace(
+            context, user_id=other.id, address=replace(context.address, user_id="bob")
+        )
+    elif selection == "address":
+        context = replace(
+            context, address=replace(context.address, channel_thread_id="other")
+        )
+    elif selection == "missing":
+        context = replace(
+            context,
+            conversation=Conversation(
+                thread_id=context.conversation.thread_id, agent_tentacle_id=agent.id
+            ),
+        )
+    else:
+        child = await app.conversations.ensure(
+            context.conversation.thread_id,
+            agent_tentacle_id=agent.id,
+            subagent_id="child",
+            parent_conversation_id=context.conversation.id,
+        )
+        context = replace(context, conversation=child)
+    async with app.commands.execute(
+        agent, context, CommandInvocation(command_id="skill")
+    ) as result:
+        assert isinstance(result, CommandError)
+        assert result.status == ("stale" if selection == "subagent" else "unavailable")
+    assert len(agent.calls) == 1
+    assert not agent.invocations

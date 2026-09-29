@@ -57,6 +57,12 @@ one `CommandCatalog` per `CommandCatalogKey(user_id, agent_id, conversation_id)`
 Before a conversation exists, its ID is `None`, so repeated discovery for the same
 user and agent shares a cached catalog while the context still matches. The catalog retains its
 discovery context; context changes replace that conversation's catalog.
+The host injects its tentacle registry and user, conversation, thread, workspace
+and gateway managers into the command manager; execution uses these dependencies directly.
+Context construction belongs to the caller: the HTTP router's `command_context`
+dependency builds it for browser requests, and IM callers build it from their
+observed surface. The command manager validates the supplied context without
+constructing a replacement.
 The command router checks channel enablement and builds context before each lookup, including
 cache hits, then calls the resolved agent's
 `discover_commands(context, refresh=False, prefix="")` method.
@@ -162,10 +168,16 @@ agent input. If a command produces both control feedback and agent activity, its
 adapter must expose both through the existing stream events.
 
 The host's `octomate.commands.execute(agent, context, invocation, ...)` is an async
-context manager for execution. The caller must authorize the target, resolve fresh
-context and deduplicate delivery before entering it. It requires an existing
-conversation, refreshes the runtime catalog, validates command membership and
-declared attachment support, and holds the conversation's turn guard through stream
+context manager for execution. The caller supplies context identifying the
+authenticated user and deduplicates delivery before entering it. Execution requires
+that user's linked profile and access to the addressed chat surface. The selected
+agent must still be enabled on the channel and own the conversation's route;
+subagent conversations are not execution targets. These checks run once after
+discovery, immediately before dispatch. A changed workspace, external session, model
+or approval posture returns `stale`; missing access returns `unavailable`.
+
+Execution requires an existing conversation, refreshes the runtime catalog, validates
+command membership and declared attachment support, and holds the conversation's turn guard through stream
 cleanup. Normal chat turns use the same guard even when gateway spells are disabled.
 Busy conversations are refused immediately; execution never queues or retries.
 

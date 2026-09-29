@@ -11,6 +11,11 @@ from uuid_utils.compat import uuid7
 
 from octomate.base import Octomate
 from octomate.managers.commands import CommandCatalogKey, CommandManager
+from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import GatewayManager
+from octomate.managers.thread import ThreadManager
+from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -60,6 +65,19 @@ class DiscoveringAgent(FakeAgent):
 
 
 @pytest.fixture
+def manager() -> CommandManager:
+    users = UserManager()
+    return CommandManager(
+        tentacles={},
+        users=users,
+        conversations=ConversationManager(),
+        threads=ThreadManager(users=users),
+        workspaces=WorkspaceManager(),
+        gateway=GatewayManager(),
+    )
+
+
+@pytest.fixture
 def context(tmp_path: Path) -> CommandContext:
     return CommandContext(
         agent_id="inkling",
@@ -70,10 +88,20 @@ def context(tmp_path: Path) -> CommandContext:
     )
 
 
+def test_command_manager_uses_the_hosts_registry_and_managers() -> None:
+    app = Octomate()
+    assert app.commands.tentacles is app.tentacles
+    assert app.commands.users is app.users
+    assert app.commands.conversations is app.conversations
+    assert app.commands.threads is app.threads
+    assert app.commands.workspaces is app.workspaces
+    assert app.commands.gateway is app.gateway
+
+
 async def test_cache_preserves_extensions_and_returns_independent_copies(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent()
     first = await manager.discover(agent, context)
     first.descriptors.clear()
@@ -97,7 +125,7 @@ async def test_cache_preserves_extensions_and_returns_independent_copies(
     ["user", "address", "workspace", "model", "permission", "conversation", "session"],
 )
 async def test_context_changes_do_not_reuse_catalogs(
-    context: CommandContext, scope: str
+    manager: CommandManager, context: CommandContext, scope: str
 ) -> None:
     conversation = Conversation(thread_id=uuid7(), agent_tentacle_id="inkling")
     context = replace(context, conversation=conversation)
@@ -130,15 +158,15 @@ async def test_context_changes_do_not_reuse_catalogs(
         case _:
             pytest.fail(f"unhandled scope {scope}")
     agent = DiscoveringAgent()
-    manager = CommandManager()
     await manager.discover(agent, context)
     await manager.discover(agent, changed)
     assert len(agent.calls) == 2
     assert len(manager.catalogs) == (2 if scope in {"user", "conversation"} else 1)
 
 
-async def test_runtime_reconnect_invalidates_catalog(context: CommandContext) -> None:
-    manager = CommandManager()
+async def test_runtime_reconnect_invalidates_catalog(
+    manager: CommandManager, context: CommandContext
+) -> None:
     for agent in (DiscoveringAgent(), DiscoveringAgent()):
         manager.invalidate(agent_id=agent.id)
         await manager.discover(agent, context)
@@ -147,11 +175,10 @@ async def test_runtime_reconnect_invalidates_catalog(context: CommandContext) ->
 
 @pytest.mark.parametrize("new_conversation", [False, True])
 async def test_explicit_refresh_reads_changed_catalog(
-    context: CommandContext, new_conversation: bool
+    manager: CommandManager, context: CommandContext, new_conversation: bool
 ) -> None:
     if new_conversation:
         context = replace(context, conversation=None)
-    manager = CommandManager()
     agent = DiscoveringAgent()
     await manager.discover(agent, context)
     agent.descriptors = set()
@@ -165,13 +192,12 @@ async def test_explicit_refresh_reads_changed_catalog(
 
 @pytest.mark.parametrize("status", ["loading", "failed", "unsupported", "unavailable"])
 async def test_transient_states_are_reprobed(
-    context: CommandContext, status: str
+    manager: CommandManager, context: CommandContext, status: str
 ) -> None:
     agent = DiscoveringAgent()
     agent.status = CommandCatalog.model_validate(
         {"context": context, "status": status, "message": "Reason"}
     ).status
-    manager = CommandManager()
     assert (await manager.discover(agent, context)).status == status
     await manager.discover(agent, context)
     assert len(agent.calls) == (2 if status in {"loading", "failed"} else 1)
@@ -179,12 +205,12 @@ async def test_transient_states_are_reprobed(
 
 @pytest.mark.parametrize("new_conversation", [False, True])
 async def test_concurrent_refreshes_share_probe_and_caller_cancellation_is_local(
+    manager: CommandManager,
     context: CommandContext,
     new_conversation: bool,
 ) -> None:
     if new_conversation:
         context = replace(context, conversation=None)
-    manager = CommandManager()
     agent = DiscoveringAgent(release=asyncio.Event())
     first = asyncio.create_task(manager.discover(agent, context, refresh=True))
     await agent.entered.wait()
@@ -201,11 +227,10 @@ async def test_concurrent_refreshes_share_probe_and_caller_cancellation_is_local
 
 @pytest.mark.parametrize("new_conversation", [False, True])
 async def test_invalidation_discards_late_result(
-    context: CommandContext, new_conversation: bool
+    manager: CommandManager, context: CommandContext, new_conversation: bool
 ) -> None:
     if new_conversation:
         context = replace(context, conversation=None)
-    manager = CommandManager()
     agent = DiscoveringAgent(release=asyncio.Event())
     waiting = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
@@ -218,9 +243,9 @@ async def test_invalidation_discards_late_result(
 
 
 async def test_invalidation_filters_preserve_other_catalogs(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent()
     conversation = Conversation(thread_id=uuid7(), agent_tentacle_id=agent.id)
     existing = replace(context, conversation=conversation)
@@ -237,14 +262,16 @@ async def test_invalidation_filters_preserve_other_catalogs(
 
 @pytest.mark.parametrize("failure", ["exception", "wrong-owner", "timeout"])
 async def test_probe_failures_are_explicit_and_retryable(
-    context: CommandContext, failure: str, monkeypatch: pytest.MonkeyPatch
+    manager: CommandManager,
+    context: CommandContext,
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent = DiscoveringAgent(
         failure=failure == "exception",
         owner="other" if failure == "wrong-owner" else None,
         release=asyncio.Event() if failure == "timeout" else None,
     )
-    manager = CommandManager()
     monkeypatch.setattr(CommandManager, "timeout", 0.01)
     result = await manager.discover(agent, context)
     assert result.message is not None
@@ -260,7 +287,7 @@ async def test_cache_evicts_least_recently_used_catalog(
     context: CommandContext, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(CommandManager, "capacity", 2)
-    manager = CommandManager()
+    manager = Octomate().commands
     agent = DiscoveringAgent()
     other = replace(context, user_id=uuid7())
     await manager.discover(agent, context)
@@ -275,9 +302,9 @@ async def test_cache_evicts_least_recently_used_catalog(
 
 
 async def test_shutdown_includes_invalidated_probes(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent(release=asyncio.Event())
     waiting = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
@@ -296,6 +323,7 @@ async def test_shutdown_includes_invalidated_probes(
 
 
 async def test_wrong_conversation_agent_is_rejected_before_discovery(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
     agent = DiscoveringAgent()
@@ -303,14 +331,14 @@ async def test_wrong_conversation_agent_is_rejected_before_discovery(
         context, conversation=Conversation(thread_id=uuid7(), agent_tentacle_id="other")
     )
     with pytest.raises(ValueError, match="another agent"):
-        await CommandManager().discover(agent, context)
+        await manager.discover(agent, context)
     assert agent.calls == []
 
 
 async def test_runtime_cancellation_does_not_poison_cache(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent(release=asyncio.Event())
     waiting = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
@@ -336,9 +364,9 @@ async def test_host_shutdown_drains_command_discovery(context: CommandContext) -
 
 
 async def test_new_composer_catalog_is_reused_until_conversation_exists(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent()
     composer = replace(context, conversation=None)
     await manager.discover(agent, composer)
@@ -354,8 +382,9 @@ async def test_new_composer_catalog_is_reused_until_conversation_exists(
 
 
 @pytest.mark.parametrize("scope", ["user", "agent", "workspace"])
-async def test_new_composer_catalog_scope(context: CommandContext, scope: str) -> None:
-    manager = CommandManager()
+async def test_new_composer_catalog_scope(
+    manager: CommandManager, context: CommandContext, scope: str
+) -> None:
     agent = DiscoveringAgent()
     context = replace(context, conversation=None)
     await manager.discover(agent, context)
@@ -378,9 +407,9 @@ async def test_new_composer_catalog_scope(context: CommandContext, scope: str) -
 
 
 async def test_loading_catalog_is_replaced_when_discovery_completes(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent(release=asyncio.Event())
     waiting = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
@@ -394,9 +423,9 @@ async def test_loading_catalog_is_replaced_when_discovery_completes(
 
 
 async def test_changed_metadata_discards_old_probe_and_replaces_same_key(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent(release=asyncio.Event())
     old = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
@@ -416,6 +445,7 @@ async def test_changed_metadata_discards_old_probe_and_replaces_same_key(
 
 
 async def test_replacement_drains_old_probe_before_concurrent_callers_share_it(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
     cleanup_started = asyncio.Event()
@@ -430,7 +460,6 @@ async def test_replacement_drains_old_probe_before_concurrent_callers_share_it(
                     cleanup_started.set()
                     await finish_cleanup.wait()
 
-    manager = CommandManager()
     agent = CleaningAgent(release=asyncio.Event())
     old = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
@@ -460,9 +489,9 @@ async def test_replacement_drains_old_probe_before_concurrent_callers_share_it(
 
 
 async def test_context_metadata_snapshots_mutable_native_session(
+    manager: CommandManager,
     context: CommandContext,
 ) -> None:
-    manager = CommandManager()
     agent = DiscoveringAgent()
     await manager.discover(agent, context)
     assert context.conversation is not None

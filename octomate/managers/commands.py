@@ -13,7 +13,11 @@ from pydantic_ai import AgentCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.managers.base import Manager
-from octomate.managers.gateway import OctomateSession
+from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import GatewayManager, OctomateSession
+from octomate.managers.thread import ThreadManager
+from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -21,7 +25,10 @@ from octomate.schemas.commands import (
     CommandInvocation,
     CommandOutcome,
 )
+from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.agent import AgentTentacle
+from octomate.tentacles.base import Tentacle
+from octomate.tentacles.channel import ChannelTentacle
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +55,29 @@ class CommandManager(Manager):
 
     catalogs: LRUCache[CommandCatalogKey, CommandCatalog]
     probes: dict[CommandCatalogKey, asyncio.Task[CommandCatalog]]
+    tentacles: dict[str, Tentacle]
+    users: UserManager
+    conversations: ConversationManager
+    threads: ThreadManager
+    workspaces: WorkspaceManager
+    gateway: GatewayManager
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        tentacles: dict[str, Tentacle],
+        users: UserManager,
+        conversations: ConversationManager,
+        threads: ThreadManager,
+        workspaces: WorkspaceManager,
+        gateway: GatewayManager,
+    ) -> None:
+        self.tentacles = tentacles
+        self.users = users
+        self.conversations = conversations
+        self.threads = threads
+        self.workspaces = workspaces
+        self.gateway = gateway
         self.catalogs = LRUCache(maxsize=self.capacity)
         self.probes = {}
 
@@ -138,6 +166,90 @@ class CommandManager(Manager):
         self.catalogs[key] = result
         return result
 
+    async def validate_execution(
+        self, agent: AgentTentacle, context: CommandContext
+    ) -> CommandError | None:
+        """Authorize an invocation and reject a selection whose context changed.
+
+        Unlike catalog inspection, execution needs the authenticated user's linked
+        profile, access to the chat surface, and the current route. Read persisted
+        conversation state rather than trusting the caller's snapshot.
+        """
+        channel = self.tentacles.get(context.address.channel_tentacle_id)
+        if (
+            not isinstance(channel, ChannelTentacle)
+            or self.tentacles.get(context.agent_id) is not agent
+            or agent.id not in channel.agent_ids
+        ):
+            return CommandError(
+                status="unavailable",
+                message="The command agent is unavailable on this channel.",
+            )
+        profile = await self.users.profile(channel.id, context.address.user_id)
+        if profile is None or profile.user_id != context.user_id:
+            return CommandError(
+                status="unavailable", message="The command surface is unavailable."
+            )
+        if context.conversation is None:
+            return CommandError(
+                status="unavailable",
+                message="Start a conversation before running a command.",
+            )
+        try:
+            conversation = await self.conversations.get(
+                context.conversation.id, with_history=False
+            )
+        except ValueError:
+            return CommandError(
+                status="unavailable", message="The command conversation is unavailable."
+            )
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
+        if thread is None:
+            return CommandError(
+                status="unavailable", message="The command conversation is unavailable."
+            )
+        surface = await self.threads.get(
+            thread.parent_thread_id or thread.id,
+            with_messages=False,
+            user_id=context.user_id,
+        )
+        if surface is None or surface.key != ThreadKey.from_address(context.address):
+            return CommandError(
+                status="unavailable", message="The command conversation is unavailable."
+            )
+        if (
+            conversation.agent_tentacle_id != agent.id
+            or conversation.subagent_id
+            or surface.active_agent_tentacle_id != agent.id
+        ):
+            return CommandError(
+                status="stale",
+                message="The selected agent no longer owns this conversation's route.",
+            )
+        try:
+            model = agent.resolve_model(surface.active_model)
+            permission_mode = (
+                conversation.permission_mode or agent.default_permission_mode
+            )
+            if permission_mode is not None:
+                agent.check_permission_mode(permission_mode)
+        except ValueError:
+            return CommandError(
+                status="stale",
+                message="The selected model or permissions are no longer available.",
+            )
+        if (
+            conversation.external_id != context.conversation.external_id
+            or self.workspaces.open(thread.id, await thread.project).path != context.cwd
+            or model != context.model
+            or permission_mode != context.permission_mode
+        ):
+            return CommandError(
+                status="stale",
+                message="The command context changed; discover commands again.",
+            )
+        return None
+
     @asynccontextmanager
     async def execute[OutputT, DepsT](
         self,
@@ -153,10 +265,12 @@ class CommandManager(Manager):
     ]:
         """Validate and execute under the conversation's active-turn guard.
 
-        The caller supplies freshly resolved, authorized context and deduplicates
-        deliveries before entering. Execution requires an existing conversation;
-        it never silently creates one. A fresh runtime catalog determines command
-        membership and attachment support. Arguments pass through unchanged.
+        The caller supplies context identifying the authenticated user and
+        deduplicates deliveries before entering. Access and current context are
+        checked once after discovery, immediately before dispatch. Execution requires an
+        existing conversation; it never silently creates one. A fresh runtime
+        catalog determines command membership and attachment support. Arguments
+        pass through unchanged.
 
         Consume streamed events inside this context: it owns their cleanup and
         holds the guard until they close. Stream failures propagate to the caller's
@@ -175,15 +289,14 @@ class CommandManager(Manager):
             or session.current_agent_id != agent.id
         ):
             raise ValueError("gateway session belongs to another command context")
-        gateway = agent.octomate.gateway
-        if conversation.id in gateway.sessions:
+        if conversation.id in self.gateway.sessions:
             yield CommandError(
                 status="busy", message="This conversation already has an active turn."
             )
             return
         async with AsyncExitStack() as stack:
             await stack.enter_async_context(
-                gateway.driving(session, conversation_id=conversation.id)
+                self.gateway.driving(session, conversation_id=conversation.id)
             )
             catalog = await self.discover(agent, context, refresh=True)
             if catalog.status != "ready":
@@ -207,6 +320,10 @@ class CommandManager(Manager):
                     status="unsupported",
                     message="This command does not declare attachment support.",
                 )
+                return
+            refusal = await self.validate_execution(agent, context)
+            if refusal is not None:
+                yield refusal
                 return
             stack.callback(self.invalidate, conversation_id=conversation.id)
             try:

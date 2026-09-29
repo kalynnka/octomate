@@ -139,7 +139,7 @@ class Octomate(FastAPI):
 
     threads: ThreadManager = field(init=False)
     conversations: ConversationManager = field(default_factory=ConversationManager)
-    commands: CommandManager = field(default_factory=CommandManager)
+    commands: CommandManager = field(init=False)
     deferred_actions: DeferredActionManager = field(
         default_factory=DeferredActionManager
     )
@@ -166,6 +166,14 @@ class Octomate(FastAPI):
             lifespan=self.lifespan,
         )
         self.threads = ThreadManager(users=self.users)
+        self.commands = CommandManager(
+            tentacles=self.tentacles,
+            users=self.users,
+            conversations=self.conversations,
+            threads=self.threads,
+            workspaces=self.workspaces,
+            gateway=self.gateway,
+        )
         self.auth = (
             AuthManager(self.config.auth) if self.config.auth is not None else None
         )
