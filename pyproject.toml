@@ -50,6 +50,7 @@ dependencies = [
     # dependencies.
     "fastmcp-slim[server]>=4.0.3,<5",
     "argon2-cffi>=25.1.0",
+    "cachetools>=7.1.1,<8",
 ]
 
 [project.urls]

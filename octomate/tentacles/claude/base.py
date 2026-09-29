@@ -194,7 +194,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # stream is the only assembler; the server never opens a transcript.
         self.session_tailer = ClaudeTranscriptTailer(
             self.octomate.conversations,
-            self.octomate.thread_manager,
+            self.octomate.threads,
             self.session_locks,
         )
         # Live hook ingest: writes the human ledger and relays the stream's drains.
@@ -302,7 +302,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             project = self.octomate.projects.get(holder) if holder is not None else None
         else:
             project = None
-        await self.octomate.thread_manager.ensure(
+        await self.octomate.threads.ensure(
             ThreadKey(self.native_id, "thread", hello.session_id),
             project=project,
         )
@@ -733,7 +733,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         if octomate_session is not None:
             mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
                 octomate_session,
-                self.octomate.thread_manager,
+                self.octomate.threads,
                 manager=self.octomate.mcp,
             )
         appended = "\n\n".join(
@@ -900,16 +900,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         "prompt-source bindings require a persisted user ModelRequest"
                     )
                 source_message_ids = list(source_thread_message_ids)
-                await self.octomate.thread_manager.bind_messages(
+                await self.octomate.threads.bind_messages(
                     source_message_ids,
                     prompt_request.id,
                     kind="request_source",
                     run_id=recorded_run.id,
                 )
-                source_thread = await self.octomate.thread_manager.ensure(
+                source_thread = await self.octomate.threads.ensure(
                     source_thread_address or conversation_address
                 )
-                await self.octomate.thread_manager.advance_prompt_cursor(
+                await self.octomate.threads.advance_prompt_cursor(
                     source_thread,
                     source_message_ids[-1],
                 )

@@ -57,7 +57,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
         octomate = Octomate()
 
     if runtime == "claude":
-        tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+        tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
         ingest = ClaudeHookIngest(octomate, tailer)
         await ingest.handle(
             ClaudeHookInput(
@@ -69,9 +69,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             SENDER,
         )
     elif runtime == "codex":
-        codex_tailer = CodexTranscriptTailer(
-            octomate.conversations, octomate.thread_manager
-        )
+        codex_tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
         codex_ingest = CodexHookIngest(octomate, codex_tailer)
         await codex_ingest.handle(
             CodexHookInput(
@@ -100,9 +98,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                     ),
                 )
             ]
-            tailer = ClaudeTranscriptTailer(
-                octomate.conversations, octomate.thread_manager
-            )
+            tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
             state, offsets = await tailer.attach_remote(
                 SESSION_ID, Path("/client/session.jsonl"), SENDER
             )
@@ -116,7 +112,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             await tailer.finish_remote(state)
         elif runtime == "codex":
             codex_tailer = CodexTranscriptTailer(
-                octomate.conversations, octomate.thread_manager
+                octomate.conversations, octomate.threads
             )
             codex_state, offsets = await codex_tailer.attach_remote(
                 SESSION_ID, Path("/client/rollout.jsonl"), SENDER
@@ -150,7 +146,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             codex_tailer.detach_remote(codex_state)
         else:
             deepseek_tailer = DeepseekEventTailer(
-                octomate.conversations, octomate.thread_manager
+                octomate.conversations, octomate.threads
             )
             deepseek_state, offsets = await deepseek_tailer.attach_remote(
                 SESSION_ID, Path("/client/session.jsonl"), "", SENDER

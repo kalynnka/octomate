@@ -470,7 +470,7 @@ class SlackTentacle(
         with sqlalchemy_materia():
             # Pre-create the thread that owns this assistant chat's conversations;
             # the first message would otherwise create it on ingest.
-            await self.octomate.thread_manager.ensure(address)
+            await self.octomate.threads.ensure(address)
         logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
 
     async def open_dm(

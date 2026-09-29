@@ -33,7 +33,7 @@ def auth_manager(app: Annotated[Octomate, Depends(application)]) -> AuthManager:
 
 
 def thread_manager(app: Annotated[Octomate, Depends(application)]) -> ThreadManager:
-    return app.thread_manager
+    return app.threads
 
 
 def oauth_manager(app: Annotated[Octomate, Depends(application)]) -> OAuthManager:

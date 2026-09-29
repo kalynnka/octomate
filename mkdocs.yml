@@ -153,6 +153,7 @@ nav:
           - api/managers.md
           - Base manager: api/managers/base.md
           - Threads and conversations: api/managers/conversations.md
+          - Command discovery: api/managers/commands.md
           - Users and accounts: api/managers/users.md
           - Projects and workspaces: api/managers/workspaces.md
           - MCP and OAuth: api/managers/mcp.md

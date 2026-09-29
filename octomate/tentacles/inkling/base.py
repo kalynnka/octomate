@@ -798,7 +798,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
-            thread_manager=self.octomate.thread_manager,
+            thread_manager=self.octomate.threads,
             agent_deps=deps,
             choose_resolvers=InklingDeferrals(
                 interactive=interactive,
@@ -906,9 +906,9 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         await self.conversation_manager.set_name(conversation, title)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.octomate.thread_manager.get(
+        thread = await self.octomate.threads.get(
             conversation.thread_id, with_messages=False
         )
         if thread is None:
             raise ValueError(f"unknown thread {conversation.thread_id}")
-        await self.octomate.thread_manager.rename(thread, title)
+        await self.octomate.threads.rename(thread, title)

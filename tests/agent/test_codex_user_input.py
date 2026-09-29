@@ -40,7 +40,7 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
         channel_thread_id="approval-test",
         user_id="dev",
     )
-    thread = await octomate.thread_manager.ensure(address)
+    thread = await octomate.threads.ensure(address)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="codex"
     )

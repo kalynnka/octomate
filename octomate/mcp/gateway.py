@@ -199,7 +199,7 @@ async def native_session(
         user_profile=profile,
         agents=octomate.agents,
         native=True,
-        threads=octomate.thread_manager,
+        threads=octomate.threads,
         workspaces=octomate.workspaces,
     )
 

@@ -246,7 +246,7 @@ async def test_directive_records_chat_ledger(
 
     await _post(channel, "hi there")
 
-    thread = await a_loaded_thread(octomate.thread_manager, _console_address())
+    thread = await a_loaded_thread(octomate.threads, _console_address())
     messages = list(thread.messages)
     inbound = [message for message in messages if message.direction == "inbound"]
     outbound = [message for message in messages if message.direction == "outbound"]
@@ -290,7 +290,7 @@ async def test_selected_route_routes_to_and_owns_the_chosen_agent(
     payload = await _post(channel, "hello", model=f"claude{ROUTE_SEP}{RECEPTION_MODEL}")
 
     assert "from claude" in _streamed_text(payload)
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert thread.active_agent_tentacle_id == "claude"
 
 
@@ -307,7 +307,7 @@ async def test_unchanged_selection_does_not_re_handoff(
     await _post(channel, "one", model=selected)
     await _post(channel, "two", model=selected)
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
@@ -326,7 +326,7 @@ async def test_route_change_after_first_directive_is_refused(
     with pytest.raises(RouteLockedError, match="manual handoff"):
         await _post(channel, "two", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
@@ -361,7 +361,7 @@ async def test_routes_offer_and_run_all_registered_agents(
 
     assert _events(payload)[-1]["event_kind"] == "run_result"
     assert "from inkling" in _streamed_text(payload)
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert thread.active_agent_tentacle_id == "inkling"
 
 
@@ -407,7 +407,7 @@ async def test_model_choices_keep_only_the_configured_entry_default(
 
     assert _events(reply)[-1]["output"] == "handled"
     assert [turn.model for turn in agent.streams] == [None, None]
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert thread.active_model is None
     assert len(thread.handoffs) == 1
 
@@ -428,7 +428,7 @@ async def test_a_first_directive_files_the_thread_under_a_project(
 
     await _post(channel, "what is this repo?", project="inky")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     project = await thread.project
     assert project is not None
     assert project.root == inky
@@ -450,7 +450,7 @@ async def test_a_directive_naming_no_project_leaves_the_thread_a_chat(
 
     await _post(channel, "just talk to me")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert await thread.project is None
 
 
@@ -901,7 +901,7 @@ async def test_threads_and_detail_endpoints(
     channel = await _register(octomate, agent)
     await _post(channel, "triage the failing checks", thread_id="thread-9")
     # Bound profiles make this user's other channels visible too.
-    await octomate.thread_manager.record_inbound(
+    await octomate.threads.record_inbound(
         MessageEvent(
             tentacle_id="slack",
             message_id="slack-1",
@@ -1020,7 +1020,7 @@ async def test_console_reads_never_load_the_model_ledger(
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
     await _post(channel, "triage the failing checks", thread_id="thread-9")
-    thread = await octomate.thread_manager.ensure(_console_address("thread-9"))
+    thread = await octomate.threads.ensure(_console_address("thread-9"))
 
     selects: list[str] = []
 
@@ -1086,10 +1086,10 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     )
     project = a_project(Path("/srv/inky"))
     octomate.workspaces.projects = await a_registry(project)
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project
     )
-    await octomate.thread_manager.record_inbound(
+    await octomate.threads.record_inbound(
         MessageEvent(
             tentacle_id=CLAUDE_NATIVE_ID,
             message_id="turn-1",
@@ -1176,7 +1176,7 @@ async def test_batch_resolve_resolves_and_streams(
     channel = await _register(octomate, agent)
     await _post(channel, "kick off", thread_id="thread-2")
 
-    thread = await octomate.thread_manager.ensure(_console_address("thread-2"))
+    thread = await octomate.threads.ensure(_console_address("thread-2"))
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="inkling"
     )

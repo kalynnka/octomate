@@ -120,13 +120,11 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager
-    )
+    return octomate, CodexTranscriptTailer(octomate.conversations, octomate.threads)
 
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     conversation = await octomate.conversations.ensure(
@@ -230,7 +228,7 @@ async def test_sibling_child_rollouts_stream_into_child_runs() -> None:
     )
     tailer.detach_remote(state)
 
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     parent = await octomate.conversations.ensure(

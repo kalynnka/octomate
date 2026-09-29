@@ -44,12 +44,11 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
-    AgentCommandCatalog,
+    CommandCatalog,
     CommandContext,
     CommandError,
     CommandInvocation,
     CommandOutcome,
-    UnavailableCommandCatalog,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
@@ -269,7 +268,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         Agents with config-supplied catalogs keep their existing models and claims.
         """
 
-    async def discover_commands(self, context: CommandContext) -> AgentCommandCatalog:
+    async def discover_commands(self, context: CommandContext) -> CommandCatalog:
         """Read runtime entries in the supplied user/session/workspace context.
 
         Discovery must not send a model prompt or create a visible turn. If a
@@ -277,12 +276,10 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         and explain that prerequisite; do not silently create one. Adapters with
         no discovery API retain this explicit unsupported result.
         """
-        return AgentCommandCatalog(
-            agent_id=self.id,
-            catalog=UnavailableCommandCatalog(
-                status="unsupported",
-                message=f"{self.id} does not expose command discovery.",
-            ),
+        return CommandCatalog(
+            context=context,
+            status="unsupported",
+            message=f"{self.id} does not expose command discovery.",
         )
 
     async def execute_command(
@@ -374,7 +371,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             # Nothing registered: no thread can be in a project, so a run is what it
             # was before there were projects, down to not reading the thread.
             return None
-        thread = await self.octomate.thread_manager.get(thread_id)
+        thread = await self.octomate.threads.get(thread_id)
         if thread is None:
             raise ValueError(f"unknown thread {thread_id}")
         return await self.octomate.projects.of(thread)

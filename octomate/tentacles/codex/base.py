@@ -424,7 +424,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
             self.octomate.conversations,
-            self.octomate.thread_manager,
+            self.octomate.threads,
             self.session_locks,
         )
         self.session_ingest = CodexHookIngest(
@@ -523,7 +523,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         if local_client and hello.cwd:
             holder = self.octomate.projects.resolve(Path(hello.cwd))
             project = self.octomate.projects.get(holder) if holder is not None else None
-        await self.octomate.thread_manager.ensure(
+        await self.octomate.threads.ensure(
             ThreadKey(self.native_id, "thread", hello.session_id),
             project=project,
         )
@@ -1232,12 +1232,12 @@ class CodexTentacle(AgentTentacle[str, None]):
         await self.octomate.conversations.set_name(conversation, name)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.octomate.thread_manager.get(
+        thread = await self.octomate.threads.get(
             conversation.thread_id, with_messages=False
         )
         if thread is None:
             raise ValueError(f"unknown thread {conversation.thread_id}")
-        await self.octomate.thread_manager.rename(thread, name)
+        await self.octomate.threads.rename(thread, name)
 
     async def _iter_events(
         self,
@@ -1507,16 +1507,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                     "prompt-source bindings require a persisted user ModelRequest"
                 )
             source_message_ids = list(source_thread_message_ids)
-            await self.octomate.thread_manager.bind_messages(
+            await self.octomate.threads.bind_messages(
                 source_message_ids,
                 prompt_request.id,
                 kind="request_source",
                 run_id=recorded_run.id,
             )
-            source_thread = await self.octomate.thread_manager.ensure(
+            source_thread = await self.octomate.threads.ensure(
                 source_thread_address or conversation_address
             )
-            await self.octomate.thread_manager.advance_prompt_cursor(
+            await self.octomate.threads.advance_prompt_cursor(
                 source_thread,
                 source_message_ids[-1],
             )

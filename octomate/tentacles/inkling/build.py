@@ -69,7 +69,7 @@ def build_inkling(
             defer_loading=True,
         ),
         HistoryCapability(
-            octomate.thread_manager,
+            octomate.threads,
             id="history",
             description="Search and page every thread the person you are answering "
             "has spoken in, on any of their linked accounts.",

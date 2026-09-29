@@ -1,7 +1,7 @@
 """Runtime command catalogs and explicit invocations, separate from chat text."""
 
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -20,6 +20,10 @@ class CommandContext:
     handle alone does not grant permission to drive that runtime.
     """
 
+    agent_id: Annotated[
+        str,
+        Field(min_length=1, description="The configured agent owning this context."),
+    ]
     user_id: Annotated[
         uuid.UUID,
         Field(description="The authenticated Octomate user, not a platform sender id."),
@@ -46,13 +50,36 @@ class CommandContext:
         str | None, Field(description="The effective runtime approval posture.")
     ] = None
 
+    def matches(self, other: "CommandContext") -> bool:
+        """Whether a resolved context can reuse this context's catalog."""
+        conversation = self.conversation
+        other_conversation = other.conversation
+        return (
+            self.agent_id == other.agent_id
+            and self.user_id == other.user_id
+            and self.address == other.address
+            and self.cwd == other.cwd
+            and self.model == other.model
+            and self.permission_mode == other.permission_mode
+            and (
+                (conversation is None and other_conversation is None)
+                or (
+                    conversation is not None
+                    and other_conversation is not None
+                    and conversation.id == other_conversation.id
+                    and conversation.external_id == other_conversation.external_id
+                )
+            )
+        )
 
-class CommandDescriptor(BaseModel):
+
+class CommandDescriptor(BaseModel, frozen=True):
     """The fields channels consume for any invocable runtime entry.
 
     Tentacles subclass this model for typed runtime metadata. Catalog serialization
     preserves those fields, but channels depend only on this base. Rehydrate an
     extended descriptor with its tentacle's concrete model, not this base model.
+    Descriptors are frozen; runtime extensions must use hashable field values.
     """
 
     id: str = Field(
@@ -72,59 +99,59 @@ class CommandDescriptor(BaseModel):
     )
 
 
-class ReadyCommandCatalog(BaseModel):
-    """A successful discovery, including an explicitly empty catalog."""
+class CommandCatalog(BaseModel):
+    """Runtime descriptors and their discovery state in one resolved context."""
 
-    status: Literal["ready"] = "ready"
-    entries: list[SerializeAsAny[CommandDescriptor]] = Field(
-        description="Commands, skills and other invocable entries in upstream order; "
-        "runtime-specific descriptor subclasses retain their additional fields.",
+    context: CommandContext = Field(
+        description="The context this catalog was discovered in."
+    )
+    descriptors: set[SerializeAsAny[CommandDescriptor]] = Field(
+        default_factory=set,
+        description="Unique invocable runtime entries, with no ordering guarantee. Runtime-specific "
+        "descriptor subclasses retain their additional fields; empty unless ready.",
+    )
+    status: Literal["ready", "loading", "unsupported", "unavailable", "failed"] = Field(
+        description="Discovery state; ready with no descriptors is a successful empty catalog."
+    )
+    message: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Required explanation when discovery cannot supply a catalog.",
     )
     limitations: list[str] = Field(
         default_factory=list,
-        description="User-visible discovery gaps, such as a skill catalog without "
-        "native slash-command discovery.",
+        description="User-visible discovery gaps, such as skills without native slash commands.",
     )
 
     @model_validator(mode="after")
-    def unique_entry_ids(self) -> Self:
-        """One selection must identify exactly one entry, even when names repeat."""
-        ids = [entry.id for entry in self.entries]
+    def valid_discovery_state(self) -> Self:
+        """Only ready catalogs contain descriptors; failed discovery explains why."""
+        if self.status != "ready" and self.descriptors:
+            raise ValueError("only ready catalogs may contain descriptors")
+        if self.status in {"unsupported", "unavailable", "failed"} and not self.message:
+            raise ValueError("unavailable catalogs require a message")
+        ids = [descriptor.id for descriptor in self.descriptors]
         if len(ids) != len(set(ids)):
-            raise ValueError("command catalog entry ids must be unique")
+            raise ValueError("command catalog descriptor ids must be unique")
         return self
 
-
-class LoadingCommandCatalog(BaseModel):
-    """The runtime has not finished discovering entries for this context."""
-
-    status: Literal["loading"] = "loading"
-
-
-class UnavailableCommandCatalog(BaseModel):
-    """Discovery cannot currently supply a catalog, with a user-facing reason."""
-
-    status: Literal["unsupported", "unavailable", "failed"] = Field(
-        description="No discovery capability, an unmet prerequisite, or a failed probe."
-    )
-    message: str = Field(min_length=1, description="Why discovery cannot proceed.")
-
-
-CommandCatalog = Annotated[
-    ReadyCommandCatalog | LoadingCommandCatalog | UnavailableCommandCatalog,
-    Field(discriminator="status"),
-]
-
-
-class AgentCommandCatalog(BaseModel):
-    """One discovery surface for the selected agent, regardless of runtime vocabulary."""
-
-    agent_id: str = Field(
-        min_length=1, description="The configured agent tentacle owning the catalog."
-    )
-    catalog: CommandCatalog = Field(
-        description="Discovery state and available invocations in this context."
-    )
+    def snapshot(self) -> Self:
+        """Copy catalog data without deep-copying the conversation's database state."""
+        conversation = self.context.conversation
+        return self.model_copy(
+            update={
+                "context": replace(
+                    self.context,
+                    conversation=conversation.model_copy()
+                    if conversation is not None
+                    else None,
+                ),
+                "descriptors": {
+                    descriptor.model_copy(deep=True) for descriptor in self.descriptors
+                },
+                "limitations": list(self.limitations),
+            }
+        )
 
 
 class CommandInvocation(BaseModel):

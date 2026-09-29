@@ -470,7 +470,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             stored_conversation = await octomate.conversations.get(
                 conversation.id, with_history=False
             )
-            thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+            thread = await octomate.threads.get(thread_id, with_messages=False)
             assert thread is not None
             assert stored_conversation.name == expected
             assert thread.title == expected
@@ -487,9 +487,9 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     FakeCodex.thread_name = "Child work"
     octomate = Octomate()
     thread_id = await a_thread()
-    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
-    await octomate.thread_manager.rename(thread, "Parent work")
+    await octomate.threads.rename(thread, "Parent work")
     parent = await octomate.conversations.ensure(thread_id, agent_tentacle_id="codex")
     await octomate.conversations.set_name(parent, "Parent work")
     child = await octomate.conversations.ensure(
@@ -514,7 +514,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     assert (
         await octomate.conversations.get(parent.id, with_history=False)
     ).name == "Parent work"
-    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
     assert thread.title == "Parent work"
 

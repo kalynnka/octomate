@@ -40,19 +40,52 @@ The optional `discover_commands` and `execute_command` hooks use the
 without starting a turn. These are extension hooks only: HTTP endpoints, channel
 entrypoints and runtime adapters are not wired yet.
 
-Both hooks receive a `CommandContext` resolved by the caller: authenticated user,
+Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval
 posture. `conversation=None` represents a new composer. Discovery must not send a
 model prompt or create a visible turn. If the runtime requires a session, return
 an unavailable catalog explaining the prerequisite instead of creating one
 silently.
 
-Implement discovery from the running backend's registry. `AgentCommandCatalog`
-contains the owning `agent_id` and one `catalog`, whose state is ready, loading,
-unsupported, unavailable or failed. A ready catalog has one list of `entries`:
-commands and skills share the same channel-facing contract. Its `limitations`
-explain gaps such as Codex exposing skills without a native command catalog.
-A successful discovery with no entries is an empty ready catalog.
+The host owns a [command manager](../api/managers/commands.md) at
+`octomate.commands`. Its `discover(agent, context, refresh=False)` method caches
+one `CommandCatalog` per `CommandCatalogKey(user_id, agent_id, conversation_id)`.
+Before a conversation exists, its ID is `None`, so repeated discovery for the same
+user and agent shares a cached catalog while the context still matches. The catalog retains its
+discovery context; context changes replace that conversation's catalog.
+Callers must authorize and resolve the context before every lookup, including cache hits. This resolver
+and the HTTP entrypoint are not wired yet.
+
+The LRU cache retains at most 256 catalogs without time-based expiration. Catalogs
+are rediscovered after eviction, explicit refresh, context changes or invalidation.
+Active discovery is represented by a loading catalog, with its asyncio task
+tracked separately under the same `CommandCatalogKey`. Superseded probes are
+canceled and drained before a replacement starts. Each probe has a 10-second timeout.
+Concurrent requests for the same conversation share a probe;
+explicit refresh bypasses a completed result. Loading and failed results are
+reprobed on the next lookup. Returned catalogs preserve runtime descriptor
+subclasses and are copied so callers cannot alter the cache.
+
+Adapters must call `octomate.commands.invalidate(agent_id=self.id)` on reconnect
+or catalog-change events, optionally narrowing by `conversation_id`. Invalidated
+in-flight results return loading so the caller can resolve context again. The host
+cancels pending discovery after channels stop and before agents close.
+
+Implement discovery from the running backend's registry. Return a flat
+`CommandCatalog` containing `context`, `descriptors` and `status`. The status is
+ready, loading, unsupported, unavailable or failed. Only ready catalogs may
+contain descriptors; a successful discovery with none is an empty ready catalog.
+Unsupported, unavailable and failed catalogs require a `message` explaining why.
+The `limitations` list explains gaps such as skills without a native command catalog.
+The owning agent is `context.agent_id`, including for a new composer.
+
+```python
+return CommandCatalog(
+    context=context,
+    descriptors=descriptors,
+    status="ready",
+)
+```
 
 Channels use only these `CommandDescriptor` fields:
 
@@ -65,10 +98,12 @@ Channels use only these `CommandDescriptor` fields:
 | `accepts_attachments` | Offer attachments only for `true`. `false` means unsupported; `None` means unspecified. |
 
 Extend `CommandDescriptor` with typed attributes in the owning tentacle's schema
-module. For example, a Codex adapter can retain the exact skill path:
+module. Descriptors are frozen and hashable. Extension fields must also be hashable:
+use tuples for sequences, frozensets for sets, and frozen models for structured
+values. For example, a Codex adapter can retain the exact skill path:
 
 ```python
-class CodexCommandDescriptor(CommandDescriptor):
+class CodexCommandDescriptor(CommandDescriptor, frozen=True):
     path: Path = Field(description="The upstream skill path used for invocation.")
 ```
 
@@ -77,8 +112,10 @@ subclasses in the same way. Map the runtime's invocation identity to the common
 `id`; channels must not construct a runtime path or slash line from the display
 name. Keep all standard fields' meanings unchanged when extending the model.
 
-Construct catalogs with these concrete descriptor instances. The `entries` field
-uses Pydantic's `SerializeAsAny` to preserve declared subclass attributes when
+Construct catalogs with these concrete descriptor instances. The `descriptors` field
+is a set: identical descriptors deduplicate, conflicting definitions with the same
+ID are rejected, and upstream order is not preserved. It serializes as a JSON array
+and uses Pydantic's `SerializeAsAny` to preserve declared subclass attributes when
 serializing the catalog. A channel may parse the result using the base contract
 and ignore the additional fields. A tentacle that rehydrates serialized metadata
 must validate it with its own concrete model: base-model parsing intentionally

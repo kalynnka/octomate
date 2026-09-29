@@ -92,9 +92,7 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, ClaudeTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, ClaudeTranscriptTailer(
-        octomate.conversations, octomate.thread_manager
-    )
+    return octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
 
 async def test_remote_feed_assembles_the_same_runs_as_a_local_tail() -> None:

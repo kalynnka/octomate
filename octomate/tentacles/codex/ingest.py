@@ -95,7 +95,7 @@ class CodexHookIngest:
                 await self.octomate.conversations.set_name(
                     conversation, event.session_name
                 )
-                await self.octomate.thread_manager.rename(thread, event.session_name)
+                await self.octomate.threads.rename(thread, event.session_name)
         if event.hook_event_name == "Stop":
             await self.on_stop(event, sender)
             return
@@ -167,7 +167,7 @@ class CodexHookIngest:
         """
         holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
         project = self.octomate.projects.get(holder) if holder is not None else None
-        return await self.octomate.thread_manager.ensure(
+        return await self.octomate.threads.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", event.session_id),
             project=project,
         )
@@ -178,11 +178,11 @@ class CodexHookIngest:
         thread = await self.session_thread(event)
         # A hook can fire more than once (a retry, a repeated Stop); the per-turn
         # turn_id + direction dedups so a re-fire is a no-op.
-        if event.turn_id and await self.octomate.thread_manager.find_message(
+        if event.turn_id and await self.octomate.threads.find_message(
             thread.id, event.turn_id, "inbound"
         ):
             return
-        await self.octomate.thread_manager.record_inbound(
+        await self.octomate.threads.record_inbound(
             MessageEvent(
                 tentacle_id=CODEX_NATIVE_ID,
                 message_id=event.turn_id or "",
@@ -198,11 +198,11 @@ class CodexHookIngest:
         self, event: CodexHookInput, answer: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.turn_id and await self.octomate.thread_manager.find_message(
+        if event.turn_id and await self.octomate.threads.find_message(
             thread.id, event.turn_id, "outbound"
         ):
             return
-        await self.octomate.thread_manager.record_outbound(
+        await self.octomate.threads.record_outbound(
             thread,
             agent_tentacle_id=CODEX_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],
@@ -214,7 +214,7 @@ class CodexHookIngest:
         if not event.turn_id:
             return
         thread = await self.session_thread(event)
-        prompt = await self.octomate.thread_manager.find_message(
+        prompt = await self.octomate.threads.find_message(
             thread.id, event.turn_id, "inbound"
         )
         if prompt is None or prompt.message_text is None:

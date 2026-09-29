@@ -247,7 +247,7 @@ class ClaudeHookIngest:
         # Octomate itself was started in.
         holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
         project = self.octomate.projects.get(holder) if holder is not None else None
-        return await self.octomate.thread_manager.ensure(
+        return await self.octomate.threads.ensure(
             ThreadKey(
                 channel_tentacle_id=CLAUDE_NATIVE_ID,
                 chat_type="thread",
@@ -263,11 +263,11 @@ class ClaudeHookIngest:
         thread = await self.session_thread(event)
         # A hook can fire more than once (retries, a repeated `Stop`); the per-turn
         # prompt_id + direction dedups so a re-fire is a no-op.
-        if event.prompt_id and await self.octomate.thread_manager.find_message(
+        if event.prompt_id and await self.octomate.threads.find_message(
             thread.id, event.prompt_id, "inbound"
         ):
             return
-        await self.octomate.thread_manager.record_inbound(
+        await self.octomate.threads.record_inbound(
             MessageEvent(
                 tentacle_id=CLAUDE_NATIVE_ID,
                 message_id=event.prompt_id or "",
@@ -296,7 +296,7 @@ class ClaudeHookIngest:
         if not event.prompt_id:
             return  # no per-turn key: nothing to write a run under
         thread = await self.session_thread(event)
-        prompt = await self.octomate.thread_manager.find_message(
+        prompt = await self.octomate.threads.find_message(
             thread.id, event.prompt_id, "inbound"
         )
         if prompt is None or prompt.message_text is None:
@@ -334,11 +334,11 @@ class ClaudeHookIngest:
         self, event: ClaudeHookInput, answer: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.prompt_id and await self.octomate.thread_manager.find_message(
+        if event.prompt_id and await self.octomate.threads.find_message(
             thread.id, event.prompt_id, "outbound"
         ):
             return
-        await self.octomate.thread_manager.record_outbound(
+        await self.octomate.threads.record_outbound(
             thread,
             agent_tentacle_id=CLAUDE_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],

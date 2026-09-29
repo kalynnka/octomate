@@ -99,7 +99,7 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
         thread_id, agent_tentacle_id="inkling"
     )
     assert conversation.name == "Plan gateway MCP exposure"
-    thread = await octomate.thread_manager.get(thread_id)
+    thread = await octomate.threads.get(thread_id)
     assert thread is not None
     assert thread.title == conversation.name
     assert "user: Investigate the gateway" in naming_requests[0]
@@ -116,7 +116,7 @@ async def test_new_prompts_name_and_revise_the_session_and_thread(
         output_type=str,
     )
     revised = await octomate.conversations.get(conversation.id)
-    thread = await octomate.thread_manager.get(thread_id)
+    thread = await octomate.threads.get(thread_id)
     assert revised.name == "Fix session naming updates"
     assert thread is not None
     assert thread.title == revised.name
@@ -207,7 +207,7 @@ async def test_naming_and_foreground_stream_run_concurrently(
         assert "The new reply." not in naming_requests[0]
         finish_naming.set()
 
-    thread = await octomate.thread_manager.get(thread_id)
+    thread = await octomate.threads.get(thread_id)
     assert thread is not None
     assert thread.title == "Gateway plan"
 
@@ -225,9 +225,9 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
         subagent_id="research",
         parent_conversation_id=parent.id,
     )
-    thread = await octomate.thread_manager.get(thread_id)
+    thread = await octomate.threads.get(thread_id)
     assert thread is not None
-    await octomate.thread_manager.rename(thread, "Parent work")
+    await octomate.threads.rename(thread, "Parent work")
     await tentacle.subagent_run(
         "Investigate the gateway",
         conversation_address=ADDRESS,
@@ -236,7 +236,7 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
     )
     named = await octomate.conversations.get(child.id)
     assert named.name == "Plan gateway MCP exposure"
-    thread = await octomate.thread_manager.get(thread_id)
+    thread = await octomate.threads.get(thread_id)
     assert thread is not None
     assert thread.title == "Parent work"
 

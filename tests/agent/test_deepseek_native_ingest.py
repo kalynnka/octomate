@@ -38,7 +38,7 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 def wired(octomate: Octomate) -> tuple[DeepseekHookIngest, DeepseekEventTailer]:
     tailer = DeepseekEventTailer(
-        octomate.conversations, octomate.thread_manager, octomate.projects
+        octomate.conversations, octomate.threads, octomate.projects
     )
     return DeepseekHookIngest(octomate, tailer), tailer
 
@@ -130,7 +130,7 @@ async def stream_events(
 
 
 async def native_conversation(octomate: Octomate):
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     return await octomate.conversations.ensure(
@@ -155,7 +155,7 @@ async def test_streamed_events_assemble_the_turn_and_its_ledger() -> None:
     assert [message.message_text for message in run.messages] == ["inspect it", "done"]
 
     thread = await a_loaded_thread(
-        octomate.thread_manager, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     directions = [
         (message.direction, message.message_text) for message in thread.messages
@@ -188,7 +188,7 @@ async def test_native_titles_are_persisted_and_revised_outside_turns(
     conversation = await native_conversation(octomate)
     assert conversation.name == "First name"
     assert len(conversation.runs) == 1
-    thread = await octomate.thread_manager.get(conversation.thread_id)
+    thread = await octomate.threads.get(conversation.thread_id)
     assert thread is not None
     assert thread.title == "First name"
 
@@ -199,7 +199,7 @@ async def test_native_titles_are_persisted_and_revised_outside_turns(
         await feed_events(tailer, state, [ev(seq, "session/title", {"title": name})])
         stored = await octomate.conversations.get(conversation.id, with_history=False)
         assert stored.name == "修复会话名称"
-        thread = await octomate.thread_manager.get(conversation.thread_id)
+        thread = await octomate.threads.get(conversation.thread_id)
         assert thread is not None
         assert thread.title == "修复会话名称"
     tailer.detach_remote(state)
@@ -256,7 +256,7 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     assert part.content == "hi\n\nalso check the tests"
     assert run.source == "gateway"
     thread = await a_loaded_thread(
-        octomate.thread_manager, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
+        octomate.threads, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     inbound = [m.message_text for m in thread.messages if m.direction == "inbound"]
     assert inbound == ["hi\n\nalso check the tests"]
@@ -420,7 +420,7 @@ async def test_a_prompt_hook_creates_the_session_skeleton() -> None:
         )
     )
 
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     conversation = await octomate.conversations.ensure(

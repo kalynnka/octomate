@@ -1,5 +1,6 @@
 """The command boundary distinguishes runtime capabilities and preserves input."""
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,6 @@ from pydantic import Field, TypeAdapter, ValidationError
 from uuid_utils.compat import uuid7
 
 from octomate.schemas.commands import (
-    AgentCommandCatalog,
     CommandCatalog,
     CommandContext,
     CommandDescriptor,
@@ -15,82 +15,160 @@ from octomate.schemas.commands import (
     CommandInvocation,
     CommandOutcome,
     CommandResult,
-    LoadingCommandCatalog,
-    ReadyCommandCatalog,
-    UnavailableCommandCatalog,
 )
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import FileData, FileSegment, TextSegment
 from octomate.types.json import JsonObject
 from tests.support.agents import FakeAgent
 
 
-class CodexCommandDescriptor(CommandDescriptor):
+class CodexCommandDescriptor(CommandDescriptor, frozen=True):
     path: Path = Field(description="The skill path used by the Codex runtime.")
 
 
-class ClaudeCommandDescriptor(CommandDescriptor):
-    aliases: list[str] = Field(description="Additional upstream command names.")
+class ClaudeCommandDescriptor(CommandDescriptor, frozen=True):
+    aliases: tuple[str, ...] = Field(description="Additional upstream command names.")
 
 
-class DeepseekCommandDescriptor(CommandDescriptor):
+class DeepseekCommandDescriptor(CommandDescriptor, frozen=True):
     definition_id: str = Field(description="The registered DSH definition identity.")
 
 
+@pytest.fixture
+def context(tmp_path: Path) -> CommandContext:
+    return CommandContext(
+        agent_id="runtime",
+        user_id=uuid7(),
+        address=ChannelAddress("web", "thread", "chat", "user", "composer"),
+        cwd=tmp_path,
+        conversation=None,
+    )
+
+
 @pytest.mark.parametrize("status", ["unsupported", "unavailable", "failed"])
-def test_catalog_failure_states_survive_wire_roundtrip(status: str) -> None:
-    catalog = TypeAdapter(CommandCatalog).validate_python(
-        {"status": status, "message": "Reconnect the runtime to discover its commands."}
-    )
-
-    assert isinstance(catalog, UnavailableCommandCatalog)
-    assert catalog.status == status
-    assert (
-        TypeAdapter(CommandCatalog).validate_json(catalog.model_dump_json()) == catalog
-    )
-
-
-def test_empty_and_loading_catalogs_are_distinct() -> None:
-    adapter = TypeAdapter(CommandCatalog)
-    empty = adapter.validate_python({"status": "ready", "entries": []})
-    loading = adapter.validate_python({"status": "loading"})
-
-    assert isinstance(empty, ReadyCommandCatalog)
-    assert empty.entries == []
-    assert isinstance(loading, LoadingCommandCatalog)
-    with pytest.raises(ValidationError, match="entries"):
-        adapter.validate_python({"status": "ready"})
-
-
-def test_unified_catalog_retains_discovery_limitations() -> None:
-    catalog = AgentCommandCatalog.model_validate(
+def test_catalog_failure_states_survive_wire_roundtrip(
+    context: CommandContext, status: str
+) -> None:
+    catalog = CommandCatalog.model_validate(
         {
-            "agent_id": "runtime",
-            "catalog": {
-                "status": "ready",
-                "limitations": ["Only skills are discoverable; no native command API."],
-                "entries": [
-                    {
-                        "id": "workspace/review",
-                        "name": "review",
-                        "description": "Review selected files.",
-                        "argument_hint": "[files…]",
-                        "accepts_attachments": True,
-                    }
-                ],
-            },
+            "context": context,
+            "status": status,
+            "message": "Reconnect the runtime to discover its commands.",
         }
     )
+    assert catalog.status == status
+    assert CommandCatalog.model_validate_json(catalog.model_dump_json()) == catalog
+    with pytest.raises(ValidationError, match="require a message"):
+        CommandCatalog.model_validate({"context": context, "status": status})
 
-    assert isinstance(catalog.catalog, ReadyCommandCatalog)
-    assert catalog.catalog.limitations == [
+
+def test_empty_and_loading_catalogs_are_distinct(context: CommandContext) -> None:
+    empty = CommandCatalog(context=context, status="ready")
+    loading = CommandCatalog(context=context, status="loading")
+    assert empty.descriptors == loading.descriptors == set()
+    assert empty.status != loading.status
+
+
+def test_flat_catalog_retains_conversation_context_on_wire(
+    context: CommandContext,
+) -> None:
+    context = replace(
+        context,
+        conversation=Conversation(
+            thread_id=uuid7(),
+            agent_tentacle_id=context.agent_id,
+            external_id="native-session",
+        ),
+    )
+    catalog = CommandCatalog(context=context, status="ready")
+    wire = catalog.model_dump_json()
+    restored = CommandCatalog.model_validate_json(wire)
+    assert restored.context.matches(context)
+    assert set(catalog.model_dump()) == {
+        "context",
+        "descriptors",
+        "status",
+        "message",
+        "limitations",
+    }
+
+
+def test_catalog_snapshot_preserves_extensions_and_isolates_mutable_data(
+    context: CommandContext,
+) -> None:
+    context = replace(
+        context,
+        conversation=Conversation(
+            thread_id=uuid7(), agent_tentacle_id=context.agent_id
+        ),
+    )
+    catalog = CommandCatalog(
+        context=context,
+        status="ready",
+        limitations=["Skills only."],
+        descriptors={
+            ClaudeCommandDescriptor(
+                id="review", name="review", description="Review", aliases=("check",)
+            )
+        },
+    )
+    snapshot = catalog.snapshot()
+    descriptor = next(iter(snapshot.descriptors))
+    assert isinstance(descriptor, ClaudeCommandDescriptor)
+    snapshot.descriptors.clear()
+    snapshot.limitations.clear()
+    assert snapshot.context.conversation is not None
+    snapshot.context.conversation.external_id = "changed"
+    original = next(iter(catalog.descriptors))
+    assert isinstance(original, ClaudeCommandDescriptor)
+    assert original.aliases == ("check",)
+    assert catalog.limitations == ["Skills only."]
+    assert catalog.context.conversation is not None
+    assert catalog.context.conversation.external_id is None
+
+
+@pytest.mark.parametrize("status", ["loading", "unsupported", "unavailable", "failed"])
+def test_nonready_catalogs_reject_descriptors(
+    context: CommandContext, status: str
+) -> None:
+    with pytest.raises(ValidationError, match="only ready"):
+        CommandCatalog.model_validate(
+            {
+                "context": context,
+                "status": status,
+                "message": "Not ready.",
+                "descriptors": [
+                    {"id": "review", "name": "review", "description": "Review."}
+                ],
+            }
+        )
+
+
+def test_unified_catalog_retains_discovery_limitations(context: CommandContext) -> None:
+    catalog = CommandCatalog.model_validate(
+        {
+            "context": context,
+            "status": "ready",
+            "limitations": ["Only skills are discoverable; no native command API."],
+            "descriptors": [
+                {
+                    "id": "workspace/review",
+                    "name": "review",
+                    "description": "Review selected files.",
+                    "argument_hint": "[files…]",
+                    "accepts_attachments": True,
+                }
+            ],
+        }
+    )
+    assert catalog.limitations == [
         "Only skills are discoverable; no native command API."
     ]
-    entry = catalog.catalog.entries[0]
+    entry = next(iter(catalog.descriptors))
     assert entry.id == "workspace/review"
     assert entry.argument_hint == "[files…]"
     assert entry.accepts_attachments
-    assert AgentCommandCatalog.model_validate_json(catalog.model_dump_json()) == catalog
+    assert CommandCatalog.model_validate_json(catalog.model_dump_json()) == catalog
 
 
 @pytest.mark.parametrize(
@@ -106,7 +184,7 @@ def test_unified_catalog_retains_discovery_limitations() -> None:
             id="review",
             name="review",
             description="Review changes.",
-            aliases=["check"],
+            aliases=("check",),
         ),
         DeepseekCommandDescriptor(
             id="plan",
@@ -120,37 +198,66 @@ def test_unified_catalog_retains_discovery_limitations() -> None:
 )
 def test_runtime_extensions_survive_catalog_serialization(
     entry: CommandDescriptor,
+    context: CommandContext,
 ) -> None:
-    catalog = AgentCommandCatalog(
-        agent_id="runtime", catalog=ReadyCommandCatalog(entries=[entry])
-    )
-
-    assert isinstance(catalog.catalog, ReadyCommandCatalog)
-    assert catalog.catalog.entries[0] is entry
+    catalog = CommandCatalog(context=context, status="ready", descriptors={entry})
+    assert hash(entry) == hash(type(entry).model_validate(entry.model_dump()))
+    with pytest.raises(ValidationError, match="frozen_instance"):
+        # The rejected assignment is the input under test: descriptors are frozen.
+        entry.description = "Changed after hashing"  # pyright: ignore[reportAttributeAccessIssue]
+    assert next(iter(catalog.descriptors)) is entry
     wire = catalog.model_dump(mode="json")
-    assert wire["catalog"]["entries"][0] == entry.model_dump(mode="json")
-    restored = type(entry).model_validate(wire["catalog"]["entries"][0])
+    assert wire["descriptors"][0] == entry.model_dump(mode="json")
+    restored = type(entry).model_validate(wire["descriptors"][0])
     assert restored == entry
 
     # Channels need only the common fields; runtime rehydration uses the subtype.
-    channel_view = AgentCommandCatalog.model_validate_json(catalog.model_dump_json())
-    assert isinstance(channel_view.catalog, ReadyCommandCatalog)
-    common = channel_view.catalog.entries[0]
+    channel_view = CommandCatalog.model_validate_json(catalog.model_dump_json())
+    common = next(iter(channel_view.descriptors))
     assert type(common) is CommandDescriptor
     assert common.id == entry.id
     assert common.argument_hint == entry.argument_hint
     assert common.accepts_attachments == entry.accepts_attachments
 
 
-def test_duplicate_ids_are_rejected_but_duplicate_names_are_allowed() -> None:
+def test_duplicate_ids_are_rejected_but_duplicate_names_are_allowed(
+    context: CommandContext,
+) -> None:
     first = CommandDescriptor(
         id="project/review", name="review", description="Project."
     )
     second = CommandDescriptor(id="user/review", name="review", description="Personal.")
 
-    assert len(ReadyCommandCatalog(entries=[first, second]).entries) == 2
+    assert (
+        len(
+            CommandCatalog(
+                context=context, status="ready", descriptors={first, second}
+            ).descriptors
+        )
+        == 2
+    )
+    duplicate = CommandDescriptor.model_validate(first.model_dump())
+    assert hash(first) == hash(duplicate)
+    assert CommandCatalog(
+        context=context, status="ready", descriptors={first, duplicate}
+    ).descriptors == {first}
+    conflict = first.model_copy(update={"description": "Conflicting definition."})
     with pytest.raises(ValidationError, match="ids must be unique"):
-        ReadyCommandCatalog(entries=[first, first])
+        CommandCatalog(context=context, status="ready", descriptors={first, conflict})
+
+
+def test_catalog_deduplicates_wire_descriptors(context: CommandContext) -> None:
+    descriptor = {"id": "review", "name": "review", "description": "Review."}
+    catalog = CommandCatalog.model_validate(
+        {
+            "context": context,
+            "status": "ready",
+            "descriptors": [descriptor, descriptor],
+        }
+    )
+    assert len(catalog.descriptors) == 1
+    restored = CommandCatalog.model_validate_json(catalog.model_dump_json())
+    assert restored.descriptors == catalog.descriptors
 
 
 @pytest.mark.parametrize("accepts", [None, False, True])
@@ -227,10 +334,11 @@ def test_direct_result_uses_existing_channel_segments() -> None:
     assert "run_id" not in restored.model_dump()
 
 
-def test_catalog_and_outcome_discriminators_reject_unknown_states() -> None:
-    for adapter in (TypeAdapter(CommandCatalog), TypeAdapter(CommandOutcome)):
-        with pytest.raises(ValidationError, match="union_tag_invalid"):
-            adapter.validate_python({"status": "invented"})
+def test_catalog_and_outcome_reject_unknown_states(context: CommandContext) -> None:
+    with pytest.raises(ValidationError, match="literal_error"):
+        CommandCatalog.model_validate({"context": context, "status": "invented"})
+    with pytest.raises(ValidationError, match="union_tag_invalid"):
+        TypeAdapter(CommandOutcome).validate_python({"status": "invented"})
 
 
 async def test_default_hooks_are_unsupported_without_starting_a_turn(
@@ -239,6 +347,7 @@ async def test_default_hooks_are_unsupported_without_starting_a_turn(
     agent = FakeAgent()
     user_id = uuid7()
     context = CommandContext(
+        agent_id=agent.id,
         user_id=user_id,
         address=ChannelAddress(
             channel_tentacle_id="trunkline",
@@ -257,8 +366,8 @@ async def test_default_hooks_are_unsupported_without_starting_a_turn(
         CommandInvocation(command_id="unknown", arguments=" /raw "),
     )
 
-    assert catalog.agent_id == agent.id
-    assert catalog.catalog.status == "unsupported"
+    assert catalog.context.agent_id == agent.id
+    assert catalog.status == "unsupported"
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unsupported"
     assert agent.turns == []

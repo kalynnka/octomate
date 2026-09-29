@@ -142,7 +142,7 @@ async def test_inkling_and_claude_mount_personal_discovery_without_tentacles(
     tools = await toolset.get_tools(context)
     listed = await toolset.call_tool(LIST_MCPS, {}, context, tools[LIST_MCPS])
     assert "Private research" in str(listed)
-    claude = await octomate_mcp_server(scope, host.thread_manager, manager=host.mcp)
+    claude = await octomate_mcp_server(scope, host.threads, manager=host.mcp)
     assert claude["name"] == "octomate"
     assert "mcp_list_servers" in [tool.name for tool in await server.list_tools()]
 

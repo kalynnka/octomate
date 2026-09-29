@@ -495,7 +495,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         conversation = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=chosen.agent
         )
-        await self.octomate.thread_manager.record_handoff(
+        await self.octomate.threads.record_handoff(
             thread,
             source_agent_tentacle_id=None,
             to_agent_tentacle_id=chosen.agent,
@@ -589,7 +589,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             name=directive.user.name,
             nickname=directive.user.nickname,
         )
-        thread = await self.octomate.thread_manager.ensure(
+        thread = await self.octomate.threads.ensure(
             ChannelAddress(
                 channel_tentacle_id=self.id,
                 chat_type=event.chat_type,
@@ -603,7 +603,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         await self.claim_route(thread, directive.model)
         if directive.permission_mode is not None:
             await self.claim_posture(thread, directive.permission_mode)
-        thread_message = await self.octomate.thread_manager.record_inbound(event)
+        thread_message = await self.octomate.threads.record_inbound(event)
         return self.stream_kick(
             UserMessageSignal([event], trigger_thread_message_id=thread_message.id)
         )
