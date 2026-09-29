@@ -42,7 +42,7 @@ class DiscoveringAgent(FakeAgent):
         }
     )
 
-    async def discover_commands(self, context: CommandContext) -> CommandCatalog:
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         self.calls.append(context)
         self.entered.set()
         if self.release is not None:
@@ -84,6 +84,7 @@ async def test_cache_preserves_extensions_and_returns_independent_copies(
     assert len(agent.calls) == 1
     assert agent.turns == []
     assert agent.streams == []
+    assert context.cwd is not None
     assert not context.cwd.exists()
     assert context.conversation is not None
     assert list(manager.catalogs) == [
@@ -108,6 +109,7 @@ async def test_context_changes_do_not_reuse_catalogs(
                 context, address=replace(context.address, user_id="other")
             )
         case "workspace":
+            assert context.cwd is not None
             changed = replace(context, cwd=context.cwd / "other")
         case "model":
             changed = replace(context, model="other")
@@ -364,6 +366,7 @@ async def test_new_composer_catalog_scope(context: CommandContext, scope: str) -
         changed_agent = DiscoveringAgent(id="other")
         changed = replace(context, agent_id=changed_agent.id)
     else:
+        assert context.cwd is not None
         changed = replace(context, cwd=context.cwd / "other")
     result = await manager.discover(changed_agent, changed)
     assert result.context.matches(changed)
@@ -397,6 +400,7 @@ async def test_changed_metadata_discards_old_probe_and_replaces_same_key(
     agent = DiscoveringAgent(release=asyncio.Event())
     old = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
+    assert context.cwd is not None
     changed = replace(context, cwd=context.cwd / "new-workspace")
     agent.entered.clear()
     new = asyncio.create_task(manager.discover(agent, changed))
@@ -418,9 +422,9 @@ async def test_replacement_drains_old_probe_before_concurrent_callers_share_it(
     finish_cleanup = asyncio.Event()
 
     class CleaningAgent(DiscoveringAgent):
-        async def discover_commands(self, context: CommandContext) -> CommandCatalog:
+        async def probe_commands(self, context: CommandContext) -> CommandCatalog:
             try:
-                return await super().discover_commands(context)
+                return await super().probe_commands(context)
             finally:
                 if len(self.calls) == 1:
                     cleanup_started.set()
@@ -431,6 +435,7 @@ async def test_replacement_drains_old_probe_before_concurrent_callers_share_it(
     old = asyncio.create_task(manager.discover(agent, context))
     await agent.entered.wait()
     agent.entered.clear()
+    assert context.cwd is not None
     changed = replace(context, cwd=context.cwd / "new-workspace")
     first = asyncio.create_task(manager.discover(agent, changed))
     await cleanup_started.wait()

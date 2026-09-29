@@ -4,6 +4,16 @@ A channel is a config model, a chromo, an ink, a tentacle class, and two lines o
 registration. Nothing in the graph or the agents changes. Discord is the worked
 example to read alongside this page: `octomate/tentacles/discord/`.
 
+For runtime command discovery, authenticate the user and check that the channel enables the agent,
+build a `CommandContext` from the observed surface and server-owned session, then
+call the selected agent's `discover_commands(context)`. It uses the host's catalog
+cache; callers must check agent enablement and resolve current context before each lookup,
+including cache hits. Use only
+the standard descriptor fields for presentation and pass a `prefix` for command
+name completion. The [agent contract](agent-tentacle.md#runtime-commands) describes
+catalog states, prerequisites and the equivalent authenticated HTTP endpoint.
+Platform command controls and execution wiring are not implemented yet.
+
 ## 1. The config model
 
 In `octomate/config/channels.py`, a variant of `ChannelConfig` with a `type`

@@ -7,6 +7,7 @@ import pytest
 from pydantic import Field, TypeAdapter, ValidationError
 from uuid_utils.compat import uuid7
 
+from octomate.base import Octomate
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -344,7 +345,7 @@ def test_catalog_and_outcome_reject_unknown_states(context: CommandContext) -> N
 async def test_default_hooks_are_unsupported_without_starting_a_turn(
     tmp_path: Path,
 ) -> None:
-    agent = FakeAgent()
+    agent = Octomate().connect(FakeAgent())
     user_id = uuid7()
     context = CommandContext(
         agent_id=agent.id,
@@ -372,4 +373,5 @@ async def test_default_hooks_are_unsupported_without_starting_a_turn(
     assert outcome.status == "unsupported"
     assert agent.turns == []
     assert agent.streams == []
+    assert context.cwd is not None
     assert not context.cwd.exists()

@@ -252,22 +252,7 @@ class ReflexDeps:
             )
 
         agent = self.agent(agent_id)
-        if not agent.models:
-            raise ValueError(f"agent {agent_id!r} has no available model catalog")
-        if model is None:
-            return AgentModelConfig(agent=agent_id, model=agent.default_model)
-        if model in agent.models:
-            return AgentModelConfig(agent=agent_id, model=model)
-
-        # Saved handoffs may omit the provider; only an unambiguous match is valid.
-        if model and ":" not in model:
-            matches = [name for name in agent.models if name.partition(":")[2] == model]
-            if len(matches) == 1:
-                return AgentModelConfig(agent=agent_id, model=matches[0])
-
-        raise ValueError(
-            f"agent {agent_id!r} does not serve model {model!r} with an unambiguous provider"
-        )
+        return AgentModelConfig(agent=agent_id, model=agent.resolve_model(model))
 
     async def render_chat(
         self, messages: list[ThreadMessage], *, ceiling: int = 0

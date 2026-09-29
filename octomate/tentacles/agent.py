@@ -235,6 +235,27 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Inkling's configured first model; harnesses override with native defaults."""
         return next(iter(self.models), None)
 
+    def resolve_model(
+        self, model: AgentRouteModelName | None
+    ) -> AgentRouteModelName | None:
+        """Resolve a default, exact model or unambiguous provider-less name."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        if model is None:
+            return self.default_model
+        if model in self.models:
+            return model
+
+        # Saved handoffs may omit the provider; only an unambiguous match is valid.
+        if model and ":" not in model:
+            matches = [name for name in self.models if name.partition(":")[2] == model]
+            if len(matches) == 1:
+                return matches[0]
+
+        raise ValueError(
+            f"agent {self.id!r} does not serve model {model!r} with an unambiguous provider"
+        )
+
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
     # waiter, instead of resuming durably through the triage graph. In-process
@@ -268,7 +289,28 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         Agents with config-supplied catalogs keep their existing models and claims.
         """
 
-    async def discover_commands(self, context: CommandContext) -> CommandCatalog:
+    async def discover_commands(
+        self,
+        context: CommandContext,
+        *,
+        refresh: bool = False,
+        prefix: str = "",
+    ) -> CommandCatalog:
+        """Read this agent's cached catalog for an already authorized context.
+
+        Callers resolve and authorize context before every lookup, including cache
+        hits. Prefix matching filters a copy by command name; it does not imply
+        argument-value completion. Runtime adapters implement `probe_commands`.
+        """
+        catalog = await self.octomate.commands.discover(self, context, refresh=refresh)
+        catalog.descriptors = {
+            descriptor
+            for descriptor in catalog.descriptors
+            if descriptor.name.casefold().startswith(prefix.casefold())
+        }
+        return catalog
+
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """Read runtime entries in the supplied user/session/workspace context.
 
         Discovery must not send a model prompt or create a visible turn. If a

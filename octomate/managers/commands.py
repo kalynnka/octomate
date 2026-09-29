@@ -106,7 +106,7 @@ class CommandManager(Manager):
         )
         try:
             async with asyncio.timeout(self.timeout):
-                result = await agent.discover_commands(context)
+                result = await agent.probe_commands(context)
                 if not result.context.matches(context):
                     raise ValueError("command catalog belongs to another context")
                 result = result.snapshot()

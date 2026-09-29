@@ -434,11 +434,13 @@ class Octomate(FastAPI):
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
         from octomate.auth import auth_router
+        from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import TrunklineTentacle
 
         self.include_router(auth_router)
+        self.include_router(command_router)
         self.include_router(mcp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted

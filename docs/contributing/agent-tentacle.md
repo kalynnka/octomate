@@ -35,14 +35,17 @@ runtime that takes no tool result back, and `subagent_run`.
 
 ## Runtime commands
 
-The optional `discover_commands` and `execute_command` hooks use the
+The optional `probe_commands` and `execute_command` hooks use the
 [command schemas](../api/schemas/commands.md). Their defaults report unsupported
-without starting a turn. These are extension hooks only: HTTP endpoints, channel
-entrypoints and runtime adapters are not wired yet.
+without starting a turn. Each agent exposes `discover_commands` for cached discovery,
+refresh and command-name completion, backed by the host's command manager and an HTTP
+endpoint. Execution, channel command controls and runtime adapters are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval
-posture. `conversation=None` represents a new composer. Discovery must not send a
+posture. A new composer has `conversation=None` and `cwd=None`. An existing
+conversation's workspace path is resolved without creating its directory.
+Discovery must not send a
 model prompt or create a visible turn. If the runtime requires a session, return
 an unavailable catalog explaining the prerequisite instead of creating one
 silently.
@@ -53,8 +56,29 @@ one `CommandCatalog` per `CommandCatalogKey(user_id, agent_id, conversation_id)`
 Before a conversation exists, its ID is `None`, so repeated discovery for the same
 user and agent shares a cached catalog while the context still matches. The catalog retains its
 discovery context; context changes replace that conversation's catalog.
-Callers must authorize and resolve the context before every lookup, including cache hits. This resolver
-and the HTTP entrypoint are not wired yet.
+The command router checks channel enablement and builds context before each lookup, including
+cache hits, then calls the resolved agent's
+`discover_commands(context, refresh=False, prefix="")` method.
+Discovery requires a signed-in user and an agent enabled on the selected channel.
+It does not require a linked channel profile, conversation membership or ownership
+of the current route. The authenticated user supplies the context's user ID.
+Discovery uses the context resolved at the
+start of the request; changes while waiting are picked up on the next lookup.
+
+Browser clients call `POST /api/commands/catalog` with a signed-in session and
+`X-Octomate-Request: 1`. Its body takes `agent_id`, `address` and optional
+`conversation_id`, `model`, `permission_mode`, `refresh` and `prefix`. Model and
+posture select a new composer's settings; existing conversations use the stored
+selection and ignore those inputs. The router resolves the actual workspace and external
+session; clients cannot override them. The response omits conversation history,
+external session IDs and session tool grants. See `/docs` for the generated API.
+
+`prefix` filters command names case-insensitively without changing the cached
+catalog. A nonmatching prefix returns an empty ready catalog when discovery
+succeeded. Argument hints remain upstream text, not argument-value completions.
+`refresh=true` bypasses a completed cache entry. A composer cannot discover
+workspace-specific commands until its thread exists; adapters needing a workspace
+or live session must return unavailable and explain the prerequisite.
 
 The LRU cache retains at most 256 catalogs without time-based expiration. Catalogs
 are rediscovered after eviction, explicit refresh, context changes or invalidation.
@@ -71,7 +95,7 @@ or catalog-change events, optionally narrowing by `conversation_id`. Invalidated
 in-flight results return loading so the caller can resolve context again. The host
 cancels pending discovery after channels stop and before agents close.
 
-Implement discovery from the running backend's registry. Return a flat
+Implement `probe_commands` from the running backend's registry. Return a flat
 `CommandCatalog` containing `context`, `descriptors` and `status`. The status is
 ready, loading, unsupported, unavailable or failed. Only ready catalogs may
 contain descriptors; a successful discovery with none is an empty ready catalog.

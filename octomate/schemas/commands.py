@@ -33,9 +33,10 @@ class CommandContext:
         Field(description="The originating surface and its platform user."),
     ]
     cwd: Annotated[
-        Path,
+        Path | None,
         Field(
-            description="The effective runtime workspace, never a client-supplied path."
+            description="The effective runtime workspace, never a client-supplied path; "
+            "null before a thread exists. Discovery must not prepare this directory.",
         ),
     ]
     conversation: Annotated[
