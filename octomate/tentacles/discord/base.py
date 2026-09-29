@@ -230,6 +230,9 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
 
         task.add_done_callback(finish)
 
+    def accepts_sub_thread(self, address: ChannelAddress) -> bool:
+        return address.chat_type == "group" and super().accepts_sub_thread(address)
+
     async def start_sub_thread(
         self,
         address: ChannelAddress,

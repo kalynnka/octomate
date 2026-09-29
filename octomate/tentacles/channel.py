@@ -414,6 +414,14 @@ class ChannelTentacle(
             channel_thread_id=None,
         )
 
+    def accepts_sub_thread(self, address: ChannelAddress) -> bool:
+        """Whether the address belongs to this channel and can contain a new thread."""
+        return (
+            address.channel_tentacle_id == self.id
+            and self.surfaces.sub_thread
+            and not address.channel_thread_id
+        )
+
     async def start_sub_thread(
         self,
         address: ChannelAddress,

@@ -24,7 +24,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED
 from octomate.mcp.server import gateway_tool, history_tool, octomate_mcp
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import GatewayNativeSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
@@ -91,13 +91,13 @@ async def a_native_call(
     OctomateSession,
     FakeChannelTentacle,
     FakeThreadManager,
-    list[GatewayHandoffSignal],
+    list[GatewayNativeSignal],
 ]:
     """The gateway as the served endpoint builds it for one native call: no
     thread, no address, the session speaking for the registered user the
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
-    kicks: list[GatewayHandoffSignal] = []
+    kicks: list[GatewayNativeSignal] = []
     await a_user("luhui", profiles={"im": "alice"} if linked else {})
     users = UserManager()
     channel = FakeChannelTentacle()

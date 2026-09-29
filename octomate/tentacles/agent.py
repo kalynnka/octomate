@@ -307,6 +307,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             f"Agent {self.id!r} does not support conversation forking"
         )
 
+    @property
+    def supports_session_fork(self) -> bool:
+        """Whether this harness implements independent runtime session creation."""
+        return type(self).fork_session is not AgentTentacle.fork_session
+
     async def fork_session(
         self, conversation: Conversation, *, cwd: Path
     ) -> str | None:

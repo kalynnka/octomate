@@ -28,7 +28,7 @@ from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import GatewayNativeSignal
 from octomate.schemas.mcp import (
     McpInstallRequest,
     McpServerSummary,
@@ -294,7 +294,7 @@ def tentacles_mcp(
 def octomate_mcp(
     resolve_session: Callable[[], Awaitable[OctomateSession]],
     thread_manager: ThreadManager,
-    kick: Callable[[GatewayHandoffSignal], None] | None = None,
+    kick: Callable[[GatewayNativeSignal], None] | None = None,
     *,
     bearers: KnownBearers | None = None,
     manager: McpManager,

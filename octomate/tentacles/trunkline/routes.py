@@ -21,46 +21,55 @@ does not know — a sub-resource of a thread that does not exist must say so
 rather than answer the empty list its query would return. Only the ledger read
 asks for the messages; the rest want the row.
 
-Directives create or continue threads on the trunkline channel itself. The two
-POST endpoints stream: a directive streams its run, and a batch response
-streams the resumed run, both as SSE of the native wire events (see `wire`).
+Directives create or continue threads on the trunkline channel itself. Directives,
+batch responses and thread operations stream native wire events over SSE.
 
 Where the work happened — a thread's project and a run's directory — is read
 here and nowhere written: a thread's project is frozen when its row is written,
 and both are learned from the session that ran, so no endpoint takes either.
 
-A conversation's approval posture is the exception, and the only write under a
-thread: it is the console's to change, mid-thread, and the conversation is what
+A conversation's approval posture is the exception: it is the console's to
+change mid-thread, and the conversation is what
 remembers it. It is switched through PATCH, or — while the thread is still being
 composed and has no row to switch — carried on the directive that creates it."""
 
 import uuid
-from typing import Annotated
+from typing import Annotated, NotRequired, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from pydantic_ai.settings import ThinkingEffort
 from uuid_utils.compat import uuid7
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
 from octomate.config.agents import AgentRouteModelName
 from octomate.dependencies import (
+    application,
     conversation_manager,
     deferred_action_manager,
+    gateway_manager,
     project_manager,
     thread_manager,
+    user_manager,
+    workspace_manager,
 )
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager, GatewayRefusal, OctomateSession
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
+from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch
+from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey, ThreadMessage
+from octomate.schemas.triage import SummonTarget, TeleportTarget
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline.base import (
@@ -119,6 +128,20 @@ class DirectiveBody(BaseModel):
     )
 
 
+class TeleportBody(TypedDict):
+    destination: TeleportTarget
+    hint: Annotated[str, Field(min_length=1, max_length=1_000)]
+
+
+class SummonBody(TypedDict):
+    destination: SummonTarget
+    agent_id: str
+    model: str
+    brief: Annotated[str, Field(min_length=1, max_length=8_000)]
+    hint: Annotated[str, Field(min_length=1, max_length=1_000)]
+    effort: NotRequired[ThinkingEffort | None]
+
+
 class AgentPostures(BaseModel):
     """An agent's approval modes and default, as `GET /permissions` lists them."""
 
@@ -167,6 +190,64 @@ async def accessible_thread(
     return thread
 
 
+async def thread_gateway(
+    thread: Annotated[Thread, Depends(accessible_thread)],
+    user: Annotated[User, Depends(current_user)],
+    app: Annotated[Octomate, Depends(application)],
+    gateway: Annotated[GatewayManager, Depends(gateway_manager)],
+    actions: Annotated[DeferredActionManager, Depends(deferred_action_manager)],
+    users: Annotated[UserManager, Depends(user_manager)],
+    threads: Annotated[ThreadManager, Depends(thread_manager)],
+    workspaces: Annotated[WorkspaceManager, Depends(workspace_manager)],
+) -> OctomateSession:
+    agent_id = thread.active_agent_tentacle_id
+    if agent_id is None:
+        raise HTTPException(409, "This thread has no active agent.")
+    if any(gateway.get(c.id) is not None for c in thread.conversations):
+        raise HTTPException(409, "Wait for the active turn to finish.")
+    if await actions.pending_for_thread(thread.id):
+        raise HTTPException(409, "Resolve the pending questions or approvals first.")
+    native = thread.kind == "native_thread"
+    channel = app.channels.get(thread.channel_tentacle_id)
+    if not native and (channel is None or agent_id not in app.agents):
+        raise HTTPException(409, "The source channel or agent is not connected.")
+    profile = UserProfile(user_id=user.id, channel_user_id=str(user.id), name=user.name)
+    if channel is not None and not isinstance(channel, TrunklineTentacle):
+        linked = await users.linked_profiles(profile)
+        source_profile = next(
+            (one for one in linked if one.channel_tentacle_id == channel.id), None
+        )
+        if source_profile is None:
+            raise HTTPException(403, "Link your account on the source channel first.")
+        profile = source_profile
+    else:
+        profile.channel_tentacle_id = thread.channel_tentacle_id
+    return OctomateSession(
+        channel_routes=gateway.available_routes(app.channels, app.agents),
+        current_agent_id=agent_id,
+        channels=app.channels,
+        agents=app.agents,
+        users=users,
+        user_profile=profile,
+        thread_id=thread.id,
+        native=native,
+        conversation_address=ChannelAddress(
+            channel_tentacle_id=thread.channel_tentacle_id,
+            chat_type=thread.chat_type,
+            chat_id=thread.chat_id,
+            channel_thread_id=thread.channel_thread_id,
+            user_id=profile.channel_user_id,
+            # External thread rows do not retain their parent surface's privacy.
+            # Only known-private sources may export the full history.
+            shared=not native
+            and not isinstance(channel, TrunklineTentacle)
+            and thread.chat_type != "dm",
+        ),
+        threads=threads,
+        workspaces=workspaces,
+    )
+
+
 def build_trunkline_router(
     octomate: Octomate,
     *,
@@ -186,6 +267,42 @@ def build_trunkline_router(
         tags=["trunkline"],
         dependencies=[Depends(browser_request), Depends(current_user)],
     )
+
+    @router.get("/threads/{thread_id}/operations")
+    async def thread_operations(
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+    ) -> ThreadOperations:
+        return await session.operations
+
+    @router.post("/threads/{thread_id}/teleport")
+    async def teleport_thread(
+        body: TeleportBody,
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+    ) -> StreamingResponse:
+        try:
+            await session.teleport(destination=body["destination"], hint=body["hint"])
+        except GatewayRefusal as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return channel.stream_kick(session.thread_operation())
+
+    @router.post("/threads/{thread_id}/summon")
+    async def summon_thread(
+        body: SummonBody,
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+    ) -> StreamingResponse:
+        try:
+            await session.summon(
+                agent_id=body["agent_id"],
+                model=body["model"],
+                destination=body["destination"],
+                hint=body["hint"],
+                reason="Summon requested from Trunkline",
+                summon=body["brief"],
+                effort=body.get("effort"),
+            )
+        except GatewayRefusal as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return channel.stream_kick(session.thread_operation())
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:

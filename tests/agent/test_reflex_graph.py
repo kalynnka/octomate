@@ -50,7 +50,7 @@ from octomate.reflex.graph import (
 )
 from octomate.schemas.awakes import (
     DeferredActionBatchResponse,
-    GatewayHandoffSignal,
+    GatewayNativeSignal,
     UserMessageSignal,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -1513,7 +1513,7 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
         action_manager=cast(DeferredActionManager, FakeActionManager()),
         gateway=GatewayManager(),
     )
-    signal = GatewayHandoffSignal(
+    signal = GatewayNativeSignal(
         decision=SummonDecision(
             action="summon",
             agent_id="second",

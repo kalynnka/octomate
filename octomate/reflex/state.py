@@ -119,7 +119,8 @@ class DeferredResult:
 type ReflexGraphResult = ReflexResult | DeferredResult
 # The node a reflex graph is entered at — see `build_reflex_graph`.
 ReflexEntryT = TypeVar(
-    "ReflexEntryT", bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]"
+    "ReflexEntryT",
+    bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]",
 )
 
 

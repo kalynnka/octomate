@@ -3,13 +3,12 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TypeAlias
 
 from pydantic import BaseModel, Field
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.triage import SchemeDecision, SummonDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
 
 
@@ -45,7 +44,7 @@ class DeferredActionBatchResponse(BaseModel):
 
 
 @dataclass(frozen=True)
-class GatewayHandoffSignal:
+class GatewayNativeSignal:
     """A native session's summon or scheme, kicked as its own turn.
 
     A driven turn's decision is read off its Octomate session when the run ends; an
@@ -63,6 +62,20 @@ class GatewayHandoffSignal:
     source: ChannelAddress | None = None
 
 
-AwakeSignal: TypeAlias = (
-    UserMessageSignal | DeferredActionBatchResponse | GatewayHandoffSignal
+@dataclass(frozen=True)
+class GatewayThreadSignal:
+    """An authenticated, validated operation on an existing thread."""
+
+    thread_id: uuid.UUID
+    decision: SummonDecision | TeleportDecision
+    agent_id: str
+    user_profile: UserProfile
+    source: ChannelAddress
+
+
+type AwakeSignal = (
+    UserMessageSignal
+    | DeferredActionBatchResponse
+    | GatewayNativeSignal
+    | GatewayThreadSignal
 )

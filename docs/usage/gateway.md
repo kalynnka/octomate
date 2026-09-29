@@ -35,6 +35,13 @@ First [link your profiles](../installation/accounts.md#link-your-channel-profile
 so Octomate can find you there. Available destinations depend on the channel;
 ask the agent to list them if your requested move is unavailable.
 
+Crossings open a sub-thread in your linked account's direct messages. Trunkline
+has only top-level threads; Discord DMs and NapCat cannot open sub-threads.
+These channels are not offered as crossing destinations.
+Discord can still open a public thread from a server text channel. Teleport also
+requires a harness that supports independent session forking; DeepSeek is not yet
+supported.
+
 A conversation can cross into another channel's private messages only when its
 current conversation is already private. For a task that began in a group,
 [continue privately with a brief](#scheme) instead. Native sessions cannot be

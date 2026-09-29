@@ -45,7 +45,7 @@ from octomate.mcp.server import (
     history_tool,
     octomate_instructions,
 )
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import GatewayNativeSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.mcp import OAuthMcpTentacle
@@ -421,7 +421,7 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
     assert result.data == "Summoning other (test) → im."
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
-    assert isinstance(signal, GatewayHandoffSignal)
+    assert isinstance(signal, GatewayNativeSignal)
     assert signal.agent_id == CLAUDE_NATIVE_ID
     # The handoff carries who the bearer named, so the summoned run knows whose
     # behalf it was asked on.

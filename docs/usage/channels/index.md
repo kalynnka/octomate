@@ -83,7 +83,7 @@ your-channel-profiles).
 | Todo checklist | Plan tasks | Card | No | Text with the final reply | Yes |
 | Approval cards | Buttons, paged | One card each | Buttons, one each | Text only | Yes |
 | Question cards | Wizard | Card, paged | Buttons and a modal | Text only | Yes |
-| Sub-threads | Yes | Yes | Public threads from a text channel | No | No |
+| Sub-threads | Yes | Yes | Public threads from a text channel | No | No; top-level threads only |
 | Direct messages | Yes | Yes | Yes | Yes | No |
 | Profile linking | From chat, or Slack OAuth | From chat | From chat, or Discord OAuth | From chat | Not needed |
 

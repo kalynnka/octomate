@@ -33,7 +33,7 @@ class TeleportRequest:
 
     hint: str
     # The deferred call to resolve into the resumed run.
-    tool_call_id: str
+    tool_call_id: str | None
     # Where it goes, when that is not a sub-thread of the chat it is already in. The
     # gateway refused a channel this agent does not run and one that opens no
     # sub-thread, so the node has a place to open and no fallback to choose.

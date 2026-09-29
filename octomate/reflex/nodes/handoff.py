@@ -29,6 +29,9 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Performs a summon: opens the sub-thread or crossing the decision names, or
     takes the surface over in place, then re-enters `React` there."""
 
+    # Refuse a failed thread open instead of continuing on the source surface.
+    require_new_thread: bool = False
+
     @reflex_logfire.instrument("reflex.handoff", extract_args=False)
     async def run(
         self,
@@ -111,6 +114,8 @@ class Handoff(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     agent_tentacle_id=decision.agent_id,
                     platform_message_id=opened.channel_thread_id,
                 )
+            if self.require_new_thread and opened == target_address:
+                raise ValueError("The destination could not create a thread.")
             group_main = target_address.shared and not target_address.channel_thread_id
             if opened == target_address and group_main:
                 # Nothing moved, and the surface it would fall back to is a group's

@@ -20,8 +20,13 @@ from typing import TYPE_CHECKING, Literal, overload
 
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import GatewayNativeSignal, GatewayThreadSignal
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.operations import (
+    OperationAvailability,
+    OperationDestination,
+    ThreadOperations,
+)
 from octomate.schemas.thread import ATTRIBUTABLE_KINDS
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
@@ -189,7 +194,7 @@ class OctomateSession:
         if address.channel_thread_id:
             return False
         channel = self.channels.get(address.channel_tentacle_id)
-        return channel is None or channel.surfaces.sub_thread
+        return channel is None or channel.accepts_sub_thread(address)
 
     @property
     def private_blocked_by(self) -> PrivateBlocker | None:
@@ -321,7 +326,11 @@ class OctomateSession:
             ):
                 continue
             channel = self.channels.get(one.address.channel_tentacle_id)
-            if channel is not None and channel.surfaces.sub_thread and one.routes:
+            if (
+                channel is not None
+                and channel.accepts_sub_thread(one.address)
+                and one.routes
+            ):
                 crossing.append(one)
         return crossing
 
@@ -334,6 +343,92 @@ class OctomateSession:
         if self.allow_sub_thread:
             handles.append(THREAD_TARGET.handle)
         return handles + [one.handle for one in await self.crossing_destinations()]
+
+    @property
+    async def operations(self) -> ThreadOperations:
+        """Offer only destinations and routes that the action validators accept."""
+        destinations: list[OperationDestination] = []
+        if self.allow_here:
+            destinations.append(
+                OperationDestination(
+                    target=HERE_TARGET, label="This thread", routes=self.other_routes
+                )
+            )
+        address = self.conversation_address
+        local = (
+            self.channel_routes.get(address.channel_tentacle_id, []) if address else []
+        )
+        if self.allow_sub_thread:
+            destinations.append(
+                OperationDestination(
+                    target=THREAD_TARGET, label="New sub-thread", routes=local
+                )
+            )
+        destinations.extend(
+            OperationDestination(
+                target=ChannelTarget(channel=one.handle),
+                label=one.label,
+                routes=list(one.routes),
+            )
+            for one in await self.crossing_destinations()
+        )
+        summon = [
+            destination.model_copy(
+                update={
+                    "routes": [
+                        route
+                        for route in destination.routes
+                        if route.agent_id != self.current_agent_id
+                    ]
+                }
+            )
+            for destination in destinations
+            if any(
+                route.agent_id != self.current_agent_id for route in destination.routes
+            )
+        ]
+        handles = await self.teleport_handles()
+        teleport = [
+            destination
+            for destination in destinations
+            if destination.target.handle in handles
+            and any(
+                route.agent_id == self.current_agent_id for route in destination.routes
+            )
+        ]
+        reason = self.teleport_unavailable
+        if reason:
+            teleport = []
+        return ThreadOperations(
+            teleport=OperationAvailability(
+                destinations=teleport,
+                reason=reason
+                or (
+                    None
+                    if teleport
+                    else "No eligible destinations for this agent and history."
+                ),
+            ),
+            summon=OperationAvailability(
+                destinations=summon,
+                reason=None
+                if summon
+                else "No other agents are available at an eligible destination.",
+            ),
+        )
+
+    @property
+    def teleport_unavailable(self) -> str | None:
+        """History transfer requires a managed agent with session-fork support."""
+        if self.native:
+            return "Native sessions cannot teleport yet; fork native Codex into Trunkline first."
+        if self.agents is not None:
+            agent = self.agents.get(self.current_agent_id)
+            if agent is None:
+                return "The source agent is not connected."
+            if not agent.supports_session_fork:
+                return "The source agent does not support independent session forking."
+        return None
 
     async def teleport_handles(self) -> list[str]:
         """Every handle `teleport` can land on. `here` is not among them at any
@@ -632,6 +727,8 @@ class OctomateSession:
                     f"a teleport takes you with it. Carry on here, or "
                     f"`{SUMMON_TOOL_NAME}` an agent it does run."
                 )
+        if reason := self.teleport_unavailable:
+            raise GatewayRefusal(reason)
         if project is not None:
             if self.workspaces is None:
                 raise RuntimeError("a teleport into a project needs the workspaces")
@@ -731,14 +828,33 @@ class OctomateSession:
             return None
         return (await self.destination(destination.handle, spell="send")).address
 
-    def native_handoff(self) -> GatewayHandoffSignal:
+    def thread_operation(self) -> GatewayThreadSignal:
+        """Package a validated user action for the graph's existing-thread entry."""
+        if (
+            self.thread_id is None
+            or self.conversation_address is None
+            or self.user_profile is None
+            or not isinstance(self.decision, SummonDecision | TeleportDecision)
+        ):
+            raise ValueError(
+                "A thread operation requires a thread, user and validated decision."
+            )
+        return GatewayThreadSignal(
+            thread_id=self.thread_id,
+            source=self.conversation_address,
+            agent_id=self.current_agent_id,
+            user_profile=self.user_profile,
+            decision=self.decision,
+        )
+
+    def native_handoff(self) -> GatewayNativeSignal:
         """This native session's recorded decision, packaged to be kicked as its
         own turn. Only a native summon or scheme leaves one, so anything else
         asking is a wiring bug, not a refusal a model could correct from."""
         decision = self.decision
         if not self.native or not isinstance(decision, SummonDecision | SchemeDecision):
             raise RuntimeError("only a native summon or scheme kicks a handoff")
-        return GatewayHandoffSignal(
+        return GatewayNativeSignal(
             decision=decision,
             agent_id=self.current_agent_id,
             user_profile=self.user_profile,

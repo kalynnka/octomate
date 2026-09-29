@@ -63,9 +63,29 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **MCP**: install connectors from the configured offerings or by URL, authorise
   them, enable, disable and uninstall.
 
-Trunkline has no direct messages and opens no sub-threads, so a `scheme` or a
-teleport into another surface is not offered from it, and it never needs profile
-linking: you are your signed-in account.
+Every Trunkline conversation is a private thread; there is no DM surface or
+nested sub-thread. It never needs profile linking: you are your signed-in account.
+Incoming Teleport and Summon crossings are unavailable until the gateway supports
+creating a top-level thread directly. The existing crossing path requires a DM
+and a sub-thread inside it.
+
+### Thread operation API
+
+The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
+Teleport destinations and Summon agent/model routes, plus reasons when unavailable.
+The dropdown controls are not connected to these endpoints yet.
+
+`POST /api/trunkline/threads/{id}/teleport` accepts a destination and an opening
+hint. `POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
+brief (up to 8,000 characters). Both require access to the source thread and
+refuse active gateway turns or pending approvals/questions. They stream native
+run events, ending with `gateway` and the destination address; execution
+failures appear as `run_error` events.
+
+Native teleport and harnesses without independent session forking remain
+unavailable. External thread rows do not preserve their parent surface's privacy,
+so the API refuses to export their full history across channels. Summon transfers
+only the supplied brief.
 
 ## The console surface
 

@@ -29,16 +29,18 @@ from anyio import BrokenResourceError, ClosedResourceError
 from anyio.streams.memory import MemoryObjectSendStream
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from rich.style import Style
-from uuid_utils import uuid7
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
+    GatewayEvent,
     LinkProfileAuthorizationEvent,
+    MessageSentEvent,
     RunErrorEvent,
     RunResultEvent,
     StreamEvents,
@@ -50,13 +52,23 @@ from octomate.capabilities.harness.events import (
     wire_event_adapter,
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
-from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
+from octomate.schemas.awakes import (
+    AwakeSignal,
+    GatewayThreadSignal,
+    UserMessageSignal,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
-from octomate.schemas.segments import ImageSegment, MessageSegment, TextSegment
+from octomate.schemas.segments import (
+    ImageSegment,
+    MarkdownSegment,
+    MessageSegment,
+    TextSegment,
+)
 from octomate.schemas.thread import Thread
+from octomate.schemas.triage import HereLanding, SummonDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
     ChannelOutput,
@@ -81,7 +93,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 type RunStreamItem = StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-type TrunklineStreamItem = RunStreamItem | SubagentStartedEvent | SubagentSettledEvent
+type TrunklineStreamItem = (
+    RunStreamItem | SubagentStartedEvent | SubagentSettledEvent | GatewayEvent
+)
 
 # Separator joining agent and model into the route id the console picker offers.
 ROUTE_SEP = ":"
@@ -93,12 +107,14 @@ current_sink = ContextVar("trunkline_output_sink", default=None)
 
 
 async def send_quietly(
-    sink: MemoryObjectSendStream[TrunklineStreamItem],
+    sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
     item: TrunklineStreamItem,
 ) -> None:
     """Forward to the console while it is still listening. A departed console
     must not kill the run — it records to the thread ledger regardless; only
     the live mirror is gone."""
+    if sink is None:
+        return
     try:
         await sink.send(item)
     except (BrokenResourceError, ClosedResourceError):
@@ -108,7 +124,7 @@ async def send_quietly(
 class TrunklineDirective(BaseModel):
     """One console turn: the directive text bound for a thread."""
 
-    thread_id: str
+    thread_id: str = Field(min_length=1)
     user: User
     text: str
     message_id: str | None = None
@@ -172,7 +188,7 @@ class TrunklineChromo(Chromo[TrunklineDirective, WireEvent]):
             channel_thread_id=raw.thread_id,
             user_id=str(raw.user.id),
             chat_id=str(raw.user.id),
-            chat_type="thread" if raw.thread_id else "dm",
+            chat_type="thread",
             segments=[TextSegment(data={"text": raw.text})],
             raw=raw.text,
         )
@@ -190,7 +206,7 @@ class TrunklineTimelineState(TimelineState):
         address: ChannelAddress,
         ask_questions: QuestionFeeler,
         approvals: ApprovalFeeler,
-        sink: MemoryObjectSendStream[TrunklineStreamItem],
+        sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
     ) -> None:
         self.address = address
         self.ask_questions = ask_questions
@@ -223,7 +239,7 @@ class TrunklineSubagentTimelineState(SubagentTimelineState):
     def __init__(
         self,
         activity: SubagentActivity,
-        sink: MemoryObjectSendStream[TrunklineStreamItem],
+        sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
     ) -> None:
         self.activity = activity
         self.sink = sink
@@ -325,6 +341,18 @@ class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
         return uuid7().hex
 
 
+class TrunklineMarkdownFeeler:
+    """Mirror notices to a watching request; callers persist them in the ledger."""
+
+    async def present(self, address: ChannelAddress, markdown: str) -> None:
+        await send_quietly(
+            current_sink.get(),
+            MessageSentEvent(
+                segments=[MarkdownSegment(data={"text": markdown})], destination=address
+            ),
+        )
+
+
 class TrunklineTimelineFeeler:
     """Opens a per-run timeline that streams into the active request's sink."""
 
@@ -339,10 +367,6 @@ class TrunklineTimelineFeeler:
         self, address: ChannelAddress
     ) -> AsyncGenerator[TrunklineTimelineState, None]:
         sink = current_sink.get()
-        if sink is None:
-            raise RuntimeError(
-                "trunkline timeline opened without an active request sink"
-            )
         state = TrunklineTimelineState(
             address, self.ask_questions, self.approvals, sink
         )
@@ -387,9 +411,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
 
     brand_color: ClassVar[Style | None] = Style(color="#D4621A", bold=True)
 
-    # Routing only: the chromo always sets a thread_id, so a directive continues
-    # its own thread without triage. There is no seam to open a sub-thread and no
-    # DM surface, so `surfaces` stays empty.
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
 
     config: TrunklineChannelConfig
@@ -409,6 +430,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         self.feelers.ask_questions = TrunklineQuestionFeeler()
         self.feelers.approvals = TrunklineApprovalFeeler()
         self.feelers.oauth = TrunklineOAuthFeeler(self.ink)
+        self.feelers.markdown = TrunklineMarkdownFeeler()
         self.feelers.timeline = TrunklineTimelineFeeler(
             ask_questions=self.feelers.ask_questions,
             approvals=self.feelers.approvals,
@@ -545,7 +567,23 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         async def pump() -> None:
             token = current_sink.set(send)
             try:
-                await self.octomate.kick(signal)
+                result = await self.octomate.kick(signal)
+                if isinstance(signal, GatewayThreadSignal):
+                    if result is None or result.target.address is None:
+                        raise ValueError("The operation did not reach a destination.")
+                    if (
+                        isinstance(signal.decision, SummonDecision)
+                        and not isinstance(signal.decision.destination, HereLanding)
+                        and result.target.address == signal.source
+                    ):
+                        raise ValueError("The destination could not create a thread.")
+                    await send_quietly(
+                        send,
+                        GatewayEvent(
+                            action=signal.decision.action,
+                            destination=result.target.address,
+                        ),
+                    )
             except Exception as exc:
                 logger.error("Trunkline kick failed", exc_info=exc)
                 captured.append(exc)

@@ -92,6 +92,10 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
 
         new_address = new_target.address
+        if self.request.tool_call_id is None and new_address == origin_address:
+            raise ValueError(
+                "The destination could not create a thread; nothing was teleported."
+            )
         source_conversation = None
         if new_address is None or new_address == origin_address:
             # The current conversation already holds the trailing teleport
@@ -146,6 +150,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 conversation,
                 carry_external_id=carry,
                 external_id=None if carry else external_id,
+                model_name=state.decision.model if state.decision is not None else None,
             )
             await agent.relocate(conversation, cwd=cwd)
         elif self.request.here:
@@ -156,6 +161,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
             await agent.relocate(conversation, cwd=cwd)
         # The pending call resolves into the resumed run, whichever runtime cast it.
+        if self.request.tool_call_id is None:
+            state.user_prompt = f"{sentence}\nCurrent channel address: {new_address}"
+            return React()
         return React(
             resume_results=DeferredToolResults(
                 calls={self.request.tool_call_id: sentence}

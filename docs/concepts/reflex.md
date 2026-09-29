@@ -18,6 +18,8 @@ flowchart TD
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native summon| Handoff
   Awake -->|native scheme| Scheme
+  Awake -->|thread summon API| Handoff
+  Awake -->|thread teleport API| Teleport
   Awake -->|user message| Route
   Route --> React
   React -->|summon| Handoff
@@ -33,9 +35,13 @@ flowchart TD
 
 ## The nodes
 
-**Awake** resolves the signal once and writes the source context into state. Three
+**Awake** resolves the signal once and writes the source context into state. Four
 signals enter here: a user message from a channel, a resolved action batch coming
-back from a card, and a hand-off a native session requested over MCP. A message
+back from a card, a hand-off a native session requested over MCP, and an authenticated
+thread operation validated by the gateway. A thread operation enters `Handoff` or
+`Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
+nodes do not retain the signal. A UI teleport opens a fresh turn with an address notice; it
+does not fabricate a deferred tool result. A message
 enters the thread its address names, or a fresh sub-thread when the address is a
 chat room. See [Threads and chat rooms](../usage/threads.md).
 

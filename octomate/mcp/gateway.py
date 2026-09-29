@@ -30,7 +30,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import GatewayNativeSignal
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -208,7 +208,7 @@ def mount_gateway(
     mcp: FastMCP,
     octomate_session: OctomateSession,
     thread_manager: ThreadManager,
-    kick: Callable[[GatewayHandoffSignal], None] | None = None,
+    kick: Callable[[GatewayNativeSignal], None] | None = None,
 ) -> None:
     """Register the gateway's spells on `mcp`.
 

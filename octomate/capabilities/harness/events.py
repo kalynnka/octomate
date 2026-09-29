@@ -108,6 +108,14 @@ class RunErrorEvent(BaseModel):
     message: str
 
 
+class GatewayEvent(BaseModel):
+    """The address reached by a user-requested gateway action."""
+
+    event_kind: Literal["gateway"] = "gateway"
+    action: Literal["teleport", "summon"]
+    destination: ChannelAddress
+
+
 @dataclass
 class ResultSegmentEvent:
     """One completed message segment from a `list[MessageSegment]` output.
@@ -302,6 +310,7 @@ type WireEvent = (
     | SubagentSettledEvent
     | RunResultEvent
     | RunErrorEvent
+    | GatewayEvent
 )
 
 # Serialization-only: wire consumers never validate events back in, so the
