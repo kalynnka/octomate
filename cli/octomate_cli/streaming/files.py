@@ -153,6 +153,10 @@ class SessionTail:
     files: dict[str, FileCursor] = field(default_factory=dict)
     last_active: float = field(default_factory=monotonic)
     spool: Path | None = None
+    stored_offset: int | None = None  # None disables transcript uploads.
+    receipts: asyncio.Queue[StreamSnapshotStored | ConnectionClosed | ValueError] = (
+        field(default_factory=asyncio.Queue)
+    )
     spooled: dict[str, Path] = field(default_factory=dict)
 
     @property
@@ -213,6 +217,8 @@ class SessionTail:
                 sent = True
         if sent:
             self.last_active = monotonic()
+        if self.stored_offset is not None:
+            await self.upload_snapshot(websocket, start=self.stored_offset)
         return sent
 
     def snapshot(self, end: int, *, start: int = 0) -> Iterator[bytes]:
@@ -252,12 +258,12 @@ class SessionTail:
         for chunk in self.snapshot(request.end, start=request.start):
             await websocket.send(chunk)
         async with asyncio.timeout(SNAPSHOT_ACK_TIMEOUT):
-            stored = server_message_adapter.validate_json(await websocket.recv())
-        if (
-            not isinstance(stored, StreamSnapshotStored)
-            or stored.transfer_id != request.transfer_id
-        ):
+            stored = await self.receipts.get()
+        if isinstance(stored, (ConnectionClosed, ValueError)):
+            raise stored
+        if stored.transfer_id != request.transfer_id:
             raise ValueError("Expected acknowledgment for the requested snapshot")
+        self.stored_offset = end
 
 
 async def stream_session(
@@ -296,22 +302,27 @@ async def stream_session(
                     digest.update(chunk)
             if digest.hexdigest() != checkpoint.sha256:
                 raise ValueError("Transcript prefix differs from the stored snapshot")
+            tail.stored_offset = checkpoint.offset
 
         stop = asyncio.Event()
+        finalized = asyncio.Event()
         idle = False
 
-        async def receive_server() -> StreamFinalize | None:
-            # The only message after welcome is finalize; a dropped socket ends the
-            # watch too, and the outer loop reconnects.
+        async def receive_server() -> None:
             try:
                 while True:
                     message = server_message_adapter.validate_json(
                         await websocket.recv()
                     )
                     if isinstance(message, StreamFinalize):
-                        return message
-            except ConnectionClosed:
-                return None
+                        finalized.set()
+                        stop.set()
+                    elif isinstance(message, StreamSnapshotStored):
+                        tail.receipts.put_nowait(message)
+                    else:
+                        raise ValueError(f"Unexpected server message: {message.type}")
+            except (ConnectionClosed, ValueError) as error:
+                tail.receipts.put_nowait(error)
             finally:
                 stop.set()
 
@@ -330,22 +341,15 @@ async def stream_session(
                 if monotonic() - tail.last_active > IDLE_TIMEOUT:
                     idle = True
                     break
-            receiver.cancel()
-            try:
-                finalize = await receiver
-            except asyncio.CancelledError:
-                finalize = None
-            if finalize is None and not idle:
+            if not finalized.is_set() and not idle:
                 return False  # the socket dropped mid-watch: reconnect and resume
             await tail.pump(websocket)  # final drain to EOF
-            if checkpoint is not None:
-                await tail.upload_snapshot(websocket, start=checkpoint.offset)
             await websocket.send(StreamEof().model_dump_json())
             # Wait out the server's close so the eof is consumed, bounded so a
             # wedged server cannot park this process forever.
             with contextlib.suppress(ConnectionClosed, TimeoutError):
                 async with asyncio.timeout(10):
-                    await websocket.recv()
+                    await receiver
             return True
         finally:
             receiver.cancel()

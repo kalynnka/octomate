@@ -1,4 +1,4 @@
-"""A native tail uploads its drained transcript and waits for its receipt."""
+"""A native tail uploads each new batch and waits for its durable receipt."""
 
 from __future__ import annotations
 
@@ -166,19 +166,32 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             assert isinstance(line, StreamLine)
             assert line.start == len(previous)
             assert line.line == prefix.decode().rstrip("\n")
+            if upload_transcript:
+                request = client_message_adapter.validate_json(await websocket.recv())
+                assert isinstance(request, StreamSnapshotStart)
+                assert request.start == len(previous)
+                assert request.end == len(previous + prefix)
+                assert await websocket.recv() == prefix
             # The final drain must include bytes appended just before finalization.
             with transcript.open("ab") as handle:
                 handle.write(later)
             await websocket.send(StreamFinalize().model_dump_json())
+            if upload_transcript:
+                # Finalization can arrive while the preceding batch awaits storage.
+                await websocket.send(
+                    StreamSnapshotStored(
+                        transfer_id=request.transfer_id
+                    ).model_dump_json()
+                )
             drained = client_message_adapter.validate_json(await websocket.recv())
             assert isinstance(drained, StreamLine)
             assert drained.line == later.decode().rstrip("\n")
             if upload_transcript:
                 request = client_message_adapter.validate_json(await websocket.recv())
                 assert isinstance(request, StreamSnapshotStart)
-                assert request.start == len(previous)
+                assert request.start == len(previous + prefix)
                 assert request.end == len(previous + prefix + later)
-                assert await websocket.recv() == prefix + later
+                assert await websocket.recv() == later
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(websocket.recv(), 0.05)
                 await websocket.send(
@@ -197,6 +210,66 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
         port = next(iter(host.sockets)).getsockname()[1]
         assert await stream_session(
             f"ws://127.0.0.1:{port}/hooks/codex/stream",
+            "source",
+            transcript,
+            str(tmp_path),
+            "test-token",
+        )
+        await finished
+
+
+async def test_file_growth_uploads_before_finalize_and_holds_partial_lines(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_bytes(b"first\nsec")
+    monkeypatch.setattr(tail_mod, "IDLE_POLL_MS", 10)
+    finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    async def server(websocket: ServerConnection) -> None:
+        try:
+            await websocket.recv()
+            await websocket.send(
+                StreamWelcome(
+                    offsets={},
+                    transcript=StreamSnapshotCursor(
+                        offset=0, sha256=hashlib.sha256(b"").hexdigest()
+                    ),
+                ).model_dump_json()
+            )
+            offset = 0
+            for delta in (b"first\n", b"second\n"):
+                line = client_message_adapter.validate_json(await websocket.recv())
+                assert isinstance(line, StreamLine)
+                assert line.line == delta.decode().rstrip("\n")
+                request = client_message_adapter.validate_json(await websocket.recv())
+                assert isinstance(request, StreamSnapshotStart)
+                assert request.start == offset
+                offset += len(delta)
+                assert request.end == offset
+                assert await websocket.recv() == delta
+                await websocket.send(
+                    StreamSnapshotStored(
+                        transfer_id=request.transfer_id
+                    ).model_dump_json()
+                )
+                if delta == b"first\n":
+                    with transcript.open("ab") as handle:
+                        handle.write(b"ond\nunfinished")
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(websocket.recv(), 0.05)
+            await websocket.send(StreamFinalize().model_dump_json())
+            assert isinstance(
+                client_message_adapter.validate_json(await websocket.recv()), StreamEof
+            )
+            finished.set_result(None)
+        except Exception as error:
+            finished.set_exception(error)
+
+    async with asyncio.timeout(5), serve(server, "127.0.0.1", 0) as host:
+        port = next(iter(host.sockets)).getsockname()[1]
+        assert await stream_session(
+            f"ws://127.0.0.1:{port}",
             "source",
             transcript,
             str(tmp_path),
@@ -238,7 +311,7 @@ async def test_unacknowledged_snapshot_does_not_send_eof(
                     StreamSnapshotStored(transfer_id=uuid7()).model_dump_json()
                 )
             elif receipt == "wrong_message":
-                await websocket.send(StreamFinalize().model_dump_json())
+                await websocket.send(StreamWelcome(offsets={}).model_dump_json())
             with pytest.raises(ConnectionClosed):
                 await websocket.recv()
             finished.set_result(None)

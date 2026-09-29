@@ -93,12 +93,12 @@ class StreamWelcome(BaseModel):
     offsets: dict[str, int]
     transcript: StreamSnapshotCursor | None = Field(
         default=None,
-        description="Upload only bytes after this verified prefix before EOF; None disables upload.",
+        description="Continuously upload bytes after this verified prefix; None disables upload.",
     )
 
 
 class StreamSnapshotStart(BaseModel):
-    """Client announces the drained session transcript before sending its bytes."""
+    """Client announces the next transcript range before sending its bytes."""
 
     type: Literal["snapshot_start"] = "snapshot_start"
     transfer_id: UUID
@@ -119,11 +119,12 @@ class StreamSnapshotStored(BaseModel):
 
 class StreamFinalize(BaseModel):
     """Server → client: the session ended (`SessionEnd` arrived on the hook pipe) —
-    drain to EOF, upload if negotiated at welcome, answer with `eof`, and exit.
+    drain the remaining bytes, answer with `eof`, and exit.
 
     A snapshot starts with `snapshot_start`, followed by binary messages totaling
     `end - start` bytes. The client waits for `snapshot_stored` before sending `eof`.
-    Ordinary transcript lines precede the binary messages; they never interleave.
+    Each batch's transcript lines precede its binary messages; they never interleave.
+    Batches may upload throughout a turn, before finalization.
     """
 
     type: Literal["finalize"] = "finalize"

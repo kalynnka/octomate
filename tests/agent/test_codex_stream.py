@@ -393,7 +393,7 @@ async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) ->
         owner_id=owner.id,
     )
 
-    with pytest.raises(ValueError, match="Transcript changed"):
+    with pytest.raises(ValueError, match="Append offset"):
         await octomate.conversations.store_transcript(
             UploadFile(BytesIO(b"stale\n"), filename="rollout.jsonl"),
             0,
@@ -407,6 +407,34 @@ async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) ->
     assert await files.read(first.id, owner_id=owner.id) == b"first\n"
     assert conversation.transcript_file_id is None
     assert len([path async for path in AsyncPath(tmp_path).glob("users/*/*")]) == 1
+
+
+def test_transcript_is_persisted_during_a_turn_and_appended_on_the_same_socket(
+    tmp_path: Path,
+) -> None:
+    client, _ = stream_client(storage=tmp_path)
+    batches = [[parent_metadata(), *TURN_A[:2]], TURN_A[2:]]
+    content = b""
+
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        websocket.receive_text()
+        for batch in batches:
+            for agent_id, start, end, line in frames(batch, start=len(content)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            delta = b"".join(map(line_bytes, batch))
+            upload_transcript(websocket, delta, start=len(content))
+            content += delta
+            assert [path.read_bytes() for path in tmp_path.glob("users/*/*")] == [
+                content
+            ]
+        websocket.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_text()
 
 
 def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) -> None:

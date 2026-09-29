@@ -33,7 +33,6 @@ class SnapshotUpload:
     request: StreamSnapshotStart
     file: UploadFile
     received: int = 0
-    stored: FileVariant | None = None
 
 
 @dataclass(eq=False)
@@ -50,6 +49,7 @@ class FileTransferSlot:
     content_type: str
     upload: SnapshotUpload | None = field(default=None, init=False)
     offset: int = 0
+    stored_offset: int = 0  # End of the durably persisted transcript.
     prefix: bytes = b""  # The owner's durable prefix, fixed for this connection.
 
     async def finalize(self) -> None:
@@ -72,10 +72,8 @@ class FileTransferSlot:
             message = client_message_adapter.validate_json(text)
             upload = self.upload
             if isinstance(message, StreamEof):
-                if (
-                    self.persist is not None
-                    and self.offset != len(self.prefix)
-                    and (upload is None or upload.stored is None)
+                if self.persist is not None and (
+                    self.offset != self.stored_offset or upload is not None
                 ):
                     raise FileTransferError(
                         "Stream ended before the transcript was stored"
@@ -83,12 +81,12 @@ class FileTransferSlot:
                 return message
             if upload is not None:
                 raise FileTransferError(
-                    "Transcript messages cannot follow snapshot start"
+                    "Transcript messages cannot interrupt a snapshot upload"
                 )
             if isinstance(message, StreamSnapshotStart):
                 if (
                     self.persist is None
-                    or message.start != len(self.prefix)
+                    or message.start != self.stored_offset
                     or message.end != self.offset
                     or message.end <= message.start
                 ):
@@ -118,8 +116,6 @@ class FileTransferSlot:
             raise FileTransferError(
                 "No snapshot upload was announced on this connection"
             )
-        if upload.stored is not None:
-            raise FileTransferError("Snapshot upload is no longer pending")
         size = upload.request.end - upload.request.start
         if not data or upload.received + len(data) > size:
             raise FileTransferError(
@@ -129,7 +125,10 @@ class FileTransferSlot:
         upload.received += len(data)
         if upload.received != size:
             return
-        upload.stored = await self.persist(upload.file, upload.request.start)
+        await self.persist(upload.file, upload.request.start)
+        self.stored_offset = upload.request.end
+        await upload.file.close()
+        self.upload = None
         await self.websocket.send_text(
             StreamSnapshotStored(
                 transfer_id=upload.request.transfer_id

@@ -432,8 +432,6 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         async with self.lock(conversation.key):
             current = await self.get(conversation.id, with_history=False)
             previous_id = current.transcript_file_id
-            if previous_id != conversation.transcript_file_id:
-                raise ValueError("Transcript changed while the upload was in progress")
             if previous_id is not None:
                 return await files.append(
                     previous_id, uploaded.file, offset=start, owner_id=owner_id

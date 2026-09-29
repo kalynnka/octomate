@@ -585,6 +585,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     state, None, raw.decode("utf-8", errors="replace"), slot.offset, end
                 )
                 slot.offset = end
+            slot.stored_offset = len(slot.prefix)
             offsets[SESSION_FILE] = slot.offset
             await websocket.send_text(
                 StreamWelcome(
