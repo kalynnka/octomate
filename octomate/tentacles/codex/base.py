@@ -12,6 +12,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import os
 import time
 import uuid
 from collections import OrderedDict
@@ -20,6 +21,7 @@ from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import cached_property, partial
+from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -32,7 +34,7 @@ from typing import (
 )
 
 import anyio
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
 from octomate_protocol.stream import (
@@ -91,6 +93,7 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
+from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
@@ -110,7 +113,9 @@ from octomate.schemas.deferred import (
     DeferredActionBatch,
     QuestionRequest,
 )
+from octomate.schemas.files import Jsonl
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -130,6 +135,7 @@ from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.telemetry import TracedCodexClient
+from octomate.tentacles.codex.transcript import rollout_line_adapter
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -667,6 +673,110 @@ class CodexTentacle(AgentTentacle[str, None]):
         if forked.id == conversation.external_id:
             raise ValueError("Codex fork returned the source thread id")
         return forked.id
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: uuid.UUID,
+        cwd: Path,
+    ) -> Conversation:
+        """Import an owner's completed native history and fork it into an empty target."""
+        conversations = self.octomate.conversations
+        async with conversations.lock(target.key):
+            source = await conversations.get(source.id)
+            target = await conversations.get(target.id)
+            if source.agent_tentacle_id != CODEX_NATIVE_ID:
+                raise ValueError("Transcript imports require a native Codex source")
+            if target.agent_tentacle_id != self.id or source.id == target.id:
+                raise ValueError("Transcript imports require a separate Codex target")
+            if target.messages or target.external_id or target.transcript_file_id:
+                raise ValueError("Transcript imports require an empty target")
+            if source.transcript_file_id is None or source.external_id is None:
+                raise ValueError("Native Codex history has not been uploaded")
+            data = await self.octomate.files.read(
+                source.transcript_file_id, owner_id=owner_id
+            )
+            end = max(
+                (
+                    run.end_offset
+                    for run in source.runs
+                    if isinstance(run, ExternalAgentRun)
+                    and run.external_session_id == source.external_id
+                    and run.end_offset is not None
+                    and 0 < run.end_offset <= len(data)
+                ),
+                default=0,
+            )
+            if not end:
+                raise ValueError("No completed Codex turn has been fully uploaded")
+            data = data[:end]
+            upload = UploadFile(
+                BytesIO(data),
+                filename=f"rollout-{source.external_id}.jsonl",
+                headers=Headers({"content-type": "application/jsonl"}),
+            )
+            try:
+                async with (
+                    self.octomate.files.upload(upload, owner_id=owner_id) as snapshot,
+                    self.import_transcript(
+                        data, external_id=source.external_id, owner_id=owner_id
+                    ) as imported_id,
+                ):
+                    imported_source = Conversation(
+                        thread_id=source.thread_id,
+                        agent_tentacle_id=self.id,
+                        external_id=imported_id,
+                    )
+                    external_id = await self.fork_session(imported_source, cwd=cwd)
+                    await conversations.fork(
+                        source,
+                        target,
+                        external_id=external_id,
+                        transcript=Jsonl.model_validate(snapshot),
+                    )
+            finally:
+                await upload.close()
+            return await conversations.get(target.id)
+
+    @contextlib.asynccontextmanager
+    async def import_transcript(
+        self, data: bytes, *, external_id: str, owner_id: uuid.UUID
+    ) -> AsyncGenerator[str]:
+        """Keep a private Codex import on success; remove it if the fork fails."""
+        if not data.endswith(b"\n"):
+            raise ValueError("Completed turn must end at a transcript line boundary")
+        opening, remainder = data.split(b"\n", 1)
+        metadata = rollout_line_adapter.validate_json(opening)
+        if metadata.type != "session_meta" or metadata.payload.get("id") != external_id:
+            raise ValueError("Transcript metadata does not match the source session")
+        if metadata.payload.get("history_base") is not None:
+            raise ValueError(
+                "This transcript requires ancestor files before it can be imported"
+            )
+        # Distinct imports of A must not compete for A's ID in Codex's rollout index.
+        imported_id = str(uuid7())
+        metadata.payload["id"] = imported_id
+        metadata.payload["session_id"] = imported_id
+        imported = metadata.model_dump_json().encode() + b"\n" + remainder
+        name = f"rollout-{metadata.timestamp:%Y-%m-%dT%H-%M-%S}-{imported_id}.jsonl"
+        home = await anyio.Path(
+            (self.config.runtime.env or {}).get("CODEX_HOME")
+            or os.environ.get("CODEX_HOME")
+            or Path.home() / ".codex"
+        ).expanduser()
+        path = await (home / "sessions" / "users" / owner_id.hex / name).absolute()
+        await path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        handle = await path.open("xb")
+        try:
+            async with handle:
+                await handle.write(imported)
+            await path.chmod(0o600)
+            yield imported_id
+        except BaseException:
+            await path.unlink(missing_ok=True)
+            raise
 
     async def discover_models(self) -> None:
         runtime = replace(

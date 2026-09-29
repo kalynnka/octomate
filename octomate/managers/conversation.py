@@ -19,7 +19,7 @@ from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.files import FileVariant
+from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadMessage
@@ -334,6 +334,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         *,
         carry_external_id: bool = False,
         external_id: str | None = None,
+        transcript: Jsonl | None = None,
     ) -> AgentRun | None:
         """Fork `source`'s full message history into `target` as one new run, so a
         same-agent `teleport` resumes seamlessly against the copy.
@@ -350,7 +351,11 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         the new place — and the handle keeps naming exactly one conversation. The
         move matters even when the mirror history is empty: the runtime holds its
         own transcript, and the handle is what resumes it. `external_id` instead
-        attaches an independently forked runtime session, preserving the source."""
+        attaches an independently forked runtime session, preserving the source.
+        An uploaded `transcript` is committed with the target and limits copied
+        messages to completed external runs within its byte boundary."""
+        if transcript is not None and (external_id is None or carry_external_id):
+            raise ValueError("An imported transcript requires an independent session")
         if external_id is not None and (
             carry_external_id or external_id == source.external_id
         ):
@@ -363,6 +368,18 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                 f"{len(target.messages)} messages; refusing to splice histories"
             )
         messages = list(source.messages)
+        if transcript is not None:
+            included_runs = {
+                run.id
+                for run in source.runs
+                if isinstance(run, ExternalAgentRun)
+                and run.external_session_id == source.external_id
+                and run.end_offset is not None
+                and run.end_offset <= transcript.size
+            }
+            messages = [
+                message for message in messages if message.run_id in included_runs
+            ]
         carry_handle = carry_external_id and source.external_id is not None
         if not messages and not carry_handle and external_id is None:
             return None
@@ -391,6 +408,9 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         # same reasoning as `persist_run`, and the handle moves by mutating the two
         # conversations as this session loads them.
         async with async_session() as session:
+            if transcript is not None:
+                session.add(transcript)
+                await session.flush()
             if forked_run is not None:
                 session.add(forked_run)
             if carry_handle:
@@ -407,6 +427,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                 if stored_target is None:
                     raise ValueError(f"unknown conversation {target.id}")
                 stored_target.external_id = external_id
+                if transcript is not None:
+                    stored_target.transcript_file_id = transcript.id
             await session.commit()
         if carry_handle:
             # The caller's transmuter mirrors the committed move.

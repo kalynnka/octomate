@@ -84,7 +84,7 @@ class Conversation(BaseTransmuter):
     external_id: str | None = None
     transcript_file_id: uuid.UUID | None = Field(
         default=None,
-        description="Latest uploaded native transcript; not inherited by forks.",
+        description="Live native transcript, or the independent starting copy of an imported fork.",
     )
 
     thread_id: uuid.UUID = Field(
