@@ -112,6 +112,8 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-400-latin.woff2") format("woff2");
+  /* The Latin subset otherwise gives curly quotes a full CJK character width. */
+  font-feature-settings: "halt" 1;
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -128,6 +130,7 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-500-latin.woff2") format("woff2");
+  font-feature-settings: "halt" 1;
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -144,6 +147,7 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-700-latin.woff2") format("woff2");
+  font-feature-settings: "halt" 1;
   font-weight: 700;
   font-style: normal;
   font-display: swap;
@@ -160,6 +164,7 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-900-latin.woff2") format("woff2");
+  font-feature-settings: "halt" 1;
   font-weight: 900;
   font-style: normal;
   font-display: swap;

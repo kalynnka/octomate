@@ -491,6 +491,9 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 }
 
 /* Collapsible side rails (width-animated panels) */
+#trk-trace-panel:not([data-folded]) {
+  min-width: min(240px, 100%);
+}
 .trk-rail {
   overflow: hidden;
   transition: width var(--motion-base) var(--ease-out);

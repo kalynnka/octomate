@@ -197,7 +197,7 @@ export function TimelinePanel() {
   const railDrag = useConsole((s) => s.railDrag)
   const { toggleTimelineFold, openFile } = useConsole((s) => s.actions)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
-  const dragTrace = useRailDrag('trace', 'trk-trace-panel', 200, 480, true)
+  const dragTrace = useRailDrag('trace', 'trk-trace-panel', 240, 480, true)
 
   const show = (traceOn ?? true) && !mgmtSec && !pvOpen
   const ntAgent = useConsole((s) => s.ntAgent)
@@ -335,7 +335,7 @@ export function TimelinePanel() {
       <div
         id="trk-timeline"
         onScroll={() => syncRails('timeline')}
-        style={{ flex: 1, overflowY: 'auto', minHeight: 0, padding: '0 0 12px' }}
+        style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0, padding: '0 0 12px' }}
       >
         {sessions.map((ses, si) => {
           const kColor = KIND_COLOR[ses.kind]
@@ -379,7 +379,7 @@ export function TimelinePanel() {
                       flexShrink: 0,
                     }}
                   />
-                  <span style={{ ...mono(10, 700), color: 'var(--color-accent)', flexShrink: 0 }}>
+                  <span title={ses.name ?? ses.id} style={{ ...mono(10, 700), color: 'var(--color-accent)', flex: 1, minWidth: 0, ...ellipsis }}>
                     {ses.name ?? ses.id}
                   </span>
                   <span style={{ ...mono(8.5), color: 'var(--fg-2)', flex: 1, minWidth: 0, ...ellipsis }}>
@@ -391,12 +391,14 @@ export function TimelinePanel() {
                       color: kColor,
                       border: `1px solid ${kColor}`,
                       padding: '1px 4px',
-                      flexShrink: 0,
+                      minWidth: 0,
+                      maxWidth: '25%',
+                      ...ellipsis,
                     }}
                   >
                     {ses.kind}
                   </span>
-                  <span style={{ ...label(7.5, '.12em'), color: TONE_COLOR[ses.tone], flexShrink: 0 }}>
+                  <span style={{ ...label(7.5, '.12em'), color: TONE_COLOR[ses.tone], minWidth: 0, maxWidth: '25%', ...ellipsis }}>
                     ● {ses.status}
                   </span>
                 </div>
@@ -409,6 +411,11 @@ export function TimelinePanel() {
                       lineHeight: 1.45,
                       flex: 1,
                       minWidth: 0,
+                      overflowWrap: 'anywhere',
+                      display: '-webkit-box',
+                      WebkitBoxOrient: 'vertical',
+                      WebkitLineClamp: 2,
+                      overflow: 'hidden',
                     }}
                   >
                     {ses.reason}
@@ -461,7 +468,7 @@ export function TimelinePanel() {
                           />
                         </span>
                         <span
-                          style={{ flex: 1, minWidth: 0, ...mono(8, 700), color: 'var(--color-teal)', lineHeight: 1.5 }}
+                          style={{ flex: 1, minWidth: 0, overflowWrap: 'anywhere', ...mono(8, 700), color: 'var(--color-teal)', lineHeight: 1.5 }}
                         >
                           {ses.hop}
                         </span>
