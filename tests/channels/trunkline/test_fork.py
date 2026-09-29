@@ -91,12 +91,11 @@ async def test_fork_creates_an_owned_driven_thread(
     assert notice.actor_kind == "system"
     assert notice.direction == "inbound"
     assert notice.platform_message_id is None
-    assert str(case.source.id) in (notice.message_text or "")
-    assert "source working directory and its files were not transferred" in (
-        notice.message_text or ""
-    )
-    assert (notice.message_text or "").endswith(
-        f"Current channel address: {stored.key}/{case.owner_id}."
+    assert notice.message_text == (
+        f"Forked from conversation {case.source.id}.\n\n"
+        "This fork has no server project. The source working directory "
+        "and its files were not transferred.\n\n"
+        f"Current channel address:\n{stored.key}/{case.owner_id}."
     )
     assert stored.source_cursor_message_id is None
     pending = await app.thread_manager.pending_prompt_messages(

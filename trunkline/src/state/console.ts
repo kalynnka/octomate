@@ -177,7 +177,8 @@ export interface ConsoleActions {
   setInterfaceSize(size: InterfaceSize): void
   toggleSidebar(): void
   toggleChannelPin(id: string): void
-  focusChannel(id: string, all: string[]): void
+  focusChannel(id: string): void
+  toggleChannel(id: string): void
   toggleControl(): void
   setControlSection(sec: ControlSection): void
   goChat(): void
@@ -256,6 +257,7 @@ interface ConsoleState {
   // panels
   sbFold: boolean
   chFold: Record<string, boolean>
+  channelFocusHistory: string[]
   chPins: string[]
   mgmtOpen: boolean
   mgmtSec: ControlSection
@@ -526,13 +528,13 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       panel?.style.removeProperty('view-transition-name')
       const animate = panel && get().selThreadId !== thId && !get().mgmtSec
         && typeof document.startViewTransition === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
-      const update = async () => {
+      const update = () => {
         if (selection !== threadSelection) return
         clearTurnTimers()
         set((s) => ({
           selChannel: chId,
           selThreadId: thId,
-          detail: null,
+          detail: queryClient.getQueryData<ThreadDetail>(['thread-detail', thId]) ?? null,
           live: [],
           running: false,
           ledgerN: LEDGER_PAGE,
@@ -559,21 +561,30 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           tlFold: {},
           composer: '',
         }))
-        const detail = await api.getThreadDetail(thId)
-        if (selection !== threadSelection || get().selThreadId !== thId) return
-        set({ detail })
         scrollChatBottom()
         if (!animate) replayView()
       }
+      const refresh = async () => {
+        const detail = await queryClient.fetchQuery({
+          queryKey: ['thread-detail', thId],
+          queryFn: () => api.getThreadDetail(thId),
+          staleTime: 0,
+          retry: false,
+        })
+        if (selection !== threadSelection || get().selThreadId !== thId) return
+        set({ detail })
+        scrollChatBottom()
+      }
       if (!animate) {
-        await update()
+        update()
+        await refresh()
         return
       }
       panel.style.viewTransitionName = direction === 'up' ? 'thread-lift' : 'thread-drop'
       const transition = document.startViewTransition(update)
       threadTransition = transition
       try {
-        await transition.finished
+        await Promise.all([transition.finished, transition.updateCallbackDone.then(refresh)])
       } finally {
         if (threadTransition === transition) {
           threadTransition = undefined
@@ -649,10 +660,22 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }))
       saveChannelPrefs()
     },
-    focusChannel(id: string, all: string[]) {
-      const fold: Record<string, boolean> = {}
-      for (const c of all) fold[c] = c !== id
-      set({ chFold: fold, sbFold: false })
+    focusChannel(id: string) {
+      set((s) => ({
+        chFold: { ...s.chFold, [id]: false },
+        channelFocusHistory: [...s.channelFocusHistory.filter((channel) => channel !== id), id],
+        sbFold: false,
+      }))
+      saveChannelPrefs()
+    },
+    toggleChannel(id: string) {
+      set((s) => ({
+        chFold: { ...s.chFold, [id]: !s.chFold[id] },
+        channelFocusHistory: [
+          ...s.channelFocusHistory.filter((channel) => channel !== id),
+          ...(s.chFold[id] ? [id] : []),
+        ],
+      }))
       saveChannelPrefs()
     },
     toggleControl() {
@@ -1334,6 +1357,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     interfaceSize: loadInterfaceSize(),
     sbFold: false,
     chFold: prefs.fold,
+    channelFocusHistory: [],
     chPins: prefs.pins,
     mgmtOpen: false,
     mgmtSec: '',

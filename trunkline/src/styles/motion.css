@@ -21,12 +21,13 @@
 
 @keyframes lt-fade-in  { from { opacity: 0; } to { opacity: 1; } }
 @keyframes lt-fade-out { from { opacity: 1; } to { opacity: 0; } }
-@keyframes lt-fade-up  { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+@keyframes lt-fade-up  { from { opacity: 0; transform: translateY(var(--entry-rise, 8px)); } to { opacity: 1; transform: none; } }
 @keyframes lt-sheen    { to { transform: translateX(100%); } }
 @keyframes lt-rec-pulse{ 0%, 100% { opacity: 1; } 50% { opacity: 0.25; } }
 
 /* --- Entries: apply on mount, runs once. Stagger siblings with --i. ------ */
 .lt-entry   { animation: lt-fade-up var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
+.lt-message-entry { --entry-rise: 4px; animation-duration: var(--motion-base); animation-delay: 0s; }
 .lt-fade-in { animation: lt-fade-in var(--motion-entry) var(--ease-out) both; animation-delay: calc(var(--i, 0) * 70ms); }
 .lt-fade-out{ animation: lt-fade-out var(--motion-base) var(--ease-out) both; pointer-events: none; }
 
@@ -54,17 +55,17 @@
 .lt-fork-dots > span:nth-child(3) { animation-delay: 240ms; }
 
 @keyframes lt-thread-lift-out {
-  to { opacity: 0; transform: translateY(-28px) scale(0.98); }
+  to { opacity: 0; transform: translateY(-12px) scale(0.99); }
 }
 @keyframes lt-thread-lift-in {
-  from { opacity: 0; transform: translateY(48px); }
+  from { opacity: 0; transform: translateY(20px); }
   to { opacity: 1; transform: none; }
 }
 @keyframes lt-thread-drop-out {
-  to { opacity: 0; transform: translateY(28px) scale(0.98); }
+  to { opacity: 0; transform: translateY(12px) scale(0.99); }
 }
 @keyframes lt-thread-drop-in {
-  from { opacity: 0; transform: translateY(-48px); }
+  from { opacity: 0; transform: translateY(-20px); }
   to { opacity: 1; transform: none; }
 }
 ::view-transition-old(thread-lift) { animation: lt-thread-lift-out 260ms var(--ease-out) both; }
@@ -88,6 +89,9 @@
 /* --- Dropdown / popover: hidden by default, toggle [data-open]. ---------- */
 .lt-menu { opacity: 0; transform: translateY(-6px); visibility: hidden; transition: opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out), visibility 0s linear var(--motion-base); }
 .lt-menu[data-open] { opacity: 1; transform: none; visibility: visible; transition-delay: 0s; }
+@keyframes lt-menu-enter { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+.lt-menu[data-open] { animation: lt-menu-enter var(--motion-fast) var(--ease-out); }
+select.trk-input:open::picker(select) { animation: lt-menu-enter var(--motion-fast) var(--ease-out); }
 
 /* --- Skeleton: sunken bed + slow paper sheen (functional loop). ---------- */
 .lt-skeleton { position: relative; overflow: hidden; background: var(--skeleton-bed); }
@@ -122,8 +126,10 @@
   .lt-entry, .lt-fade-in, .lt-fade-out, .lt-skeleton::after, .lt-rec-dot,
   .lt-dots i, .lt-scanbar::after, .lt-spin, .lt-caret, .lt-wave i,
   .lt-error-notice, .lt-error-notice > span, .lt-fork-dots > span,
+  .lt-menu[data-open],
   ::view-transition-old(thread-drop), ::view-transition-new(thread-drop),
   ::view-transition-old(thread-lift), ::view-transition-new(thread-lift) { animation: none; }
   .lt-fold, .lt-fold-x, .lt-menu, .lt-disclose { transition: none; }
+  select.trk-input:open::picker(select) { animation: none; }
   .lt-fade-out { opacity: 0; }
 }

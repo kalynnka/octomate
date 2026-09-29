@@ -157,7 +157,7 @@ export function ChatHeader() {
               setMenu(openMenu === 'destinations' ? null : { threadId: selThreadId, kind: 'destinations' })
             }
           }}
-          className="hov-teal-ghost"
+          className={disabledReason ? undefined : 'hov-teal-ghost'}
           style={{
             display: 'inline-flex', alignItems: 'center', gap: 6,
             width: 88, flexShrink: 0, justifyContent: 'center', whiteSpace: 'nowrap',
@@ -213,28 +213,30 @@ export function ChatHeader() {
                 key={value}
                 type="button"
                 aria-pressed={operation === value}
+                aria-disabled={Boolean(unavailable[value])}
                 title={unavailable[value]}
                 onClick={() => {
+                  if (unavailable[value]) return
                   setChoice({ threadId: selThreadId, operation: value })
                   setMenu(null)
                   trigger.current?.focus()
                 }}
-                className="hov-wash"
+                className={unavailable[value] ? undefined : 'hov-wash'}
                 style={{
                   display: 'flex', alignItems: 'center', gap: 10, width: '100%',
-                  padding: '10px 12px', textAlign: 'left', cursor: 'pointer',
+                  padding: '10px 12px', textAlign: 'left', cursor: unavailable[value] ? 'not-allowed' : 'pointer',
                   background: 'transparent', color: 'var(--fg-1)', border: 0,
                   borderBottom: '1px solid var(--line-divider)',
                 }}
               >
                 <span style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: 1 }}>
-                  <span style={{ ...label(9, '.1em'), color: operation === value ? 'var(--color-teal)' : 'var(--fg-1)' }}>
+                  <span style={{ ...label(9, '.1em'), color: unavailable[value] ? 'var(--fg-3)' : operation === value ? 'var(--color-teal)' : 'var(--fg-1)' }}>
                     {operations[value].label}
                   </span>
                   <span style={{ ...mono(9), color: 'var(--fg-3)', lineHeight: 1.6 }}>{operations[value].description}</span>
                   {unavailable[value] && <span style={{ ...mono(8), color: 'var(--fg-3)' }}>{unavailable[value]}</span>}
                 </span>
-                {operation === value && <Icon name="check" size={13} style={{ color: 'var(--color-teal)', flexShrink: 0 }} />}
+                {operation === value && <Icon name="check" size={13} style={{ color: unavailable[value] ? 'var(--fg-3)' : 'var(--color-teal)', flexShrink: 0 }} />}
               </button>
             ))}
           </div>

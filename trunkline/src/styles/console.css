@@ -32,6 +32,8 @@ a:hover {
   --trk-zoom: calc(var(--trk-display-scale) * var(--trk-interface-scale));
   zoom: var(--trk-zoom);
   color-scheme: light;
+  --trk-thread-title-fg: var(--fg-2);
+  --trk-control-item-fg: var(--fg-1);
   --trk-bracket: color-mix(in srgb, var(--color-ink) 42%, transparent);
   --trk-vline: color-mix(in srgb, var(--color-ink) 14%, transparent);
   --surface-raised: #f2ecdd;
@@ -44,6 +46,8 @@ a:hover {
 }
 html[data-theme='dark'] {
   color-scheme: dark;
+  --trk-thread-title-fg: var(--fg-1);
+  --trk-control-item-fg: var(--fg-2);
   --trk-bracket: rgb(236 228 212 / 0.38);
   --trk-vline: rgb(236 228 212 / 0.13);
   --surface-raised: rgb(var(--ce-raised));
@@ -502,6 +506,9 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-sb {
   transition: width var(--motion-base) var(--ease-out), --trk-rail-w 240ms var(--ease-out);
 }
+.trk-sb:not([data-folded]) {
+  min-width: calc(var(--trk-rail-w) + 220px);
+}
 .trk-rail[data-dragging],
 .trk-sb[data-dragging] {
   transition: none;
@@ -860,7 +867,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 }
 @media (hover: hover) and (pointer: fine) {
   .trk-sb[data-rail-expanded] {
-    --trk-rail-w: 122px;
+    --trk-rail-w: 100px;
   }
 }
 
@@ -945,7 +952,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     --trk-rail-row-pad: 2px 8px 2px 4px;
     --trk-btn: 32px;
     --trk-channel-row-h: 40px;
-    --trk-th-pad: 11px 14px 11px 30px;
+    --trk-th-pad: 11px 14px;
     --trk-head-h: 54px;
     --trk-head-pad: 0 10px 0 12px;
     --trk-comp-head-pad: 7px 12px 6px;
@@ -983,6 +990,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   }
   #trk-sb-panel:not([data-folded]) {
     width: min(300px, 86vw) !important;
+    min-width: 0;
     z-index: 90;
     box-shadow: var(--shadow-card);
   }

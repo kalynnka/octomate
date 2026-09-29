@@ -81,6 +81,8 @@ function RouteSelector() {
         </span>
         {open && (
           <span
+            className="lt-menu"
+            data-open=""
             style={{
               position: 'absolute',
               bottom: 'calc(100% + 6px)',
@@ -310,6 +312,8 @@ function PermissionChip() {
           id={menuId}
           role="group"
           aria-label="Permission modes"
+          className="lt-menu"
+          data-open=""
           style={{
             position: 'fixed',
             bottom: `calc(100dvh - ${ntMenuPos.top}px + 6px)`,

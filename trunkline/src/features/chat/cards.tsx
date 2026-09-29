@@ -89,7 +89,7 @@ function UserChips({ chips, width }: { chips: QueueChip[]; width: string }) {
 
 function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
   return (
-    <div id={`pm-${item.uid}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
       <CapsLabel>{item.who} · {item.t}</CapsLabel>
       {item.chips && item.chips.length > 0 && <UserChips chips={item.chips} width="min(440px,72%)" />}
       <div
@@ -102,6 +102,7 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
           padding: '10px 15px',
           ...serif(13.5),
           color: 'var(--fg-1)',
+          whiteSpace: 'pre-wrap',
           maxWidth: '72%',
         }}
       >
@@ -166,7 +167,7 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
 
 function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string }) {
   return (
-    <div id={`pm-${item.uid}`} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <CapsLabel>{item.label}</CapsLabel>
       <div style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.blocks.map((b, i) => {
@@ -273,6 +274,7 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
                 lineHeight: 1.65,
                 color: recorded ? 'var(--fg-2)' : 'var(--fg-3)',
                 fontStyle: 'italic',
+                whiteSpace: 'pre-wrap',
               }}
             >
               {recorded
@@ -997,7 +999,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <i style={{ width: 6, height: 6, borderRadius: 9999, background: 'var(--fg-3)', flexShrink: 0 }} />
-          <CapsLabel>{item.text}</CapsLabel>
+          <CapsLabel style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minWidth: 0 }}>{item.text}</CapsLabel>
           <span style={{ flex: 1, borderTop: '1px solid var(--line-color)' }} />
         </div>
       )
@@ -1053,7 +1055,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       )
     case 'stream':
       return (
-        <div id={`pm-${item.uid}`} className="lt-fade-in" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+        <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
           <Markdown text={item.text} />
           {item.streaming && <span className="lt-caret" style={{ verticalAlign: 'text-bottom', marginLeft: 3 }} />}
         </div>
@@ -1070,7 +1072,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       return (
         <div className={item.tone === 'error' ? 'lt-error-notice' : 'lt-fade-in'} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0', color: item.tone === 'error' ? 'var(--color-red)' : item.tone === 'warning' ? 'var(--color-gold)' : 'var(--color-teal)' }}>
           <span style={{ flex: 1, borderTop: '1px dashed currentColor', opacity: 0.6 }} />
-          <span style={{ ...label(9, '.14em') }}>⇄ {item.text}</span>
+          <span style={{ ...label(9, '.14em'), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minWidth: 0 }}>⇄ {item.text}</span>
           <span style={{ flex: 1, borderTop: '1px dashed currentColor', opacity: 0.6 }} />
         </div>
       )
