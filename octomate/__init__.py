@@ -1,12 +1,12 @@
 import warnings
 
-# `ExternalAgentRun.kind` narrows the polymorphic discriminator on purpose, which pydantic
+# Run and command variants narrow the polymorphic discriminator on purpose, which pydantic
 # flags with a UserWarning as the run schema imports (see octomate/schemas/runs.py). The
 # override is intentional, so silence it here at the package boundary — before the schemas
 # import below — so it does not fire on every entrypoint (the CLI especially).
 warnings.filterwarnings(
     "ignore",
-    message='Field name "kind" in "ExternalAgentRun" shadows',
+    message='Field name "kind" in "(ExternalAgentRun|ThreadCommand)" shadows',
     category=UserWarning,
 )
 

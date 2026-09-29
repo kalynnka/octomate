@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Annotated, Self
+from typing import TYPE_CHECKING, Annotated, Literal, Self
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
@@ -15,6 +15,7 @@ from uuid_utils.compat import uuid7
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.commands import CommandInvocation, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
@@ -113,6 +114,11 @@ class ThreadMessage(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    kind: Literal["message"] = Field(
+        default="message",
+        frozen=True,
+        description="Whether this ledger row is a chat message or an explicit command.",
+    )
     thread_id: uuid.UUID
     platform_message_id: str | None = None
     reply_id: str = ""
@@ -150,6 +156,34 @@ class ThreadMessage(BaseTransmuter):
             f"{self.id}{handle} {self.happened_at:%Y-%m-%d %H:%M} "
             f"{self.actor_kind} {who}: {self.message_text or ''}"
         )
+
+
+@sqlalchemy_materia.bless(thread_models.ThreadCommand)
+class ThreadCommand(ThreadMessage):
+    """A durable command receipt and its outcome, never ordinary prompt input.
+
+    The inherited delivery key identifies retries. Record the receipt before
+    invoking the runtime; an absent outcome does not make replay safe.
+    """
+
+    kind: Literal["command"] = Field(default="command", frozen=True)
+    conversation_id: uuid.UUID | None = Field(
+        description="The command's target conversation; null after that conversation is deleted."
+    )
+    invocation: CommandInvocation = Field(
+        description="Explicit command intent with raw arguments and resolved attachments."
+    )
+    outcome: CommandOutcome | None = Field(
+        default=None,
+        description="Recorded command outcome; null means no terminal outcome was recorded, not permission to retry.",
+    )
+
+    @model_validator(mode="after")
+    def has_delivery_id(self) -> Self:
+        """A durable receipt must identify the delivery it protects from replay."""
+        if not self.platform_message_id:
+            raise ValueError("command deliveries require a platform_message_id")
+        return self
 
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
@@ -260,7 +294,7 @@ class Thread(BaseTransmuter):
     )
     parent: Relation[Thread | None] = Field(default_factory=Relation, frozen=True)
 
-    messages: RelationCollection[ThreadMessage] = Relationships()
+    messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
 
     @model_validator(mode="after")
@@ -317,4 +351,9 @@ ThreadMessage.model_rebuild(
         "ModelResponse": ModelResponse,
     }
 )
-ModelMessage.model_rebuild(_types_namespace={"ThreadMessage": ThreadMessage})
+ThreadCommand.model_rebuild(
+    _types_namespace={"ModelRequest": ModelRequest, "ModelResponse": ModelResponse}
+)
+ModelMessage.model_rebuild(
+    _types_namespace={"ThreadMessage": ThreadMessage, "ThreadCommand": ThreadCommand}
+)

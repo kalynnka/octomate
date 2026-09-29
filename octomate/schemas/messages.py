@@ -36,7 +36,7 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
-    from octomate.schemas.thread import ThreadMessage
+    from octomate.schemas.thread import ThreadCommand, ThreadMessage
 
 # The message-send tool's name. Owned at the message-schema boundary, where a
 # send call is recognized in run history, so the `send` capability that registers
@@ -84,7 +84,7 @@ class ModelMessage(BaseTransmuter, ABC):
     conversation_id: str | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
-    thread_messages: RelationCollection[ThreadMessage] = Relationships()
+    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
 
     @abstractmethod
     def _concrete_message(self) -> None:

@@ -54,6 +54,9 @@ gateway recorded: a summon becomes `Handoff`, a scheme becomes `Scheme`, a telep
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
 
+Explicit command receipts stay in the visible ledger but are omitted from pending
+chat input and automatic room recaps. Their arguments are not another chat turn.
+
 **Handoff** performs a summon: takes over in place, opens a sub-thread and posts the
 hint, or crosses into someone's direct messages on another channel, then re-enters
 `React` with the brief as the new agent's prompt. If nothing could be opened on a

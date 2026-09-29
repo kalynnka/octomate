@@ -34,6 +34,7 @@ from octomate.models.thread import (
     Handoff,
     MessageBinding,
     Thread,
+    ThreadCommand,
     ThreadMessage,
 )
 from octomate.models.todos import Todo
@@ -62,6 +63,7 @@ __all__ = [
     "OAuthOperation",
     "Project",
     "Thread",
+    "ThreadCommand",
     "ThreadMessage",
     "Todo",
     "ToolOutputSpill",

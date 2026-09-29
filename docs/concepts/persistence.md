@@ -26,6 +26,7 @@ Thread                           a chat room, or a piece of work
  ├─ parent_thread_id             one level: a sub-thread of a room
  ├─ project_id                   only for a thread or a native thread
  ├─ ThreadMessage                the chat ledger, one row per visible message
+ │    ├─ ThreadCommand           explicit command receipt and outcome
  │    └─ MessageBinding ──▶ ModelMessage
  ├─ Handoff                      append-only ownership transfers
  └─ Conversation                 one per (agent, subagent) in the thread
@@ -53,6 +54,13 @@ ledger rather than copying another agent's private transcript. Message handles
 such as `#msg:<platform id>` let tools page around a search hit or cite a message.
 History visibility comes from participation by the user's linked profiles, not
 from platform group membership.
+
+Command receipts are a typed variant of a ledger message. They retain the target
+conversation, raw invocation and optional outcome, and use the same delivery key
+as other ledger messages. A missing outcome means no terminal result was recorded;
+it does not make re-execution safe. Command rows remain visible in history but are
+excluded from pending chat prompts, without advancing the prompt cursor.
+Execution does not write these receipts yet.
 
 ## Migrations
 

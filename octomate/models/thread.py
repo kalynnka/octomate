@@ -24,7 +24,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base, UTCDateTime
+from octomate.models.base import Base, MapperArgs, UTCDateTime
 from octomate.types.threads import (
     ChannelActorKind,
     MessageBindingKind,
@@ -266,6 +266,11 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     """One user-facing message in a thread's chat ledger."""
 
     __tablename__ = "thread_messages"
+    __mapper_args__: ClassVar[MapperArgs] = {
+        "polymorphic_on": "kind",
+        "polymorphic_identity": "message",
+        "with_polymorphic": "*",
+    }
     # One row per delivery. A platform re-sends a message when it misses an ack, and
     # the second send is the same message — a duplicate here is a duplicate in
     # everyone's scroll-back and a second turn answering what is already answered.
@@ -283,6 +288,12 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     )
 
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    kind: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        server_default="message",
+        comment="Whether this ledger row is a chat message or an explicit command.",
+    )
 
     thread_id: Mapped[uuid.UUID] = mapped_column(
         Uuid,
@@ -354,6 +365,34 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         lazy="selectin",
         viewonly=True,
         overlaps="thread_message,model_message",
+    )
+
+
+class ThreadCommand(ThreadMessage):
+    """A command delivery in the shared ledger, separate from model input."""
+
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "command"}
+
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "conversations.id",
+            name="fk_thread_command_conversation",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+        comment="The command's target conversation; NULL after that conversation is deleted.",
+    )
+    invocation: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Explicit command intent with raw arguments and resolved attachments.",
+    )
+    outcome: Mapped[JsonValue] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
+        comment="Recorded command outcome; NULL means no terminal outcome was recorded, not permission to retry.",
     )
 
 

@@ -51,7 +51,7 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.user import ProfileInfo, User
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -270,7 +270,7 @@ def build_trunkline_router(
         thread_id: uuid.UUID,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         user: Annotated[User, Depends(current_user)],
-    ) -> list[ThreadMessage]:
+    ) -> list[ThreadMessage | ThreadCommand]:
         thread = await threads.get(thread_id, user_id=user.id)
         if thread is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")

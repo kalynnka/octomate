@@ -166,7 +166,7 @@ class CommandManager(Manager):
         self.catalogs[key] = result
         return result
 
-    async def validate_execution(
+    async def validate(
         self, agent: AgentTentacle, context: CommandContext
     ) -> CommandError | None:
         """Authorize an invocation and reject a selection whose context changed.
@@ -321,7 +321,7 @@ class CommandManager(Manager):
                     message="This command does not declare attachment support.",
                 )
                 return
-            refusal = await self.validate_execution(agent, context)
+            refusal = await self.validate(agent, context)
             if refusal is not None:
                 yield refusal
                 return

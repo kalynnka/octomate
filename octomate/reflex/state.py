@@ -28,7 +28,7 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.prompts import tagged
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     ResponseTargetMode,
@@ -271,6 +271,8 @@ class ReflexDeps:
         """
         parts: list[str] = []
         for message in messages:
+            if isinstance(message, ThreadCommand):
+                continue
             text = "\n".join(str(segment) for segment in message.segments)
             if not text:
                 continue

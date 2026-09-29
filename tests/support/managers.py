@@ -423,7 +423,8 @@ class FakeThreadManager(ThreadManager):
             message_text=message_text or message_text_from_segments(segments),
             raw=raw,
         )
-        thread.messages.append(message)
+        # Arcanus's union collection treats a single model as an iterable.
+        thread.messages.extend([message])
         self.outbounds.append(message)
         return message
 

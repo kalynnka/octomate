@@ -53,6 +53,7 @@ from octomate.schemas.awakes import (
     GatewayHandoffSignal,
     UserMessageSignal,
 )
+from octomate.schemas.commands import CommandInvocation
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
@@ -63,7 +64,7 @@ from octomate.schemas.segments import (
     MarkdownSegment,
     TextSegment,
 )
-from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     SCRY_TOOL_NAME,
     AgentRoute,
@@ -1906,6 +1907,25 @@ async def test_a_picture_reaches_the_prompt_as_itself() -> None:
     assert await deps.render_chat([message]) == (
         "anonymous (alice) #msg:m9:\nlook at this\n[image: shot.png | /tmp/shot.png]"
     )
+
+
+async def test_command_receipts_do_not_enter_room_recaps() -> None:
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": _channel(stream=False)},
+        agent=FakeAgent(id="other"),
+    )
+    command = ThreadCommand(
+        thread_id=uuid.uuid4(),
+        platform_message_id="command-1",
+        direction="inbound",
+        actor_kind="human",
+        sender_id=uuid.uuid4(),
+        conversation_id=None,
+        invocation=CommandInvocation(command_id="review", arguments="private args"),
+        segments=[TextSegment(data={"text": "/review private args"})],
+    )
+    assert await deps.render_chat([command], ceiling=500) == ""
 
 
 async def test_a_chat_room_kick_runs_in_a_sub_thread() -> None:

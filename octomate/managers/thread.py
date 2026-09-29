@@ -518,7 +518,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             return message
         message.platform_message_id = platform_message_id
         async with async_session() as session:
-            stored = await session.get(ThreadMessage, message.id)
+            stored = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == message.id]
+            )
             if stored is None:
                 raise ValueError(f"thread message {message.id} does not exist")
             stored.platform_message_id = platform_message_id
@@ -536,7 +538,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             return message
         message.happened_at = happened_at
         async with async_session() as session:
-            stored = await session.get(ThreadMessage, message.id)
+            stored = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == message.id]
+            )
             if stored is None:
                 raise ValueError(f"thread message {message.id} does not exist")
             stored.happened_at = happened_at
@@ -557,6 +561,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             expressions = [
                 ThreadMessage["thread_id"] == fresh.id,
                 ThreadMessage["id"] <= trigger_message_id,
+                ThreadMessage["kind"] == "message",
                 or_(
                     ThreadMessage["actor_kind"] != "agent",
                     ThreadMessage["agent_tentacle_id"] != active_agent_id,
@@ -815,7 +820,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         first. Neighbours in the conversation, which is what the ledger's order means —
         so the anchor is compared on the same key the rows are sorted by."""
         async with async_session() as session:
-            anchor = await session.get(ThreadMessage, anchor_id)
+            anchor = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == anchor_id]
+            )
             if anchor is None:
                 raise ValueError(f"thread message {anchor_id} does not exist")
             rows = await session.list(
@@ -848,7 +855,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         """The rows standing after `anchor_id` in the thread, oldest first — the mirror
         of `chat_messages_before`, and anchored on the same key."""
         async with async_session() as session:
-            anchor = await session.get(ThreadMessage, anchor_id)
+            anchor = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == anchor_id]
+            )
             if anchor is None:
                 raise ValueError(f"thread message {anchor_id} does not exist")
             rows = await session.list(
