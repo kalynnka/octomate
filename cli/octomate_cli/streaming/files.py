@@ -215,18 +215,24 @@ class SessionTail:
             self.last_active = monotonic()
         return sent
 
-    def snapshot(self, end: int) -> Iterator[bytes]:
-        """Read an already streamed, complete prefix without including later turns."""
-        if end <= 0 or end > self.cursor(SESSION_FILE).offset:
+    def snapshot(self, end: int, *, start: int = 0) -> Iterator[bytes]:
+        """Read an already streamed range without resending the stored prefix."""
+        if start < 0 or end <= start or end > self.cursor(SESSION_FILE).offset:
             raise ValueError("Snapshot boundary must be within the streamed transcript")
         with self.transcript_path.open("rb") as handle:
+            if start:
+                handle.seek(start - 1)
+                if handle.read(1) != b"\n":
+                    raise ValueError(
+                        "Snapshot boundary must start after a complete line"
+                    )
             handle.seek(end - 1)
             if handle.read(1) != b"\n":
                 raise ValueError(
                     "Snapshot boundary must end a complete transcript line"
                 )
-            handle.seek(0)
-            remaining = end
+            handle.seek(start)
+            remaining = end - start
             while remaining:
                 chunk = handle.read(min(remaining, SNAPSHOT_CHUNK_SIZE))
                 if not chunk:
@@ -234,13 +240,16 @@ class SessionTail:
                 remaining -= len(chunk)
                 yield chunk
 
-    async def upload_snapshot(self, websocket: ClientConnection) -> None:
-        """Upload the drained transcript and require its storage acknowledgment."""
-        request = StreamSnapshotStart(
-            transfer_id=uuid7(), end=self.cursor(SESSION_FILE).offset
-        )
+    async def upload_snapshot(self, websocket: ClientConnection, *, start: int) -> None:
+        """Upload only new transcript bytes and require their acknowledgment."""
+        end = self.cursor(SESSION_FILE).offset
+        if start == end:
+            return
+        if start > end:
+            raise ValueError("Transcript was truncated since its last upload")
+        request = StreamSnapshotStart(transfer_id=uuid7(), start=start, end=end)
         await websocket.send(request.model_dump_json())
-        for chunk in self.snapshot(request.end):
+        for chunk in self.snapshot(request.end, start=request.start):
             await websocket.send(chunk)
         async with asyncio.timeout(SNAPSHOT_ACK_TIMEOUT):
             stored = server_message_adapter.validate_json(await websocket.recv())
@@ -279,6 +288,14 @@ async def stream_session(
         tail = SessionTail(
             session_id, transcript_path, offsets=dict(welcome.offsets), spool=spool
         )
+        checkpoint = welcome.transcript
+        if checkpoint is not None:
+            digest = hashlib.sha256()
+            if checkpoint.offset:
+                for chunk in tail.snapshot(checkpoint.offset):
+                    digest.update(chunk)
+            if digest.hexdigest() != checkpoint.sha256:
+                raise ValueError("Transcript prefix differs from the stored snapshot")
 
         stop = asyncio.Event()
         idle = False
@@ -321,8 +338,8 @@ async def stream_session(
             if finalize is None and not idle:
                 return False  # the socket dropped mid-watch: reconnect and resume
             await tail.pump(websocket)  # final drain to EOF
-            if welcome.upload_transcript and tail.cursor(SESSION_FILE).offset:
-                await tail.upload_snapshot(websocket)
+            if checkpoint is not None:
+                await tail.upload_snapshot(websocket, start=checkpoint.offset)
             await websocket.send(StreamEof().model_dump_json())
             # Wait out the server's close so the eof is consumed, bounded so a
             # wedged server cannot park this process forever.

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import time
@@ -39,6 +40,7 @@ from octomate_protocol.stream import (
     STREAM_PROTOCOL,
     StreamEof,
     StreamHello,
+    StreamSnapshotCursor,
     StreamWelcome,
     client_message_adapter,
 )
@@ -504,7 +506,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         resume offsets, then feed each framed line through the tailer's assembly.
         Codex turns close on their own `task_complete`/`turn_aborted` lines, so
         nothing commits at the boundary either way — `eof` and a drop alike just
-        return the registry slot, and the next connect re-streams from byte 0. A
+        return the registry slot. The stored prefix rebuilds the tailer on the
+        server; the client resumes after it and uploads only appended bytes. A
         `Stop` on the hook pipe reaches here as the state's `stop_event`
         (`stop_turn`, once the stopped turn is durable or its wait ran out); the
         relay sends `finalize`, whose drain re-reads the client's files to EOF —
@@ -555,11 +558,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             content_type="application/jsonl",
             offset=offsets.get(SESSION_FILE, 0),
         )
-        await websocket.send_text(
-            StreamWelcome(
-                offsets=offsets, upload_transcript=slot.persist is not None
-            ).model_dump_json()
-        )
 
         async def relay_finalize() -> None:
             await state.stop_event.wait()
@@ -572,13 +570,36 @@ class CodexTentacle(AgentTentacle[str, None]):
                     "session %s: finalize relay lost its socket", hello.session_id
                 )
 
-        relay = asyncio.create_task(relay_finalize())
-        # Per-file contiguity: each line must start where the last one ended, so a
-        # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
-        # instead of a silently mis-assembled turn.
-        expected_offsets = dict(offsets)
+        relay: asyncio.Task[None] | None = None
         clean = False
         try:
+            if conversation.transcript_file_id is not None:
+                if sender.user_id is None:
+                    raise FileTransferError("Stored transcripts require an owner")
+                slot.prefix = await self.octomate.files.read(
+                    conversation.transcript_file_id, owner_id=sender.user_id
+                )
+            for raw in slot.prefix.split(b"\n")[:-1]:
+                end = slot.offset + len(raw) + 1
+                await self.session_tailer.feed_remote(
+                    state, None, raw.decode("utf-8", errors="replace"), slot.offset, end
+                )
+                slot.offset = end
+            offsets[SESSION_FILE] = slot.offset
+            await websocket.send_text(
+                StreamWelcome(
+                    offsets=offsets,
+                    transcript=StreamSnapshotCursor(
+                        offset=len(slot.prefix),
+                        sha256=hashlib.sha256(slot.prefix).hexdigest(),
+                    )
+                    if slot.persist is not None
+                    else None,
+                ).model_dump_json()
+            )
+            relay = asyncio.create_task(relay_finalize())
+            # Each line must begin where the preceding line ended.
+            expected_offsets = dict(offsets)
             while True:
                 message = await slot.receive()
                 if isinstance(message, StreamEof):
@@ -602,7 +623,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
         except WebSocketDisconnect:
             pass
-        except (ValidationError, FileTransferError):
+        except (ValidationError, FileTransferError, FileNotFoundError):
             await websocket.close(code=1008, reason="invalid stream message")
         except Exception:
             logger.exception(
@@ -611,9 +632,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 hello.session_id,
             )
         finally:
-            relay.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await relay
+            if relay is not None:
+                relay.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await relay
             await slot.close()
             self.session_tailer.detach_remote(state)
             if clean:

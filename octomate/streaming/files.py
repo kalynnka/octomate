@@ -45,11 +45,12 @@ class FileTransferSlot:
     """
 
     websocket: WebSocket
-    persist: Callable[[UploadFile], Awaitable[FileVariant]] | None
+    persist: Callable[[UploadFile, int], Awaitable[FileVariant]] | None
     filename: str
     content_type: str
     upload: SnapshotUpload | None = field(default=None, init=False)
     offset: int = 0
+    prefix: bytes = b""  # The owner's durable prefix, fixed for this connection.
 
     async def finalize(self) -> None:
         """Ask the client to drain, upload its transcript, then send EOF."""
@@ -73,7 +74,7 @@ class FileTransferSlot:
             if isinstance(message, StreamEof):
                 if (
                     self.persist is not None
-                    and self.offset
+                    and self.offset != len(self.prefix)
                     and (upload is None or upload.stored is None)
                 ):
                     raise FileTransferError(
@@ -85,7 +86,12 @@ class FileTransferSlot:
                     "Transcript messages cannot follow snapshot start"
                 )
             if isinstance(message, StreamSnapshotStart):
-                if self.persist is None or message.end != self.offset:
+                if (
+                    self.persist is None
+                    or message.start != len(self.prefix)
+                    or message.end != self.offset
+                    or message.end <= message.start
+                ):
                     raise FileTransferError(
                         "Snapshot must match the drained transcript"
                     )
@@ -114,15 +120,16 @@ class FileTransferSlot:
             )
         if upload.stored is not None:
             raise FileTransferError("Snapshot upload is no longer pending")
-        if not data or upload.received + len(data) > upload.request.end:
+        size = upload.request.end - upload.request.start
+        if not data or upload.received + len(data) > size:
             raise FileTransferError(
                 "Snapshot bytes exceed the requested size or are empty"
             )
         await upload.file.write(data)
         upload.received += len(data)
-        if upload.received != upload.request.end:
+        if upload.received != size:
             return
-        upload.stored = await self.persist(upload.file)
+        upload.stored = await self.persist(upload.file, upload.request.start)
         await self.websocket.send_text(
             StreamSnapshotStored(
                 transfer_id=upload.request.transfer_id

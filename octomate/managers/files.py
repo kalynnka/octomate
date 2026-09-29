@@ -7,22 +7,24 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import BinaryIO
 
 import opendal
+from anyio import to_thread
 from fastapi import UploadFile
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers.base import Manager
+from octomate.managers.base import Locks, Manager
 from octomate.schemas.files import File, FileVariant, FileVariantAdapter
 from octomate.types.files import FileProviderName
 
 
 @dataclass
-class FileManager(Manager):
+class FileManager(Manager, Locks[uuid.UUID]):
     """Keep file metadata in the database and contents in the injected OpenDAL operator.
 
-    Files are immutable: every write gets a fresh ID and key. `get` returns
+    Every write gets a fresh ID and key; append extends an existing file. `get` returns
     metadata; `read` returns bytes. All lookups are scoped to the provider and owner.
     Callers supply the authenticated owner's ID, never an unverified client claim.
     Omitting the owner accesses only unowned service files, not every user's files.
@@ -32,6 +34,9 @@ class FileManager(Manager):
     interruption or a failed cleanup can leave an orphan, and a failed database
     commit after deletion can leave metadata for missing content. Retrying delete
     can finish that operation. No background reconciliation is performed.
+
+    Append commits the new size after storage succeeds. A failed append or commit
+    can leave extra bytes in storage; reads and appends reject a size mismatch.
     """
 
     provider: FileProviderName = "filesystem"
@@ -121,21 +126,65 @@ class FileManager(Manager):
             raise FileNotFoundError(str(file_id))
         return FileVariantAdapter.validate_python(stored)
 
+    async def append(
+        self,
+        file_id: uuid.UUID,
+        file: BinaryIO,
+        *,
+        offset: int,
+        owner_id: uuid.UUID | None = None,
+    ) -> FileVariant:
+        """Append at the expected size, publishing metadata only after storage succeeds.
+
+        The stream contains only new bytes; rewind it and leave it open at EOF.
+        Keep the existing identity, filename, and MIME type. Storage changes cannot
+        be undone if the commit fails.
+        """
+        if not self.storage.capability().write_can_append:
+            raise ValueError("File storage does not support append")
+        async with self.lock(file_id), async_session() as session:
+            stored = await session.one_or_none(
+                File,
+                expressions=[
+                    File["id"] == file_id,
+                    File["provider"] == self.provider,
+                    File["owner_id"] == owner_id,
+                ],
+            )
+            if stored is None:
+                raise FileNotFoundError(str(file_id))
+            if stored.size != offset:
+                raise ValueError("Append offset does not match the stored file size")
+            metadata = await self.storage.stat(stored.key)
+            if metadata.content_length != stored.size:
+                raise ValueError("Stored content size differs from file metadata")
+            await to_thread.run_sync(file.seek, 0)
+            data = await to_thread.run_sync(file.read)
+            if data:
+                await self.storage.write(stored.key, data, append=True)
+                stored.size += len(data)
+                await session.commit()
+            return FileVariantAdapter.validate_python(stored)
+
     async def read(
         self, file_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
     ) -> bytes:
         """Read the content addressed by persisted metadata."""
-        stored = await self.get(file_id, owner_id=owner_id)
-        try:
-            return await self.storage.read(stored.key)
-        except opendal.exceptions.NotFound as exc:
-            raise FileNotFoundError(stored.key) from exc
+        async with self.lock(file_id):
+            stored = await self.get(file_id, owner_id=owner_id)
+            try:
+                data = await self.storage.read(stored.key)
+            except opendal.exceptions.NotFound as exc:
+                raise FileNotFoundError(stored.key) from exc
+            if len(data) != stored.size:
+                raise ValueError("Stored content size differs from file metadata")
+            return data
 
     async def delete(
         self, file_id: uuid.UUID, *, owner_id: uuid.UUID | None = None
     ) -> None:
         """Delete content before removing its tracking record."""
-        async with async_session() as session:
+        async with self.lock(file_id), async_session() as session:
             stored = await session.one_or_none(
                 File,
                 expressions=[

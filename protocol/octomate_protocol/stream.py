@@ -76,15 +76,24 @@ class StreamEof(BaseModel):
     type: Literal["eof"] = "eof"
 
 
+class StreamSnapshotCursor(BaseModel):
+    """The durable transcript prefix the client must verify before appending."""
+
+    offset: int = Field(ge=0, description="Number of transcript bytes already stored.")
+    sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$", description="SHA-256 of that prefix."
+    )
+
+
 class StreamWelcome(BaseModel):
     """The server's answer to hello: where each file resumes, keyed by `SESSION_FILE`
     or agent id. A file absent from the map starts at 0."""
 
     type: Literal["welcome"] = "welcome"
     offsets: dict[str, int]
-    upload_transcript: bool = Field(
-        default=False,
-        description="Upload the drained session transcript before EOF on every connection.",
+    transcript: StreamSnapshotCursor | None = Field(
+        default=None,
+        description="Upload only bytes after this verified prefix before EOF; None disables upload.",
     )
 
 
@@ -93,6 +102,9 @@ class StreamSnapshotStart(BaseModel):
 
     type: Literal["snapshot_start"] = "snapshot_start"
     transfer_id: UUID
+    start: int = Field(
+        ge=0, description="Exclusive end of the previously stored prefix."
+    )
     end: int = Field(
         gt=0, description="Exclusive byte offset at a complete-line boundary."
     )
@@ -109,8 +121,8 @@ class StreamFinalize(BaseModel):
     """Server → client: the session ended (`SessionEnd` arrived on the hook pipe) —
     drain to EOF, upload if negotiated at welcome, answer with `eof`, and exit.
 
-    A snapshot starts with `snapshot_start`, followed by binary messages totaling `end`
-    bytes. The client waits for the matching `snapshot_stored` before sending `eof`.
+    A snapshot starts with `snapshot_start`, followed by binary messages totaling
+    `end - start` bytes. The client waits for `snapshot_stored` before sending `eof`.
     Ordinary transcript lines precede the binary messages; they never interleave.
     """
 

@@ -2,7 +2,7 @@
 
 from io import BytesIO
 from pathlib import Path
-from tempfile import SpooledTemporaryFile
+from tempfile import SpooledTemporaryFile, TemporaryFile
 from unittest.mock import AsyncMock, Mock
 
 import opendal
@@ -29,6 +29,7 @@ from octomate.schemas.files import (
     Png,
     Text,
 )
+from tests.support.users import a_user
 
 
 @pytest.fixture
@@ -57,6 +58,124 @@ async def test_round_trip_and_metadata(
     assert reloaded.provider == "filesystem"
     assert reloaded.created_at.utcoffset() is not None
     assert await FileManager(storage=storage).read(stored.id) == data
+
+
+@pytest.mark.parametrize("delta", [b"", b"second\n"])
+@pytest.mark.parametrize("on_disk", [False, True])
+async def test_append_preserves_identity_and_updates_persisted_size(
+    in_memory_engine: AsyncEngine,
+    storage: opendal.AsyncOperator,
+    delta: bytes,
+    on_disk: bool,
+) -> None:
+    files = FileManager(storage=storage)
+    original = await files.write(UploadFile(BytesIO(b"first\n"), filename="note"))
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.write = AsyncMock(wraps=storage.write)
+    files.storage = mocked_storage
+
+    with TemporaryFile() if on_disk else BytesIO() as stream:
+        stream.write(delta)
+        updated = await files.append(original.id, stream, offset=original.size)
+        assert not stream.closed
+        assert stream.read() == b""
+
+    assert updated.id == original.id
+    assert updated.key == original.key
+    assert updated.name == original.name
+    assert updated.media_type == original.media_type
+    assert updated.size == original.size + len(delta)
+    assert original.size == len(b"first\n")
+    assert (await files.get(original.id)).size == updated.size
+    assert await files.read(original.id) == b"first\n" + delta
+    if delta:
+        mocked_storage.write.assert_awaited_once_with(original.key, delta, append=True)
+    else:
+        mocked_storage.write.assert_not_awaited()
+
+
+async def test_append_refuses_a_stale_offset(
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
+) -> None:
+    files = FileManager(storage=storage)
+    original = await files.write(UploadFile(BytesIO(b"first\n"), filename="note"))
+    await files.append(original.id, BytesIO(b"second\n"), offset=original.size)
+
+    with pytest.raises(ValueError, match="Append offset"):
+        await files.append(original.id, BytesIO(b"again\n"), offset=original.size)
+
+    assert await files.read(original.id) == b"first\nsecond\n"
+
+
+async def test_append_is_scoped_to_the_owner(
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
+) -> None:
+    files = FileManager(storage=storage)
+    owner = await a_user()
+    other = await a_user("other")
+    original = await files.write(
+        UploadFile(BytesIO(b"private\n"), filename="note"), owner_id=owner.id
+    )
+
+    with pytest.raises(FileNotFoundError):
+        await files.append(
+            original.id,
+            BytesIO(b"foreign\n"),
+            offset=original.size,
+            owner_id=other.id,
+        )
+
+    assert await files.read(original.id, owner_id=owner.id) == b"private\n"
+
+
+@pytest.mark.parametrize("failure", ["storage", "commit"])
+async def test_failed_append_leaves_metadata_unchanged(
+    in_memory_engine: AsyncEngine,
+    storage: opendal.AsyncOperator,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    files = FileManager(storage=storage)
+    original = await files.write(UploadFile(BytesIO(b"first\n"), filename="note"))
+    with monkeypatch.context() as patch:
+        if failure == "storage":
+            mocked_storage = Mock(wraps=storage)
+            mocked_storage.write = AsyncMock(side_effect=RuntimeError("append failed"))
+            patch.setattr(files, "storage", mocked_storage)
+        else:
+            patch.setattr(
+                AsyncSession,
+                "commit",
+                AsyncMock(side_effect=RuntimeError("commit failed")),
+            )
+        with pytest.raises(RuntimeError, match="failed"):
+            await files.append(original.id, BytesIO(b"second\n"), offset=original.size)
+
+    assert (await files.get(original.id)).size == original.size
+    if failure == "storage":
+        assert await files.read(original.id) == b"first\n"
+    else:
+        assert await storage.read(original.key) == b"first\nsecond\n"
+        with pytest.raises(ValueError, match="differs from file metadata"):
+            await files.read(original.id)
+        with pytest.raises(ValueError, match="differs from file metadata"):
+            await files.append(original.id, BytesIO(b"retry\n"), offset=original.size)
+
+
+async def test_append_refuses_unsupported_storage(
+    in_memory_engine: AsyncEngine, storage: opendal.AsyncOperator
+) -> None:
+    files = FileManager(storage=storage)
+    original = await files.write(UploadFile(BytesIO(b"first\n"), filename="note"))
+    mocked_storage = Mock(wraps=storage)
+    mocked_storage.capability = Mock(return_value=Mock(write_can_append=False))
+    mocked_storage.write = AsyncMock()
+    files.storage = mocked_storage
+
+    with pytest.raises(ValueError, match="does not support append"):
+        await files.append(original.id, BytesIO(b"second\n"), offset=original.size)
+
+    mocked_storage.write.assert_not_awaited()
 
 
 async def test_repeated_filenames_have_independent_storage(

@@ -19,7 +19,7 @@ from octomate.types.files import FileProviderName
 
 @sqlalchemy_materia.bless(file_models.File)
 class File(BaseTransmuter):
-    """Metadata for one immutable file, retrieved through its manager by ID."""
+    """Metadata for one stored file, retrieved through its manager by ID."""
 
     model_config = ConfigDict(from_attributes=True)
 

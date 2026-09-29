@@ -417,32 +417,38 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def store_transcript(
         self,
-        file: UploadFile,
+        uploaded: UploadFile,
+        start: int,
         *,
         conversation: Conversation,
         files: FileManager,
         owner_id: uuid.UUID,
     ) -> FileVariant:
-        """Replace a native conversation's owner-scoped transcript after upload.
+        """Persist new bytes of a native conversation's owner-scoped transcript.
 
-        Commit the file metadata and conversation reference together after the
-        content upload succeeds. Retain previous files for separate cleanup.
-        Return the stored file without mutating the caller's conversation.
+        Create the first file and conversation reference in one transaction;
+        subsequent uploads append to that file. Never mutate the caller's conversation.
         """
         async with self.lock(conversation.key):
             current = await self.get(conversation.id, with_history=False)
             previous_id = current.transcript_file_id
+            if previous_id != conversation.transcript_file_id:
+                raise ValueError("Transcript changed while the upload was in progress")
             if previous_id is not None:
-                # Refuse to replace another owner's transcript before uploading.
-                await files.get(previous_id, owner_id=owner_id)
+                return await files.append(
+                    previous_id, uploaded.file, offset=start, owner_id=owner_id
+                )
+            if start != 0:
+                raise ValueError("The first transcript upload must start at zero")
             async with (
-                files.upload(file, owner_id=owner_id) as transcript,
+                files.upload(uploaded, owner_id=owner_id) as transcript,
                 async_session() as session,
             ):
                 stored = await session.get(Conversation, conversation.id)
                 if stored is None:
                     raise ValueError(f"unknown conversation {conversation.id}")
                 session.add(transcript)
+                await session.flush()
                 stored.transcript_file_id = transcript.id
                 await session.commit()
             return transcript

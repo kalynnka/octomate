@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from pathlib import Path
 from typing import Literal
 
@@ -19,6 +20,7 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamSnapshotCursor,
     StreamSnapshotStart,
     StreamSnapshotStored,
     StreamWelcome,
@@ -62,14 +64,84 @@ def test_snapshot_refuses_a_truncated_transcript(tmp_path: Path) -> None:
         list(tail.snapshot(8))
 
 
-@pytest.mark.parametrize("upload_transcript", [False, True])
-async def test_finalize_waits_for_snapshot_receipt_before_eof(
-    tmp_path: Path, upload_transcript: bool
+def test_incremental_snapshot_preserves_raw_suffix(tmp_path: Path) -> None:
+    prefix = b"previous\n"
+    suffix = b"x" * SNAPSHOT_CHUNK_SIZE + b"\xff\r\n"
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_bytes(prefix + suffix + b"later\n")
+    tail = SessionTail("source", transcript, offsets={"": len(prefix + suffix)})
+
+    chunks = list(tail.snapshot(len(prefix + suffix), start=len(prefix)))
+
+    assert b"".join(chunks) == suffix
+    assert len(chunks) == 2
+
+
+@pytest.mark.parametrize("content", [b"before\n", b"edited\n", b"short\n"])
+async def test_stored_prefix_is_verified_before_sending_any_lines(
+    tmp_path: Path, content: bytes
 ) -> None:
+    prefix = b"before\n"
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_bytes(content)
+    finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+
+    async def server(websocket: ServerConnection) -> None:
+        try:
+            await websocket.recv()
+            await websocket.send(
+                StreamWelcome(
+                    offsets={"": len(prefix)},
+                    transcript=StreamSnapshotCursor(
+                        offset=len(prefix), sha256=hashlib.sha256(prefix).hexdigest()
+                    ),
+                ).model_dump_json()
+            )
+            if content == prefix:
+                await websocket.send(StreamFinalize().model_dump_json())
+                assert isinstance(
+                    client_message_adapter.validate_json(await websocket.recv()),
+                    StreamEof,
+                )
+            else:
+                with pytest.raises(ConnectionClosed):
+                    await websocket.recv()
+            finished.set_result(None)
+        except Exception as error:
+            finished.set_exception(error)
+
+    async with asyncio.timeout(5), serve(server, "127.0.0.1", 0) as host:
+        port = next(iter(host.sockets)).getsockname()[1]
+        if content == prefix:
+            assert await stream_session(
+                f"ws://127.0.0.1:{port}",
+                "source",
+                transcript,
+                str(tmp_path),
+                "test-token",
+            )
+        else:
+            with pytest.raises(ValueError, match=r"prefix|complete transcript line"):
+                await stream_session(
+                    f"ws://127.0.0.1:{port}",
+                    "source",
+                    transcript,
+                    str(tmp_path),
+                    "test-token",
+                )
+        await finished
+
+
+@pytest.mark.parametrize("upload_transcript", [False, True])
+@pytest.mark.parametrize("resuming", [False, True])
+async def test_finalize_waits_for_snapshot_receipt_before_eof(
+    tmp_path: Path, upload_transcript: bool, resuming: bool
+) -> None:
+    previous = b'{"previous":true}\n' if resuming else b""
     prefix = b'{"turn":1}\n'
     later = b'{"turn":2}\n'
     transcript = tmp_path / "rollout.jsonl"
-    transcript.write_bytes(prefix)
+    transcript.write_bytes(previous + prefix)
     finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
     async def server(websocket: ServerConnection) -> None:
@@ -81,11 +153,19 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             assert websocket.request.headers["Authorization"] == "Bearer test-token"
             await websocket.send(
                 StreamWelcome(
-                    offsets={}, upload_transcript=upload_transcript
+                    offsets={"": len(previous)},
+                    transcript=StreamSnapshotCursor(
+                        offset=len(previous),
+                        sha256=hashlib.sha256(previous).hexdigest(),
+                    )
+                    if upload_transcript
+                    else None,
                 ).model_dump_json()
             )
             line = client_message_adapter.validate_json(await websocket.recv())
             assert isinstance(line, StreamLine)
+            assert line.start == len(previous)
+            assert line.line == prefix.decode().rstrip("\n")
             # The final drain must include bytes appended just before finalization.
             with transcript.open("ab") as handle:
                 handle.write(later)
@@ -96,7 +176,8 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
             if upload_transcript:
                 request = client_message_adapter.validate_json(await websocket.recv())
                 assert isinstance(request, StreamSnapshotStart)
-                assert request.end == len(prefix + later)
+                assert request.start == len(previous)
+                assert request.end == len(previous + prefix + later)
                 assert await websocket.recv() == prefix + later
                 with pytest.raises(TimeoutError):
                     await asyncio.wait_for(websocket.recv(), 0.05)
@@ -139,7 +220,12 @@ async def test_unacknowledged_snapshot_does_not_send_eof(
         try:
             await websocket.recv()  # hello
             await websocket.send(
-                StreamWelcome(offsets={}, upload_transcript=True).model_dump_json()
+                StreamWelcome(
+                    offsets={},
+                    transcript=StreamSnapshotCursor(
+                        offset=0, sha256=hashlib.sha256(b"").hexdigest()
+                    ),
+                ).model_dump_json()
             )
             await websocket.recv()  # transcript line
             await websocket.send(StreamFinalize().model_dump_json())
