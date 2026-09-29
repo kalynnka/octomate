@@ -116,7 +116,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.files import Jsonl
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
+from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.streaming.files import FileTransferError, FileTransferSlot
@@ -673,6 +673,39 @@ class CodexTentacle(AgentTentacle[str, None]):
         if forked.id == conversation.external_id:
             raise ValueError("Codex fork returned the source thread id")
         return forked.id
+
+    async def fork(
+        self,
+        source: Conversation,
+        destination: ThreadKey,
+        *,
+        sender: UserProfile,
+    ) -> Thread:
+        """Fork an owner's uploaded native history onto a new surface."""
+        owner_id = sender.user_id
+        if owner_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only root native Codex sessions can be forked here")
+        threads = self.octomate.thread_manager
+        source_thread = await threads.get(
+            source.thread_id, with_messages=False, user_id=owner_id
+        )
+        if source_thread is None:
+            raise FileNotFoundError("No conversation")
+        if source.transcript_file_id is None:
+            raise ValueError("The session transcript has not been uploaded yet")
+        await self.octomate.files.get(source.transcript_file_id, owner_id=owner_id)
+        project = await source_thread.project
+        thread = await threads.ensure(destination, project=project)
+        target = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=self.id
+        )
+        cwd = self.octomate.workspaces.open(thread.id, project).path
+        await self.fork_transcript(source, target, owner_id=owner_id, cwd=cwd)
+        return await threads.record_fork(
+            source, thread, sender=sender, title=source_thread.title
+        )
 
     async def fork_transcript(
         self,

@@ -40,19 +40,29 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
+from uuid_utils.compat import uuid7
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
 from octomate.config.agents import AgentRouteModelName
-from octomate.dependencies import thread_manager
+from octomate.dependencies import (
+    conversation_manager,
+    deferred_action_manager,
+    project_manager,
+    thread_manager,
+)
+from octomate.managers.conversation import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadMessage
-from octomate.schemas.user import ProfileInfo, User
+from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey, ThreadMessage
+from octomate.schemas.user import ProfileInfo, User, UserProfile
+from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -146,6 +156,17 @@ class BatchResponseBody(BaseModel):
     allow_session: bool = False
 
 
+async def accessible_thread(
+    thread_id: uuid.UUID,
+    threads: Annotated[ThreadManager, Depends(thread_manager)],
+    user: Annotated[User, Depends(current_user)],
+) -> Thread:
+    thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
+    return thread
+
+
 def build_trunkline_router(
     octomate: Octomate,
     *,
@@ -182,10 +203,12 @@ def build_trunkline_router(
         ]
 
     @router.get("/projects")
-    async def list_projects() -> list[Project]:
+    async def list_projects(
+        projects: Annotated[ProjectManager, Depends(project_manager)],
+    ) -> list[Project]:
         """The projects a new thread can be filed under — the enabled ones, since
         a project whose root disk has lost is nowhere to work."""
-        return [project for project in octomate.projects.list() if project.enabled]
+        return [project for project in projects.list() if project.enabled]
 
     @router.get("/permissions")
     async def permission_modes() -> dict[str, AgentPostures]:
@@ -250,15 +273,10 @@ def build_trunkline_router(
 
     @router.get("/threads/{thread_id}", response_model_exclude={"messages", "parent"})
     async def read_thread(
-        thread_id: uuid.UUID,
-        threads: Annotated[ThreadManager, Depends(thread_manager)],
-        user: Annotated[User, Depends(current_user)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
     ) -> Thread:
         """One thread and its handoffs, by row id — any channel's, not only the
         console's own."""
-        thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
-        if thread is None:
-            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         return thread
 
     @router.get(
@@ -282,7 +300,8 @@ def build_trunkline_router(
         response_model_exclude={"__all__": {"messages"}},
     )
     async def thread_conversations(
-        thread: Annotated[Thread, Depends(read_thread)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
     ) -> list[Conversation]:
         """Subagent conversations included — they name their parent, so a reader
         can fold them under the run whose tool call spawned them.
@@ -292,13 +311,11 @@ def build_trunkline_router(
         a thread would otherwise watch a run's whole middle disappear. The
         conversation's own `messages` stay excluded — that relation is the same rows
         under a different parent, and one copy is enough."""
-        return await octomate.conversations.for_thread(
-            thread.id, with_run_messages=True
-        )
+        return await conversations.for_thread(thread.id, with_run_messages=True)
 
     @router.get("/threads/{thread_id}/project")
     async def thread_project(
-        thread: Annotated[Thread, Depends(read_thread)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
     ) -> Project | None:
         """The project this thread's work is in; null for a thread no project
         claims. Frozen: it is set when the thread is created, from the directory
@@ -311,12 +328,15 @@ def build_trunkline_router(
         response_model_exclude={"__all__": {"requests"}},
     )
     async def thread_batches(
-        thread: Annotated[Thread, Depends(read_thread)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        deferred_actions: Annotated[
+            DeferredActionManager, Depends(deferred_action_manager)
+        ],
     ) -> list[DeferredActionBatch]:
         """The waiting questions and approvals, so a reload re-renders the
         feelers a run is blocked on. `requests` stays behind: it is the agent's
         own tool-call payload, and the actions carry what a reader asks."""
-        return await octomate.deferred_actions.pending_for_thread(thread.id)
+        return await deferred_actions.pending_for_thread(thread.id)
 
     @router.post(
         "/threads/{thread_key}/messages",
@@ -346,6 +366,57 @@ def build_trunkline_router(
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 
+    @router.post(
+        "/threads/{thread_id}/fork",
+        summary="Fork a native Codex thread into a new private Trunkline thread",
+        response_model_exclude={"messages", "parent"},
+        status_code=201,
+    )
+    async def fork_thread(
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        user: Annotated[User, Depends(current_user)],
+    ) -> Thread:
+        if thread.active_agent_tentacle_id != CODEX_NATIVE_ID:
+            raise HTTPException(
+                status_code=422, detail="Only native Codex threads can be forked here"
+            )
+        sources = [
+            conversation
+            for conversation in thread.conversations
+            if conversation.agent_tentacle_id == thread.active_agent_tentacle_id
+            and not conversation.subagent_id
+        ]
+        if not sources:
+            raise HTTPException(
+                status_code=409, detail="The thread has no active conversation to fork"
+            )
+        agent = next(
+            (
+                octomate.agents[agent_id]
+                for agent_id in channel.agent_ids
+                if isinstance(octomate.agents.get(agent_id), CodexTentacle)
+            ),
+            None,
+        )
+        if not isinstance(agent, CodexTentacle):
+            raise HTTPException(status_code=503, detail="No Codex agent is configured")
+        try:
+            return await agent.fork(
+                sources[-1],
+                ThreadKey(channel.id, "thread", str(user.id), uuid7().hex),
+                sender=UserProfile(
+                    channel_tentacle_id=channel.id,
+                    channel_user_id=str(user.id),
+                    user_id=user.id,
+                    name=user.name,
+                    nickname=user.nickname,
+                ),
+            )
+        except FileNotFoundError as error:
+            raise HTTPException(status_code=404, detail="No conversation") from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
     @router.patch(
         "/conversations/{conversation_id}/permission-mode",
         summary="Switch the approval posture this conversation's agent works under",
@@ -355,16 +426,17 @@ def build_trunkline_router(
         conversation_id: uuid.UUID,
         body: PermissionModeBody,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
         user: Annotated[User, Depends(current_user)],
     ) -> Conversation:
         """The one place a live thread's posture changes. A run reads it as it
         starts, so the switch lands on the next turn and leaves anything in flight
         alone — including a batch already waiting on a human."""
         try:
-            conversation = await octomate.conversations.get(conversation_id)
+            conversation = await conversations.get(conversation_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        await read_thread(conversation.thread_id, threads, user)
+        await accessible_thread(conversation.thread_id, threads, user)
         try:
             agent = octomate.agents.get(conversation.agent_tentacle_id)
             if agent is None:
@@ -373,7 +445,7 @@ def build_trunkline_router(
                 )
             if body.permission_mode is not None:
                 agent.check_permission_mode(body.permission_mode)
-            return await octomate.conversations.set_permission_mode(
+            return await conversations.set_permission_mode(
                 conversation, body.permission_mode
             )
         except ValueError as error:
@@ -389,13 +461,17 @@ def build_trunkline_router(
         body: BatchResponseBody,
         user: Annotated[User, Depends(current_user)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+        deferred_actions: Annotated[
+            DeferredActionManager, Depends(deferred_action_manager)
+        ],
     ) -> StreamingResponse:
         try:
-            batch = await octomate.deferred_actions.get_batch(batch_id)
+            batch = await deferred_actions.get_batch(batch_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        conversation = await octomate.conversations.get(batch.conversation_id)
-        await read_thread(conversation.thread_id, threads, user)
+        conversation = await conversations.get(batch.conversation_id)
+        await accessible_thread(conversation.thread_id, threads, user)
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")

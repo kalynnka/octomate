@@ -1060,13 +1060,14 @@ async def test_console_reads_never_load_the_model_ledger(
         assert len(ledger_reads) == 1
         assert "agent_runs" in ledger_reads[0] or "run_id" in ledger_reads[0]
 
-        # The listing names threads and opens none of them.
+        # Routing reads conversation metadata in one batch, without histories.
         selects.clear()
         await client.get("/api/trunkline/threads")
         assert not any(
             select.lstrip().startswith("SELECT thread_messages.") for select in selects
         )
-        assert not any("FROM conversations" in select for select in selects)
+        assert sum("FROM conversations" in select for select in selects) == 1
+        assert not any("FROM agent_runs" in select for select in selects)
 
 
 async def test_a_native_thread_reads_back_with_its_project_and_run_directory(

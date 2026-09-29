@@ -45,6 +45,7 @@ from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
@@ -293,6 +294,18 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             else:
                 spoken.append("Approved." if verdict else "Denied.")
         return "\n\n".join(spoken)
+
+    async def fork(
+        self,
+        source: Conversation,
+        destination: ThreadKey,
+        *,
+        sender: UserProfile,
+    ) -> Thread:
+        """Create an independent conversation on a new destination surface."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
 
     async def fork_session(
         self, conversation: Conversation, *, cwd: Path

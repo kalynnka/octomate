@@ -13,7 +13,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.project import Project
@@ -122,6 +122,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         async with self.lock(key), async_session() as session:
             thread = await session.one_or_none(
                 Thread,
+                options=[selectinload(Thread["conversations"]).noload("*")],
                 expressions=[
                     Thread["channel_tentacle_id"] == key.channel_tentacle_id,
                     Thread["chat_type"] == key.chat_type,
@@ -320,6 +321,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if with_messages
             else []
         )
+        options.append(selectinload(Thread["conversations"]).noload("*"))
         async with async_session() as session:
             expressions = [Thread["id"] == thread_id]
             if user_id is not None:
@@ -366,6 +368,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             rows = await session.list(
                 Thread,
                 limit=limit,
+                options=[selectinload(Thread["conversations"]).noload("*")],
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
                 expressions=expressions,
             )
@@ -585,6 +588,51 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             stored.source_cursor_message_id = message_id
             await session.commit()
         thread.source_cursor_message_id = message_id
+        return thread
+
+    async def record_fork(
+        self,
+        source: Conversation,
+        target: Thread,
+        *,
+        sender: UserProfile,
+        title: str | None,
+    ) -> Thread:
+        """Publish a user-attributed system notice after a successful fork."""
+        profile = await self.users.ensure_profile(target.channel_tentacle_id, sender)
+        async with async_session() as session:
+            thread = await session.get(
+                Thread,
+                target.id,
+                options=[selectinload(Thread["conversations"]).noload("*")],
+            )
+            if thread is None:
+                raise ValueError(f"unknown thread {target.id}")
+            address = ChannelAddress(
+                channel_tentacle_id=thread.channel_tentacle_id,
+                chat_type=thread.chat_type,
+                chat_id=thread.chat_id,
+                channel_thread_id=thread.channel_thread_id,
+                user_id=profile.channel_user_id,
+            )
+            text = (
+                f"Forked from conversation {source.id}. "
+                f"Current channel address: {address}."
+            )
+            notice = ThreadMessage(
+                thread_id=thread.id,
+                direction="inbound",
+                actor_kind="system",
+                user_id=profile.channel_user_id,
+                sender_id=profile.id,
+                segments=[TextSegment(data={"text": text})],
+                message_text=text,
+            )
+            session.add(notice)
+            thread.title = title
+            thread.updated_at = notice.happened_at
+            await thread.handoffs
+            await session.commit()
         return thread
 
     async def record_handoff(

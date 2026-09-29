@@ -53,7 +53,7 @@ from octomate.schemas.awakes import (
     GatewayHandoffSignal,
     UserMessageSignal,
 )
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest
@@ -2477,3 +2477,31 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     assert (workspace / "readme.md").read_text() == "hello"
     # And the agent's session was relocated to where the resumed run happens.
     assert [cwd for _, cwd in agent.relocated] == [workspace]
+
+
+async def test_fork_follows_its_conversation_without_handoff() -> None:
+    address = _key(thread_id="forked-thread")
+    thread = _thread(address)
+    thread.conversations.append(
+        Conversation(thread_id=thread.id, agent_tentacle_id="forked")
+    )
+    entry = FakeAgent(id="other")
+    forked = FakeAgent(id="forked", reception_output="continued")
+    channel = _channel()
+    channel.config.agents = ["other", "forked"]
+    threads = FakeThreadManager(threads_by_key={thread.key: thread})
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": channel},
+        agent=forked,
+        threads=threads,
+    )
+    deps.agents["other"] = entry
+    result = await _run(Route(), state=_state(address, thread=thread), deps=deps)
+    assert not isinstance(result, DeferredResult)
+    assert result.decision is not None
+    assert result.decision.agent_id == "forked"
+    assert len(forked.streams) == 1
+    assert entry.streams == []
+    assert threads.handoffs == []
+    assert thread.handoffs == []
