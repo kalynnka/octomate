@@ -6,7 +6,7 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TypeAlias, cast
+from typing import cast
 
 import pytest
 from pydantic_ai import (
@@ -61,7 +61,7 @@ from tests.support.agents import (
 )
 from tests.support.managers import FakeConversation, FakeConversationManager
 
-InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
+type InklingTestEvent = ReactStreamEvent[ScriptedOutput]
 
 
 def _inkling_agent() -> Agent[None, InklingOutput]:
