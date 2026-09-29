@@ -56,6 +56,16 @@ class AgentRun(Base, TransmuterProxiedMixin):
         default=None,
         index=True,
     )
+    model_name: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Model selected for this run, as reported by its runtime.",
+    )
+    permission_mode: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Permission preset used by this run; NULL when unknown or unsupported.",
+    )
     cwd: Mapped[Path | None] = mapped_column(
         PathString,
         nullable=False,

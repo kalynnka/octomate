@@ -43,7 +43,6 @@ from pydantic_graph import (
     GraphRunContext,
     TypeExpression,
 )
-from typing_extensions import TypeAliasType
 
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeferredSuspender, ResolverChoice
@@ -54,6 +53,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import AgentRun as PersistedAgentRun
 from octomate.telemetry import react_logfire
+from octomate.types.permissions import AgentPermissionMode
 
 logger = logging.getLogger(__name__)
 # The react graph is generic machinery: the run's output type is whatever the
@@ -65,10 +65,8 @@ ReactDepsT = TypeVar("ReactDepsT")
 # The events a react run streams: the normalized `StreamEvents` union (Pydantic AI
 # passthrough + output/display events + a suspended run's deferred-action batch)
 # plus the terminal result.
-ReactStreamEvent = TypeAliasType(
-    "ReactStreamEvent",
-    StreamEvents[ReactOutputT] | AgentRunResultEvent[ReactOutputT],
-    type_params=(ReactOutputT,),
+type ReactStreamEvent[ReactOutputT] = (
+    StreamEvents[ReactOutputT] | AgentRunResultEvent[ReactOutputT]
 )
 
 
@@ -98,17 +96,22 @@ class RunPersistence:
     run_name: str
     cwd: Path | None
     binds_prompt_sources: bool
+    permission_mode: AgentPermissionMode | None
 
     async def record(
         self,
         run_id: str,
         messages: Sequence[PydanticModelMessage],
+        *,
+        model_name: str | None,
     ) -> PersistedAgentRun | None:
         recorded_run = await self.conversation_manager.record_agent_run(
             self.conversation,
             run_id=run_id,
             messages=messages,
             name=self.run_name,
+            model_name=model_name,
+            permission_mode=self.permission_mode,
             cwd=self.cwd,
         )
         if not self.state.source_thread_message_ids or not self.binds_prompt_sources:
@@ -162,7 +165,11 @@ class PersistRunFailure(
             return
         if ctx.run_id is None:
             raise RuntimeError("failed agent run has no run_id")
-        await self.persistence.record(ctx.run_id, messages)
+        await self.persistence.record(
+            ctx.run_id,
+            messages,
+            model_name=ctx.model.model_name,
+        )
         self.recorded = True
 
     async def on_node_run_error(
@@ -222,6 +229,8 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     # the run is in no project, since a react run has no directory of its own.
     cwd: DirectoryPath | None = None
     model: Model | KnownModelName | str | None = None
+    # The preset used when the conversation has no explicit override.
+    permission_mode: AgentPermissionMode | None = None
     instructions: AgentInstructions[ReactDepsT] = None
     model_settings: AgentModelSettings[ReactDepsT] | None = None
     usage_limits: UsageLimits | None = None
@@ -235,7 +244,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     spec: dict[str, Any] | AgentSpec | None = None
 
 
-async def resolve_conversation(
+async def resolve_conversation[ReactOutputT, ReactDepsT](
     ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
 ) -> Conversation:
     """The node's conversation: the pre-ensured one when the run is addressed
@@ -338,6 +347,8 @@ class RunAgent(
                 run_name=ctx.deps.run_name,
                 cwd=ctx.deps.cwd,
                 binds_prompt_sources=self.deferred_results is None,
+                permission_mode=conversation.permission_mode
+                or ctx.deps.permission_mode,
             )
             capabilities = [
                 (
@@ -442,7 +453,9 @@ class RunAgent(
             # Recording persists the turn, so the next RunAgent's ensure() picks
             # it up from the manager — no copy in state. Only the prompt turn
             # binds source messages; deferred resumes carry no new user request.
-            await persistence.record(result.run_id, new_messages)
+            await persistence.record(
+                result.run_id, new_messages, model_name=result.response.model_name
+            )
 
         if isinstance(result.output, DeferredToolRequests) and (
             ctx.deps.choose_resolvers is not None or ctx.deps.suspender is not None
@@ -512,14 +525,12 @@ class ResolveDeferred(
         return End(self.result)
 
 
-ReactGraphInput = TypeAliasType(
-    "ReactGraphInput",
-    StartTurn[ReactOutputT, ReactDepsT] | ResumeTurn[ReactOutputT, ReactDepsT],
-    type_params=(ReactOutputT, ReactDepsT),
+type ReactGraphInput[ReactOutputT, ReactDepsT] = (
+    StartTurn[ReactOutputT, ReactDepsT] | ResumeTurn[ReactOutputT, ReactDepsT]
 )
 
 
-def build_react_graph(
+def build_react_graph[ReactOutputT, ReactDepsT](
     start_node: ReactGraphInput[ReactOutputT, ReactDepsT],
 ) -> Graph[
     ReactState,

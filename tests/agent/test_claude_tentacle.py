@@ -487,14 +487,18 @@ async def test_run_rejects_deferred_output_type(
 
 async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
     tentacle = _tentacle(
-        FakeConversationManager(),
+        conversations,
         config=ClaudeCodeConfig(),
     )
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model="opus")
 
     assert getattr(FakeClaudeClient.last_options, "model", None) == "opus"
+    [run] = conversations.store[(_THREAD, "claude", "")].runs
+    assert run.model_name == "claude-opus-4-8"
+    assert run.permission_mode == tentacle.config.permission_mode
 
 
 async def test_local_transport_passes_no_custom_transport(

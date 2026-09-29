@@ -615,10 +615,13 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 channel_thread_id=thread.channel_thread_id,
                 user_id=profile.channel_user_id,
             )
-            text = (
-                f"Forked from conversation {source.id}. "
-                f"Current channel address: {address}."
-            )
+            text = f"Forked from conversation {source.id}. "
+            if thread.project_id is None:
+                text += (
+                    "This fork has no server project. The source working directory "
+                    "and its files were not transferred. "
+                )
+            text += f"Current channel address: {address}."
             notice = ThreadMessage(
                 thread_id=thread.id,
                 direction="inbound",

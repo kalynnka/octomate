@@ -1,6 +1,7 @@
 """Forking native Codex history through the authenticated console API."""
 
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID
 
@@ -11,11 +12,12 @@ from octomate.auth import current_user
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CODEX_NATIVE_ID
+from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.test_codex_transcript_fork import ForkCase
 from tests.agent.test_codex_transcript_fork import case as case
+from tests.support.managers import a_project
 from tests.support.users import a_user
 
 
@@ -71,6 +73,8 @@ async def test_fork_creates_an_owned_driven_thread(
     )
     [forked] = conversations.json()
     assert forked["external_id"] == case.fork.return_value
+    assert forked["permission_mode"] == "auto_review"
+    assert forked["runs"][-1]["model_name"] == "gpt-6-luna"
     assert forked["transcript_file_id"] != str(case.source.transcript_file_id)
     assert (
         await app.files.read(UUID(forked["transcript_file_id"]), owner_id=case.owner_id)
@@ -88,6 +92,9 @@ async def test_fork_creates_an_owned_driven_thread(
     assert notice.direction == "inbound"
     assert notice.platform_message_id is None
     assert str(case.source.id) in (notice.message_text or "")
+    assert "source working directory and its files were not transferred" in (
+        notice.message_text or ""
+    )
     assert (notice.message_text or "").endswith(
         f"Current channel address: {stored.key}/{case.owner_id}."
     )
@@ -127,6 +134,46 @@ async def test_fork_creates_an_owned_driven_thread(
     assert (
         await client.get(f"/api/trunkline/threads/{destination['id']}")
     ).status_code == 404
+
+
+@pytest.mark.parametrize(
+    "availability", ["available", "missing", "disabled", "unregistered"]
+)
+async def test_fork_uses_only_an_available_server_project(
+    case: ForkCase,
+    client: httpx.AsyncClient,
+    tmp_path: Path,
+    availability: str,
+) -> None:
+    app = case.tentacle.octomate
+    root = tmp_path / "project"
+    if availability != "missing":
+        root.mkdir()
+    project = a_project(root, name="native-project", enabled=availability != "disabled")
+    async with async_session() as session:
+        session.add(project)
+        await session.flush()
+        source = await session.get(Thread, case.source.thread_id)
+        assert source is not None
+        source.project_id = project.id
+        await session.commit()
+    if availability != "unregistered":
+        app.projects.index([project])
+
+    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
+    assert response.status_code == 201, response.text
+    destination = response.json()
+    available = availability == "available"
+    assert destination["project_id"] == (str(project.id) if available else None)
+    assert (
+        case.fork.call_args.kwargs["cwd"]
+        == app.workspaces.open(
+            UUID(destination["id"]), project if available else None
+        ).path
+    )
+    stored_source = await app.thread_manager.get(case.source.thread_id)
+    assert stored_source is not None
+    assert stored_source.project_id == project.id
 
 
 async def test_fork_requires_source_ownership(

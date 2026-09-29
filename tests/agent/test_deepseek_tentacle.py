@@ -864,6 +864,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         run_id: str,
         messages: Sequence[ModelMessage],
         name: str | None,
+        model_name: str | None,
+        permission_mode: str | None,
         cwd: Path,
         external_id: str,
     ) -> None:
@@ -874,6 +876,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
             run_id,
             messages,
             name=name,
+            model_name=model_name,
+            permission_mode=permission_mode,
             cwd=cwd,
             external_id=external_id,
         )

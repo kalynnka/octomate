@@ -817,6 +817,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             # or nothing, since inkling has no configured directory to fall back to.
             cwd=workspace,
             model=model,
+            permission_mode=self.permission_mode,
             instructions=instructions,
             model_settings=model_settings,
             usage_limits=usage_limits or UsageLimits(request_limit=self.request_limit),

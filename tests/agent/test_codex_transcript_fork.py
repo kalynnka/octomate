@@ -27,6 +27,8 @@ from octomate.schemas.files import File
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID
 from octomate.tentacles.codex import CodexTentacle
+from octomate.tentacles.codex.transcript import TurnPermissions
+from octomate.types.json import JsonObject
 from tests.support.managers import a_thread
 from tests.support.users import a_user
 
@@ -78,6 +80,20 @@ async def case(
         + b"\n"
         + json.dumps(
             {
+                "timestamp": "2026-09-29T00:00:00Z",
+                "type": "turn_context",
+                "payload": {
+                    "model": "gpt-6-luna",
+                    "effort": "high",
+                    "approval_policy": "on-request",
+                    "approvals_reviewer": "auto_review",
+                    "sandbox_policy": {"type": "workspace-write"},
+                },
+            }
+        ).encode()
+        + b"\n"
+        + json.dumps(
+            {
                 "timestamp": "2026-09-29T00:00:01Z",
                 "type": "event_msg",
                 "payload": {"type": "task_complete", "turn_id": completed_id},
@@ -85,7 +101,20 @@ async def case(
         ).encode()
         + b"\n"
     )
-    pending = b'{"type":"event_msg","payload":{"type":"task_started"}}\n'
+    pending = (
+        b'{"type":"event_msg","payload":{"type":"task_started"}}\n'
+        + json.dumps(
+            {
+                "timestamp": "2026-09-29T00:00:02Z",
+                "type": "turn_context",
+                "payload": {
+                    "approval_policy": "never",
+                    "sandbox_policy": {"type": "danger-full-access"},
+                },
+            }
+        ).encode()
+        + b"\n"
+    )
     for label, end in (
         ("completed", len(prefix)),
         ("not uploaded", len(prefix) + 1000),
@@ -96,6 +125,8 @@ async def case(
             completed_id if label == "completed" else str(uuid7()),
             [ModelRequest(parts=[UserPromptPart(label)])],
             external_session_id=session_id,
+            model_name="gpt-6-luna" if label == "completed" else "other-model",
+            permission_mode="auto_review" if label == "completed" else "full_access",
             end_offset=end,
         )
     await octomate.conversations.store_transcript(
@@ -122,6 +153,9 @@ async def test_fork_copies_only_completed_uploaded_history(
         cwd=tmp_path,
     )
     assert result.external_id == case.fork.return_value
+    assert result.permission_mode == "auto_review"
+    assert result.runs[-1].model_name == "gpt-6-luna"
+    assert result.runs[-1].permission_mode == "auto_review"
     assert result.transcript_file_id is not None
     assert result.transcript_file_id != case.source.transcript_file_id
     assert len(result.messages) == 1
@@ -145,6 +179,10 @@ async def test_fork_copies_only_completed_uploaded_history(
     assert case.fork.call_args.kwargs == {"cwd": tmp_path}
     assert case.target.external_id is None
     assert case.target.transcript_file_id is None
+    assert case.target.permission_mode is None
+    assert (
+        await tentacle.octomate.conversations.get(case.source.id)
+    ).permission_mode is None
     assert case.source.transcript_file_id is not None
     await files.append(
         case.source.transcript_file_id,
@@ -225,6 +263,7 @@ async def test_fork_failure_publishes_no_target_or_file(
     target = await case.tentacle.octomate.conversations.get(case.target.id)
     assert target.external_id is None
     assert target.transcript_file_id is None
+    assert target.permission_mode is None
     assert not target.messages
     assert not list(case.home.rglob("*.jsonl"))
     assert len(list((tmp_path / "files").glob("users/*/*"))) == 1
@@ -246,6 +285,67 @@ async def test_no_completed_uploaded_turn_cannot_fork(
             run.end_offset = None
         await session.commit()
     with pytest.raises(ValueError, match="No completed Codex turn"):
+        await case.tentacle.fork_transcript(
+            case.source, case.target, owner_id=case.owner_id, cwd=tmp_path
+        )
+    case.fork.assert_not_awaited()
+    assert not case.home.exists()
+
+
+@pytest.mark.parametrize(
+    ("policy", "reviewer", "sandbox", "expected"),
+    [
+        ("on-request", "user", "workspace-write", "user_review"),
+        ("on-request", "auto_review", "workspace-write", "auto_review"),
+        ("never", "user", "danger-full-access", "full_access"),
+    ],
+)
+def test_native_permission_presets(
+    policy: str, reviewer: str, sandbox: str, expected: str
+) -> None:
+    permissions = TurnPermissions.model_validate(
+        {
+            "approval_policy": policy,
+            "approvals_reviewer": reviewer,
+            "sandbox_policy": {"type": sandbox},
+        }
+    )
+    assert permissions.permission_mode == expected
+
+
+@pytest.mark.parametrize(
+    "sandbox",
+    [
+        {"type": "read-only"},
+        {"type": "workspace-write", "network_access": True},
+        {"type": "workspace-write", "writable_roots": ["/laptop/private"]},
+        {"type": "workspace-write", "exclude_slash_tmp": True},
+    ],
+)
+def test_custom_native_permissions_are_not_silently_replaced(
+    sandbox: JsonObject,
+) -> None:
+    with pytest.raises(ValueError, match="sandbox_policy"):
+        TurnPermissions.model_validate(
+            {
+                "approval_policy": "on-request",
+                "approvals_reviewer": "user",
+                "sandbox_policy": sandbox,
+            }
+        )
+
+
+async def test_missing_native_permissions_does_not_use_server_defaults(
+    case: ForkCase, tmp_path: Path
+) -> None:
+    async with async_session() as session:
+        run = await session.one(
+            ExternalAgentRun,
+            expressions=[ExternalAgentRun["end_offset"] == len(case.prefix)],
+        )
+        run.permission_mode = None
+        await session.commit()
+    with pytest.raises(ValueError, match="no supported permission preset"):
         await case.tentacle.fork_transcript(
             case.source, case.target, owner_id=case.owner_id, cwd=tmp_path
         )
@@ -302,6 +402,8 @@ async def test_fork_requires_a_matching_terminal_event(
         run_id,
         [ModelRequest(parts=[UserPromptPart("later turn")])],
         external_session_id=case.source.external_id,
+        model_name="other-model",
+        permission_mode="full_access",
         end_offset=len(content),
     )
     terminal = event in {"task_complete", "turn_aborted"}
@@ -321,6 +423,8 @@ async def test_fork_requires_a_matching_terminal_event(
         content if terminal else case.prefix
     )
     assert len(result.messages) == int(previous_completed) + int(terminal)
+    assert result.runs[-1].model_name == ("other-model" if terminal else "gpt-6-luna")
+    assert result.permission_mode == ("full_access" if terminal else "auto_review")
 
 
 async def test_fork_rejects_an_offset_inside_a_line(

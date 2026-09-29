@@ -696,7 +696,9 @@ class CodexTentacle(AgentTentacle[str, None]):
         if source.transcript_file_id is None:
             raise ValueError("The session transcript has not been uploaded yet")
         await self.octomate.files.get(source.transcript_file_id, owner_id=owner_id)
-        project = await source_thread.project
+        project = await self.octomate.projects.of(source_thread)
+        if project is not None and not await anyio.Path(project.root).is_dir():
+            project = None
         thread = await threads.ensure(destination, project=project)
         target = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=self.id
@@ -732,6 +734,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 source.transcript_file_id, owner_id=owner_id
             )
             end = 0
+            completed_run: ExternalAgentRun | None = None
             for run in source.runs:
                 if (
                     not isinstance(run, ExternalAgentRun)
@@ -753,8 +756,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                     and closing.payload.get("turn_id") == run.id
                 ):
                     end = offset
-            if not end:
+                    completed_run = run
+            if completed_run is None:
                 raise ValueError("No completed Codex turn has been fully uploaded")
+            if completed_run.permission_mode is None:
+                raise ValueError(
+                    "The completed Codex turn has no supported permission preset"
+                )
             data = data[:end]
             upload = UploadFile(
                 BytesIO(data),
@@ -779,6 +787,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                         target,
                         external_id=external_id,
                         transcript=Jsonl.model_validate(snapshot),
+                        model_name=completed_run.model_name,
+                        permission_mode=completed_run.permission_mode,
                     )
             finally:
                 await upload.close()
@@ -1702,6 +1712,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_id=run_id,
             messages=accumulator.messages,
             name=run_name,
+            model_name=sdk_model,
+            permission_mode=permission_mode,
             cwd=Path(run_cwd),
             external_id=accumulator.thread_id or codex_thread_id,
         )

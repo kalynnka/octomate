@@ -1048,6 +1048,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     run_id=run_id,
                     messages=accumulator.messages,
                     name=run_name,
+                    model_name=accumulator.route.model
+                    if accumulator.route is not None
+                    else deepseek_model,
+                    permission_mode=permission_mode,
                     cwd=Path(run_cwd),
                     external_id=session_id,
                 )

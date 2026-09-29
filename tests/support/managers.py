@@ -225,6 +225,8 @@ class FakeConversationManager(ConversationManager):
         messages: Sequence[ModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
         parent_run_id: str | None = None,
@@ -233,7 +235,14 @@ class FakeConversationManager(ConversationManager):
         fake = cast(FakeConversation, conversation)
         self.runs.append((fake, f"{name}:{run_id}", list(messages)))
         fake.runs.append(
-            AgentRun(id=run_id, conversation_id=fake.id, name=name, cwd=cwd)
+            AgentRun(
+                id=run_id,
+                conversation_id=fake.id,
+                name=name,
+                cwd=cwd,
+                model_name=model_name,
+                permission_mode=permission_mode,
+            )
         )
         fake.messages.extend(messages)
         if external_id is not None:

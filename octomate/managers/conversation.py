@@ -194,6 +194,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
         parent_run_id: str | None = None,
@@ -211,6 +213,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             id=run_id,
             conversation_id=conversation.id,
             name=name,
+            model_name=model_name,
+            permission_mode=permission_mode,
             cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
@@ -231,6 +235,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_session_id: str,
         source: str | None = None,
@@ -281,6 +287,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             id=run_id,
             conversation_id=conversation.id,
             name=name,
+            model_name=model_name,
+            permission_mode=permission_mode,
             cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
@@ -335,6 +343,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         carry_external_id: bool = False,
         external_id: str | None = None,
         transcript: Jsonl | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
     ) -> AgentRun | None:
         """Fork `source`'s full message history into `target` as one new run, so a
         same-agent `teleport` resumes seamlessly against the copy.
@@ -391,6 +401,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                 id=run_id,
                 conversation_id=target.id,
                 name="fork",
+                model_name=model_name,
+                permission_mode=permission_mode or source.permission_mode,
                 started_at=messages[0].timestamp,
                 # New uuid7 ids minted in source order stay monotonic, so the copies
                 # keep their ordering under the id-ordered messages relation.
@@ -408,6 +420,10 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         # same reasoning as `persist_run`, and the handle moves by mutating the two
         # conversations as this session loads them.
         async with async_session() as session:
+            stored_target = await session.get(Conversation, target.id)
+            if stored_target is None:
+                raise ValueError(f"unknown conversation {target.id}")
+            stored_target.permission_mode = permission_mode or source.permission_mode
             if transcript is not None:
                 session.add(transcript)
                 await session.flush()
@@ -415,17 +431,13 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                 session.add(forked_run)
             if carry_handle:
                 moving_source = await session.get(Conversation, source.id)
-                moving_target = await session.get(Conversation, target.id)
-                if moving_source is None or moving_target is None:
+                if moving_source is None:
                     raise ValueError(
                         "fork can only carry a handle between persisted conversations"
                     )
-                moving_target.external_id = moving_source.external_id
+                stored_target.external_id = moving_source.external_id
                 moving_source.external_id = None
             elif external_id is not None:
-                stored_target = await session.get(Conversation, target.id)
-                if stored_target is None:
-                    raise ValueError(f"unknown conversation {target.id}")
                 stored_target.external_id = external_id
                 if transcript is not None:
                     stored_target.transcript_file_id = transcript.id

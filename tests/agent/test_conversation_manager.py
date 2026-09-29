@@ -37,6 +37,32 @@ async def _thread() -> uuid.UUID:
     return await a_thread()
 
 
+@pytest.mark.parametrize(
+    ("model_name", "permission_mode"),
+    [("selected-model", "auto_review"), (None, None)],
+)
+async def test_record_agent_run_persists_only_explicit_settings(
+    model_name: str | None, permission_mode: str | None
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="codex")
+    conversation = await manager.set_permission_mode(conversation, "full_access")
+    run = await manager.record_agent_run(
+        conversation,
+        run_id=str(uuid7()),
+        messages=[
+            RawModelResponse(parts=[TextPart("done")], model_name="message-model")
+        ],
+        model_name=model_name,
+        permission_mode=permission_mode,
+    )
+    assert run is not None
+    stored = await manager.get(conversation.id)
+    assert stored.runs[-1].model_name == model_name
+    assert stored.runs[-1].permission_mode == permission_mode
+    assert stored.permission_mode == "full_access"
+
+
 async def test_ensure_is_idempotent() -> None:
     service = ConversationManager()
     a = await service.ensure(await _thread(), agent_tentacle_id="inkling")

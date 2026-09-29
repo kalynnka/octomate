@@ -628,6 +628,9 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "start"
     assert thread_call.model == "gpt-5.3-codex"
+    [recorded] = conversations.store[(_THREAD, "codex", "")].runs
+    assert recorded.model_name == "gpt-5.3-codex"
+    assert recorded.permission_mode == "auto_review"
     assert thread_call.approval_mode == ApprovalMode.auto_review
     # The configured preset, in a chat thread as in any other: the run has a
     # workspace of its own for it to be scoped to.
@@ -1603,9 +1606,12 @@ async def test_the_conversations_preset_overrides_the_configured_one(
     assert thread_call.approval_mode is approval
     assert thread_call.sandbox is sandbox
     assert thread_call.kind == ("resume" if external_id else "start")
+    assert thread_call.model is None
+    assert thread_call.model_provider is None
     [turn_call] = FakeCodex.turn_calls
     assert turn_call.approval_mode is approval
     assert turn_call.sandbox is sandbox
+    assert turn_call.model is None
 
 
 async def test_a_warm_thread_reapplies_the_selected_preset(
