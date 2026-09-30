@@ -118,19 +118,18 @@ and the effort levels it accepts — pick the route whose ability covers the wor
 the agent's own default applies. Then `{summon}` — copying its `agent_id` and `model`
 exactly from that route, and writing a self-contained brief since the other agent may
 not see this chat. Choose `destination`: `here` hands over this same conversation;
-`thread` opens a new sub-thread of the current chat; a channel id from `{scry}` with
-`reveal="destinations"` opens one in that person's direct messages on that channel,
-for work that belongs where they actually do it. You yourself are not a valid summon
-target.
+`thread` opens a new sub-thread of the current chat; a destination handle from
+`{scry}` with `reveal="destinations"` starts a new thread there. You yourself are
+not a valid summon target.
 
 ### `{teleport}` — relocate yourself
-Move this conversation into a new sub-thread that *you* keep handling, carrying
+Move this conversation into a new thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
-`destination` is `thread`, a sub-thread of the current chat, unless you name a channel
-id from `{scry}` (`reveal="destinations"`) to carry it into their direct messages
-there — offered only from a conversation nobody else can read, since everything said
-here travels with you.
+`destination` is `thread`, a sub-thread of the current chat, unless you copy a
+destination handle from `{scry}` (`reveal="destinations"`) to start a new thread
+there. Moving elsewhere is offered only from a conversation nobody else can read,
+since everything said here travels with you.
 
 To work on a project, add `project` (from `{scry}` with `reveal="projects"`), and
 `ref` — a branch, tag or commit — only when the default branch is the wrong place to
@@ -402,12 +401,11 @@ class GatewayCapability(AbstractCapability[None]):
 
         Args:
             agent_id: The target agent, copied exactly from a `scry` route
-                (`reveal="routes"`) — from that destination's own routes when you
-                name a channel, since which agents run where is each channel's own
-                business.
+                (`reveal="routes"`) — use the selected destination's routes when
+                moving elsewhere.
             model: That route's model, copied exactly.
-            destination: Where the other agent picks it up. A channel opens a
-                sub-thread of that person's direct messages there.
+            destination: Where the other agent picks it up. Copy a destination
+                handle from `scry` to start a new thread there.
             hint: A short, user-facing note announcing the handoff; used as the
                 opener when a new thread is started.
             reason: One line on why this agent fits — recorded with the handoff, not
@@ -453,7 +451,7 @@ class GatewayCapability(AbstractCapability[None]):
         Args:
             hint: The short, user-facing thread-starter message.
             destination: Where to carry it, a sub-thread of this chat by default. A
-                channel takes it into their direct messages there, and is offered
+                destination handle starts a new thread there, offered
                 only out of a conversation nobody else can read — everything said
                 here goes with you, and it is not all yours to move. `here` stays
                 in this thread, and only to bind it to a `project`.
@@ -500,8 +498,8 @@ class GatewayCapability(AbstractCapability[None]):
                 person has spoken in, so cite a message by its `#msg:<id>` handle and
                 say what to search for instead of pasting it. A brief over the size
                 budget is refused, never trimmed.
-            destination: Whose direct messages — this channel's by default, or a
-                channel from `scry` (`reveal="destinations"`) to continue where
+            destination: Whose direct messages — `dm` by default, or a
+                destination handle from `scry` (`reveal="destinations"`) to continue where
                 they already are.
         """
         try:

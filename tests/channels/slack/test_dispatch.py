@@ -13,6 +13,7 @@ from typing import ClassVar, cast
 import pytest
 from slack_bolt.async_app import AsyncApp, AsyncSay
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.slack import base as slack_base
 from octomate.tentacles.slack.schema import SlackMessageEvent
@@ -143,6 +144,28 @@ async def test_open_dm_threads_off_the_opener_a_moving_turn_brings() -> None:
         for _chat, _type, messages, _reply, _channel_thread in ink.sent
         for message in messages
     ] == ["Finish the migration write-up."]
+
+
+async def test_gateway_thread_opens_one_dm_and_posts_one_root_message() -> None:
+    ink = FakeSlackInk()
+    channel = slack_channel(ink)
+    destination = ChannelAddress(
+        channel_tentacle_id=channel.id, chat_type="dm", chat_id="", user_id="U-alice"
+    )
+
+    address = await channel.start_thread(destination, "Continue here")
+
+    assert ink.opened_dms == ["U-alice"]
+    assert address.chat_id == "D-U-alice"
+    assert address.chat_type == "thread"
+    assert address.channel_thread_id == "fallback-ts"
+    [sent] = ink.sent
+    chat_id, chat_type, messages, reply_to, thread_id = sent
+    assert chat_id == "D-U-alice"
+    assert chat_type == "dm"
+    assert reply_to is None
+    assert thread_id == "D-U-alice"
+    assert [message.text for message in messages] == ["Continue here"]
 
 
 async def test_open_dm_stays_at_the_root_for_a_caller_with_nothing_to_say() -> None:

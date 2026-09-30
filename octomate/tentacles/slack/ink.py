@@ -16,7 +16,12 @@ from slack_sdk.web.async_client import AsyncWebClient
 
 from octomate.schemas.segments import ImageSegment
 from octomate.telemetry import slack_logfire
-from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.channel import (
+    DownloadedImage,
+    Ink,
+    SubThreadLocation,
+    ThreadLocationVariant,
+)
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownChunker
 from octomate.tentacles.slack.schema import (
     SlackBlock,
@@ -75,6 +80,13 @@ class SlackInk(Ink[SlackOutboundMessage]):
             nickname=profile.get("display_name") or None,
             title=profile.get("title") or None,
         )
+
+    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+        return [
+            SubThreadLocation(
+                key="", label="New sub-thread in DM", chat_type="dm", chat_id=""
+            )
+        ]
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The `D…` channel id of the bot's 1:1 with `user_id`.

@@ -17,7 +17,7 @@ from octomate import Octomate
 from octomate.auth import current_user
 from octomate.config import ChannelConfig, DiscordChannelConfig
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.managers.gateway import GatewayRefusal, OctomateSession
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import TextSegment
@@ -94,10 +94,12 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     assert options.status_code == 200, options.text
     data = options.json()
     assert [one["target"] for one in data["teleport"]["destinations"]] == [
-        {"kind": "channel", "channel": "far"}
+        {"kind": "channel", "channel": "trunkline"},
+        {"kind": "channel", "channel": "far"},
     ]
     assert [one["target"]["kind"] for one in data["summon"]["destinations"]] == [
         "here",
+        "channel",
         "channel",
     ]
     assert all(
@@ -228,7 +230,7 @@ async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> 
 async def test_failed_open_reports_stream_error(
     case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(case.far, "open_dm", AsyncMock(return_value=None))
+    monkeypatch.setattr(case.far.ink, "open_dm", AsyncMock(return_value=None))
     response = await client.post(
         f"/api/trunkline/threads/{case.thread.id}/teleport",
         json={"destination": {"kind": "channel", "channel": "far"}, "hint": "go"},
@@ -336,8 +338,8 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []
-    assert all(
-        one["target"] != {"kind": "channel", "channel": "trunkline"}
+    assert any(
+        one["target"] == {"kind": "channel", "channel": "trunkline"}
         for one in options["summon"]["destinations"]
     )
     response = await client.post(
@@ -350,7 +352,7 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     assert response.status_code == 409
 
 
-async def test_trunkline_is_not_offered_as_a_dm_crossing(case: Case) -> None:
+async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
     profile = await case.app.users.profile("far", "alice")
     assert profile is not None
     gateway = OctomateSession(
@@ -366,23 +368,20 @@ async def test_trunkline_is_not_offered_as_a_dm_crossing(case: Case) -> None:
             channel_tentacle_id="far", chat_type="dm", chat_id="alice", user_id="alice"
         ),
     )
-    assert all(one.handle != "trunkline" for one in await gateway.destinations())
     assert all(
-        one.handle != "trunkline" for one in await gateway.crossing_destinations()
+        one.handle != "trunkline" for one in (await gateway.destinations())["send"]
     )
-    with pytest.raises(GatewayRefusal):
-        await gateway.summon(
-            agent_id="second",
-            model="test",
-            destination=ChannelTarget(channel="trunkline"),
-            hint="Work in browser",
-            reason="move",
-            summon="Continue from this brief",
-        )
-    assert not case.receiver.streams
+    [destination] = (await gateway.destinations())["teleport"]
+    assert destination.handle == "trunkline"
+    assert destination.address.chat_type == "thread"
+    assert destination.address.channel_thread_id is None
+    await gateway.teleport(
+        destination=ChannelTarget(channel="trunkline"), hint="Work in browser"
+    )
+    assert gateway.decision is not None
 
 
-async def test_native_teleport_remains_unavailable(
+async def test_native_teleport_requires_a_transcript_fork_agent(
     case: Case, client: httpx.AsyncClient
 ) -> None:
     thread = await case.app.thread_manager.ensure(
@@ -398,9 +397,9 @@ async def test_native_teleport_remains_unavailable(
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []
-    assert "Native" in options["teleport"]["reason"]
-    assert all(
-        one["target"] != {"kind": "channel", "channel": "trunkline"}
+    assert "No eligible destinations" in options["teleport"]["reason"]
+    assert any(
+        one["target"] == {"kind": "channel", "channel": "trunkline"}
         for one in options["summon"]["destinations"]
     )
     response = await client.post(
@@ -483,3 +482,31 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
     assert not discord.accepts_sub_thread(
         replace(group, channel_tentacle_id="another-discord")
     )
+
+
+@pytest.mark.parametrize("operation", ["teleport", "summon"])
+async def test_new_trunkline_destination_is_owned_and_independent(
+    case: Case, client: httpx.AsyncClient, operation: str
+) -> None:
+    body = {
+        "destination": {"kind": "channel", "channel": "trunkline"},
+        "hint": "New workspace",
+    }
+    if operation == "summon":
+        body.update(agent_id="second", model="test", brief="Continue the investigation")
+    response = await client.post(
+        f"/api/trunkline/threads/{case.thread.id}/{operation}", json=body
+    )
+    assert "run_error" not in response.text, response.text
+    assert '"event_kind":"gateway"' in response.text
+    listed = await case.app.thread_manager.list_threads(user_id=case.owner.id)
+    [landed] = [thread for thread in listed if thread.id != case.thread.id]
+    assert landed.channel_tentacle_id == "trunkline"
+    assert landed.chat_type == "thread"
+    assert landed.channel_thread_id != case.thread.channel_thread_id
+    assert landed.active_agent_tentacle_id == (
+        "first" if operation == "teleport" else "second"
+    )
+    original = await case.app.thread_manager.get(case.thread.id)
+    assert original is not None
+    assert original.active_agent_tentacle_id == "first"

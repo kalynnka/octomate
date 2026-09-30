@@ -77,6 +77,8 @@ from octomate.tentacles.channel import (
     DownloadedImage,
     IMMessageID,
     Ink,
+    ThreadLocation,
+    ThreadLocationVariant,
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.deferred import ApprovalFeeler, QuestionFeeler
@@ -148,10 +150,19 @@ class TrunklineSeamNotWired(NotImplementedError):
 
 
 class TrunklineInk(Ink[WireEvent]):
-    """Transport stub: only identity probing is used (output streams inline)."""
+    """Console identity and thread locations; output streams inline."""
 
     async def inspect(self) -> UserProfile:
         return UserProfile(channel_user_id="trunkline", name="Trunkline")
+
+    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+        return [
+            ThreadLocation(
+                key="",
+                label="New thread",
+                chat_id=user_id,
+            )
+        ]
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         return UserProfile(channel_user_id=user_id, name="Console")
@@ -524,6 +535,25 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             to_model=chosen.model,
             reason="console route selection",
             target_conversation_id=conversation.id,
+        )
+
+    def thread_user_id(self, profile: UserProfile) -> str | None:
+        return str(profile.user_id) if profile.user_id is not None else None
+
+    async def start_thread(self, address: ChannelAddress, hint: str) -> ChannelAddress:
+        if (
+            address.channel_tentacle_id != self.id
+            or address.chat_type != "thread"
+            or address.channel_thread_id
+            or address.chat_id != address.user_id
+        ):
+            raise ValueError("Trunkline requires a new thread for its requesting user.")
+        return ChannelAddress(
+            channel_tentacle_id=self.id,
+            chat_type="thread",
+            chat_id=address.chat_id,
+            user_id=address.user_id,
+            channel_thread_id=uuid7().hex,
         )
 
     async def claim_posture(self, thread: Thread, mode: AgentPermissionMode) -> None:

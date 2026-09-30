@@ -42,7 +42,12 @@ from uuid_utils import uuid7
 
 from octomate.schemas.segments import ImageSegment
 from octomate.telemetry import lark_logfire
-from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.channel import (
+    DownloadedImage,
+    Ink,
+    SubThreadLocation,
+    ThreadLocationVariant,
+)
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.schema import (
     LarkBotInfoResponse,
@@ -281,6 +286,13 @@ class LarkInk(Ink[LarkOutboundMessage]):
             return None
         data, file_name = result
         return DownloadedImage(data=data, file_name=file_name)
+
+    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+        return [
+            SubThreadLocation(
+                key="", label="New sub-thread in DM", chat_type="dm", chat_id=""
+            )
+        ]
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """A user's own open_id is their 1:1 chat id, so nothing has to be opened."""

@@ -32,7 +32,6 @@ from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
     HERE_TARGET,
-    SCHEME_TOOL_NAME,
     SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     THREAD_TARGET,
@@ -41,6 +40,7 @@ from octomate.schemas.triage import (
     CrossingLanding,
     Destination,
     GatewayDecision,
+    GatewayDestinations,
     HereLanding,
     HereTarget,
     ProjectSummary,
@@ -56,6 +56,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
     ThreadTarget,
 )
+from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
@@ -65,7 +66,6 @@ if TYPE_CHECKING:
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
     from octomate.schemas.user import UserProfile
-    from octomate.tentacles.agent import AgentTentacle
     from octomate.tentacles.channel import ChannelTentacle
 
 # Why `scheme` has nowhere to land, and the sentence each reason refuses with.
@@ -110,7 +110,7 @@ class OctomateSession:
     # this person is reachable. Both None on a gateway built only to route locally.
     users: UserManager | None = None
     user_profile: UserProfile | None = None
-    # Which agents are live, narrowing `linked_destinations` to channels somebody
+    # Which agents are live, narrowing destinations to channels somebody
     # actually serves; also what the accomplice spells run with.
     agents: dict[str, AgentTentacle] | None = None
     thread_id: uuid.UUID | None = None
@@ -141,9 +141,9 @@ class OctomateSession:
     # shared with the agent to decide where to go, and what a spell landing here
     # validates a chosen route against. A crossing validates against its own.
     other_routes: list[AgentRoute] = field(init=False, repr=False)
-    # `destinations` is computed once per gateway, and a gateway lasts one turn. Held
-    # here rather than recomputed because resolving it reaches the identity registry.
-    computed_destinations: list[Destination] | None = field(
+
+    # Discovery is lazy and reused for this gateway session.
+    destination_cache: GatewayDestinations | None = field(
         default=None, init=False, repr=False
     )
 
@@ -253,96 +253,82 @@ class OctomateSession:
             )
         return built_in
 
-    async def destinations(self) -> list[Destination]:
-        """Every place this run can name, the built-in ones first.
+    async def destinations(self) -> GatewayDestinations:
+        """Discover named destinations once per gateway, grouped by spell.
 
-        One list, so a spell never has its own idea of what a place is — and `scry`
-        shows it whole. Computed on first use and kept: most turns never route, so
-        the registry is not touched at all unless a spell is actually cast.
+        Delivery uses linked DMs; Teleport/Summon ask channels for new-thread
+        destinations. Route and history checks stay with each spell's validator.
         """
-        if self.computed_destinations is None:
-            self.computed_destinations = (
-                self.built_in_destinations + await self.linked_destinations()
-            )
-        return self.computed_destinations
-
-    async def linked_destinations(self) -> list[Destination]:
-        """Their direct messages on other channels they are registered on.
-
-        Only channels that are connected, have direct messages, and serve an agent —
-        a place nobody could answer from is not somewhere this can go. Each carries
-        the routes *it* runs, because a handoff sent there is resolved against that
-        channel's config, not against the one the request came from.
-        """
+        if self.destination_cache is not None:
+            return self.destination_cache
+        delivery = self.built_in_destinations
+        places = GatewayDestinations(
+            send=delivery,
+            scheme=[one for one in delivery if one.handle != HERE_TARGET.handle],
+            summon=[],
+            teleport=[],
+        )
         if self.users is None or self.user_profile is None:
-            return []
-        linked: list[Destination] = []
-        for other in await self.users.linked_profiles(self.user_profile):
-            channel = self.channels.get(other.channel_tentacle_id)
+            self.destination_cache = places
+            return places
+        linked = await self.users.linked_profiles(self.user_profile)
+        for profile in linked:
+            channel = self.channels.get(profile.channel_tentacle_id)
             if channel is None or not channel.surfaces.direct_message:
                 continue
-            if not [
-                served
-                for served in channel.agent_ids
-                if self.agents is None or served in self.agents
-            ]:
+            if not any(
+                self.agents is None or agent_id in self.agents
+                for agent_id in channel.agent_ids
+            ):
                 continue
-            linked.append(
-                Destination(
-                    handle=other.channel_tentacle_id,
-                    label=f"their direct messages on {channel.name}",
-                    address=ChannelAddress(
-                        channel_tentacle_id=other.channel_tentacle_id,
-                        chat_type="dm",
-                        chat_id="",
-                        user_id=other.channel_user_id,
-                    ),
-                    routes=tuple(
-                        self.channel_routes.get(other.channel_tentacle_id, [])
-                    ),
-                )
+            destination = Destination(
+                handle=channel.id,
+                label=f"their direct messages on {channel.name}",
+                address=ChannelAddress(
+                    channel_tentacle_id=channel.id,
+                    chat_type="dm",
+                    chat_id="",
+                    user_id=profile.channel_user_id,
+                ),
+                routes=tuple(self.channel_routes.get(channel.id, [])),
             )
-        return linked
-
-    async def crossing_destinations(self) -> list[Destination]:
-        """The other channels this person is on that a turn can be *moved* to.
-
-        `summon` and `teleport` land in a sub-thread wherever they go, so a channel
-        that opens none is not somewhere they can be sent — while `scheme`, which
-        lands in the direct messages themselves, still reaches it. A channel running
-        nothing this run could name is out for the same reason: the turn would arrive
-        with nobody to take it. Both crossing spells ask this; neither may cross to
-        the channel it is already on. A native session has no address and every
-        place it can reach is a crossing, so it alone crosses from nowhere.
-        """
-        address = self.conversation_address
-        if address is None and not self.native:
-            return []
-        crossing: list[Destination] = []
-        for one in await self.destinations():
-            if (
-                address is not None
-                and one.address.channel_tentacle_id == address.channel_tentacle_id
-            ):
+            places["send"].append(destination)
+            places["scheme"].append(destination)
+        profiles = {profile.channel_tentacle_id: profile for profile in linked}
+        profiles[self.user_profile.channel_tentacle_id] = self.user_profile
+        for channel in self.channels.values():
+            routes = self.channel_routes.get(channel.id, [])
+            if not routes:
                 continue
-            channel = self.channels.get(one.address.channel_tentacle_id)
-            if (
-                channel is not None
-                and channel.accepts_sub_thread(one.address)
-                and one.routes
-            ):
-                crossing.append(one)
-        return crossing
+            profile = profiles.get(channel.id, self.user_profile)
+            for destination in await channel.thread_destinations(profile):
+                # A DM source already offers its own sub-thread as `thread`.
+                source = self.conversation_address
+                if (
+                    source is not None
+                    and source.channel_tentacle_id == channel.id
+                    and destination.address.chat_type == "dm"
+                ):
+                    continue
+                destination = replace(destination, routes=tuple(routes))
+                places["summon"].append(destination)
+                # Shared history may only move into its own local sub-thread.
+                if source is None or not source.shared:
+                    places["teleport"].append(destination)
+        self.destination_cache = places
+        return places
 
-    async def summon_handles(self) -> list[str]:
-        """Every handle `summon` can actually land on from here, in the order the
-        model should prefer them: this surface, a sub-thread of it, then anywhere
-        else the asker is. Empty means the spell has nowhere to go at all, which is
-        what each refusal below says when it has nothing to offer instead."""
-        handles = [HERE_TARGET.handle] if self.allow_here else []
+    async def destination_handles(
+        self, spell: Literal["summon", "teleport"]
+    ) -> list[str]:
+        """Local targets followed by the spell's cached named destinations.
+
+        Teleport's `here` target requires a project and is validated separately.
+        """
+        handles = [HERE_TARGET.handle] if spell == "summon" and self.allow_here else []
         if self.allow_sub_thread:
             handles.append(THREAD_TARGET.handle)
-        return handles + [one.handle for one in await self.crossing_destinations()]
+        return handles + [one.handle for one in (await self.destinations())[spell]]
 
     @property
     async def operations(self) -> ThreadOperations:
@@ -370,7 +356,7 @@ class OctomateSession:
                 label=one.label,
                 routes=list(one.routes),
             )
-            for one in await self.crossing_destinations()
+            for one in (await self.destinations())["summon"]
         )
         summon = [
             destination.model_copy(
@@ -387,18 +373,16 @@ class OctomateSession:
                 route.agent_id != self.current_agent_id for route in destination.routes
             )
         ]
-        handles = await self.teleport_handles()
+        reason = self.teleport_unavailable
+        handles = [] if reason else await self.destination_handles("teleport")
         teleport = [
             destination
             for destination in destinations
             if destination.target.handle in handles
             and any(
-                route.agent_id == self.current_agent_id for route in destination.routes
+                self.is_compatible_agent(route.agent_id) for route in destination.routes
             )
         ]
-        reason = self.teleport_unavailable
-        if reason:
-            teleport = []
         return ThreadOperations(
             teleport=OperationAvailability(
                 destinations=teleport,
@@ -417,34 +401,29 @@ class OctomateSession:
             ),
         )
 
+    def is_compatible_agent(self, agent_id: str) -> bool:
+        """A driven source keeps its agent; native history needs a matching importer."""
+        if not self.native:
+            return agent_id == self.current_agent_id
+        agent = self.agents.get(agent_id) if self.agents is not None else None
+        return (
+            agent is not None
+            and agent.native_id == self.current_agent_id
+            and type(agent).fork is not AgentTentacle.fork
+        )
+
     @property
     def teleport_unavailable(self) -> str | None:
-        """History transfer requires a managed agent with session-fork support."""
-        if self.native:
-            return "Native sessions cannot teleport yet; fork native Codex into Trunkline first."
-        if self.agents is not None:
+        """Only a stored, owned history can be imported from a native runtime."""
+        if self.native and self.thread_id is None:
+            return "Native teleport requires an uploaded thread; use Trunkline to select it."
+        if not self.native and self.agents is not None:
             agent = self.agents.get(self.current_agent_id)
             if agent is None:
                 return "The source agent is not connected."
             if not agent.supports_session_fork:
                 return "The source agent does not support independent session forking."
         return None
-
-    async def teleport_handles(self) -> list[str]:
-        """Every handle `teleport` can land on. `here` is not among them at any
-        surface — a teleport that stayed put would be the agent simply carrying on,
-        unless it carries a project, which `teleport` settles before asking here.
-
-        A shared surface can only reach its own sub-thread. Everything said here
-        comes with a teleport, and on a crossing that would republish what other
-        people said into somewhere private on another platform, under this person's
-        name alone. A private conversation is already all theirs to move.
-        """
-        handles = [THREAD_TARGET.handle] if self.allow_sub_thread else []
-        address = self.conversation_address
-        if address is not None and address.shared:
-            return handles
-        return handles + [one.handle for one in await self.crossing_destinations()]
 
     def no_landing(self, handle: str, handles: list[str], *, spell: str) -> str:
         """Why `handle` is nowhere `spell` can land, and what is instead.
@@ -475,11 +454,13 @@ class OctomateSession:
             return f"{why}`{spell}` has nowhere left to land, so answer it{fallback}"
         return f"{why}Use one of these instead, copied exactly: {', '.join(handles)}."
 
-    async def destination(self, handle: str, *, spell: str) -> Destination:
+    async def destination(
+        self, handle: str, *, spell: Literal["send", "scheme", "summon", "teleport"]
+    ) -> Destination:
         """The place `handle` names, or a `GatewayRefusal` listing what it could
         have named. The model never names an address — this is where one comes from.
         """
-        places = await self.destinations()
+        places = (await self.destinations())[spell]
         found = next((one for one in places if one.handle == handle), None)
         if found is not None:
             return found
@@ -561,7 +542,12 @@ class OctomateSession:
             case "routes":
                 return self.other_routes
             case "destinations":
-                return await self.destinations()
+                destinations = await self.destinations()
+                places: dict[str, Destination] = {}
+                for spell in ("send", "scheme", "summon", "teleport"):
+                    for one in destinations[spell]:
+                        places.setdefault(one.handle, one)
+                return list(places.values())
             case "projects":
                 return await self.projects()
 
@@ -598,7 +584,7 @@ class OctomateSession:
     ) -> str:
         """Validate and record a handoff decision, returning the sentence the
         summoning agent is told. The move itself is the graph's, after the turn."""
-        handles = await self.summon_handles()
+        handles = await self.destination_handles("summon")
         if destination.handle not in handles:
             raise GatewayRefusal(
                 self.no_landing(destination.handle, handles, spell="summon")
@@ -660,16 +646,13 @@ class OctomateSession:
         and once — so staying put is refused for a DM or a group and for a thread
         already about a project, before a mirror is synced for nothing.
 
-        A native session is refused before any handle is read: its turn lives in a
-        terminal Octomate does not drive, so there is nothing to relocate — only
-        work to hand off."""
-        if self.native:
-            raise GatewayRefusal(
-                "This session lives in your terminal — Octomate cannot relocate "
-                f"it. `{SUMMON_TOOL_NAME}` an agent to take the work up on a real "
-                f"channel, or `{SCHEME_TOOL_NAME}` it into someone's direct "
-                "messages."
-            )
+        Native history requires a stored thread and a runtime that can import its
+        uploaded transcript. Anonymous native tool sessions still cannot teleport."""
+        agent_id = self.current_agent_id
+        if self.native and (reason := self.teleport_unavailable):
+            raise GatewayRefusal(reason)
+        if self.native and not isinstance(destination, ChannelTarget):
+            raise GatewayRefusal("Native teleport requires a new destination.")
         if project is not None and (
             self.users is None
             or self.user_profile is None
@@ -708,7 +691,7 @@ class OctomateSession:
                 )
             crossing = None
         else:
-            handles = await self.teleport_handles()
+            handles = await self.destination_handles("teleport")
             if destination.handle not in handles:
                 raise GatewayRefusal(
                     self.no_landing(destination.handle, handles, spell="teleport")
@@ -718,15 +701,25 @@ class OctomateSession:
                 if isinstance(destination, ChannelTarget)
                 else None
             )
-            if crossing is not None and not any(
-                route.agent_id == self.current_agent_id for route in crossing.routes
-            ):
-                channel = self.channels[crossing.address.channel_tentacle_id]
-                raise GatewayRefusal(
-                    f"{channel.name} does not run you ({self.current_agent_id}), and "
-                    f"a teleport takes you with it. Carry on here, or "
-                    f"`{SUMMON_TOOL_NAME}` an agent it does run."
+            if crossing is not None:
+                route = next(
+                    (
+                        route
+                        for route in crossing.routes
+                        if self.is_compatible_agent(route.agent_id)
+                    ),
+                    None,
                 )
+                if route is None:
+                    channel = self.channels[crossing.address.channel_tentacle_id]
+                    raise GatewayRefusal(
+                        f"{channel.name} has no agent that can import this native history."
+                        if self.native
+                        else f"{channel.name} does not run you ({self.current_agent_id}), "
+                        f"and a teleport takes you with it. Carry on here, or "
+                        f"`{SUMMON_TOOL_NAME}` an agent it does run."
+                    )
+                agent_id = route.agent_id
         if reason := self.teleport_unavailable:
             raise GatewayRefusal(reason)
         if project is not None:
@@ -754,6 +747,7 @@ class OctomateSession:
                     "default branch."
                 )
         decision = TeleportDecision(
+            agent_id=agent_id,
             hint=hint,
             crossing=CrossingLanding(address=crossing.address) if crossing else None,
             here=isinstance(destination, HereTarget),

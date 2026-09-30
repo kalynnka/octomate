@@ -2040,7 +2040,7 @@ class BindingFakeTurn(FakeTurn):
         yield first
         assert BindingFakeTurn.session is not None
         BindingFakeTurn.session.decision = TeleportDecision(
-            hint="into inky", here=True, project="inky"
+            agent_id="codex", hint="into inky", here=True, project="inky"
         )
         for event in rest:
             yield event

@@ -115,6 +115,7 @@ async def test_napcat_send_rejects_unsuccessful_onebot_responses(
 async def test_napcat_rejects_subthread_destinations() -> None:
     ink = NapcatInk("http://napcat.test")
     try:
+        assert await ink.thread_locations("1001") == []
         with pytest.raises(ValueError, match="only group chats and DMs"):
             await ink.send_message("2002", "thread", [], channel_thread_id="1001")
     finally:

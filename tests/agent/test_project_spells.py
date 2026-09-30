@@ -145,7 +145,9 @@ async def test_a_teleport_into_a_project_validates_it_and_records_the_move(
         hint="into inky", destination=HERE_TARGET, project="inky"
     )
 
-    assert decision == TeleportDecision(hint="into inky", here=True, project="inky")
+    assert decision == TeleportDecision(
+        agent_id="inkling", hint="into inky", here=True, project="inky"
+    )
     assert harness.session.decision is decision
     # Nothing bound yet: that is the graph's, on the thread it lands in. The mirror
     # is synced here, which is what a ref has to resolve against.
@@ -260,7 +262,7 @@ async def test_a_native_session_may_list_but_neither_move_nor_dispel(
     assert await harness.session.scry("projects") == [
         ProjectSummary(name="inky", description=None)
     ]
-    with pytest.raises(GatewayRefusal, match="lives in your terminal"):
+    with pytest.raises(GatewayRefusal, match="requires a new destination"):
         await harness.session.teleport(
             hint="h", destination=HERE_TARGET, project="inky"
         )

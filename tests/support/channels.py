@@ -47,6 +47,8 @@ from octomate.tentacles.channel import (
     Chromo,
     DownloadedImage,
     Ink,
+    SubThreadLocation,
+    ThreadLocationVariant,
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.deferred import (
@@ -143,6 +145,11 @@ class RecordingInk(Ink[NativeMessage]):
     # Whether this platform will hand back a private chat; False is the open
     # failing at the moment of asking.
     dm_opens: bool = True
+
+    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+        return [
+            SubThreadLocation(key="", label="New thread", chat_type="dm", chat_id="")
+        ]
 
     async def inspect(self) -> UserProfile:
         return self.self_profile

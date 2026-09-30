@@ -329,7 +329,7 @@ async def test_a_native_session_scries_only_crossings(
     # landing exists — everywhere it can go is the linked account's crossing.
     assert routes.data == "- (none)"
     assert "their direct messages on" in places.data
-    assert await session.summon_handles() == ["im"]
+    assert await session.destination_handles("summon") == ["im"]
 
 
 async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
@@ -361,7 +361,7 @@ async def test_a_native_teleport_is_refused_honestly(
             await client.call_tool("gateway_teleport", {"hint": "moving over"})
 
     assert str(refusal.value).startswith(
-        "This session lives in your terminal — Octomate cannot relocate it."
+        "Native teleport requires an uploaded thread; use Trunkline to select it."
     )
     assert kicks == []
 

@@ -1426,7 +1426,7 @@ async def test_a_crossing_leaves_a_row_in_the_chat_it_left(
     [recorded] = [
         message
         for message in threads.outbounds
-        if message.message_text == "Working on it"
+        if message.message_text == "Working on it" and message.actor_kind != "system"
     ]
     assert recorded.direction == "outbound"
     assert recorded.agent_tentacle_id == second.id

@@ -5,6 +5,7 @@ import logging
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import ClassVar
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
@@ -13,6 +14,7 @@ from pydantic import SecretStr
 from octomate import Octomate
 from octomate.config import DiscordChannelConfig
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces, build_channel
 from octomate.tentacles.discord import (
     DiscordChromo,
@@ -375,3 +377,89 @@ async def test_start_sub_thread_uses_base_fallback_for_dm_and_thread(
 
     assert returned == addresses
     assert presented == [(address, "Stay on this surface") for address in addresses]
+
+
+@pytest.mark.parametrize("denied", [None, "user", "bot", "missing"])
+async def test_gateway_destinations_check_discord_membership_and_permissions(
+    monkeypatch: pytest.MonkeyPatch, denied: str | None
+) -> None:
+    tentacle = DiscordTentacle(
+        "discord",
+        Octomate(),
+        config=DiscordChannelConfig(bot_token=SecretStr("test"), agents=["first"]),
+    )
+    tentacle.self_profile = UserProfile(channel_user_id="42", name="Discord")
+    guild = a_text_channel().guild
+    guild.name = "Development"
+    channel = a_text_channel(guild=guild)
+    channel.name = "work"
+    channel.position = 0
+    other = a_text_channel(401, guild=guild)
+    other.name = "planning"
+    other.position = 1
+    guild._channels = {channel.id: channel, other.id: other}
+    member = Mock(spec=discord.Member)
+    bot = Mock(spec=discord.Member)
+    monkeypatch.setattr(discord.Client, "guilds", property(lambda self: [guild]))
+    monkeypatch.setattr(discord.Guild, "me", property(lambda self: bot))
+    monkeypatch.setattr(discord.Guild, "get_member", lambda self, user_id: member)
+    fetch_member = AsyncMock(return_value=member)
+    monkeypatch.setattr(discord.Guild, "fetch_member", fetch_member)
+    if denied == "missing":
+        monkeypatch.setattr(discord.Guild, "get_member", lambda self, user_id: None)
+        fetch_member.side_effect = discord.NotFound(
+            Mock(status=404, reason="Not Found"), "Unknown Member"
+        )
+    allowed = discord.Permissions(
+        view_channel=True,
+        send_messages=True,
+        create_public_threads=True,
+        send_messages_in_threads=True,
+    )
+    blocked = discord.Permissions.none()
+
+    def permissions(
+        self: discord.TextChannel, who: discord.Member
+    ) -> discord.Permissions:
+        return (
+            blocked
+            if (denied == "user" and who is member) or (denied == "bot" and who is bot)
+            else allowed
+        )
+
+    monkeypatch.setattr(discord.TextChannel, "permissions_for", permissions)
+    profile = UserProfile(channel_tentacle_id="discord", channel_user_id="100")
+    destinations = await tentacle.thread_destinations(profile)
+    if denied:
+        assert destinations == []
+        return
+    destination, alternative = destinations
+    assert alternative.handle == f"discord/{other.id}"
+    assert alternative.address.chat_id == str(other.id)
+    assert "Development / #planning" in alternative.label
+    assert destination.handle == f"discord/{channel.id}"
+    assert "Development / #work" in destination.label
+    assert destination.address.shared
+    assert destination.address.chat_type == "group"
+    assert (
+        await tentacle.thread_destinations(
+            UserProfile(channel_tentacle_id="unlinked", channel_user_id="100")
+        )
+        == []
+    )
+    sent = AsyncMock(return_value=a_message(channel, message_id=700))
+    opened = AsyncMock(return_value=a_thread(500, parent_id=channel.id, guild=guild))
+    monkeypatch.setattr(
+        tentacle.ink, "resolve_messageable", AsyncMock(return_value=channel)
+    )
+    monkeypatch.setattr(discord.TextChannel, "send", sent)
+    monkeypatch.setattr(discord.Message, "create_thread", opened)
+    address = await tentacle.start_thread(destination.address, "Continue here")
+    assert address.channel_thread_id == "500"
+    fetch_member.assert_awaited_once_with(100)
+    # Access is rechecked at execution, after the menu was opened.
+    allowed.create_public_threads = False
+    with pytest.raises(ValueError, match="no longer use"):
+        await tentacle.start_thread(destination.address, "Continue here")
+    sent.assert_awaited_once()
+    opened.assert_awaited_once()

@@ -4,7 +4,7 @@ landings they resolve to, and the decisions a run leaves."""
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal, NamedTuple
+from typing import Annotated, Literal, NamedTuple, TypedDict
 
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ToolCallPart
@@ -106,11 +106,11 @@ class DirectTarget(SpellTarget):
 
 
 class ChannelTarget(SpellTarget):
-    """Another channel this person is on, to reach them where they already are."""
+    """A named destination resolved by the gateway and its owning channel."""
 
     kind: Literal["channel"] = "channel"
     channel: str = Field(
-        description="The channel id, copied exactly from a `scry` destination."
+        description="The destination handle, copied exactly from `scry` or the operation menu."
     )
 
     @property
@@ -173,6 +173,15 @@ class Destination:
         return "\n".join([line, *(f"  {route}" for route in self.routes)])
 
 
+class GatewayDestinations(TypedDict):
+    """Named destinations by spell; local targets and agent routes validate separately."""
+
+    send: list[Destination]
+    scheme: list[Destination]
+    summon: list[Destination]
+    teleport: list[Destination]
+
+
 class HereLanding(BaseModel):
     """Take over this same conversation, in place — no new surface."""
 
@@ -187,19 +196,12 @@ class ThreadLanding(BaseModel):
 
 
 class CrossingLanding(BaseModel):
-    """Open a sub-thread of this person's direct messages on another channel.
-
-    A landing of its own rather than a `ThreadLanding` with an address, because
-    reaching it takes a different sequence: the direct messages have to be opened
-    before there is anywhere to open a sub-thread of, the receiving agent is
-    resolved against the far channel's config, and the origin has to be told,
-    having watched the conversation leave without a word.
-    """
+    """Create an isolated thread at a destination resolved by its owning channel."""
 
     kind: Literal["crossing"] = "crossing"
     address: ChannelAddress = Field(
-        description="The channel and the account on it, from the identity registry. "
-        "`chat_id` stays empty until that channel opens the conversation."
+        description="A channel-owned thread destination. A DM parent may leave "
+        "chat_id empty until opened; a server channel names its existing chat_id."
     )
 
 
@@ -268,6 +270,9 @@ class TeleportDecision(BaseModel):
     """
 
     action: Literal["teleport"] = "teleport"
+    agent_id: str = Field(
+        description="The driven agent selected to resume the history at the destination."
+    )
     hint: str = Field(description="The short, user-facing thread-starter message.")
     crossing: CrossingLanding | None = Field(
         default=None,

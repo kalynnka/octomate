@@ -15,7 +15,12 @@ import httpx
 
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.channel import (
+    DownloadedImage,
+    Ink,
+    SubThreadLocation,
+    ThreadLocationVariant,
+)
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.utils import strip_markdown
@@ -207,8 +212,60 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
                     "Discord typing hint failed for %s", channel_id, exc_info=True
                 )
 
-    async def start_public_thread(self, chat_id: str, hint_text: str) -> str:
+    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+        """Server text channels where the requester and bot can share a new thread."""
+        locations: list[ThreadLocationVariant] = []
+        for guild in self.client.guilds:
+            member = guild.get_member(int(user_id))
+            if member is None:
+                try:
+                    member = await guild.fetch_member(int(user_id))
+                except discord.NotFound:
+                    continue
+            locations.extend(
+                SubThreadLocation(
+                    key=str(channel.id),
+                    label=f"{guild.name} / #{channel.name} (public thread)",
+                    chat_type="group",
+                    chat_id=str(channel.id),
+                    shared=True,
+                )
+                for channel in guild.text_channels
+                if self.thread_permissions(channel, member)
+            )
+        return locations
+
+    def thread_permissions(
+        self, channel: discord.TextChannel, member: discord.Member
+    ) -> bool:
+        """Both the requester and bot must be able to participate in the new thread."""
+        user = channel.permissions_for(member)
+        bot = channel.permissions_for(channel.guild.me)
+        return (
+            channel.type is discord.ChannelType.text
+            and user.view_channel
+            and user.send_messages_in_threads
+            and bot.view_channel
+            and bot.send_messages
+            and bot.create_public_threads
+            and bot.send_messages_in_threads
+        )
+
+    async def start_public_thread(
+        self, chat_id: str, hint_text: str, *, user_id: str | None = None
+    ) -> str:
+        """Create a public thread; recheck a supplied requester's membership and access."""
         destination = await self.resolve_messageable(chat_id)
+        if user_id is not None:
+            if not isinstance(destination, discord.TextChannel):
+                raise ValueError(
+                    "The Discord destination is not a server text channel."
+                )
+            member = await destination.guild.fetch_member(int(user_id))
+            if not self.thread_permissions(destination, member):
+                raise ValueError(
+                    "The requester or bot can no longer use this Discord channel."
+                )
         if (
             not isinstance(destination, discord.TextChannel)
             or destination.type is not discord.ChannelType.text

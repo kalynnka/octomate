@@ -1,5 +1,4 @@
-"""The sequence both crossing spells share: open a sub-thread of a person's direct
-messages on another channel and announce the move at the origin."""
+"""Create a channel-owned destination and announce the move at its origin."""
 
 from __future__ import annotations
 
@@ -9,7 +8,9 @@ from pydantic_graph import GraphRunContext
 
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.triage import CrossingLanding
+from octomate.schemas.user import UserProfile
 
 logger = logging.getLogger(__name__)
 
@@ -21,48 +22,62 @@ async def open_crossing(
     hint_text: str,
     agent_tentacle_id: str,
 ) -> ChannelAddress | None:
-    """Open a sub-thread of this person's direct messages on another channel and
-    return where it landed, or None when nothing moved.
+    """Ask the destination channel to create an isolated thread, then announce it.
 
-    Both spells that cross ask for the same thing and are refused the same way, so
-    the sequence lives here rather than twice: the direct messages have to exist
-    before there is anywhere to open a sub-thread of, and the origin has to be told,
-    having otherwise watched the conversation leave without a word.
-
-    The gate refused a channel that opens no sub-thread and one that cannot run the
-    agent going there, so both failures left are the platform failing as it is asked.
-    Neither falls back to the direct messages themselves: a `summon` landing there
-    would pin an agent the origin chose onto someone's private conversation, and a
-    `teleport` would fork a whole history onto a chat that already has one.
+    The existing opener is recorded with its requesting user so the destination
+    remains visible in their console. No fallback may reuse an existing chat.
     """
     channel = ctx.deps.channel(landing.address.channel_tentacle_id)
-    dm_address = await channel.open_dm(landing.address.user_id, hint_text)
-    if dm_address is None:
-        logger.warning(
-            "Channel %s could not open a DM with %s; leaving the turn here",
-            landing.address.channel_tentacle_id,
-            landing.address.user_id,
-        )
-        return None
+    profile = ctx.state.user_profile
+    if profile is not None:
+        destinations = await channel.thread_destinations(profile)
+        if profile.channel_tentacle_id != channel.id:
+            linked = await ctx.deps.thread_manager.users.profile(
+                channel.id, landing.address.user_id
+            )
+            if linked is not None and linked.user_id == profile.user_id:
+                profile = linked
+            elif not any(one.address == landing.address for one in destinations):
+                raise ValueError(
+                    "The destination profile is no longer linked to this user."
+                )
     try:
-        opened = await channel.start_sub_thread(dm_address, hint_text)
+        opened = await channel.start_thread(landing.address, hint_text)
     except Exception:
         logger.warning(
-            "Channel %s raised starting a crossed sub-thread",
-            landing.address.channel_tentacle_id,
+            "Channel %s could not create the destination thread",
+            channel.id,
             exc_info=True,
         )
-        opened = dm_address
-    if opened == dm_address:
-        # An ink swallows its own send failures, so a failed open hands back the
-        # address it was given rather than raising.
-        logger.warning(
-            "Channel %s opened no sub-thread for the crossing; leaving the turn "
-            "here rather than claiming their direct messages",
-            landing.address.channel_tentacle_id,
-        )
         return None
+    if profile is not None:
+        if profile.channel_tentacle_id != channel.id:
+            profile = UserProfile(
+                channel_tentacle_id=channel.id,
+                channel_user_id=opened.user_id,
+                user_id=profile.user_id,
+                name=profile.name,
+                nickname=profile.nickname,
+            )
+        ctx.state.user_profile = profile
+        # Attribute the existing opener so the requesting user can find the destination.
+        # Native teleport's transcript fork already publishes its attributed fork notice.
+        native_fork = (
+            ctx.state.run_name == "teleport"
+            and ctx.state.thread is not None
+            and ctx.state.thread.kind == "native_thread"
+        )
+        if not native_fork:
+            await ctx.deps.thread_manager.record_outbound(
+                opened,
+                agent_tentacle_id=agent_tentacle_id,
+                sender=ctx.state.user_profile,
+                actor_kind="system",
+                segments=[MarkdownSegment(data={"text": hint_text})],
+            )
     origin = source_address.channel_tentacle_id
+    if origin not in ctx.deps.channels:
+        return opened
     try:
         announced = await ctx.deps.channel(origin).feelers.markdown.present(
             source_address, hint_text

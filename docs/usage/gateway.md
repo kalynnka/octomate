@@ -35,17 +35,26 @@ First [link your profiles](../installation/accounts.md#link-your-channel-profile
 so Octomate can find you there. Available destinations depend on the channel;
 ask the agent to list them if your requested move is unavailable.
 
-Crossings open a sub-thread in your linked account's direct messages. Trunkline
-has only top-level threads; Discord DMs and NapCat cannot open sub-threads.
-These channels are not offered as crossing destinations.
-Discord can still open a public thread from a server text channel. Teleport also
-requires a harness that supports independent session forking; DeepSeek is not yet
-supported.
+Each channel creates its own destination. Trunkline opens a new private thread,
+including when the source is already in Trunkline. Discord offers server text
+channels where your linked account and the bot can participate; the bot opens a
+new public thread there. Other thread-capable channels can open a sub-thread in
+your linked account's direct messages. Existing Discord DMs and NapCat are not
+Teleport destinations: neither can create an isolated thread.
 
-A conversation can cross into another channel's private messages only when its
-current conversation is already private. For a task that began in a group,
-[continue privately with a brief](#scheme) instead. Native sessions cannot be
-teleported; use a handoff from your local agent.
+Teleport requires independent history copying: driven Codex, Claude and Inkling
+support it; DeepSeek does not yet. In Trunkline, an owned native Codex session can
+also teleport using its latest fully uploaded completed turn. The import keeps
+that turn's model and permissions, copies its transcript, and leaves the native
+source usable. The selected destination must expose a Codex agent; its first
+compatible configured route handles the import. Other connected Codex agents
+do not prevent the move.
+
+A conversation can cross to a new destination only when its current conversation
+is private. For a task that began in a group,
+[continue privately with a brief](#scheme) instead. An anonymous native MCP call
+cannot teleport its history; select the uploaded session in Trunkline, or use a
+handoff from your local agent.
 
 You can also ask the agent to use a project before starting file work:
 

@@ -19,7 +19,7 @@ from octomate.reflex.state import (
     ResponseTarget,
 )
 from octomate.reflex.suspender import TeleportRequest
-from octomate.schemas.thread import Thread
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)
@@ -111,6 +111,37 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # for the same agent so follow-ups continue there, and resume against
             # the fork. The runtime prepares its destination handle after the
             # destination workspace is ready.
+            if state.thread.kind == "native_thread":
+                source_agent_id = state.thread.active_agent_tentacle_id
+                if (
+                    state.user_profile is None
+                    or state.decision is None
+                    or source_agent_id is None
+                ):
+                    raise ValueError(
+                        "Native teleport requires its requesting user and agent."
+                    )
+                source = await ctx.deps.conversation_manager.ensure(
+                    state.thread.id,
+                    agent_tentacle_id=source_agent_id,
+                )
+                agent = ctx.deps.agent(self.agent_id)
+                landed = await agent.fork(
+                    source,
+                    ThreadKey.from_address(new_address),
+                    sender=state.user_profile,
+                )
+                copied = await ctx.deps.conversation_manager.ensure(
+                    landed.id, agent_tentacle_id=agent.id
+                )
+                state.decision = state.decision.model_copy(
+                    update={"model": copied.runs[-1].model_name}
+                )
+                state.thread = landed
+                state.target = new_target
+                state.handoff = None
+                state.user_prompt = f"Continuing the conversation here.\nCurrent channel address: {new_address}"
+                return React()
             landed = await ctx.deps.thread_manager.enter(
                 new_address, current=state.thread
             )

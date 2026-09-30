@@ -25,7 +25,7 @@ from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.files import File
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import CODEX_NATIVE_ID
+from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.transcript import TurnPermissions
 from octomate.types.json import JsonObject
@@ -61,8 +61,11 @@ async def case(
         config=CodexConfig(runtime=RuntimeConfig(env={"CODEX_HOME": str(home)})),
     )
     owner = await a_user()
+    source_thread = await octomate.thread_manager.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "thread", str(owner.id), uuid7().hex)
+    )
     source = await octomate.conversations.ensure(
-        await a_thread("source"), agent_tentacle_id=CODEX_NATIVE_ID
+        source_thread.id, agent_tentacle_id=CODEX_NATIVE_ID
     )
     target = await octomate.conversations.ensure(
         await a_thread("target"), agent_tentacle_id=tentacle.id

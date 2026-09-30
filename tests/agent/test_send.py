@@ -281,10 +281,12 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
     capability = _gate()
     # Seeded rather than computed: this is about resolving a handle, not about
     # reaching the identity registry, which `test_user` covers.
-    capability.session.computed_destinations = [
-        *capability.session.built_in_destinations,
-        lark,
-    ]
+    capability.session.destination_cache = {
+        "send": [*capability.session.built_in_destinations, lark],
+        "scheme": [lark],
+        "summon": [],
+        "teleport": [],
+    }
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
@@ -320,10 +322,12 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
     capability = _gate()
     # Seeded rather than computed: this is about resolving a handle, not about
     # reaching the identity registry, which `test_user` covers.
-    capability.session.computed_destinations = [
-        *capability.session.built_in_destinations,
-        lark,
-    ]
+    capability.session.destination_cache = {
+        "send": [*capability.session.built_in_destinations, lark],
+        "scheme": [lark],
+        "summon": [],
+        "teleport": [],
+    }
     assert capability.toolset is not None
     scry = capability.toolset.tools["scry"].function
 
@@ -363,6 +367,9 @@ async def test_the_gate_works_out_where_else_the_asker_is(
     session.channels = {"im": FakeChannelTentacle(), "lark": lark, "mute": mute}
     session.agents = {"other": cast(Any, object())}
 
-    assert [one.handle for one in await session.linked_destinations()] == ["lark"]
+    assert [one.handle for one in (await session.destinations())["send"]] == [
+        "dm",
+        "lark",
+    ]
     # Computed once and kept: a gateway lasts one turn.
     assert await session.destinations() is await session.destinations()

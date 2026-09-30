@@ -9,14 +9,17 @@ import httpx
 import pytest
 
 from octomate.auth import current_user
-from octomate.config.channels import TrunklineChannelConfig
+from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
 from octomate.schemas.user import User, UserProfile
+from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.test_codex_transcript_fork import ForkCase
 from tests.agent.test_codex_transcript_fork import case as case
+from tests.support.agents import FakeAgent
+from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project
 from tests.support.users import a_user
 
@@ -258,3 +261,64 @@ async def test_fork_uses_the_threads_active_conversation(
     response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
     assert response.status_code == 422
     case.fork.assert_not_awaited()
+
+
+@pytest.mark.parametrize("destination", ["trunkline", "far"])
+async def test_native_teleport_imports_completed_history_before_resuming(
+    case: ForkCase,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    destination: str,
+) -> None:
+    app = case.tentacle.octomate
+    app.connect(CodexTentacle("other-codex", app, config=case.tentacle.config))
+    if destination == "far":
+        far = app.connect(
+            FakeChannelTentacle(
+                "far", app, config=ChannelConfig(type="fake", agents=[case.tentacle.id])
+            )
+        )
+        await far.probe()
+        await app.users.ensure_profile(
+            "far", UserProfile(channel_user_id="alice", user_id=case.owner_id)
+        )
+    case.tentacle.models = {"gpt-6-luna": "test"}
+    runner = FakeAgent(id=case.tentacle.id, allow_reception_run=True)
+    monkeypatch.setattr(case.tentacle, "run", runner.run)
+    monkeypatch.setattr(case.tentacle, "run_stream_events", runner.run_stream_events)
+    path = f"/api/trunkline/threads/{case.source.thread_id}"
+    options = (await client.get(f"{path}/operations")).json()
+    assert options["teleport"]["reason"] is None
+    assert any(
+        one["target"] == {"kind": "channel", "channel": destination}
+        for one in options["teleport"]["destinations"]
+    )
+    response = await client.post(
+        f"{path}/teleport",
+        json={
+            "destination": {"kind": "channel", "channel": destination},
+            "hint": "Continue here",
+        },
+    )
+    assert "run_error" not in response.text, response.text
+    assert '"event_kind":"gateway"' in response.text
+    listed = await app.thread_manager.list_threads(user_id=case.owner_id)
+    [landed] = [
+        thread for thread in listed if thread.channel_tentacle_id == destination
+    ]
+    [copied] = await app.conversations.for_thread(landed.id)
+    copied = await app.conversations.get(copied.id)
+    assert copied.agent_tentacle_id == case.tentacle.id
+    assert copied.permission_mode == "auto_review"
+    assert copied.runs[-1].model_name == "gpt-6-luna"
+    assert copied.external_id == case.fork.return_value
+    assert copied.transcript_file_id is not None
+    assert (
+        await app.files.read(copied.transcript_file_id, owner_id=case.owner_id)
+        == case.prefix
+    )
+    assert not landed.handoffs
+    assert [run.model for run in (*runner.turns, *runner.streams)] == ["test"]
+    assert (
+        await app.conversations.get(case.source.id)
+    ).external_id == case.source.external_id

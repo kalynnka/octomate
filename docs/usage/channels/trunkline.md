@@ -75,9 +75,10 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 
 Every Trunkline conversation is a private thread; there is no DM surface or
 nested sub-thread. It never needs profile linking: you are your signed-in account.
-Incoming Teleport and Summon crossings are unavailable until the gateway supports
-creating a top-level thread directly. The existing crossing path requires a DM
-and a sub-thread inside it.
+Teleport and Summon can create a new Trunkline thread directly. The destination
+list also includes eligible Discord server channels for your linked account;
+selecting one creates a public Discord thread. Existing Discord DMs are omitted
+because they cannot hold an isolated new thread.
 
 ### Thread operation API
 
@@ -93,15 +94,17 @@ refuse active gateway turns or pending approvals/questions. They stream native
 run events, ending with `gateway` and the destination address; execution
 failures appear as `run_error` events.
 
-Native teleport and harnesses without independent session forking remain
-unavailable. External thread rows do not preserve their parent surface's privacy,
+Native Codex teleport imports the latest fully uploaded completed turn through
+the existing transcript fork, preserving its model and permissions. It uses
+the first compatible Codex agent in the selected destination's route order. Other native harnesses and driven harnesses without
+independent session forking remain unavailable. External thread rows do not
+preserve their parent surface's privacy,
 so the API refuses to export their full history across channels. Summon transfers
 only the supplied brief.
 
-Destination visibility is still incomplete for newly created crossing threads.
-If the move succeeds but the destination is absent from your accessible thread
-list, the console reports that limitation in the message panel instead of
-claiming navigation succeeded.
+The destination's existing opening message is recorded with the requesting
+user's identity so the new thread appears in their list. Native Codex's fork
+notice provides this attribution instead. No additional arrival hint is sent.
 
 ## The console surface
 

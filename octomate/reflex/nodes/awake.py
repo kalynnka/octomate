@@ -63,6 +63,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ctx.state.target = source
             decision = signal.decision
             if isinstance(decision, TeleportDecision):
+                agent = ctx.deps.agent(decision.agent_id)
                 conversation = next(
                     c
                     for c in thread.conversations
@@ -73,8 +74,8 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     stored.runs[-1].model_name if stored.runs else thread.active_model
                 )
                 ctx.state.decision = SummonDecision(
-                    agent_id=signal.agent_id,
-                    model=model,
+                    agent_id=agent.id,
+                    model=None if thread.kind == "native_thread" else model,
                     reason="Teleport requested from Trunkline",
                     hint=decision.hint,
                     summon="",
@@ -86,7 +87,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         crossing=decision.crossing,
                     ),
                     origin=source,
-                    agent_id=signal.agent_id,
+                    agent_id=agent.id,
                 )
             ctx.state.decision = decision
             ctx.state.run_name = "summon"

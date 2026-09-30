@@ -51,6 +51,12 @@ it, so `mention_only` accepts a mention **or** a reply. Once an agent owns a thr
 messages there need neither. Sub-threads are created from a text channel only,
 public, named from the hint.
 
+Teleport and Summon destination menus list server text channels where your linked
+Discord account can view and send messages in threads, and the bot can view, send,
+and create public threads. Membership and permissions are checked again when the
+thread opens. Discord DMs are not offered as fresh-thread destinations; their
+existing conversations are never overwritten.
+
 ## Rendering
 
 Discord has no cards. Streaming means editing one message as text arrives, rolling

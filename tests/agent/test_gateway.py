@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import ClassVar, Literal, cast
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import ValidationError
@@ -27,6 +28,7 @@ from octomate.schemas.triage import (
     ChannelTarget,
     Claim,
     CrossingLanding,
+    Destination,
     HereLanding,
     SchemeDecision,
     SummonDecision,
@@ -36,6 +38,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
+from octomate.types.threads import CODEX_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.users import a_user
@@ -233,7 +236,65 @@ async def test_scry_computes_only_the_facet_it_was_asked_for() -> None:
     await scry(FAKE_CONTEXT, "routes")
 
     # The registry was never reached for the facet nobody asked for.
-    assert capability.session.computed_destinations is None
+    assert capability.session.destination_cache is None
+
+
+async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) -> None:
+    users = UserManager()
+    session = OctomateSession(
+        channel_routes={},
+        current_agent_id="inkling",
+        users=users,
+        user_profile=UserProfile(channel_user_id="alice"),
+    )
+    discover = AsyncMock(return_value=[])
+    monkeypatch.setattr(users, "linked_profiles", discover)
+    discover.assert_not_called()
+
+    first = await session.destinations()
+
+    assert first == {"send": [], "scheme": [], "summon": [], "teleport": []}
+    assert await session.destinations() is first
+    assert await session.destination_handles("summon") == ["here", "thread"]
+    assert await session.destination_handles("teleport") == ["thread"]
+    assert await session.scry("destinations") == []
+    await session.operations
+    discover.assert_awaited_once_with(session.user_profile)
+
+
+@pytest.mark.parametrize("agent_id", ["codex", "claude", "inkling"])
+async def test_native_summon_accepts_any_distinct_driven_agent(agent_id: str) -> None:
+    route = AgentRoute(agent_id=agent_id, model="test", claim=CLAUDE_CLAIM)
+    destination = Destination(
+        handle="far",
+        label="new thread",
+        address=ChannelAddress(
+            channel_tentacle_id="far", chat_type="dm", chat_id="alice", user_id="alice"
+        ),
+        routes=(route,),
+    )
+    session = OctomateSession(
+        channel_routes={}, current_agent_id=CODEX_NATIVE_ID, native=True
+    )
+    session.destination_cache = {
+        "send": [],
+        "scheme": [],
+        "summon": [destination],
+        "teleport": [],
+    }
+
+    operations = await session.operations
+    assert operations.summon.destinations[0].routes == [route]
+    await session.summon(
+        agent_id=agent_id,
+        model="test",
+        destination=ChannelTarget(channel="far"),
+        hint="Continue",
+        reason="replacement",
+        summon="Carry on from this brief.",
+    )
+    assert isinstance(session.decision, SummonDecision)
+    assert session.decision.agent_id == agent_id
 
 
 async def test_summon_capability_rejects_self_summon() -> None:
@@ -579,7 +640,7 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    assert await capability.session.crossing_destinations() == []
+    assert (await capability.session.destinations())["summon"] == []
     with pytest.raises(ModelRetry, match="No destination 'far'"):
         await summon(
             FAKE_CONTEXT,
@@ -608,9 +669,9 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
 
     # `codex` is on no route here, and `scry` says where it is instead.
     assert only_far not in capability.session.other_routes
-    assert [one.routes for one in await capability.session.crossing_destinations()] == [
-        (only_far,)
-    ]
+    assert [
+        one.routes for one in (await capability.session.destinations())["summon"]
+    ] == [(only_far,)]
 
     await summon(
         FAKE_CONTEXT,
@@ -651,7 +712,11 @@ async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
     under this person's name alone — so the crossing is not offered at all, while
     the group's own sub-thread still is."""
     capability = await _crossable(shape, far_routes=(INKLING_ROUTE,))
-    assert await capability.session.teleport_handles() == destinations
+    assert await capability.session.destination_handles("teleport") == destinations
+    places = await capability.session.destinations()
+    assert [one.handle for one in places["summon"]] == ["far"]
+    assert [one.handle for one in places["teleport"]] == destinations[1:]
+    assert all(one.handle != "here" for one in places["scheme"])
 
 
 async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(

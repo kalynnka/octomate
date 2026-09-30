@@ -775,7 +775,7 @@ class BindingClaudeClient(FakeClaudeClient):
         )
         assert BindingClaudeClient.session is not None
         BindingClaudeClient.session.decision = TeleportDecision(
-            hint="into inky", here=True, project="inky"
+            agent_id="claude", hint="into inky", here=True, project="inky"
         )
         yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="bound")])
         await self.released.wait()

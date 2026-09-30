@@ -230,6 +230,16 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
 
         task.add_done_callback(finish)
 
+    async def start_thread(self, address: ChannelAddress, hint: str) -> ChannelAddress:
+        if not self.accepts_sub_thread(address):
+            raise ValueError(
+                "Discord requires a server text channel to create a thread."
+            )
+        thread_id = await self.ink.start_public_thread(
+            address.chat_id, hint, user_id=address.user_id
+        )
+        return replace(address, chat_type="thread", channel_thread_id=thread_id)
+
     def accepts_sub_thread(self, address: ChannelAddress) -> bool:
         return address.chat_type == "group" and super().accepts_sub_thread(address)
 

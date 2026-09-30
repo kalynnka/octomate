@@ -55,7 +55,8 @@ channel and `@`-mention it, or open its assistant pane. Verify a reply.
 Slack's streaming API takes a thread and nothing else, so the bot never streams
 into a channel root. When it opens a sub-thread it posts the hint as a message and
 that message becomes the thread. A private hand-off opens a thread inside your DM
-the same way.
+the same way. Teleport and Summon into a new DM thread post one opener at the
+DM root and continue in that thread.
 
 Text over Slack's limit is uploaded as a Markdown file with a one-line note.
 
