@@ -124,6 +124,35 @@ def test_deferred_reply_rejects_non_uuid7_batch_id() -> None:
     assert error.value.errors()[0]["type"] == "uuid_version"
 
 
+def test_deferred_action_rejects_non_uuid7_id() -> None:
+    with pytest.raises(ValidationError) as error:
+        DeferredQuestion(
+            id=uuid4(),
+            tool_name="ask_questions",
+            tool_call_id="call_question",
+            args={"question": "Deploy window?"},
+        )
+
+    assert error.value.errors()[0]["loc"] == ("id",)
+    assert error.value.errors()[0]["type"] == "uuid_version"
+
+
+def test_deferred_batch_rejects_non_uuid7_conversation_id() -> None:
+    address = _key()
+    with pytest.raises(ValidationError) as error:
+        DeferredActionBatch(
+            response_mode="live",
+            conversation_id=uuid4(),
+            agent_tentacle_id="deepseek",
+            source_address=address,
+            target_address=address,
+            requests=DeferredToolRequests(),
+        )
+
+    assert error.value.errors()[0]["loc"] == ("conversation_id",)
+    assert error.value.errors()[0]["type"] == "uuid_version"
+
+
 def test_deferred_action_batch_accepts_validated_actions() -> None:
     requests = _requests()
     actions = DeferredActionCollection.validate_python(requests)

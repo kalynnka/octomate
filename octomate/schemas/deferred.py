@@ -3,7 +3,6 @@ batch they are presented and resolved as."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import (
     Annotated,
@@ -122,7 +121,7 @@ class DeferredAction(BaseTransmuter):
         populate_by_name=True,
     )
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     batch_id: UUID7 | None = None
     status: DeferredActionStatus = "pending"
     tool_name: str
@@ -239,7 +238,7 @@ class DeferredActionBatch(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
-    conversation_id: uuid.UUID
+    conversation_id: UUID7
     agent_tentacle_id: str
     run_name: str | None = "react"
     status: DeferredBatchStatus = "pending"
