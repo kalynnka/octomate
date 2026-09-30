@@ -109,22 +109,6 @@ class CodexConfig(AgentConfig):
             "indefinitely."
         ),
     )
-    max_clients: int | None = Field(
-        default=8,
-        ge=1,
-        description=(
-            "Max warm Codex app-server processes kept in the per-thread client "
-            "pool. When exceeded, the least-recently-used idle client is closed. "
-            "None keeps every thread's client until shutdown."
-        ),
-    )
-    client_idle_ttl: float | None = Field(
-        default=600.0,
-        description=(
-            "Seconds a pooled Codex client may sit idle before it is closed on the "
-            "next pool access. None keeps idle clients until shutdown."
-        ),
-    )
 
     @model_validator(mode="before")
     @classmethod

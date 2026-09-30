@@ -1,7 +1,7 @@
 # Codex
 
-`type: codex` drives Codex through the openai-codex SDK's app-server, one warm
-process per conversation, and records the Codex sessions you run yourself.
+`type: codex` drives Codex through one shared openai-codex SDK app-server per
+tentacle and records the Codex sessions you run yourself.
 
 ## Enable
 
@@ -19,8 +19,6 @@ tentacles:
     effort: ~                      # none | minimal | low | medium | high | xhigh
     summary: ~                     # auto | concise | detailed | none
     personality: ~                 # none | friendly | pragmatic
-    max_clients: 8                 # warm app-servers kept; ~ = unbounded
-    client_idle_ttl: 600           # seconds an idle one lives; ~ = forever
     runtime:
       # codex_bin: /opt/bin/codex
       config_overrides: []
@@ -37,10 +35,15 @@ upgrading its Codex dependency to refresh the available models.
 
 ## Driven runs
 
-Each conversation gets its own app-server process from a pool, evicted after
-`client_idle_ttl` idle seconds or when the pool exceeds `max_clients`, least
-recently used first. The Codex thread id is the conversation's resumable handle,
-so a turn on a fresh process resumes the same thread.
+One app-server process handles model discovery, skill discovery and all driven
+conversations. Octomate saves a new native thread ID before starting its first turn.
+Before each later turn, it loads the conversation's native ID from the database,
+asks Codex whether that thread is loaded, and resumes it when needed. The applied
+credential and conversation header are tracked in memory for the life of the
+native thread; tokens also remain in memory. Moving the native handle to another
+conversation causes the next turn to reapply the destination's credential and header.
+The process starts when the tentacle starts and closes when it stops. If the
+process disconnects, requests fail until Octomate restarts.
 
 After each turn, Octomate reads the Codex thread's name through the SDK without
 loading its turn history. When Codex supplies a nonblank name, Octomate updates
@@ -58,9 +61,37 @@ Local customisation is off through config overrides appended after your own:
 hooks, plugins, apps and notifications are disabled, and every MCP server in the
 local Codex config is switched off for the thread. One server is added instead,
 `octomate_driven`, pointing at Octomate over HTTP with a temporary `mcp`-scoped API
-key minted for the asking user and revoked when the process closes. Codex lists
-those tools under `mcp__octomate_driven`. Your `developer_instructions` and
-`base_instructions` are carried on start and on resume.
+key shared by that user's conversations within the tentacle. Each thread receives
+the user's credential and its own conversation header. When the asking user changes
+or the credential expires, Octomate unsubscribes from that idle thread and resumes
+it with the current user's credential. Codex reloads the unsubscribed idle thread
+to apply the changed configuration; Octomate preserves the server's default idle
+unload delay. Changing credentials while the native thread is active is refused.
+Expired keys are replaced once per user; other loaded threads adopt the
+replacement on their next turn. Unloading a thread preserves
+the shared key for the user's other conversations. Remaining credentials are
+revoked when the tentacle shuts down. Codex lists those tools
+under `mcp__octomate_driven`. Your `developer_instructions` and `base_instructions`
+are carried on start and on resume.
+
+## Runtime commands
+
+The command catalog discovers enabled skills through Codex's `skills/list` API.
+It preserves native names and descriptions, and identifies skills by their paths,
+so two skills with the same name remain distinct. Codex does not expose a general
+CLI slash-command catalog through this API.
+
+Discovery requires an existing conversation workspace. Before one exists, the
+catalog reports unavailable; inspection does not create a workspace, start a
+Codex thread or send a prompt. It uses the tentacle's shared app-server, including
+its configuration overrides and change notifications.
+
+The host caches the catalog until explicit refresh, context changes or eviction.
+A `skills/changed` notification or runtime disconnect invalidates the agent's
+catalogs. Preparing a driven turn invalidates that conversation's catalog as well.
+Refresh rescans Codex's own skills cache; use it for changes the runtime has not
+reported. Native skill-loading errors appear in catalog limitations. If errors
+leave no enabled skills, discovery reports failed instead of an empty success.
 
 ## Approvals and questions
 
@@ -69,6 +100,9 @@ elicitations become Octomate actions. A denied request tells Codex why. Choices
 Codex offers, such as MCP consent prompts, are presented as they are. Under
 `auto_review` and `full_access` no request reaches the bridge at all. As with
 Claude, the wait is in process, so an answer is not durable across a restart.
+Requests are routed by native thread ID and answered asynchronously. One person's
+approval wait does not block the shared reader from delivering another
+conversation's events or answering discovery requests.
 
 ## Native sessions
 
@@ -90,5 +124,7 @@ for where new turns land and the limits for older history.
 
 ## Not yet
 
+- **Skill execution through the command API** remains unsupported; this adapter
+  currently implements discovery only.
 - **Structured output** rides the turn's output schema; there is no retry loop.
 - **Images in a prompt** are dropped.

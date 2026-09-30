@@ -806,6 +806,16 @@ async def test_observed_permission_names_survive_without_a_running_catalog() -> 
     assert reloaded.permission_mode == "audit-only"
 
 
+async def test_native_handle_is_saved_before_any_run() -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="codex")
+    await manager.set_external_id(conversation, "native-thread")
+    assert conversation.external_id == "native-thread"
+    stored = await ConversationManager().get(conversation.id)
+    assert stored.external_id == "native-thread"
+    assert not await stored.runs
+
+
 async def _carry_pair(
     tag: str,
 ) -> tuple[ConversationManager, uuid.UUID, uuid.UUID, Conversation, Conversation]:

@@ -72,8 +72,7 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
     async with send, receive:
         token = current_sink.set(send)
         try:
-            tentacle.bridge_contexts[conversation.id] = CodexBridgeContext(
-                loop=asyncio.get_running_loop(),
+            tentacle.bridge_contexts["codex-thread"] = CodexBridgeContext(
                 conversation=conversation,
                 conversation_address=address,
                 run_name="react",
@@ -82,14 +81,9 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
         finally:
             current_sink.reset(token)
 
-        # The SDK invokes its handler on a plain transport thread, which does
-        # not inherit the active request's ContextVars (unlike asyncio.to_thread).
-        task = asyncio.get_running_loop().run_in_executor(
-            None,
-            tentacle.handle_sdk_request,
-            conversation.id,
-            "item/tool/requestUserInput",
-            params,
+        # The shared reader dispatches from a context without this turn's sink.
+        task = asyncio.create_task(
+            tentacle.handle_sdk_request("item/tool/requestUserInput", params)
         )
         try:
             card = await asyncio.wait_for(receive.receive(), timeout=1)

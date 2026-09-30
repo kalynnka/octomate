@@ -85,8 +85,6 @@
   #   effort: ~                  # none | minimal | low | medium | high | xhigh
   #   summary: ~                 # auto | concise | detailed | none
   #   personality: ~             # none | friendly | pragmatic
-  #   max_clients: 8             # warm app-server processes pooled; ~ = unbounded
-  #   client_idle_ttl: 600       # seconds an idle pooled client lives; ~ = forever
 
   # WIP DeepSeek Harness agent. Owns a `dsh web` child with private extension
   # configuration, sharing native settings, credentials, sessions and attachments.

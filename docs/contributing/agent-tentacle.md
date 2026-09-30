@@ -5,6 +5,15 @@ conversation, stream what happens in Octomate's event vocabulary, raise approval
 and questions as deferred requests, and advertise its models. Inkling is the
 smallest complete example; Claude Code is the one to read for a subprocess harness.
 
+Codex keeps its SDK operations in `CodexInk`: client startup and shutdown,
+notifications, discovery queries, MCP configuration, and native thread and turn
+operations. `CodexTentacle` loads conversations and saves their native thread IDs
+through `ConversationManager`, and passes a catalog invalidation callback when
+starting the ink. The ink receives native thread IDs and credential values for
+each operation. Applied conversation and credential bindings stay in ink memory
+until the native thread closes or the client disconnects. The tentacle also owns
+credentials, human approvals and run recording.
+
 ## The contract
 
 `AgentTentacle` is abstract over two methods, each taking the same arguments:
@@ -40,7 +49,8 @@ The optional `probe_commands` and `execute_command` hooks use the
 without starting a turn. Each agent exposes `discover_commands` for cached discovery,
 refresh and command-name completion, backed by the host's command manager and an HTTP
 endpoint. The host also provides guarded execution through its command manager and
-HTTP API. Channel command controls and runtime adapters are not wired yet.
+HTTP API. Codex implements skill discovery; runtime execution, the other runtime
+discovery adapters and channel command controls are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval

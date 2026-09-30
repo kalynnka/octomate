@@ -195,6 +195,16 @@ class FakeConversationManager(ConversationManager):
                 return cast(Conversation, conversation)
         raise ValueError(f"unknown conversation {conversation_id}")
 
+    async def set_external_id(
+        self,
+        conversation: Conversation,
+        external_id: str,
+    ) -> Conversation:
+        stored = await self.get(conversation.id)
+        stored.external_id = external_id
+        conversation.external_id = external_id
+        return conversation
+
     async def link_parent_run(
         self,
         run_id: str,

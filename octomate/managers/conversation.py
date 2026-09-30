@@ -429,6 +429,28 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             source.external_id = None
         return forked_run
 
+    async def set_external_id(
+        self,
+        conversation: Conversation,
+        external_id: str,
+    ) -> Conversation:
+        """Save a native handle before starting its first turn."""
+        async with async_session() as session:
+            stored = await session.get(
+                Conversation,
+                conversation.id,
+                options=[
+                    lazyload(Conversation["runs"]),
+                    lazyload(Conversation["messages"]),
+                ],
+            )
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.external_id = external_id
+            await session.commit()
+        conversation.external_id = external_id
+        return conversation
+
     async def set_permission_mode(
         self,
         conversation: Conversation,

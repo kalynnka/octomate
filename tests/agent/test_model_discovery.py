@@ -185,23 +185,27 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
             claims={f"{prefix}:future-model": Claim("Old metadata", efforts=("low",))}
         ),
     )
-    await tentacle.discover_models()
-
-    assert tentacle.models == {
-        f"{prefix}:recommended": "recommended",
-        f"{prefix}:future-model": "future-model",
-    }
-    assert tentacle.default_model is None
-    assert tentacle.provider == prefix
-    assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-        "Native description", efforts=("high",)
-    )
-    assert [route.claim.efforts for route in tentacle.routes] == [("high",), ("high",)]
-    assert codex_catalog.request.call_args_list[2].args == (
-        "model/list",
-        {"includeHidden": False, "cursor": "page-2"},
-    )
+    async with tentacle:
+        assert tentacle.models == {
+            f"{prefix}:recommended": "recommended",
+            f"{prefix}:future-model": "future-model",
+        }
+        assert tentacle.default_model is None
+        assert tentacle.provider == prefix
+        assert tentacle.claims[f"{prefix}:future-model"] == Claim(
+            "Native description", efforts=("high",)
+        )
+        assert [route.claim.efforts for route in tentacle.routes] == [
+            ("high",),
+            ("high",),
+        ]
+        assert codex_catalog.request.call_args_list[2].args == (
+            "model/list",
+            {"includeHidden": False, "cursor": "page-2"},
+        )
+        codex_catalog.close.assert_not_awaited()
     codex_catalog.initialize.assert_awaited_once()
+    codex_catalog.close.assert_awaited_once()
 
 
 async def test_codex_empty_catalog_fails_without_fabricating_models(
@@ -213,8 +217,11 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
     ]
     tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig())
     with pytest.raises(ValueError, match="no available models"):
-        await tentacle.discover_models()
+        async with tentacle:
+            pytest.fail("An empty catalog must not start successfully")
     assert tentacle.models == {}
+    codex_catalog.close.assert_awaited_once()
+    assert tentacle.ink.notification_task is None
 
 
 async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
