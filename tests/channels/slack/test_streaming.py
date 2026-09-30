@@ -8,7 +8,6 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from uuid import uuid4
 
 import pytest
 from pydantic import JsonValue
@@ -27,6 +26,7 @@ from pydantic_ai.messages import (
 )
 from pydantic_ai.result import FinalResult
 from slack_sdk.models.messages.chunk import Chunk, TaskUpdateChunk
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import (
@@ -257,7 +257,7 @@ async def test_slack_consume_renders_image_and_card_segments(
 async def test_slack_consume_renders_todos_as_timeline_tasks() -> None:
     ink = FakeSlackInk()
     channel = slack_channel(ink)
-    todo = Todo(conversation_id=uuid4(), ref="T1", content="Find the docs")
+    todo = Todo(conversation_id=uuid7(), ref="T1", content="Find the docs")
 
     async def events() -> AsyncIterator[
         StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
@@ -295,7 +295,7 @@ async def test_slack_consume_renders_action_batch_blocks() -> None:
     channel = slack_channel(ink, deferred_actions=actions)
     # The slack block builders serialize the batch id into the buttons, so the
     # scripted actions need one (the action manager sets it on real runs).
-    batch_id = uuid4()
+    batch_id = uuid7()
     question, approval = batch_actions()
     question = question.model_copy(update={"batch_id": batch_id})
     approval = approval.model_copy(update={"batch_id": batch_id})

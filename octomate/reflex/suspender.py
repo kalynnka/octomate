@@ -3,9 +3,9 @@ back to the graph, everything else to a human as a persisted batch."""
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 
+from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -67,9 +67,9 @@ class ReflexSuspender:
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: SummonDecision | None
-    thread_id: uuid.UUID | None = None
+    thread_id: UUID7 | None = None
     emit_on_stream: bool = False
-    suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
+    suspended_batch_id: UUID7 | None = field(default=None, init=False)
     # Set when a run deferred a `teleport` (classified by metadata kind); the dispatch
     # graph reads this to route to its Teleport node instead of persisting a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)

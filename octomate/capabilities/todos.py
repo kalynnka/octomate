@@ -16,7 +16,7 @@ from collections.abc import AsyncIterable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
 from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.agent.abstract import AgentInstructions
 from pydantic_ai.capabilities import AbstractCapability
@@ -186,7 +186,7 @@ def build_todo_toolset(
 ) -> FunctionToolset[Any]:
     toolset: FunctionToolset[Any] = FunctionToolset(id="todo")
 
-    def conversation_id(ctx: RunContext[Any]) -> uuid.UUID:
+    def conversation_id(ctx: RunContext[Any]) -> UUID7:
         if ctx.conversation_id is None:
             raise ValueError("todo tools require a conversation_id on the run")
         return uuid.UUID(ctx.conversation_id)

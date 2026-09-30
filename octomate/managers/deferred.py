@@ -3,7 +3,6 @@ for a human — and their resolution from replies."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 
 from arcanus import RelationCollection
@@ -83,7 +82,7 @@ class DeferredActionManager(Manager):
 
     async def pending_for_thread(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
     ) -> list[DeferredActionBatch]:
         """The thread's unanswered batches, oldest first, so a channel can
         re-present waiting questions and approvals when the thread is reloaded."""
@@ -194,7 +193,7 @@ class DeferredActionManager(Manager):
 
     async def mark_action_presented(
         self,
-        action_id: uuid.UUID,
+        action_id: UUID7,
         platform_message_id: str | None,
     ) -> None:
         if not platform_message_id:

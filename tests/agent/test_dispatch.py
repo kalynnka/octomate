@@ -4,11 +4,11 @@ over the real ConversationManager/ThreadManager on in-memory SQLite."""
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncIterator
 from typing import cast
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -96,7 +96,7 @@ def _event(
     )
 
 
-async def _agent_rows(thread_id: uuid.UUID, text: str) -> list[ThreadMessage]:
+async def _agent_rows(thread_id: UUID7, text: str) -> list[ThreadMessage]:
     """The agent's own rows in a thread, read off the ledger: what reception
     recorded, before anyone's history tools come to search it."""
     async with async_session() as session:

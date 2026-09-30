@@ -7,7 +7,6 @@ Inkling already has gateway and history tools in process, so it mounts only
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
@@ -17,7 +16,7 @@ from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.shared.exceptions import MCPError
-from pydantic import Field, JsonValue
+from pydantic import UUID7, Field, JsonValue, WithJsonSchema
 
 from octomate.capabilities.gateway import gateway_instructions
 from octomate.capabilities.history import history_instructions
@@ -204,7 +203,8 @@ def tentacles_mcp(
         annotations={"destructiveHint": False, "idempotentHint": True},
     )
     async def enable(
-        mcp_id: uuid.UUID,
+        # OpenAI strict mode needs the standard format; UUID7 still validates values.
+        mcp_id: Annotated[UUID7, WithJsonSchema({"type": "string", "format": "uuid"})],
         user: User = Depends(require_user),  # noqa: B008
     ) -> McpServerSummary:
         try:
@@ -222,7 +222,7 @@ def tentacles_mcp(
         annotations={"destructiveHint": False, "idempotentHint": True},
     )
     async def disable(
-        mcp_id: uuid.UUID,
+        mcp_id: Annotated[UUID7, WithJsonSchema({"type": "string", "format": "uuid"})],
         user: User = Depends(require_user),  # noqa: B008
     ) -> McpServerSummary:
         try:
@@ -241,7 +241,7 @@ def tentacles_mcp(
         annotations={"destructiveHint": True},
     )
     async def uninstall(
-        mcp_id: uuid.UUID,
+        mcp_id: Annotated[UUID7, WithJsonSchema({"type": "string", "format": "uuid"})],
         user: User = Depends(require_user),  # noqa: B008
     ) -> str:
         try:

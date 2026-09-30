@@ -4,11 +4,11 @@ deferred feelers, `Feelers.present_actions`, stream batching, and chunking."""
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator
 from typing import cast
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -82,7 +82,7 @@ def _key(channel: str = "im") -> ChannelAddress:
 
 def _question(
     *,
-    batch_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
     position: int = 0,
     question: str = "Continue?",
     choices: list[str] | None = None,
@@ -103,7 +103,7 @@ def _question(
     )
 
 
-def _approval(*, batch_id: uuid.UUID | None = None) -> DeferredApproval:
+def _approval(*, batch_id: UUID7 | None = None) -> DeferredApproval:
     return DeferredApproval(
         id=uuid7(),
         batch_id=batch_id or uuid7(),

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from datetime import UTC, datetime
 from typing import Literal
 from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
+from pydantic import UUID7
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
@@ -33,7 +33,7 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-async def _thread() -> uuid.UUID:
+async def _thread() -> UUID7:
     return await a_thread()
 
 
@@ -808,7 +808,7 @@ async def test_observed_permission_names_survive_without_a_running_catalog() -> 
 
 async def _carry_pair(
     tag: str,
-) -> tuple[ConversationManager, uuid.UUID, uuid.UUID, Conversation, Conversation]:
+) -> tuple[ConversationManager, UUID7, UUID7, Conversation, Conversation]:
     """A source conversation holding one recorded run with a resumable handle, and
     a fresh target beside it."""
     service = ConversationManager()

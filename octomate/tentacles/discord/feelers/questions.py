@@ -7,6 +7,7 @@ import uuid
 from typing import Literal, Self
 
 import discord
+from pydantic import UUID7
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
@@ -41,8 +42,8 @@ class DiscordQuestionChoiceButton(
 
     def __init__(
         self,
-        batch_id: uuid.UUID,
-        action_id: uuid.UUID,
+        batch_id: UUID7,
+        action_id: UUID7,
         choice_index: int,
         label: str = "",
         *,
@@ -114,8 +115,8 @@ class DiscordQuestionAnswerButton(
 
     def __init__(
         self,
-        batch_id: uuid.UUID,
-        action_id: uuid.UUID,
+        batch_id: UUID7,
+        action_id: UUID7,
         *,
         label: str = "Write an answer…",
         selected: bool = False,
@@ -192,7 +193,7 @@ class DiscordQuestionNavButton(
 
     def __init__(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         page: int,
         operation: QuestionNavOperation,
         *,
@@ -252,7 +253,7 @@ class DiscordQuestionNavButton(
 
                 async def settle_message(
                     actions: list[DeferredQuestion],
-                    answers: dict[uuid.UUID, str],
+                    answers: dict[UUID7, str],
                 ) -> None:
                     await interaction.edit_original_response(
                         content=None,
@@ -285,8 +286,8 @@ class DiscordQuestionModal(discord.ui.Modal):
 
     def __init__(
         self,
-        batch_id: uuid.UUID,
-        action_id: uuid.UUID,
+        batch_id: UUID7,
+        action_id: UUID7,
         *,
         question: str,
         default: str | None = None,
@@ -342,7 +343,7 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[uuid.UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         actions = sorted(actions)
@@ -363,7 +364,7 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
 async def edit_question_page(
     interaction: discord.Interaction[discord.Client],
     actions: list[DeferredQuestion],
-    answers: dict[uuid.UUID, str],
+    answers: dict[UUID7, str],
     page: int,
 ) -> None:
     await interaction.edit_original_response(
@@ -375,7 +376,7 @@ async def edit_question_page(
 
 def question_page_content(
     actions: list[DeferredQuestion],
-    answers: dict[uuid.UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
     *,
     page: int = 0,
 ) -> str:
@@ -402,7 +403,7 @@ def question_page_content(
 
 def question_view(
     actions: list[DeferredQuestion],
-    answers: dict[uuid.UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
     *,
     page: int = 0,
 ) -> discord.ui.LayoutView:
@@ -468,7 +469,7 @@ def question_summary_view(content: str) -> discord.ui.LayoutView:
 
 def question_summary_content(
     actions: list[DeferredQuestion],
-    answers: dict[uuid.UUID, str],
+    answers: dict[UUID7, str],
     *,
     responder_id: str,
 ) -> str:

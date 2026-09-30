@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import uuid
 
 import pytest
 from logfire.testing import CaptureLogfire
@@ -12,6 +11,7 @@ from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_s
 from pydantic_ai.messages import TextContent
 from pydantic_ai.models.test import TestModel
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.agent import Agent
@@ -111,7 +111,7 @@ async def test_inkling_native_model_spans_keep_the_driving_trace(
                 chat_id="test",
                 user_id="test",
             ),
-            thread_id=uuid.uuid4(),
+            thread_id=uuid7(),
             output_type=str,
         )
 

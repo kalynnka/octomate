@@ -7,16 +7,17 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
@@ -34,7 +35,7 @@ from octomate.tentacles.agent import AgentTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import FakeConversationManager
 
-THREAD = uuid.uuid4()
+THREAD = uuid7()
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im",
     chat_type="dm",
@@ -50,7 +51,7 @@ CLAUDE_ROUTE = AgentRoute(
 
 
 def _ctx(
-    parent_id: uuid.UUID,
+    parent_id: UUID7,
     run_id: str = "run-parent",
     tool_call_id: str = "call-1",
 ) -> RunContext[None]:

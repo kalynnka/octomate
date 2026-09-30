@@ -3,13 +3,12 @@ external transcript."""
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 from typing import Annotated, Literal
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import AwareDatetime, ConfigDict, Field
+from pydantic import UUID7, AwareDatetime, ConfigDict, Field
 
 from octomate.models.runs import AgentRun as AgentRunModel
 from octomate.models.runs import ExternalAgentRun as ExternalAgentRunModel
@@ -33,7 +32,7 @@ class AgentRun(BaseTransmuter):
     # its type — mirroring pydantic-ai's own `ModelRequest | ModelResponse`. The
     # `external` variant narrows it; the override warns but is intended.
     kind: Literal["octomate"] = "octomate"
-    conversation_id: uuid.UUID
+    conversation_id: UUID7
     name: str | None = None
     cwd: Path | None = Field(
         default=None,

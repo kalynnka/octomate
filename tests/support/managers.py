@@ -9,7 +9,6 @@ them the parent row SQLite's foreign keys require.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -116,7 +115,7 @@ async def the_sub_thread(chat_room: Thread) -> Thread:
     return rows[0]
 
 
-async def a_thread(chat_id: str = "chat") -> uuid.UUID:
+async def a_thread(chat_id: str = "chat") -> UUID7:
     """A persisted `threads` row to hang conversations off, idempotent per
     `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
     `uuid7()` names a parent that does not exist."""
@@ -143,12 +142,12 @@ class FakeConversation:
     """Stand-in whose `messages` is a plain list react can read + accumulate
     into, since the real arcanus relation can't be appended to detached."""
 
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    id: UUID7 = field(default_factory=uuid7)
     messages: list[ModelMessage] = field(default_factory=list)
     external_id: str | None = None
-    thread_id: uuid.UUID | None = None
+    thread_id: UUID7 | None = None
     subagent_id: str = ""
-    parent_conversation_id: uuid.UUID | None = None
+    parent_conversation_id: UUID7 | None = None
     agent_tentacle_id: str = ""
     runs: list[AgentRun] = field(default_factory=list)
     permission_mode: AgentPermissionMode | None = None
@@ -157,10 +156,10 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager(ConversationManager):
-    store: dict[tuple[uuid.UUID, str | None, str], FakeConversation] = field(
+    store: dict[tuple[UUID7, str | None, str], FakeConversation] = field(
         default_factory=dict
     )
-    ensured: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
+    ensured: list[tuple[UUID7, str | None]] = field(default_factory=list)
     runs: list[tuple[FakeConversation, str, list[ModelMessage]]] = field(
         default_factory=list
     )
@@ -168,11 +167,11 @@ class FakeConversationManager(ConversationManager):
 
     async def ensure(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         *,
         agent_tentacle_id: str | None = None,
         subagent_id: str = "",
-        parent_conversation_id: uuid.UUID | None = None,
+        parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
@@ -189,7 +188,7 @@ class FakeConversationManager(ConversationManager):
         return cast(Conversation, conversation)
 
     async def get(
-        self, conversation_id: uuid.UUID, *, with_history: bool = True
+        self, conversation_id: UUID7, *, with_history: bool = True
     ) -> Conversation:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
@@ -205,7 +204,7 @@ class FakeConversationManager(ConversationManager):
     ) -> None:
         self.parent_links.append((run_id, parent_run_id, parent_tool_call_id))
 
-    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+    async def subagents(self, parent_conversation_id: UUID7) -> list[Conversation]:
         return [
             cast(Conversation, conversation)
             for conversation in self.store.values()
@@ -213,7 +212,7 @@ class FakeConversationManager(ConversationManager):
             and conversation.subagent_id
         ]
 
-    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+    async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
                 return conversation.thread_id
@@ -290,7 +289,7 @@ class FakeThreadManager(ThreadManager):
     sub_threads: list[Thread] = field(default_factory=list)
     handoffs: list[Handoff] = field(default_factory=list)
     outbounds: list[ThreadMessage] = field(default_factory=list)
-    assistant_reply_bindings: list[tuple[list[uuid.UUID], str]] = field(
+    assistant_reply_bindings: list[tuple[list[UUID7], str]] = field(
         default_factory=list
     )
 
@@ -338,7 +337,7 @@ class FakeThreadManager(ThreadManager):
         return thread
 
     async def get(
-        self, thread_id: uuid.UUID, *, with_messages: bool = True
+        self, thread_id: UUID7, *, with_messages: bool = True
     ) -> Thread | None:
         return next(
             (
@@ -359,10 +358,10 @@ class FakeThreadManager(ThreadManager):
         reason: str = "",
         hint: str = "",
         brief: str = "",
-        source_conversation_id: uuid.UUID | None = None,
-        target_conversation_id: uuid.UUID | None = None,
+        source_conversation_id: UUID7 | None = None,
+        target_conversation_id: UUID7 | None = None,
         source_run_id: str | None = None,
-        source_model_message_id: uuid.UUID | None = None,
+        source_model_message_id: UUID7 | None = None,
     ) -> Handoff:
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
@@ -438,7 +437,7 @@ class FakeThreadManager(ThreadManager):
 
     async def bind_assistant_replies(
         self,
-        thread_message_ids: list[uuid.UUID],
+        thread_message_ids: list[UUID7],
         *,
         run_id: str,
     ) -> list[MessageBinding]:
@@ -481,7 +480,7 @@ class FakeDeferredBatch:
     deferred_results: DeferredToolResults
     # The conversation the suspended run was in — which names the thread it ran
     # in, and so the sub-thread a chat room's kick opened.
-    conversation_id: uuid.UUID = field(default_factory=uuid.uuid4)
+    conversation_id: UUID7 = field(default_factory=uuid7)
     id: UUID7 = field(default_factory=uuid7)
     agent_tentacle_id: str = "inkling"
     run_name: str | None = "react"
@@ -500,7 +499,7 @@ class FakeActionManager:
     batch: FakeDeferredBatch | None = None
     presented_batch: FakePresentedBatch | None = None
     create_calls: list[CreateBatchCall] = field(default_factory=list)
-    presented: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
+    presented: list[tuple[UUID7, str | None]] = field(default_factory=list)
     marked: list[tuple[UUID7, DeferredBatchStatus, bool]] = field(default_factory=list)
 
     async def create_batch(
@@ -540,7 +539,7 @@ class FakeActionManager:
 
     async def mark_action_presented(
         self,
-        action_id: uuid.UUID,
+        action_id: UUID7,
         platform_message_id: str | None,
     ) -> None:
         self.presented.append((action_id, platform_message_id))
@@ -579,7 +578,7 @@ class RecordingWorkspaceManager(WorkspaceManager):
 
     def __init__(self) -> None:
         super().__init__()
-        self.saved: list[uuid.UUID] = []
+        self.saved: list[UUID7] = []
 
     async def save(self, thread: Thread) -> None:
         self.saved.append(thread.id)

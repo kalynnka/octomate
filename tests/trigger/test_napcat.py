@@ -10,10 +10,10 @@ a plain message after it."""
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import NapcatChannelConfig, OctomateConfig
@@ -105,7 +105,7 @@ async def test_napcat_renders_action_batch(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     channel, address = napcat_channel
-    batch_id = uuid4()
+    batch_id = uuid7()
     question, approval = batch_actions()
     script = action_batch(
         batch_id=str(batch_id),

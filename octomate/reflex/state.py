@@ -7,12 +7,12 @@ without importing its siblings.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, TypeVar, overload
 
+from pydantic import UUID7
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
@@ -87,9 +87,9 @@ class PendingHandoff:
     session it came from; a route that pins a thread's owner names nobody."""
 
     source_agent_tentacle_id: str | None = None
-    source_conversation_id: uuid.UUID | None = None
+    source_conversation_id: UUID7 | None = None
     source_run_id: str | None = None
-    source_model_message_id: uuid.UUID | None = None
+    source_model_message_id: UUID7 | None = None
 
 
 @dataclass
@@ -113,7 +113,7 @@ class DeferredResult:
     # `RunName`, because on a re-present it is read back from the persisted batch.
     run_name: str
     result: AgentRunResult[Any]
-    batch_id: uuid.UUID | None = None
+    batch_id: UUID7 | None = None
 
 
 type ReflexGraphResult = ReflexResult | DeferredResult
@@ -138,9 +138,9 @@ class ReflexState:
     targets: dict[str, ResponseTarget] = field(default_factory=dict)
     summon_routes: list[AgentRoute] = field(default_factory=list)
     thread: Thread | None = None
-    trigger_thread_message_id: uuid.UUID | None = None
+    trigger_thread_message_id: UUID7 | None = None
     source_thread_address: ChannelAddress | None = None
-    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
+    source_thread_message_ids: list[UUID7] = field(default_factory=list)
     # The handoff the next React records when it lands, or None when it records
     # none.
     handoff: PendingHandoff | None = None
@@ -196,7 +196,7 @@ class ReflexDeps:
         agent: AgentTentacle,
         *,
         user_profile: UserProfile | None,
-        thread_id: uuid.UUID | None,
+        thread_id: UUID7 | None,
         conversation_address: ChannelAddress,
     ) -> OctomateSession | None:
         """One turn's gateway for `agent`, or None for an agent whose flag is off.

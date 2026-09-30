@@ -4,7 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from arcanus import RelationCollection
-from pydantic import ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -89,7 +89,7 @@ async def _create_batch(
 @pytest.mark.parametrize("batch_id", [None, uuid7()], ids=["generated", "supplied"])
 async def test_create_batch_uses_uuid7(
     in_memory_engine: AsyncEngine,
-    batch_id: UUID | None,
+    batch_id: UUID7 | None,
 ) -> None:
     created = await _create_batch(batch_id=batch_id)
 
@@ -282,4 +282,4 @@ async def test_mark_batch_sets_status_and_completed_at(
 async def test_mark_action_presented_noops_for_unknown_action(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    await DeferredActionManager().mark_action_presented(uuid4(), "msg-1")
+    await DeferredActionManager().mark_action_presented(uuid7(), "msg-1")

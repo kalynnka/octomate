@@ -2,9 +2,9 @@
 
 import asyncio
 from unittest.mock import AsyncMock
-from uuid import UUID
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -95,7 +95,7 @@ async def test_reply_during_presentation_reaches_the_live_request(
 
     async def present(
         address: ChannelAddress, actions: list[DeferredApproval]
-    ) -> dict[UUID, str]:
+    ) -> dict[UUID7, str]:
         [action] = actions
         assert action.batch_id is not None
         assert action.batch_id in agent.pendings
@@ -131,7 +131,7 @@ async def test_pending_batches_accept_replies_in_reverse_order(
 
     async def present(
         address: ChannelAddress, actions: list[DeferredApproval]
-    ) -> dict[UUID, str]:
+    ) -> dict[UUID7, str]:
         presented.extend(actions)
         if len(presented) == 2:
             ready.set()

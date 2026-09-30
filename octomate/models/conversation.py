@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import UUID7
 from sqlalchemy import ARRAY, JSON, ForeignKey, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -32,10 +32,10 @@ class Conversation(Base, TransmuterProxiedMixin):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     external_id: Mapped[str | None] = mapped_column(String, nullable=True)
 
-    thread_id: Mapped[uuid.UUID] = mapped_column(
+    thread_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("threads.id", ondelete="CASCADE"),
         nullable=False,
@@ -64,7 +64,7 @@ class Conversation(Base, TransmuterProxiedMixin):
             "external_id: that is a mutable resumable handle, this is identity."
         ),
     )
-    parent_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+    parent_conversation_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="SET NULL"),
         nullable=True,

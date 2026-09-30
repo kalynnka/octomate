@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass, field
 from typing import cast
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import UUID7, JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -62,8 +61,8 @@ def _key(channel: str = "im") -> ChannelAddress:
 
 def _question(
     *,
-    batch_id: uuid.UUID | None = None,
-    action_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
+    action_id: UUID7 | None = None,
     position: int = 0,
     question: str = "Continue?",
     choices: list[str] | None = None,
@@ -86,8 +85,8 @@ def _question(
 
 def _approval(
     *,
-    batch_id: uuid.UUID | None = None,
-    action_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
+    action_id: UUID7 | None = None,
 ) -> DeferredApproval:
     return DeferredApproval(
         id=action_id or uuid7(),
@@ -98,7 +97,7 @@ def _approval(
     )
 
 
-def _batch_id(action: DeferredQuestion | DeferredApproval) -> uuid.UUID:
+def _batch_id(action: DeferredQuestion | DeferredApproval) -> UUID7:
     assert action.batch_id is not None
     return action.batch_id
 

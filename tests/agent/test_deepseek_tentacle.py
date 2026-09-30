@@ -29,6 +29,7 @@ from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -70,7 +71,7 @@ KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
 
-_THREAD = uuid.uuid4()
+_THREAD = uuid7()
 
 TurnEntry = (
     JsonObject | ApprovalRequestedFrame | QuestionRequestedFrame | StreamErrorFrame

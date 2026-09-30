@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import JsonValue
+from pydantic import UUID7, JsonValue
 from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -29,8 +28,8 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
 
     __tablename__ = "deferred_action_batches"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    conversation_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
@@ -109,8 +108,8 @@ class DeferredAction(Base, TransmuterProxiedMixin):
         "polymorphic_abstract": True,
     }
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    batch_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("deferred_action_batches.id", ondelete="CASCADE"),
         nullable=False,
