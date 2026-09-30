@@ -263,7 +263,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         async with target_channel.feelers.timeline.open(
                             target_address
                         ) as timeline_state:
-                            with target_channel.feelers.driving(
+                            async with target_channel.feelers.driving(
                                 target_address, timeline_state
                             ):
                                 async with aclosing(stream_events()) as events:

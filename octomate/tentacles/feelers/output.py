@@ -18,6 +18,7 @@ from collections.abc import (
 )
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
+from functools import cached_property
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -623,6 +624,11 @@ class TimelineState:
     deferred_actions: DeferredActionManager
     subagent_timelines: dict[str, OpenSubagentTimeline] | None = None
 
+    @cached_property
+    def render_lock(self) -> asyncio.Lock:
+        """Serialize stream events with out-of-stream permission callbacks."""
+        return asyncio.Lock()
+
     @asynccontextmanager
     async def open_subagent(
         self,
@@ -750,6 +756,7 @@ class TimelineState:
             await self.observe_subagent_event(event)
             if failed:
                 continue  # keep draining the stream even after a render failure
+            await self.render_lock.acquire()
             try:
                 match event:
                     case PartStartEvent(part=ThinkingPart(content=content)):
@@ -822,34 +829,37 @@ class TimelineState:
                     exc_info=True,
                 )
                 failed = True
-        # `failed` means a render already raised (the transport threw); this
-        # "never streamed" backup is outside the try/except, so re-rendering after
-        # a failure would propagate and abort the drain (or double-send a partial).
-        # It only fires when nothing was drawn — not as an error-recovery retry.
-        if (
-            not failed
-            and not answered
-            and isinstance(final_output, Sequence)
-            and all(isinstance(segment, Segment) for segment in final_output)
-        ):
-            reply_to, body = split_reply(cast("list[MessageSegment]", final_output))
-            self.capture_reply(reply_to)
-            for segment in body:
-                await self.answer_segment(segment)
-        elif (
-            not failed
-            and not answered
-            and final_output is not None
-            and not isinstance(final_output, DeferredToolRequests)
-        ):
-            # The reply never streamed; render the final output once so the turn
-            # is not left blank. A deferral is the exception: the run parked rather
-            # than finished, and there is nothing to show for it here — a `teleport`
-            # resumes in the place it moved to, and a batch put up for review has
-            # already drawn itself through `present_actions`. `str()` on one is its
-            # own repr, tool call and metadata and all, which is what this used to
-            # post into the chat.
-            await self.answer_delta(str(final_output))
+            finally:
+                self.render_lock.release()
+        async with self.render_lock:
+            # `failed` means a render already raised (the transport threw); this
+            # "never streamed" backup is outside the try/except, so re-rendering after
+            # a failure would propagate and abort the drain (or double-send a partial).
+            # It only fires when nothing was drawn — not as an error-recovery retry.
+            if (
+                not failed
+                and not answered
+                and isinstance(final_output, Sequence)
+                and all(isinstance(segment, Segment) for segment in final_output)
+            ):
+                reply_to, body = split_reply(cast("list[MessageSegment]", final_output))
+                self.capture_reply(reply_to)
+                for segment in body:
+                    await self.answer_segment(segment)
+            elif (
+                not failed
+                and not answered
+                and final_output is not None
+                and not isinstance(final_output, DeferredToolRequests)
+            ):
+                # The reply never streamed; render the final output once so the turn
+                # is not left blank. A deferral is the exception: the run parked rather
+                # than finished, and there is nothing to show for it here — a `teleport`
+                # resumes in the place it moved to, and a batch put up for review has
+                # already drawn itself through `present_actions`. `str()` on one is its
+                # own repr, tool call and metadata and all, which is what this used to
+                # post into the chat.
+                await self.answer_delta(str(final_output))
 
     async def present_actions(self, event: ActionBatchEvent) -> None:
         """Render a deferred-action batch as a unit, then record each presented
@@ -871,11 +881,13 @@ class TimelineState:
                 )
 
     async def actions_presented(self) -> None:
-        """A deferred-action batch was just presented into this timeline's
-        thread from *outside* its stream — an agent's in-process bridge parking
-        its live run on a human. Nothing will flow until the answer, so a
-        surface with live status should settle it and say so; the base renders
-        no status, so there is nothing to settle."""
+        """A deferred-action batch was presented outside the run's event stream.
+
+        A pending action does not imply the whole run is paused. Hooks may flush
+        buffered output, but must keep active thinking and answer surfaces open
+        for more events. `Feelers` calls this hook under `render_lock`, between
+        stream events and before the timeline closes. Drain background flushers
+        before flushing their buffers here to avoid overlapping writes."""
 
     async def begin_entry(self) -> None:
         """A new timeline entry is opening: if answer content streamed since

@@ -66,12 +66,17 @@ calls become tasks in the plan, expanded while they run and folded when done, wi
 arguments and results inside. Todos are tasks in the same plan; Slack has no
 "blocked" state, so a blocked todo shows as pending. Each answer text part is its
 own streamed message, and the assistant status line reads "Thinking", "Writing the
-response" or "Waiting for your input" as the turn moves.
+response" or "Input requested" as the turn moves.
 
 Approvals arrive as one paged message per batch with Approve and Deny buttons.
 Questions are a small wizard: radio buttons for choices, a free-text field, Back,
 Next and Submit. The buttons carry the batch's state, so they keep working across
 a restart.
+
+Approvals and questions flush buffered output without closing the current plan
+or answer message. The agent can continue working while prompts remain open;
+"Input requested" does not mean the whole run has paused. Tool results update
+their original plan entries, and continuing answer text stays in the same message.
 
 ## MCP tools acting as the person
 

@@ -550,7 +550,7 @@ async def test_present_actions_settles_the_live_timeline() -> None:
     target_address = _key("target")
     timeline = SettlingTimeline()
 
-    with feelers.driving(target_address, timeline):
+    async with feelers.driving(target_address, timeline):
         await present_one_approval(feelers, target_address)
     # Nobody driving the thread: nothing to settle, and nothing raises.
     await present_one_approval(feelers, target_address)
@@ -565,7 +565,7 @@ async def test_a_settle_hiccup_does_not_fail_the_presentation() -> None:
     feelers = plain_feelers()
     target_address = _key("target")
 
-    with feelers.driving(target_address, HiccupTimeline()):
+    async with feelers.driving(target_address, HiccupTimeline()):
         await present_one_approval(feelers, target_address)
 
     approvals = cast(RecordingApprovalFeeler, feelers.approvals)

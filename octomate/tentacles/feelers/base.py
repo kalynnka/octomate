@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Generator
-from contextlib import contextmanager
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -48,18 +48,21 @@ class Feelers:
     # `TimelineState.actions_presented`).
     live_timelines: dict[str, TimelineState] = field(default_factory=dict)
 
-    @contextmanager
-    def driving(
+    @asynccontextmanager
+    async def driving(
         self, address: ChannelAddress, timeline: TimelineState
-    ) -> Generator[None]:
+    ) -> AsyncGenerator[None]:
         """Marks `timeline` as the surface rendering `address`'s live run."""
         key = str(address)
         self.live_timelines[key] = timeline
         try:
             yield
         finally:
-            if self.live_timelines.get(key) is timeline:
-                del self.live_timelines[key]
+            # A callback already settling the surface must finish before the
+            # timeline's context closes its streams/cards.
+            async with timeline.render_lock:
+                if self.live_timelines.get(key) is timeline:
+                    del self.live_timelines[key]
 
     async def present_actions(
         self,
@@ -110,18 +113,24 @@ class Feelers:
                     message_ids.get(action.id),
                 )
 
-            timeline = self.live_timelines.get(str(target_address))
-            if timeline is not None:
-                # The cards are the load-bearing part and are already up; the
-                # surface settle is a UI hint, and a render hiccup must not
-                # fail the presentation (or cancel the approval behind it).
-                try:
-                    await timeline.actions_presented()
-                except Exception:
-                    logger.warning(
-                        "live timeline for %s failed to settle after "
-                        "presenting actions",
-                        target_address,
-                        exc_info=True,
-                    )
+            await self.settle_timeline(target_address)
             return batch
+
+    async def settle_timeline(self, address: ChannelAddress) -> None:
+        """Settle a live surface between events, before its resources close."""
+        key = str(address)
+        timeline = self.live_timelines.get(key)
+        if timeline is None:
+            return
+        # The cards are already up; a render hiccup must not cancel the approval.
+        try:
+            async with timeline.render_lock:
+                if self.live_timelines.get(key) is not timeline:
+                    return
+                await timeline.actions_presented()
+        except Exception:
+            logger.warning(
+                "live timeline for %s failed to settle after presenting actions",
+                address,
+                exc_info=True,
+            )
