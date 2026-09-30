@@ -70,8 +70,11 @@ response" or "Input requested" as the turn moves.
 
 Approvals arrive as one paged message per batch with Approve and Deny buttons.
 Questions are a small wizard: radio buttons for choices, a free-text field, Back,
-Next and Submit. The buttons carry the batch's state, so they keep working across
-a restart.
+Next and Submit. A card shows its submitted summary after Octomate handles the
+response; a rejected response leaves the card unchanged. The buttons carry the
+batch's state, but a live request still needs its running agent to receive the
+reply. See [Requests after a restart](../actions.md#if-the-request-expires-or-the-server-restarts)
+for the difference between live requests and saved, suspended runs.
 
 Approvals and questions flush buffered output without closing the current plan
 or answer message. The agent can continue working while prompts remain open;

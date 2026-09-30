@@ -318,6 +318,13 @@ class SlackTentacle(
             ),
             None,
         )
+        await self.octomate.kick(
+            DeferredActionBatchResponse(
+                batch_id=action_value["batch_id"],
+                responder_id=responder_id,
+                approvals={approved_action.id: approved},
+            )
+        )
         await self.ink.update_message(
             channel,
             message_ts,
@@ -335,13 +342,6 @@ class SlackTentacle(
                     responder_id=responder_id,
                 )
             ),
-        )
-        await self.octomate.kick(
-            DeferredActionBatchResponse(
-                batch_id=action_value["batch_id"],
-                responder_id=responder_id,
-                approvals={approved_action.id: approved},
-            )
         )
 
     async def on_question_nav(self, ack, body: SlackQuestionActionBody) -> None:
@@ -414,12 +414,6 @@ class SlackTentacle(
         }:
             page += 1
         else:
-            await self.ink.update_message(
-                action_body["channel"]["id"],
-                action_body["message"]["ts"],
-                text="Answers submitted",
-                blocks=submitted_blocks(actions, answers),
-            )
             await self.octomate.kick(
                 DeferredActionBatchResponse(
                     batch_id=action_value["batch_id"],
@@ -428,6 +422,12 @@ class SlackTentacle(
                         action.id: str(answers.get(action.id, "")) for action in actions
                     },
                 )
+            )
+            await self.ink.update_message(
+                action_body["channel"]["id"],
+                action_body["message"]["ts"],
+                text="Answers submitted",
+                blocks=submitted_blocks(actions, answers),
             )
             return
         await self.ink.update_message(
