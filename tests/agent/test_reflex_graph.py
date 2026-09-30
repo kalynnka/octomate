@@ -65,7 +65,7 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
-    SCRY_TOOL_NAME,
+    INSPECT_TOOL_NAME,
     AgentRoute,
     Claim,
     CrossingLanding,
@@ -532,9 +532,9 @@ async def test_reception_mounts_gate_capability() -> None:
 
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.toolset is not None
-    scry = gate.toolset.tools[SCRY_TOOL_NAME].function
-    routes = await scry(FAKE_CONTEXT, "routes")
-    places = await scry(FAKE_CONTEXT, "destinations")
+    inspect_tool = gate.toolset.tools[INSPECT_TOOL_NAME].function
+    routes = await inspect_tool(FAKE_CONTEXT, "routes")
+    places = await inspect_tool(FAKE_CONTEXT, "destinations")
     assert routes == []
     # One list for every spell: this run is a DM, so `dm` is not among them — it is
     # already where it would go — and nothing links this asker to another channel.

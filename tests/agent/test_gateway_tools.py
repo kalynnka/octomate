@@ -131,7 +131,7 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     ]
 
     assert [tool.name for tool in tools] == [
-        "gateway_scry",
+        "gateway_inspect",
         "gateway_summon",
         "gateway_teleport",
         "gateway_scheme",
@@ -151,7 +151,7 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
 async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
     server, _session, _channel, _threads = a_turn()
     contracts = {
-        "gateway_scry": GatewayCapability.scry,
+        "gateway_inspect": GatewayCapability.inspect,
         "gateway_summon": GatewayCapability.summon,
         "gateway_teleport": GatewayCapability.teleport,
         "gateway_scheme": GatewayCapability.scheme,
@@ -168,7 +168,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         assert doc is not None
         assert tools[name].description == cleandoc(doc)
     # And the contract is the model-facing one, not a paraphrase.
-    assert "copied exactly from a `scry` route" in (
+    assert "copied exactly from an `inspect` route" in (
         tools["gateway_summon"].description or ""
     )
     assert "do NOT repeat it in your final reply" in (
@@ -184,7 +184,7 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert "### Writing a brief" in inkling
 
     mcp = gateway_instructions(gateway_tool)
-    for name in ("scry", "summon", "teleport", "scheme", "send", "dispel"):
+    for name in ("inspect", "summon", "teleport", "scheme", "send", "dispel"):
         assert f"`gateway_{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp
@@ -316,14 +316,14 @@ async def test_send_to_dm_opens_it_and_lands_there() -> None:
     assert outbound.direction == "outbound"
 
 
-async def test_a_native_session_scries_only_crossings(
+async def test_a_native_session_inspects_only_crossings(
     in_memory_engine: AsyncEngine,
 ) -> None:
     server, session, _channel, _threads, _kicks = await a_native_call()
 
     async with Client(server) as client:
-        routes = await client.call_tool("gateway_scry", {"reveal": "routes"})
-        places = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+        routes = await client.call_tool("gateway_inspect", {"reveal": "routes"})
+        places = await client.call_tool("gateway_inspect", {"reveal": "destinations"})
 
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
@@ -332,13 +332,13 @@ async def test_a_native_session_scries_only_crossings(
     assert await session.destination_handles("summon") == ["im"]
 
 
-async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
+async def test_a_native_session_with_no_linked_accounts_inspects_nowhere(
     in_memory_engine: AsyncEngine,
 ) -> None:
     server, session, _channel, _threads, kicks = await a_native_call(linked=False)
 
     async with Client(server) as client:
-        result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+        result = await client.call_tool("gateway_inspect", {"reveal": "destinations"})
         with pytest.raises(ToolError) as refusal:
             await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
@@ -380,7 +380,7 @@ async def test_a_native_send_here_is_refused(
 
     assert str(refusal.value) == (
         "This session has no conversation of its own to land a send on — "
-        'name a destination from `scry` (`reveal="destinations"`).'
+        'name a destination from `inspect` (`reveal="destinations"`).'
     )
     assert threads.outbounds == []
 

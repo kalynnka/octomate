@@ -86,8 +86,8 @@ SEGMENTS_PROMPT = (
     "Keep the message concise and do not ask questions."
 )
 SUBAGENTS_PROMPT = (
-    "This is a subagent capture test. First call scry. Then, in one assistant "
-    "turn, call commission twice using the route scry returns. Name the accomplices "
+    "This is a subagent capture test. First call inspect. Then, in one assistant "
+    "turn, call commission twice using the route inspect returns. Name the accomplices "
     "timeline-contract and failure-review. Ask timeline-contract for three "
     "invariants of an independent subagent activity timeline. Ask failure-review "
     "for three failure cases whose partial report should remain reviewable. After "

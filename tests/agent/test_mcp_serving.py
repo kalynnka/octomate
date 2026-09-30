@@ -310,10 +310,12 @@ async def test_a_served_call_runs_against_the_turn_its_header_names(
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
             mode=mode,
         ) as client:
-            result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+            result = await client.call_tool(
+                "gateway_inspect", {"reveal": "destinations"}
+            )
 
     assert result.data == "\n".join(
-        str(one) for one in await session.scry("destinations")
+        str(one) for one in await session.inspect("destinations")
     )
 
 
@@ -333,7 +335,7 @@ async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
             octomate, app, {"Authorization": "Bearer hui-token", **header}
         ) as client:
             with pytest.raises(ToolError, match="not this bearer's to drive"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
 async def test_a_call_naming_no_turn_is_refused() -> None:
@@ -342,17 +344,17 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
 
         async with over(octomate, app, DRIVEN_BEARER) as client:
             with pytest.raises(ToolError, match="names no identity"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
         stray = {**DRIVEN_BEARER, CONVERSATION_HEADER: "not-a-uuid"}
         async with over(octomate, app, stray) as client:
             with pytest.raises(ToolError, match="not a conversation id"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
         unknown = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(uuid.uuid4())}
         async with over(octomate, app, unknown) as client:
             with pytest.raises(ToolError, match="No turn of conversation"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
 async def a_native_deployment() -> FakeOctomate:
@@ -387,13 +389,15 @@ async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
             octomate, app, {**USER_BEARER, CLIENT_HEADER: "emacs-native"}
         ) as client:
             with pytest.raises(ToolError, match="names no native runtime"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
 async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
     async with served(await a_native_deployment()) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
-            result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+            result = await client.call_tool(
+                "gateway_inspect", {"reveal": "destinations"}
+            )
 
     # The bearer named luhui, so their linked account's crossing is on offer, and
     # nothing was ever registered: the session lived exactly one call.

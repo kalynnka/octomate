@@ -37,13 +37,13 @@ from octomate.schemas.triage import (
     DIRECT_TARGET,
     DISPEL_TOOL_NAME,
     HERE_TARGET,
+    INSPECT_TOOL_NAME,
     SCHEME_TOOL_NAME,
-    SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
+    InspectFacet,
     SchemeTarget,
-    ScryFacet,
     SendTarget,
     SummonTarget,
     TeleportTarget,
@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 # The spells the gateway offers, in the order it registers them. `commission` and
 # `whisper` are deliberately absent: external runtimes bring their own subagents.
 GATEWAY_SPELLS: tuple[str, ...] = (
-    SCRY_TOOL_NAME,
+    INSPECT_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
     SCHEME_TOOL_NAME,
@@ -221,14 +221,17 @@ def mount_gateway(
     """
 
     @mcp.tool(
-        name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
+        name=INSPECT_TOOL_NAME,
+        description=capability_contract(GatewayCapability.inspect),
     )
     @spoken
-    async def scry(
-        reveal: ScryFacet, session: OctomateSession = octomate_session
+    async def inspect(
+        reveal: InspectFacet, session: OctomateSession = octomate_session
     ) -> str:
         # Lines, never the list: FastMCP renders an empty list as no content at all.
-        return "\n".join(str(one) for one in await session.scry(reveal)) or "- (none)"
+        return (
+            "\n".join(str(one) for one in await session.inspect(reveal)) or "- (none)"
+        )
 
     @mcp.tool(
         name=SUMMON_TOOL_NAME, description=capability_contract(GatewayCapability.summon)
@@ -314,7 +317,7 @@ def mount_gateway(
         if target is None:
             raise GatewayRefusal(
                 "This session has no conversation of its own to land a send on — "
-                f'name a destination from `{SCRY_TOOL_NAME}` (`reveal="destinations"`).'
+                f'name a destination from `{INSPECT_TOOL_NAME}` (`reveal="destinations"`).'
             )
         notice = "sent"
         if address is not None:

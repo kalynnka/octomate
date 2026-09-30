@@ -19,8 +19,8 @@ from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
     HERE_TARGET,
+    INSPECT_TOOL_NAME,
     SCHEME_TOOL_NAME,
-    SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
@@ -192,7 +192,7 @@ async def test_summon_capability_accepts_exact_route() -> None:
 def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
     instructions = _capability().get_instructions()
 
-    assert "`scry`" in instructions
+    assert "`inspect`" in instructions
     assert "`summon`" in instructions
     assert "`teleport`" in instructions
     assert "route the conversation" in instructions
@@ -205,14 +205,16 @@ def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
     assert "target_id" not in instructions
 
 
-async def test_scry_tool_returns_other_routes() -> None:
+async def test_inspect_tool_returns_other_routes() -> None:
     # A shared thread: the one shape that offers both built-ins at once.
     capability = _capability("shared_thread")
     assert capability.toolset is not None
-    scry = capability.toolset.tools[SCRY_TOOL_NAME].function
+    assert "inspect" in capability.toolset.tools
+    assert "scry" not in capability.toolset.tools
+    inspect_tool = capability.toolset.tools[INSPECT_TOOL_NAME].function
 
-    routes = await scry(FAKE_CONTEXT, "routes")
-    places = await scry(FAKE_CONTEXT, "destinations")
+    routes = await inspect_tool(FAKE_CONTEXT, "routes")
+    places = await inspect_tool(FAKE_CONTEXT, "destinations")
 
     assert routes == [
         AgentRoute(
@@ -228,12 +230,12 @@ async def test_scry_tool_returns_other_routes() -> None:
     assert [one.handle for one in places] == ["here", "dm"]
 
 
-async def test_scry_computes_only_the_facet_it_was_asked_for() -> None:
+async def test_inspect_computes_only_the_facet_it_was_asked_for() -> None:
     capability = _capability("shared_thread")
     assert capability.toolset is not None
-    scry = capability.toolset.tools[SCRY_TOOL_NAME].function
+    inspect_tool = capability.toolset.tools[INSPECT_TOOL_NAME].function
 
-    await scry(FAKE_CONTEXT, "routes")
+    await inspect_tool(FAKE_CONTEXT, "routes")
 
     # The registry was never reached for the facet nobody asked for.
     assert capability.session.destination_cache is None
@@ -257,7 +259,7 @@ async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) 
     assert await session.destinations() is first
     assert await session.destination_handles("summon") == ["here", "thread"]
     assert await session.destination_handles("teleport") == ["thread"]
-    assert await session.scry("destinations") == []
+    assert await session.inspect("destinations") == []
     await session.operations
     discover.assert_awaited_once_with(session.user_profile)
 
@@ -667,7 +669,7 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    # `codex` is on no route here, and `scry` says where it is instead.
+    # `codex` is on no route here, and `inspect` says where it is instead.
     assert only_far not in capability.session.other_routes
     assert [
         one.routes for one in (await capability.session.destinations())["summon"]
@@ -834,7 +836,7 @@ def test_tool_schemas_do_not_vary_with_dm_availability() -> None:
 
 def test_tool_schemas_do_not_carry_the_live_routes() -> None:
     # The spells take their route as plain `str`, validated in the body against
-    # `scry`'s list. Rendering the live routes as a `Literal` instead would put
+    # `inspect`'s list. Rendering the live routes as a `Literal` instead would put
     # runtime state in the tool block — the same cache breakpoint as above — and
     # would drown the schema in KnownModelName's ~500 entries.
     summon = _schemas(_capability())[SUMMON_TOOL_NAME]

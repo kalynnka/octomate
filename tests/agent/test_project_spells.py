@@ -1,6 +1,6 @@
 """A chat thread says which project it is about, on every driven runtime.
 
-Three operations, all gateway spells: the `projects` facet of `scry`, `teleport`
+Three operations, all gateway spells: the `projects` facet of `inspect`, `teleport`
 with a `project`, and `dispel`. They ride the identity the gateway already carries — a registered
 user or a visitor, a driven turn or a native session, a thread or none — so the
 gate is a refusal in the tool body rather than a tool that comes and goes. The
@@ -121,17 +121,17 @@ async def test_a_visitor_is_refused_the_projects_and_the_move(tmp_path: Path) ->
     harness = await a_harness(tmp_path, registered=False)
 
     with pytest.raises(GatewayRefusal, match="no registered user"):
-        await harness.session.scry("projects")
+        await harness.session.inspect("projects")
     with pytest.raises(GatewayRefusal, match="no registered user"):
         await harness.session.teleport(
             hint="into inky", destination=HERE_TARGET, project="inky"
         )
 
 
-async def test_a_registered_user_scries_the_enabled_projects(tmp_path: Path) -> None:
+async def test_a_registered_user_inspects_the_enabled_projects(tmp_path: Path) -> None:
     harness = await a_harness(tmp_path)
 
-    assert await harness.session.scry("projects") == [
+    assert await harness.session.inspect("projects") == [
         ProjectSummary(name="inky", description=None)
     ]
 
@@ -259,7 +259,7 @@ async def test_a_native_session_may_list_but_neither_move_nor_dispel(
     harness = await a_harness(tmp_path)
     harness.session.native = True
 
-    assert await harness.session.scry("projects") == [
+    assert await harness.session.inspect("projects") == [
         ProjectSummary(name="inky", description=None)
     ]
     with pytest.raises(GatewayRefusal, match="requires a new destination"):
@@ -277,7 +277,7 @@ async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
     )
 
     with pytest.raises(RuntimeError):
-        await session.scry("projects")
+        await session.inspect("projects")
     with pytest.raises(RuntimeError):
         await session.teleport(hint="h", destination=HERE_TARGET, project="inky")
     with pytest.raises(RuntimeError):
@@ -289,7 +289,7 @@ async def test_inkling_hears_a_refusal_as_a_retry(tmp_path: Path) -> None:
     capability = GatewayCapability(session=harness.session)
 
     with pytest.raises(ModelRetry, match="no registered user"):
-        await capability.scry(FAKE_CONTEXT, "projects")
+        await capability.inspect(FAKE_CONTEXT, "projects")
     with pytest.raises(ModelRetry, match="no registered user"):
         await capability.teleport(FAKE_CONTEXT, "into inky", HERE_TARGET, "inky")
     with pytest.raises(ModelRetry, match="about no project"):
@@ -329,7 +329,7 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
     )
 
     async with Client(server) as client:
-        listed = await client.call_tool("gateway_scry", {"reveal": "projects"})
+        listed = await client.call_tool("gateway_inspect", {"reveal": "projects"})
         with pytest.raises(ToolError, match=r"Available: inky\."):
             await client.call_tool(
                 "gateway_teleport",

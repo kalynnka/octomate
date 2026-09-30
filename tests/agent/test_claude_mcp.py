@@ -127,7 +127,7 @@ def test_the_instruction_names_the_tools_by_their_served_names() -> None:
     instruction = octomate_instructions()
 
     for name in (
-        "gateway_scry",
+        "gateway_inspect",
         "gateway_summon",
         "gateway_teleport",
         "gateway_scheme",

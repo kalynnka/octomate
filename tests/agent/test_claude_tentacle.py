@@ -716,7 +716,7 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     append = options.system_prompt.get("append")
     assert isinstance(append, str)
     assert append.startswith("House rules.\n\n")
-    assert "`gateway_scry`" in append
+    assert "`gateway_inspect`" in append
 
 
 async def test_without_the_gateway_no_server_and_no_instruction(

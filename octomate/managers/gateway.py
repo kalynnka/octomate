@@ -32,7 +32,7 @@ from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
     HERE_TARGET,
-    SCRY_TOOL_NAME,
+    INSPECT_TOOL_NAME,
     SUMMON_TOOL_NAME,
     THREAD_TARGET,
     AgentRoute,
@@ -43,10 +43,10 @@ from octomate.schemas.triage import (
     GatewayDestinations,
     HereLanding,
     HereTarget,
+    InspectFacet,
     ProjectSummary,
     SchemeDecision,
     SchemeTarget,
-    ScryFacet,
     SendTarget,
     SummonDecision,
     SummonLanding,
@@ -540,16 +540,16 @@ class OctomateSession:
         return route
 
     @overload
-    async def scry(self, reveal: Literal["routes"]) -> list[AgentRoute]: ...
+    async def inspect(self, reveal: Literal["routes"]) -> list[AgentRoute]: ...
 
     @overload
-    async def scry(self, reveal: Literal["destinations"]) -> list[Destination]: ...
+    async def inspect(self, reveal: Literal["destinations"]) -> list[Destination]: ...
 
     @overload
-    async def scry(self, reveal: Literal["projects"]) -> list[ProjectSummary]: ...
+    async def inspect(self, reveal: Literal["projects"]) -> list[ProjectSummary]: ...
 
-    async def scry(
-        self, reveal: ScryFacet
+    async def inspect(
+        self, reveal: InspectFacet
     ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
         """One facet of what this conversation can reach: the routes here, every
         place it can go, or the projects it can be about. Only the asked facet is
@@ -608,7 +608,7 @@ class OctomateSession:
         if agent_id == self.current_agent_id:
             raise GatewayRefusal(
                 f"Cannot summon yourself {self.current_agent_id!r}. "
-                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
+                f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
         landing: SummonLanding = HereLanding()
         # Against the routes of the channel it lands on: an agent is summonable

@@ -128,7 +128,7 @@ def test_send_tool_exposes_no_channel_fields() -> None:
     assert params == {"ctx", "segments", "destination"}
 
     # A closed set of shapes — one per kind of place — and the only free text in it
-    # is a channel id the model copies from `scry`. Which channels *this* person is
+    # is a channel id the model copies from `inspect`. Which channels *this* person is
     # on never reaches the schema: that list is per-user and the tool block is a
     # cached prompt segment, so it would fork the prefix at the front.
     schema = tool.tool_def.parameters_json_schema
@@ -306,7 +306,7 @@ async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None
         )
 
 
-async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
+async def test_inspect_reveals_where_else_the_asker_can_be_reached() -> None:
     # The only carrier for a per-user list: a tool result. In the schema it would
     # fork the cached tool block, in the instructions the cached system block.
     lark = Destination(
@@ -329,9 +329,9 @@ async def test_scry_reveals_where_else_the_asker_can_be_reached() -> None:
         "teleport": [],
     }
     assert capability.toolset is not None
-    scry = capability.toolset.tools["scry"].function
+    inspect_tool = capability.toolset.tools["inspect"].function
 
-    places = await scry(cast(RunContext[Any], None), "destinations")
+    places = await inspect_tool(cast(RunContext[Any], None), "destinations")
 
     assert lark in places
 

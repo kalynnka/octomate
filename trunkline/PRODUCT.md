@@ -53,7 +53,7 @@ between agents and surfaces. Desktop-first, long-lived tab, both color schemes
   endpoints replace them without UI changes. [constraint from brief]
 - Domain vocabulary is binding: threads, sessions (entry/summon/teleport/
   ingest), ledger, directives, feelers (write approvals + asks), spills,
-  dossiers/revs, verbs (scry · send · summon · commission · teleport).
+  dossiers/revs, verbs (inspect · send · summon · commission · teleport).
 - Chat renders live markdown and streams; history loads backwards on scroll.
 
 ## Brand Commitments

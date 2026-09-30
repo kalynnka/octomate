@@ -634,14 +634,14 @@ def subagent_run() -> ChannelScript:
         ),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scry",
+                tool_name="inspect",
                 args={"reveal": "routes"},
-                tool_call_id="call_scry_subagents",
+                tool_call_id="call_inspect_subagents",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scry",
+                tool_name="inspect",
                 content=[
                     {
                         "agent_id": "capture-accomplice",
@@ -649,7 +649,7 @@ def subagent_run() -> ChannelScript:
                         "claim": {"ability": "independent analysis for capture tests"},
                     }
                 ],
-                tool_call_id="call_scry_subagents",
+                tool_call_id="call_inspect_subagents",
             )
         ),
         *narration("I found the route and am starting both reviews in parallel."),

@@ -3,7 +3,7 @@
 The spells decide where a turn goes, who handles it, and what it is about. Each is
 opaque on its own, so the instruction opens with plain words for what they actually do:
 
-- `scry`: reveal the other agents this one can hand off to or put to work.
+- `inspect`: reveal the other agents this one can hand off to or put to work.
 - `summon`: hand the conversation to another agent (a handoff — they take over from a
   brief). The graph reads the recorded decision after the run.
 - `teleport`: continue the same agent in a new place (a sub-thread), carrying the
@@ -60,8 +60,8 @@ from octomate.schemas.triage import (
     DISPEL_TOOL_NAME,
     GATEWAY_TOOLSET_ID,
     HERE_TARGET,
+    INSPECT_TOOL_NAME,
     SCHEME_TOOL_NAME,
-    SCRY_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
     THREAD_TARGET,
@@ -69,9 +69,9 @@ from octomate.schemas.triage import (
     AgentRoute,
     Destination,
     GatewayDecision,
+    InspectFacet,
     ProjectSummary,
     SchemeTarget,
-    ScryFacet,
     SendTarget,
     SummonTarget,
     TeleportTarget,
@@ -88,8 +88,8 @@ if TYPE_CHECKING:
 COMMISSION_TIMEOUT = 900.0
 
 # The instruction prose, templated only where a spell is named: each runtime's
-# adapter renders the same contract under its own tool naming (`scry` for Inkling,
-# `gateway_scry` on the served server). Everything else — argument names, the
+# adapter renders the same contract under its own tool naming (`inspect` for Inkling,
+# `gateway_inspect` on the served server). Everything else — argument names, the
 # `here`/`thread`/`dm` handles — is the shared vocabulary and stays literal.
 GATEWAY_INSTRUCTION_TEMPLATE = """\
 ## Gateway — decide where this conversation goes and who handles it
@@ -111,7 +111,7 @@ Do NOT summon when:
 - You are only mildly unsure — ask the user a clarifying question instead.
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
-When one fires, call `{scry}` with `reveal="routes"` first to see the agents and what
+When one fires, call `{inspect}` with `reveal="routes"` first to see the agents and what
 each is for. Every route carries a claim: its ability (what that agent+model is for)
 and the effort levels it accepts — pick the route whose ability covers the work. Set
 `effort` only when the user explicitly asked for a level; otherwise leave it unset so
@@ -119,7 +119,7 @@ the agent's own default applies. Then `{summon}` — copying its `agent_id` and 
 exactly from that route, and writing a self-contained brief since the other agent may
 not see this chat. Choose `destination`: `here` hands over this same conversation;
 `thread` opens a new sub-thread of the current chat; a destination handle from
-`{scry}` with `reveal="destinations"` starts a new thread there. You yourself are
+`{inspect}` with `reveal="destinations"` starts a new thread there. You yourself are
 not a valid summon target.
 
 ### `{teleport}` — relocate yourself
@@ -127,11 +127,11 @@ Move this conversation into a new thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
 `destination` is `thread`, a sub-thread of the current chat, unless you copy a
-destination handle from `{scry}` (`reveal="destinations"`) to start a new thread
+destination handle from `{inspect}` (`reveal="destinations"`) to start a new thread
 there. Moving elsewhere is offered only from a conversation nobody else can read,
 since everything said here travels with you.
 
-To work on a project, add `project` (from `{scry}` with `reveal="projects"`), and
+To work on a project, add `project` (from `{inspect}` with `reveal="projects"`), and
 `ref` — a branch, tag or commit — only when the default branch is the wrong place to
 start: the thread you land in is bound to it and you resume in its workspace, where
 work is kept. A thread about no project runs in a throwaway tree, so do this before
@@ -209,7 +209,7 @@ def gateway_instructions(tool_name: Callable[[str], str]) -> str:
     naming — the identity for Inkling, `gateway_…` on the served server — so every
     agent reads one contract under the names its runtime lists the tools by."""
     names = {
-        "scry": tool_name(SCRY_TOOL_NAME),
+        "inspect": tool_name(INSPECT_TOOL_NAME),
         "summon": tool_name(SUMMON_TOOL_NAME),
         "teleport": tool_name(TELEPORT_TOOL_NAME),
         "scheme": tool_name(SCHEME_TOOL_NAME),
@@ -226,7 +226,7 @@ COMMISSION_INSTRUCTION = """\
 ### `commission` — put another agent to work in the background (you keep the conversation)
 Where `summon` hands the conversation away, `commission` does not: another agent works a
 self-contained task and the tool returns its report — the user sees only your reply.
-Pick the route from `scry` exactly as for `summon`; the same claim and effort rules
+Pick the route from `inspect` exactly as for `summon`; the same claim and effort rules
 apply. Give the accomplice a short mnemonic `name`. The brief must stand alone: the
 accomplice cannot see this chat and has no user to ask, so include the goal, the
 relevant context, and what a finished result looks like. Several commissions in one
@@ -240,7 +240,7 @@ refine or extend that work instead of commissioning a new accomplice.
 
 @dataclass
 class GatewayCapability(AbstractCapability[None]):
-    """The gateway spells as one turn's toolset: scry, summon, teleport, scheme,
+    """The gateway spells as one turn's toolset: inspect, summon, teleport, scheme,
     send and dispel, plus the accomplice spells when there is a thread to run
     them in."""
 
@@ -262,9 +262,9 @@ class GatewayCapability(AbstractCapability[None]):
         # provider prompt-cache breakpoint (`anthropic_cache_tool_definitions`) at the
         # front of the prefix, so a schema that varies forks it into variants that never
         # warm each other. Hence plain `str` routes, validated by `claimed_route`
-        # against the list `scry` returns — a tool *result*, after the breakpoint.
+        # against the list `inspect` returns — a tool *result*, after the breakpoint.
         toolset: FunctionToolset[None] = FunctionToolset(id=GATEWAY_TOOLSET_ID)
-        toolset.tool(name=SCRY_TOOL_NAME)(self.scry)
+        toolset.tool(name=INSPECT_TOOL_NAME)(self.inspect)
         toolset.tool(name=SUMMON_TOOL_NAME, retries=2)(self.summon)
         # `retries` to match its siblings: teleport refuses a surface with no
         # sub-thread to open, so it needs the same room to be told and correct.
@@ -369,8 +369,8 @@ class GatewayCapability(AbstractCapability[None]):
             return "\n\n".join(str(part) for part in output)
         return str(output)
 
-    async def scry(
-        self, ctx: RunContext[None], reveal: ScryFacet
+    async def inspect(
+        self, ctx: RunContext[None], reveal: InspectFacet
     ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
         """Reveal one facet of what this conversation can reach.
 
@@ -382,7 +382,7 @@ class GatewayCapability(AbstractCapability[None]):
                 deployment can work on, for `teleport`.
         """
         try:
-            return await self.session.scry(reveal)
+            return await self.session.inspect(reveal)
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
 
@@ -400,12 +400,12 @@ class GatewayCapability(AbstractCapability[None]):
         """Hand this conversation to another Octomate agent, who takes it over.
 
         Args:
-            agent_id: The target agent, copied exactly from a `scry` route
+            agent_id: The target agent, copied exactly from an `inspect` route
                 (`reveal="routes"`) — use the selected destination's routes when
                 moving elsewhere.
             model: That route's model, copied exactly.
             destination: Where the other agent picks it up. Copy a destination
-                handle from `scry` to start a new thread there.
+                handle from `inspect` to start a new thread there.
             hint: A short, user-facing note announcing the handoff; used as the
                 opener when a new thread is started.
             reason: One line on why this agent fits — recorded with the handoff, not
@@ -455,7 +455,7 @@ class GatewayCapability(AbstractCapability[None]):
                 only out of a conversation nobody else can read — everything said
                 here goes with you, and it is not all yours to move. `here` stays
                 in this thread, and only to bind it to a `project`.
-            project: A project's name, copied exactly from `scry`
+            project: A project's name, copied exactly from `inspect`
                 (`reveal="projects"`): the thread you land in is bound to it, and
                 you resume in its workspace, where work is kept.
             ref: The branch, tag or commit that workspace starts from; omit it for
@@ -499,7 +499,7 @@ class GatewayCapability(AbstractCapability[None]):
                 say what to search for instead of pasting it. A brief over the size
                 budget is refused, never trimmed.
             destination: Whose direct messages — `dm` by default, or a
-                destination handle from `scry` (`reveal="destinations"`) to continue where
+                destination handle from `inspect` (`reveal="destinations"`) to continue where
                 they already are.
         """
         try:
@@ -561,8 +561,8 @@ class GatewayCapability(AbstractCapability[None]):
         Args:
             name: Your name for this accomplice — short and mnemonic, e.g.
                 `repo-audit`. `whisper` to it later to follow up.
-            agent_id: The agent to draw in, copied exactly from a
-                `scry` route.
+            agent_id: The agent to draw in, copied exactly from an
+                `inspect` route.
             model: That route's model, copied exactly.
             brief: The self-contained work order. The accomplice cannot see
                 this conversation and has no user to ask, so give the
@@ -578,7 +578,7 @@ class GatewayCapability(AbstractCapability[None]):
         if agent_id == self.session.current_agent_id:
             raise ModelRetry(
                 f"Cannot commission yourself {self.session.current_agent_id!r}. "
-                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
+                f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
         try:
             route = self.session.claimed_route(
@@ -590,7 +590,7 @@ class GatewayCapability(AbstractCapability[None]):
         if run_model is None:
             raise ModelRetry(
                 f"Agent {agent_id!r} does not serve model {model!r}. "
-                f'Call `{SCRY_TOOL_NAME}` with `reveal="routes"` and copy a route exactly.'
+                f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` and copy a route exactly.'
             )
         # The calling run's own conversation is the parent — the react
         # graph put its id on the RunContext. No id means the gate is

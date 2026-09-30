@@ -206,7 +206,7 @@ Follow the [client quick start](clients/quickstart.md) on each machine where you
 run a native agent. On this Mac, the standalone CLI is already installed.
 
 You are done when a fresh native prompt and its answer appear in Trunkline, the
-agent can call `gateway_scry` over MCP, and the console can still get a driven
+agent can call `gateway_inspect` over MCP, and the console can still get a driven
 reply. Run `octomate service restart`, then check that sign-in, history and a new
 reply still work.
 

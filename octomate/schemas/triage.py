@@ -28,19 +28,19 @@ RunName = Literal["react", "summon", "teleport", "resume"]
 # exception: its name is `octomate.schemas.messages.SEND_TOOL_NAME`, beside the
 # segment types it delivers.
 GATEWAY_TOOLSET_ID = "gateway"
-SCRY_TOOL_NAME = "scry"
+INSPECT_TOOL_NAME = "inspect"
 SUMMON_TOOL_NAME = "summon"
 TELEPORT_TOOL_NAME = "teleport"
 SCHEME_TOOL_NAME = "scheme"
 DISPEL_TOOL_NAME = "dispel"
 COMMISSION_TOOL_NAME = "commission"
 WHISPER_TOOL_NAME = "whisper"
-# What one `scry` reveals. One facet per call, because each spell needs exactly one —
+# What one `inspect` reveals. One facet per call, because each spell needs exactly one —
 # a route for `summon`, a place for anything that lands somewhere, a project for
 # `teleport` — and the routes alone run long enough that showing everything every time
 # buried the line the caller came for. A tool result is the only place a per-user
 # list can reach the model without forking a cached prompt segment.
-ScryFacet = Literal["routes", "destinations", "projects"]
+InspectFacet = Literal["routes", "destinations", "projects"]
 # The `teleport` deferral's declared metadata kind. The suspender and dispatch graph
 # classify the deferral by this kind rather than the tool name, so the gateway (which
 # emits it) and `reflex` (which resolves it) agree on one value without matching on
@@ -65,7 +65,7 @@ class SpellTarget(BaseModel):
     front of the prefix. So the *shape* is declared here and the *policy* — which of
     these this surface can actually reach — stays a refusal in the tool body.
 
-    `handle` is what the gateway resolves against, and what `scry` prints.
+    `handle` is what the gateway resolves against, and what `inspect` prints.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -110,7 +110,7 @@ class ChannelTarget(SpellTarget):
 
     kind: Literal["channel"] = "channel"
     channel: str = Field(
-        description="The destination handle, copied exactly from `scry` or the operation menu."
+        description="The destination handle, copied exactly from `inspect` or the operation menu."
     )
 
     @property
@@ -157,12 +157,12 @@ class Destination:
     """
 
     handle: str
-    # What this place is, in words, for `scry` to show.
+    # What this place is, in words, for `inspect` to show.
     label: str
     address: ChannelAddress
     # Who can take a handoff there, when that is not the same list as here: which
     # agents serve a channel is that channel's own config, so a place on another one
-    # answers with its own. Empty for this run's own surface, whose routes `scry`
+    # answers with its own. Empty for this run's own surface, whose routes `inspect`
     # already lists whole, and for a place only `send` and `scheme` can reach.
     routes: tuple[AgentRoute, ...] = ()
 
