@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -29,12 +28,12 @@ from anyio import BrokenResourceError, ClosedResourceError
 from anyio.streams.memory import MemoryObjectSendStream
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import UUID7, BaseModel
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from rich.style import Style
-from uuid_utils import uuid7
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
@@ -275,7 +274,7 @@ class TrunklineQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[uuid.UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         sink = current_sink.get()
         if sink is not None and actions:
             await send_quietly(
@@ -295,7 +294,7 @@ class TrunklineApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[uuid.UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         sink = current_sink.get()
         if sink is not None and actions:
             await send_quietly(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from dataclasses import dataclass
 from typing import cast
 
@@ -199,7 +198,7 @@ async def create_batch(
 ) -> DeferredActionBatch:
     address = discord_address()
     conversation = await ConversationManager().ensure(
-        await a_thread(f"discord-{uuid.uuid4()}"),
+        await a_thread(f"discord-{uuid7()}"),
         agent_tentacle_id="inkling",
     )
     requests = DeferredToolRequests(
@@ -227,6 +226,7 @@ async def create_batch(
         ),
     )
     return await DeferredActionManager().create_batch(
+        response_mode="resume",
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="react",
@@ -558,7 +558,7 @@ async def test_approval_callback_rejects_unknown_and_mismatched_actions(
     DiscordComponentRouter(octomate).bind(client)
 
     for batch_id, action_id, expected in [
-        (uuid.uuid4(), first_action.id, "no longer available"),
+        (uuid7(), first_action.id, "no longer available"),
         (first.id, second_action.id, "does not belong"),
     ]:
         interaction = FakeInteraction(client, events)

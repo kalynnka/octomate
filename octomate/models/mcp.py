@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import UUID7
 from sqlalchemy import Boolean, ForeignKey, LargeBinary, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
@@ -27,8 +27,8 @@ class Mcp(Base, TransmuterProxiedMixin):
         "with_polymorphic": "*",
     }
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    user_id: Mapped[UUID7] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String, nullable=False)

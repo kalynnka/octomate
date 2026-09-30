@@ -12,7 +12,6 @@ import contextlib
 import json
 import logging
 import time
-import uuid
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from contextvars import Context, copy_context
@@ -66,7 +65,7 @@ from openai_codex.generated.v2_all import (
     TurnStatus,
     UserInput,
 )
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import UUID7, SecretStr, TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -190,7 +189,7 @@ class CodexClientPool:
     def __init__(
         self,
         *,
-        build: Callable[[uuid.UUID, SecretStr | None], AsyncCodex],
+        build: Callable[[UUID7, SecretStr | None], AsyncCodex],
         auth: AuthManager | None,
         max_clients: int | None,
         idle_ttl: float | None,
@@ -199,11 +198,11 @@ class CodexClientPool:
         self.auth: AuthManager | None = auth
         self.max_clients = max_clients
         self.idle_ttl = idle_ttl
-        self.clients: OrderedDict[uuid.UUID, PooledCodexClient] = OrderedDict()
+        self.clients: OrderedDict[UUID7, PooledCodexClient] = OrderedDict()
         self.lock = asyncio.Lock()
 
     async def acquire(
-        self, conversation_id: uuid.UUID, *, user_id: uuid.UUID | None = None
+        self, conversation_id: UUID7, *, user_id: UUID7 | None = None
     ) -> PooledCodexClient:
         async with self.lock:
             await self.evict_idle()
@@ -258,7 +257,7 @@ class CodexClientPool:
             await self.evict_over_cap()
             return pooled
 
-    async def release(self, conversation_id: uuid.UUID) -> None:
+    async def release(self, conversation_id: UUID7) -> None:
         async with self.lock:
             pooled = self.clients.get(conversation_id)
             if pooled is not None:
@@ -358,11 +357,9 @@ class CodexTentacle(AgentTentacle[str, None]):
     config: CodexConfig = field(init=False)
     provider: str = field(init=False)
     pool: CodexClientPool | None = field(default=None, init=False, repr=False)
-    live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
-        default_factory=dict, init=False
-    )
+    live_turns: dict[UUID7, AsyncTurnHandle] = field(default_factory=dict, init=False)
     conversation_locks: SessionLocks = field(default_factory=SessionLocks, init=False)
-    bridge_contexts: dict[uuid.UUID, CodexBridgeContext] = field(
+    bridge_contexts: dict[UUID7, CodexBridgeContext] = field(
         default_factory=dict, init=False
     )
 
@@ -416,7 +413,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.live_turns = {}
         self.conversation_locks = SessionLocks()
         self.bridge_contexts = {}
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         self.models = {}
@@ -661,7 +658,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         # client is built here, entered/exited through the SDK's async context, and
         # reused or evicted by the pool.
         def new_client(
-            conversation_id: uuid.UUID, mcp_bearer: SecretStr | None
+            conversation_id: UUID7, mcp_bearer: SecretStr | None
         ) -> AsyncCodex:
             env = dict(self.config.runtime.env or {})
             overrides = (
@@ -763,10 +760,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                     cancelled = True
             await self.session_tailer.shutdown()
             self.bridge_contexts.clear()
-            for future in list(self.pending.values()):
+            for future in list(self.pendings.values()):
                 if not future.done():
                     future.cancel()
-            self.pending.clear()
+            self.pendings.clear()
             if self.pool is not None:
                 await self.pool.aclose()
                 self.pool = None
@@ -788,37 +785,41 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{context.conversation_address.channel_tentacle_id!r} to present "
                 "a Codex approval/question"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=context.conversation,
-            agent_tentacle_id=self.id,
-            run_name=context.run_name,
-            source_address=context.conversation_address,
-            target_address=context.conversation_address,
-            target_mode="sub"
-            if context.conversation_address.channel_thread_id
-            else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
+            batch = await channel.feelers.present_actions(
+                response_mode="live",
+                batch_id=batch_id,
+                action_manager=self.octomate.deferred_actions,
+                conversation=context.conversation,
+                agent_tentacle_id=self.id,
+                run_name=context.run_name,
+                source_address=context.conversation_address,
+                target_address=context.conversation_address,
+                target_mode="sub"
+                if context.conversation_address.channel_thread_id
+                else "main",
+                decision=None,
+                requests=requests,
             )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
+            self.pendings.pop(batch_id, None)
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
     def handle_sdk_request(
-        self, conversation_id: uuid.UUID, method: str, params: JsonObject | None
+        self, conversation_id: UUID7, method: str, params: JsonObject | None
     ) -> JsonObject:
         # The SDK approval handler fires on the transport thread; bridge each request
         # onto the run's event loop and block that thread until the human answers.
@@ -1205,7 +1206,7 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     @contextlib.contextmanager
     def track_turn(
-        self, conversation_id: uuid.UUID, turn: AsyncTurnHandle
+        self, conversation_id: UUID7, turn: AsyncTurnHandle
     ) -> Generator[None]:
         self.live_turns[conversation_id] = turn
         try:
@@ -1244,14 +1245,14 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -1561,16 +1562,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1593,16 +1594,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1624,16 +1625,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1683,16 +1684,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1714,16 +1715,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1744,16 +1745,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,

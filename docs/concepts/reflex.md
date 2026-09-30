@@ -14,7 +14,8 @@ validates that every node is reachable from the entry.
 
 ```mermaid
 flowchart TD
-  START([kick]) --> Awake
+  START([kick]) -->|message or resume batch| Awake
+  START -->|live batch| Live[Deliver to the owning request]
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native summon| Handoff
   Awake -->|native scheme| Scheme
@@ -90,9 +91,11 @@ The batch is a row. When the cards are answered, possibly after a restart, the
 channel kicks the graph with the batch id, `ResumeDeferred` rebuilds the state from
 the row, and `React` resumes the agent's conversation. Inkling resumes through the
 graph with the answers as tool results; a harness that takes no tool result back
-is given the answers as its next prompt. An agent that parked a live process
-instead, as the harness bridges do, is answered in place if the process is still
-there, and the graph path is the fallback.
+is given the answers as its next prompt. Each batch records its response mode:
+`resume` re-enters the graph; `live` delivers the answer to the owning agent's
+registered request. A missing live waiter is an error, never a reason to start
+another run. The live waiter is registered before the batch's cards are shown,
+so an immediate response can reach it.
 
 ## The inner graph
 

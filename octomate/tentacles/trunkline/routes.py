@@ -34,12 +34,11 @@ thread: it is the console's to change, mid-thread, and the conversation is what
 remembers it. It is switched through PATCH, or — while the thread is still being
 composed and has no row to switch — carried on the directive that creates it."""
 
-import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
@@ -141,8 +140,8 @@ class BatchResponseBody(BaseModel):
     allowed for the rest of the session.
     """
 
-    answers: dict[uuid.UUID, str] = Field(default_factory=dict)
-    approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
+    answers: dict[UUID7, str] = Field(default_factory=dict)
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
     allow_session: bool = False
 
 
@@ -250,7 +249,7 @@ def build_trunkline_router(
 
     @router.get("/threads/{thread_id}", response_model_exclude={"messages", "parent"})
     async def read_thread(
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         user: Annotated[User, Depends(current_user)],
     ) -> Thread:
@@ -267,7 +266,7 @@ def build_trunkline_router(
         response_model_exclude={"__all__": {"model_messages"}},
     )
     async def thread_messages(
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         user: Annotated[User, Depends(current_user)],
     ) -> list[ThreadMessage]:
@@ -352,7 +351,7 @@ def build_trunkline_router(
         response_model_exclude={"messages", "runs"},
     )
     async def set_permission_mode(
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         body: PermissionModeBody,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         user: Annotated[User, Depends(current_user)],
@@ -385,7 +384,7 @@ def build_trunkline_router(
         summary="Answer a deferred-action batch and stream the resumed run",
     )
     async def resolve_batch(
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         body: BatchResponseBody,
         user: Annotated[User, Depends(current_user)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],

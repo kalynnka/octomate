@@ -29,11 +29,11 @@ import logging
 import os
 import shutil
 import time
-import uuid
 from contextlib import suppress
 from pathlib import Path
 
 import pytest
+from pydantic import UUID7
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -112,7 +112,7 @@ async def a_bound_thread(manager: WorkspaceManager) -> Thread:
     )
 
 
-def a_workspace(manager: WorkspaceManager, thread_id: uuid.UUID) -> ProjectWorkspace:
+def a_workspace(manager: WorkspaceManager, thread_id: UUID7) -> ProjectWorkspace:
     """The handle a run is given before anything is forked. `materialize` takes one
     rather than a thread id, because where a workspace goes and what it is forked
     from are the workspace's to answer, not the caller's."""
@@ -146,7 +146,7 @@ async def manager(request: pytest.FixtureRequest, tmp_path: Path) -> WorkspaceMa
 async def a_mirror(path: Path, files: dict[str, str]) -> Path:
     """A pristine mirror to fork from — what `MirrorManager.sync` leaves behind,
     built here directly so this unit's tests turn on nothing but git."""
-    path.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
     for name, content in files.items():
         (path / name).write_text(content)
     await run_git("init", "-b", "main", str(path))
@@ -360,7 +360,7 @@ async def test_a_workspace_path_is_absolute_from_a_relative_directory(
     # started, and a workspace is handed to processes started elsewhere.
     monkeypatch.chdir(tmp_path)
     manager = WorkspaceManager()
-    thread = uuid.uuid4()
+    thread = uuid7()
 
     assert manager.path(thread) == (tmp_path / ".octomate/workspaces" / str(thread))
 
@@ -398,7 +398,7 @@ async def a_turn(workspace: Path, files: dict[str, str]) -> None:
         (workspace / name).write_text(content)
 
 
-async def saved(mirror: Path, thread_id: uuid.UUID) -> str:
+async def saved(mirror: Path, thread_id: UUID7) -> str:
     """What the mirror is keeping for this thread, or "" when it keeps nothing."""
     return (
         await run_git("ls-remote", str(mirror), workspaces.thread_ref(thread_id))

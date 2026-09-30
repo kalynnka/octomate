@@ -3,7 +3,6 @@ persisted operation and connection."""
 
 from __future__ import annotations
 
-import uuid
 from abc import ABC, abstractmethod
 from base64 import b64decode
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from arcanus.base import Identity
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from mcp.shared.auth import OAuthClientInformationFull, OAuthMetadata
 from pydantic import (
+    UUID7,
     AliasChoices,
     AnyHttpUrl,
     AwareDatetime,
@@ -67,11 +67,11 @@ class OAuthFlowContext:
     polling or browser callbacks; it never selects or overrides the owning user.
     """
 
-    operation_id: uuid.UUID
+    operation_id: UUID7
     connector_id: str
     user: User
     profile: UserProfile | None
-    mcp_id: uuid.UUID | None = None
+    mcp_id: UUID7 | None = None
     interval_seconds: int | None = None  # Current device polling interval.
 
 
@@ -131,7 +131,7 @@ class DeviceAuthorization(BaseModel):
     owner-bound authorization without accepting a user id from the caller.
     """
 
-    operation_id: uuid.UUID
+    operation_id: UUID7
     verification_uri: HttpsUrl
     verification_uri_complete: HttpsUrl | None = None
     user_code: SecretStr = Field(repr=False)
@@ -176,7 +176,7 @@ class AuthorizationLink(BaseModel):
     the eventual callback to the manager's shared completion boundary.
     """
 
-    operation_id: uuid.UUID
+    operation_id: UUID7
     authorization_uri: AnyHttpUrl
     expires_at: AwareDatetime
 
@@ -342,10 +342,10 @@ class OAuthOperation(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    user_id: uuid.UUID
-    profile_id: uuid.UUID | None = None
-    mcp_id: uuid.UUID | None = None
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    user_id: UUID7
+    profile_id: UUID7 | None = None
+    mcp_id: UUID7 | None = None
     connector_id: str
     encrypted_data: bytes = Field(repr=False)
     expires_at: AwareDatetime
@@ -364,10 +364,10 @@ class OAuthConnection(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    user_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    user_id: UUID7
     connector_id: str
-    mcp_id: uuid.UUID | None = None
+    mcp_id: UUID7 | None = None
     status: OAuthConnectionStatus = "active"
     encrypted_tokens: bytes = Field(repr=False)
     subject: str | None = None

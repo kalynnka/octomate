@@ -5,6 +5,8 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from pydantic import UUID7
+
 from octomate.database import async_session
 from octomate.managers.base import Manager
 from octomate.schemas.todos import Todo, TodoWrite
@@ -26,7 +28,7 @@ class TodoManager(Manager):
     todo capability, which owns the agent-facing behaviour.
     """
 
-    async def list_todos(self, conversation_id: uuid.UUID) -> list[Todo]:
+    async def list_todos(self, conversation_id: UUID7) -> list[Todo]:
         async with async_session() as session:
             todos = await session.list(
                 Todo,
@@ -36,7 +38,7 @@ class TodoManager(Manager):
             )
         return list(todos)
 
-    async def get_todo(self, conversation_id: uuid.UUID, ref: str) -> Todo | None:
+    async def get_todo(self, conversation_id: UUID7, ref: str) -> Todo | None:
         async with async_session() as session:
             return await session.one_or_none(
                 Todo,
@@ -48,7 +50,7 @@ class TodoManager(Manager):
 
     async def add_todo(
         self,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         *,
         content: str,
         active_form: str,
@@ -70,7 +72,7 @@ class TodoManager(Manager):
 
     async def update_todo(
         self,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         ref: str,
         *,
         content: str | None = None,
@@ -103,7 +105,7 @@ class TodoManager(Manager):
             await session.commit()
         return todo
 
-    async def remove_todo(self, conversation_id: uuid.UUID, ref: str) -> Todo | None:
+    async def remove_todo(self, conversation_id: UUID7, ref: str) -> Todo | None:
         async with async_session() as session:
             todo = await session.one_or_none(
                 Todo,
@@ -120,7 +122,7 @@ class TodoManager(Manager):
 
     async def write_todos(
         self,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         items: list[TodoWrite],
     ) -> tuple[list[Todo], list[Todo]]:
         """Replace the conversation's todos with `items`; return (deleted, created)."""

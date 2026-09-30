@@ -4,11 +4,11 @@ deferred feelers, `Feelers.present_actions`, stream batching, and chunking."""
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator
 from typing import cast
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -82,7 +82,7 @@ def _key(channel: str = "im") -> ChannelAddress:
 
 def _question(
     *,
-    batch_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
     position: int = 0,
     question: str = "Continue?",
     choices: list[str] | None = None,
@@ -103,7 +103,7 @@ def _question(
     )
 
 
-def _approval(*, batch_id: uuid.UUID | None = None) -> DeferredApproval:
+def _approval(*, batch_id: UUID7 | None = None) -> DeferredApproval:
     return DeferredApproval(
         id=uuid7(),
         batch_id=batch_id or uuid7(),
@@ -469,6 +469,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
             cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
         ),
     ).present_actions(
+        response_mode="live",
         action_manager=cast(DeferredActionManager, manager),
         conversation=conversation,
         agent_tentacle_id="inkling",
@@ -526,6 +527,7 @@ async def present_one_approval(
         presented_batch=FakePresentedBatch(approvals=[approval])
     )
     await feelers.present_actions(
+        response_mode="live",
         action_manager=cast(DeferredActionManager, manager),
         conversation=Conversation(thread_id=uuid7(), agent_tentacle_id="deepseek"),
         agent_tentacle_id="deepseek",
@@ -550,7 +552,7 @@ async def test_present_actions_settles_the_live_timeline() -> None:
     target_address = _key("target")
     timeline = SettlingTimeline()
 
-    with feelers.driving(target_address, timeline):
+    async with feelers.driving(target_address, timeline):
         await present_one_approval(feelers, target_address)
     # Nobody driving the thread: nothing to settle, and nothing raises.
     await present_one_approval(feelers, target_address)
@@ -565,7 +567,7 @@ async def test_a_settle_hiccup_does_not_fail_the_presentation() -> None:
     feelers = plain_feelers()
     target_address = _key("target")
 
-    with feelers.driving(target_address, HiccupTimeline()):
+    async with feelers.driving(target_address, HiccupTimeline()):
         await present_one_approval(feelers, target_address)
 
     approvals = cast(RecordingApprovalFeeler, feelers.approvals)

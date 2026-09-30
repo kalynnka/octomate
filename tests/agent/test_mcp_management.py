@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import uuid
+from uuid import uuid4
 
 import httpx2
 import pytest
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError, ValidationError
 from pydantic import AnyHttpUrl, SecretStr, TypeAdapter
+from pydantic_ai.profiles.openai import OpenAIJsonSchemaTransformer
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
@@ -54,6 +56,22 @@ async def deployment(in_memory_engine: AsyncEngine) -> tuple[Octomate, User, Fas
         fixed_session(a_turn(UserProfile(user_id=user.id))), manager=host.mcp
     )
     return host, user, server
+
+
+@pytest.mark.parametrize("tool_name", [ENABLE_MCP, DISABLE_MCP, UNINSTALL_MCP])
+async def test_management_ids_keep_strict_schemas_and_reject_uuid4(
+    deployment: tuple[Octomate, User, FastMCP],
+    tool_name: str,
+) -> None:
+    _, _, server = deployment
+    tool = await server.get_tool(tool_name)
+    assert tool is not None
+    transformer = OpenAIJsonSchemaTransformer(tool.parameters)
+    transformer.walk()
+    assert transformer.is_strict_compatible
+
+    with pytest.raises((ToolError, ValidationError), match="UUID version 7 expected"):
+        await server.call_tool(tool_name, {"mcp_id": str(uuid4())})
 
 
 async def test_catalog_and_multiple_installs_keep_secrets_and_owners_separate(
@@ -248,9 +266,7 @@ async def test_install_rejects_invalid_auth_endpoints_and_tentacle_overrides(
     assert await host.mcp.list(user.id) == []
 
 
-@pytest.mark.parametrize(
-    "profile", [None, UserProfile(), UserProfile(user_id=uuid.uuid4())]
-)
+@pytest.mark.parametrize("profile", [None, UserProfile(), UserProfile(user_id=uuid7())])
 async def test_management_requires_a_registered_owner(
     deployment: tuple[Octomate, User, FastMCP],
     profile: UserProfile | None,
@@ -264,7 +280,7 @@ async def test_management_requires_a_registered_owner(
             {"name": "Remote", "namespace": "remote", "url": "https://mcp.example/mcp"},
         ),
         *[
-            (tool, {"mcp_id": str(uuid.uuid4())})
+            (tool, {"mcp_id": str(uuid7())})
             for tool in (ENABLE_MCP, DISABLE_MCP, UNINSTALL_MCP)
         ],
     ]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +9,7 @@ from typing import Literal, TypeVar
 
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
+from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
@@ -25,7 +25,7 @@ from octomate.types.permissions import AgentPermissionMode
 RunT = TypeVar("RunT", bound=AgentRun)
 
 
-class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
+class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
@@ -38,11 +38,11 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def ensure(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         *,
         agent_tentacle_id: str,
         subagent_id: str = "",
-        parent_conversation_id: uuid.UUID | None = None,
+        parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
@@ -90,7 +90,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             return conversation
 
     async def get(
-        self, conversation_id: uuid.UUID, *, with_history: bool = True
+        self, conversation_id: UUID7, *, with_history: bool = True
     ) -> Conversation:
         """Resolve a conversation by id — one fresh read; raises on an unknown
         id. This is the by-id path for a run addressed at a pre-ensured
@@ -138,7 +138,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             run.parent_tool_call_id = parent_tool_call_id
             await session.commit()
 
-    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+    async def subagents(self, parent_conversation_id: UUID7) -> list[Conversation]:
         """The subagent conversations spawned from `parent_conversation_id` — the
         live accomplices a `whisper` can reach. Rows only; callers resolve a
         chosen one through `ensure`."""
@@ -153,7 +153,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         return list(rows)
 
     async def for_thread(
-        self, thread_id: uuid.UUID, *, with_run_messages: bool = False
+        self, thread_id: UUID7, *, with_run_messages: bool = False
     ) -> list[Conversation]:
         """The thread's agent conversations, subagents included, each with its runs.
 
@@ -177,7 +177,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             )
         return list(rows)
 
-    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+    async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         async with async_session() as session:
             conversation = await session.get(Conversation, conversation_id)
         if conversation is None:
@@ -329,7 +329,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         self,
         run: RunT,
         *,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         external_id: str | None,
     ) -> RunT:
         """Persist a freshly built run. `external_id`, when given, updates the
@@ -520,7 +520,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def search_messages(
         self,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         query: str,
         *,
         role: Literal["user", "assistant"] | None = None,
@@ -549,8 +549,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def messages_before(
         self,
-        conversation_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        conversation_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ModelMessage]:
@@ -570,8 +570,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def messages_after(
         self,
-        conversation_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        conversation_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ModelMessage]:
@@ -591,7 +591,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def related_chat_messages(
         self,
-        model_message_id: uuid.UUID,
+        model_message_id: UUID7,
     ) -> list[ThreadMessage]:
         async with async_session() as session:
             message = await session.one_or_none(

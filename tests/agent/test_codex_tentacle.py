@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -41,7 +40,7 @@ from openai_codex.generated.v2_all import (
     WorkspaceWriteSandboxPolicy,
 )
 from openai_codex.models import Notification, NotificationPayload
-from pydantic import BaseModel, SecretStr, TypeAdapter
+from pydantic import UUID7, BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -68,6 +67,7 @@ from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.feelers.base import Feelers
+from octomate.types.deferred import DeferredResponseMode
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
@@ -384,8 +384,17 @@ class FakeFeelers:
     presented: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def present_actions(
-        self, *, requests: object, **_: object
+        self,
+        *,
+        requests: DeferredToolRequests,
+        batch_id: UUID7,
+        agent_tentacle_id: str,
+        response_mode: DeferredResponseMode,
+        **_: object,
     ) -> FakePresentedBatch:
+        self.batch.id = batch_id
+        self.batch.agent_tentacle_id = agent_tentacle_id
+        self.batch.response_mode = response_mode
         self.requests.append(requests)
         self.presented.set()
         return self.batch
@@ -401,14 +410,20 @@ def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
 
 @dataclass
 class RecordingDeferredActions:
+    batch: FakePresentedBatch
+
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
+        return self.batch
+
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
 
     async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
         self.resolved.append(awake)
 
     async def mark_batch(
-        self, batch_id: uuid.UUID, status: str, *, completed: bool = False
+        self, batch_id: UUID7, status: str, *, completed: bool = False
     ) -> None:
         self.marked.append((batch_id, status))
 
@@ -563,9 +578,9 @@ def codex_bridge_context(
     )
 
 
-async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uuid.UUID:
+async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> UUID7:
     await asyncio.wait_for(feelers.presented.wait(), timeout=5)
-    return next(iter(tentacle.pending))
+    return next(iter(tentacle.pendings))
 
 
 @pytest.mark.parametrize("instrument", [False, True])
@@ -820,7 +835,7 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     octomate = Octomate(
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
@@ -864,7 +879,7 @@ async def test_question_requests_bridge_to_cards() -> None:
         args={"question": "Which branch?"},
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(questions=[question]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
@@ -916,7 +931,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         conversations=FakeConversationManager(),
@@ -983,7 +998,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     conversations = FakeConversationManager()
     octomate = Octomate(

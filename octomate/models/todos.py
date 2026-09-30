@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import JsonValue
+from pydantic import UUID7, JsonValue
 from sqlalchemy import (
     JSON,
     ForeignKey,
@@ -34,8 +33,8 @@ class Todo(Base, TransmuterProxiedMixin):
         UniqueConstraint("conversation_id", "ref", name="uq_todos_conversation_ref"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    conversation_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,

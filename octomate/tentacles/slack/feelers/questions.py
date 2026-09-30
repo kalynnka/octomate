@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import UUID
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import UUID7, JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
@@ -50,7 +49,7 @@ class SlackAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         text = question_title(actions)
@@ -75,7 +74,7 @@ def ask_question_blocks(
     actions: list[DeferredQuestion],
     *,
     page: int = 0,
-    answers: dict[UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
 ) -> list[SlackBlock]:
     if not actions:
         return []
@@ -195,7 +194,7 @@ def question_input_block(
 
 def submitted_blocks(
     actions: list[DeferredQuestion],
-    answers: dict[UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
 ) -> list[SlackBlock]:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
@@ -230,10 +229,10 @@ def collect_current_answer(
     state: SlackQuestionState,
     actions: list[DeferredQuestion],
     page: int,
-    answers: dict[UUID, str],
+    answers: dict[UUID7, str],
     *,
     prefer_choice: bool = False,
-) -> dict[UUID, str]:
+) -> dict[UUID7, str]:
     if not actions:
         return answers
     page = max(0, min(page, len(actions) - 1))
@@ -288,7 +287,7 @@ def question_button(
     action: SlackBlockAction | str,
     actions: list[DeferredQuestion],
     page: int,
-    answers: dict[UUID, str],
+    answers: dict[UUID7, str],
     *,
     style: str | None = None,
 ) -> SlackBlock:

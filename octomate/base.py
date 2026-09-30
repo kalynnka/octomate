@@ -294,17 +294,9 @@ class Octomate(FastAPI):
                 span.set_attribute("action", signal.decision.action)
             elif isinstance(signal, DeferredActionBatchResponse):
                 span.set_attribute("batch_id", str(signal.batch_id))
-                # Deliver the response to a live Claude run blocked on this batch
-                # (approval/question), rather than resuming through the graph.
-                for agent in self.agents.values():
-                    if not agent.in_process:
-                        continue
-                    future = agent.pending.get(signal.batch_id)
-                    if future is None:
-                        continue
-                    if not future.done():
-                        future.set_result(signal)
-                    span.set_attribute("resolved_live", agent.id)
+                agent_id = await self.deliver_live_response(signal)
+                if agent_id is not None:
+                    span.set_attribute("resolved_live", agent_id)
                     return
             with sqlalchemy_materia():
                 await reflex_graph.run(
@@ -320,6 +312,23 @@ class Octomate(FastAPI):
                         gateway=self.gateway,
                     ),
                 )
+
+    async def deliver_live_response(
+        self, response: DeferredActionBatchResponse
+    ) -> str | None:
+        """Return the live recipient's id; only an explicit resume batch returns None."""
+        batch = await self.deferred_actions.get_batch(response.batch_id)
+        if batch.response_mode == "resume":
+            return None
+        agent = self.agents.get(batch.agent_tentacle_id)
+        if agent is None or not agent.in_process:
+            raise RuntimeError("The agent for this live request is unavailable")
+        future = agent.pendings.get(response.batch_id)
+        if future is None:
+            raise RuntimeError("This live request is no longer awaiting a response")
+        if not future.done():
+            future.set_result(response)
+        return agent.id
 
     def kick_soon(self, signal: AwakeSignal) -> None:
         """`kick` as its own task, for a caller that must answer now — a served

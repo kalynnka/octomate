@@ -3,7 +3,6 @@ authorization link carries, what the exchange posts, and who the grant names."""
 
 from __future__ import annotations
 
-import uuid
 from base64 import urlsafe_b64encode
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -16,6 +15,7 @@ import pytest
 from pydantic import AnyHttpUrl, SecretStr
 from slack_sdk.web.async_slack_response import AsyncSlackResponse
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OAuthConfig, OctomateConfig, SlackChannelConfig
@@ -47,7 +47,7 @@ def flow_context() -> OAuthFlowContext:
         user_id=user.id,
     )
     return OAuthFlowContext(
-        operation_id=uuid.uuid4(),
+        operation_id=uuid7(),
         connector_id="slack",
         user=user,
         profile=profile,

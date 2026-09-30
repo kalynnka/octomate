@@ -7,9 +7,9 @@ from collections.abc import AsyncGenerator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
@@ -298,7 +298,7 @@ async def test_todo_and_native_segment_rotate_the_answer_messages(
         ),
     )
     image = tmp_path / "diagram.png"
-    todo = Todo(conversation_id=uuid4(), ref="T1", content="Read the docs")
+    todo = Todo(conversation_id=uuid7(), ref="T1", content="Read the docs")
     events = [
         ResultTextDeltaEvent(delta="status"),
         TodoCreatedEvent(todo=todo),

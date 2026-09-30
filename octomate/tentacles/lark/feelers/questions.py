@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import UUID
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import UUID7, JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion
@@ -51,7 +50,7 @@ class LarkAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         channel_thread_id = (
@@ -78,7 +77,7 @@ def ask_question_card(
     actions: list[DeferredQuestion],
     *,
     page: int = 0,
-    answers: dict[UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
 ) -> str:
     return LarkInteractiveCard.model_validate(
         ask_question_card_data(
@@ -93,7 +92,7 @@ def ask_question_card_data(
     *,
     actions: list[DeferredQuestion],
     page: int = 0,
-    answers: dict[UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
 ) -> JsonObject:
     answers = answers or {}
     page = max(0, min(page, len(actions) - 1))
@@ -192,7 +191,7 @@ def ask_question_card_data(
 
 def submitted_card_data(
     actions: list[DeferredQuestion],
-    answers: dict[UUID, str] | None = None,
+    answers: dict[UUID7, str] | None = None,
 ) -> JsonObject:
     answers = answers or {}
     count = len(actions)
@@ -215,8 +214,8 @@ def collect_answer(
     actions: list[DeferredQuestion],
     page: int,
     form_value: LarkQuestionFormValue,
-    answers: dict[UUID, str] | None = None,
-) -> dict[UUID, str]:
+    answers: dict[UUID7, str] | None = None,
+) -> dict[UUID7, str]:
     collected = dict(answers or {})
     if not actions:
         return collected
@@ -235,7 +234,7 @@ def question_button(
     action: LarkCardAction,
     actions: list[DeferredQuestion],
     page: int,
-    answers: dict[UUID, str],
+    answers: dict[UUID7, str],
     *,
     button_type: str = "default",
     choice: str | None = None,

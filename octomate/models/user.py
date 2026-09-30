@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-import uuid
-
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import SecretStr
+from pydantic import UUID7, SecretStr
 from sqlalchemy import ForeignKey, Integer, String, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -17,7 +15,7 @@ class User(Base, TransmuterProxiedMixin):
     """A registered human; one row per account."""
 
     __tablename__ = "users"
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     username: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -59,7 +57,7 @@ class UserProfile(Base, TransmuterProxiedMixin):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     channel_tentacle_id: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -69,7 +67,7 @@ class UserProfile(Base, TransmuterProxiedMixin):
             "profile's identity — one row per (channel, platform user) ever seen."
         ),
     )
-    user_id: Mapped[uuid.UUID | None] = mapped_column(
+    user_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,

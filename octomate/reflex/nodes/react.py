@@ -4,11 +4,11 @@ channel's timeline, and acts on whatever decision or deferral the run left."""
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncGenerator, Iterable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass
 
+from pydantic import UUID7
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
@@ -40,7 +40,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Runs the summoned agent on the target channel and acts on how the run ends:
     a reply, a spell to perform, or a deferral to park."""
 
-    resume_batch_id: uuid.UUID | None = None
+    resume_batch_id: UUID7 | None = None
     # Set by Teleport to resume the same agent where it landed, with its pending
     # call resolved — against the forked history, or in place.
     resume_results: DeferredToolResults | None = None
@@ -195,7 +195,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 else None,
             ) as span:
                 stream_results: list[AgentRunResult[ChannelOutput]] = []
-                reply_thread_message_ids: list[uuid.UUID] = []
+                reply_thread_message_ids: list[UUID7] = []
                 assistant_replies_bound = False
                 if target_channel.config.stream.enabled:
 
@@ -263,7 +263,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         async with target_channel.feelers.timeline.open(
                             target_address
                         ) as timeline_state:
-                            with target_channel.feelers.driving(
+                            async with target_channel.feelers.driving(
                                 target_address, timeline_state
                             ):
                                 async with aclosing(stream_events()) as events:

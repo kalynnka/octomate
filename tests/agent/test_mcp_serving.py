@@ -10,7 +10,6 @@ pinned in memory by `test_gateway_tools`.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal, Self
@@ -23,6 +22,7 @@ from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.base import Octomate
 from octomate.capabilities.history import HISTORY_TOOLS
@@ -155,7 +155,7 @@ async def a_driven_turn(octomate: Octomate) -> OctomateSession:
         channel_routes={"im": []},
         current_agent_id="codex",
         channels={"im": FakeChannelTentacle(octomate=octomate)},
-        conversation_id=uuid.uuid4(),
+        conversation_id=uuid7(),
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="group",
@@ -349,7 +349,7 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
             with pytest.raises(ToolError, match="not a conversation id"):
                 await client.call_tool("gateway_scry", {"reveal": "routes"})
 
-        unknown = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(uuid.uuid4())}
+        unknown = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(uuid7())}
         async with over(octomate, app, unknown) as client:
             with pytest.raises(ToolError, match="No turn of conversation"):
                 await client.call_tool("gateway_scry", {"reveal": "routes"})

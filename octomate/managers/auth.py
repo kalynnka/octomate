@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import uuid
 from datetime import UTC, datetime
 
 from anyio import CapacityLimiter, to_thread
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-from pydantic import AwareDatetime, SecretStr
+from pydantic import UUID7, AwareDatetime, SecretStr
 from sqlalchemy import or_
 from sqlalchemy.orm.exc import StaleDataError
 from uuid_utils.compat import uuid7
@@ -302,7 +301,7 @@ class AuthManager(Manager, Locks[str]):
             await session.commit()
             return tokens
 
-    async def revoke_session(self, user_id: uuid.UUID, session_id: uuid.UUID) -> None:
+    async def revoke_session(self, user_id: UUID7, session_id: UUID7) -> None:
         async with async_session() as session:
             current = await session.get(UserSession, session_id)
             if current is None or current.user_id != user_id:
@@ -317,7 +316,7 @@ class AuthManager(Manager, Locks[str]):
 
     async def create_api_key(
         self,
-        user_id: uuid.UUID,
+        user_id: UUID7,
         *,
         name: str,
         scopes: list[ApiKeyScope],
@@ -358,7 +357,7 @@ class AuthManager(Manager, Locks[str]):
             )
         return key if key is not None and scope in key.scopes else None
 
-    async def list_api_keys(self, user_id: uuid.UUID) -> list[UserApiKey]:
+    async def list_api_keys(self, user_id: UUID7) -> list[UserApiKey]:
         async with async_session() as session:
             return list(
                 await session.list(
@@ -368,7 +367,7 @@ class AuthManager(Manager, Locks[str]):
                 )
             )
 
-    async def revoke_api_key(self, user_id: uuid.UUID, key_id: uuid.UUID) -> None:
+    async def revoke_api_key(self, user_id: UUID7, key_id: UUID7) -> None:
         async with async_session() as session:
             key = await session.get(UserApiKey, key_id)
             if key is None or key.user_id != user_id:

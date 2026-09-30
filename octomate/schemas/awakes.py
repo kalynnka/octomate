@@ -1,11 +1,9 @@
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TypeAlias
 
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -16,7 +14,7 @@ from octomate.schemas.user import UserProfile
 @dataclass(frozen=True)
 class UserMessageSignal:
     messages: list[MessageEvent]
-    trigger_thread_message_id: uuid.UUID | None = None
+    trigger_thread_message_id: UUID7 | None = None
 
     def __bool__(self) -> bool:
         return bool(self.messages)
@@ -37,10 +35,10 @@ class UserMessageSignal:
 
 
 class DeferredActionBatchResponse(BaseModel):
-    batch_id: uuid.UUID
+    batch_id: UUID7
     responder_id: str = ""
-    answers: dict[uuid.UUID, str] = Field(default_factory=dict)
-    approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
+    answers: dict[UUID7, str] = Field(default_factory=dict)
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
     allow_session: bool = False
 
 
@@ -63,6 +61,6 @@ class GatewayHandoffSignal:
     source: ChannelAddress | None = None
 
 
-AwakeSignal: TypeAlias = (
+type AwakeSignal = (
     UserMessageSignal | DeferredActionBatchResponse | GatewayHandoffSignal
 )

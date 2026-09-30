@@ -1,5 +1,10 @@
 # Approvals and questions
 
+A pending question or approval does not necessarily pause the whole agent.
+Replies to live requests return to that request. If it is no longer available,
+the reply fails instead of starting another run; ask the agent to request input
+again. Batches from runs that explicitly suspended can still resume those runs.
+
 When an agent needs permission or a decision, answer the request in the
 conversation or open it in Trunkline. A task may wait for several answers before
 it continues.

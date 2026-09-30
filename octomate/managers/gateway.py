@@ -12,11 +12,12 @@ session from.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
+
+from pydantic import UUID7
 
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
@@ -108,13 +109,13 @@ class OctomateSession:
     # Which agents are live, narrowing `linked_destinations` to channels somebody
     # actually serves; also what the accomplice spells run with.
     agents: dict[str, AgentTentacle] | None = None
-    thread_id: uuid.UUID | None = None
+    thread_id: UUID7 | None = None
     # Where this run lives; also what `allow_here` and `private_blocked_by` read.
     conversation_address: ChannelAddress | None = None
     # The conversation whose turn this session belongs to — the key an external
     # runtime's tool call presents to `GatewayManager`. None on a gateway built
     # outside a driven turn, which is then never registered.
-    conversation_id: uuid.UUID | None = None
+    conversation_id: UUID7 | None = None
     # An anonymous native session — a terminal run reaching the served gateway with
     # a runtime attribution and nothing else. Policy, never schema: there is no
     # here or sub-thread to land on, every destination is a crossing, and a summon
@@ -760,7 +761,7 @@ class GatewayManager(Manager):
     driving it."""
 
     def __init__(self) -> None:
-        self.sessions: dict[uuid.UUID, OctomateSession] = {}
+        self.sessions: dict[UUID7, OctomateSession] = {}
 
     def register(self, session: OctomateSession) -> None:
         """Hold the conversation for `session`, first arrival only.
@@ -789,7 +790,7 @@ class GatewayManager(Manager):
         ):
             del self.sessions[session.conversation_id]
 
-    def get(self, conversation_id: uuid.UUID) -> OctomateSession | None:
+    def get(self, conversation_id: UUID7) -> OctomateSession | None:
         return self.sessions.get(conversation_id)
 
     def available_routes(

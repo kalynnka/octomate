@@ -88,7 +88,7 @@ def test_extension_events_share_the_event_kind_style() -> None:
     todo = decode(
         TodoCreatedEvent(
             todo=Todo(
-                conversation_id=uuid.UUID(int=0),
+                conversation_id=uuid.UUID("00000000-0000-7000-8000-000000000001"),
                 ref="T1",
                 content="write tests",
                 position=1,
