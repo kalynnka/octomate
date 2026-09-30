@@ -33,19 +33,21 @@ The run-stream union itself stays generic (`FinalResult[OutputT]`), so it has
 no single serialized form — but the wire family is concrete, so `WireEvent` and
 its `wire_event_adapter` live here too: the run stream as a wire consumer sees
 it, with the generic/unserializable members replaced by their wire forms.
+`CommandStreamEvent` adds a terminal `CommandOutcomeEvent` for the command API.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.auth import LinkProfileAuthorization
+from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.segments import MessageSegment
@@ -106,6 +108,17 @@ class RunErrorEvent(BaseModel):
 
     event_kind: Literal["run_error"] = "run_error"
     message: str
+
+
+class CommandOutcomeEvent(BaseModel):
+    """The terminal command result, refusal or saved delivery outcome."""
+
+    event_kind: Literal["command_outcome"] = Field(
+        default="command_outcome", description="Identifies a terminal command outcome."
+    )
+    outcome: CommandOutcome = Field(
+        description="Direct or replayed outcome, or completion after stream cleanup and persistence."
+    )
 
 
 @dataclass
@@ -285,12 +298,25 @@ type StreamEvents[OutputT] = (
     | ActionBatchEvent
 )
 
+
+def omit_native_discriminator(schema: dict[str, JsonValue]) -> None:
+    """Keep native event variants without OpenAPI-invalid registry mappings.
+
+    Native registries emit inline discriminator targets, while OpenAPI requires
+    references. The generated oneOf still describes every event variant.
+    """
+    schema.pop("discriminator", None)
+
+
 # The run stream as a wire consumer sees it: `StreamEvents` with the generic /
 # unserializable members replaced by their wire forms (`FinalResult` dropped for
 # `RunResultEvent`, the subagent timeline callbacks as events), every member
 # discriminated by `event_kind`.
 type WireEvent = (
-    AgentStreamEvent
+    Annotated[
+        AgentStreamEvent,
+        Field(json_schema_extra=omit_native_discriminator),
+    ]
     | ResultSegmentEvent
     | ResultTextDeltaEvent
     | TodoEvent
@@ -303,6 +329,8 @@ type WireEvent = (
     | RunResultEvent
     | RunErrorEvent
 )
+
+type CommandStreamEvent = WireEvent | CommandOutcomeEvent
 
 # Serialization-only: wire consumers never validate events back in, so the
 # union needs no validation discriminator (the OAuth pair could not carry one

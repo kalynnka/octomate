@@ -39,8 +39,8 @@ The optional `probe_commands` and `execute_command` hooks use the
 [command schemas](../api/schemas/commands.md). Their defaults report unsupported
 without starting a turn. Each agent exposes `discover_commands` for cached discovery,
 refresh and command-name completion, backed by the host's command manager and an HTTP
-endpoint. The host also provides guarded execution through its command manager;
-HTTP execution, channel command controls and runtime adapters are not wired yet.
+endpoint. The host also provides guarded execution through its command manager and
+HTTP API. Channel command controls and runtime adapters are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval
@@ -79,6 +79,25 @@ posture select a new composer's settings; existing conversations use the stored
 selection and ignore those inputs. The router resolves the actual workspace and external
 session; clients cannot override them. The response omits conversation history,
 external session IDs and session tool grants. See `/docs` for the generated API.
+
+`POST /api/commands/execute` uses the same authentication and context fields, plus
+`command_id`, a stable `delivery_id`, and optional raw `arguments`. It requires an
+existing conversation and applies the execution access checks below. The server
+resolves the descriptor from a fresh catalog. Browser attachments are not supported
+yet; a nonempty `attachments` field is rejected before dispatch.
+
+Execution responses use `text/event-stream`. Each SSE `data` field is a JSON
+`CommandStreamEvent`, identified by `event_kind`. Immediate results, refusals and
+replayed deliveries emit one `CommandOutcomeEvent` with `event_kind="command_outcome"`
+and the `CommandOutcome` in its `outcome` field. Agent activity uses Trunkline's
+existing wire events, followed by that terminal event after runtime cleanup and
+receipt persistence succeed. Stream failures close without a terminal outcome.
+A disconnect cancels execution and waits for cleanup, outcome persistence and guard
+release. Retrying the same delivery returns its saved outcome as one SSE event;
+streamed activity is not replayed. Authentication and request-validation failures
+remain non-2xx JSON responses. The OpenAPI document uses version 3.2 and describes
+each SSE frame through `itemSchema`, with its JSON data contract in `contentSchema`.
+This endpoint does not yet supply gateway capabilities or a deferred-action presenter.
 
 `prefix` filters command names case-insensitively without changing the cached
 catalog. A nonmatching prefix returns an empty ready catalog when discovery

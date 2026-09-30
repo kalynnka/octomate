@@ -1,12 +1,24 @@
-"""Authenticated command discovery shared by browser clients and IM channels."""
+"""Authenticated command discovery and execution for browser clients."""
 
+import asyncio
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import AbstractAsyncContextManager
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.responses import Response
+from pydantic import JsonValue
+from starlette.types import Receive, Scope, Send
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
+from octomate.capabilities.harness.events import (
+    CommandOutcomeEvent,
+    CommandStreamEvent,
+    wire_event_adapter,
+)
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.dependencies import (
     application,
     conversation_manager,
@@ -16,15 +28,105 @@ from octomate.dependencies import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
-from octomate.schemas.commands import CommandCatalog, CommandContext
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+    CommandResult,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import User
+from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.trunkline.base import SSE_HEADERS, to_wire
 
 command_router = APIRouter(
     prefix="/api/commands",
     tags=["commands"],
     dependencies=[Depends(browser_request)],
 )
+
+
+class CommandResponse(Response):
+    """Stream command events while one task owns execution through runtime cleanup.
+
+    A disconnect cancels that task once and waits for it to close the runtime,
+    record the interrupted outcome and release the conversation's turn guard.
+    Each SSE data field contains a ``CommandStreamEvent`` JSON payload. Immediate
+    and replayed outcomes produce one event. Agent activity ends with an outcome
+    only after runtime cleanup and persistence succeed.
+    """
+
+    execution: AbstractAsyncContextManager[
+        CommandOutcome | AsyncGenerator[ReactStreamEvent[ChannelOutput], None]
+    ]
+
+    def __init__(
+        self,
+        execution: AbstractAsyncContextManager[
+            CommandOutcome | AsyncGenerator[ReactStreamEvent[ChannelOutput], None]
+        ],
+    ) -> None:
+        super().__init__(media_type="text/event-stream", headers=SSE_HEADERS)
+        del self.headers["content-length"]
+        self.execution = execution
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        async with asyncio.TaskGroup() as tasks:
+            execution = tasks.create_task(self.respond(send))
+            disconnected = tasks.create_task(self.listen_for_disconnect(receive))
+            await asyncio.wait(
+                (execution, disconnected), return_when=asyncio.FIRST_COMPLETED
+            )
+            if not execution.done():
+                execution.cancel()
+            disconnected.cancel()
+
+    async def listen_for_disconnect(self, receive: Receive) -> None:
+        while (await receive())["type"] != "http.disconnect":
+            pass
+
+    async def respond(self, send: Send) -> None:
+        async with self.execution as result:
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": self.raw_headers,
+                }
+            )
+            if isinstance(result, CommandResult | CommandError):
+                outcome = result
+            else:
+                await self.stream_events(result, send)
+                outcome = CommandResult()
+        await send(
+            {
+                "type": "http.response.body",
+                "body": b"data: "
+                + CommandOutcomeEvent(outcome=outcome).model_dump_json().encode()
+                + b"\n\n",
+                "more_body": False,
+            }
+        )
+
+    async def stream_events(
+        self,
+        events: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
+        send: Send,
+    ) -> None:
+        async for event in events:
+            wire = to_wire(event)
+            if wire is not None:
+                payload = wire_event_adapter.dump_json(wire, warnings=False)
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b"data: " + payload + b"\n\n",
+                        "more_body": True,
+                    }
+                )
 
 
 async def command_context(
@@ -125,3 +227,69 @@ async def discover_commands(
     """Discover or complete commands without creating a conversation or model turn."""
     agent = app.agents[context.agent_id]
     return await agent.discover_commands(context, refresh=refresh, prefix=prefix)
+
+
+@command_router.post(
+    "/execute",
+    response_class=Response,
+    response_model=CommandStreamEvent,
+    response_description="SSE events with JSON data identified by event_kind.",
+    responses={
+        200: {
+            "content": {
+                "text/event-stream": {
+                    "itemSchema": {
+                        "type": "object",
+                        "required": ["data"],
+                        "properties": {
+                            "data": {
+                                "type": "string",
+                                "contentMediaType": "application/json",
+                                "contentSchema": {
+                                    "$ref": "#/components/schemas/CommandStreamEvent"
+                                },
+                            }
+                        },
+                    }
+                }
+            }
+        }
+    },
+)
+async def execute_command(
+    context: Annotated[CommandContext, Depends(command_context)],
+    app: Annotated[Octomate, Depends(application)],
+    command_id: Annotated[
+        str, Body(min_length=1, description="The selected descriptor's opaque ID.")
+    ],
+    delivery_id: Annotated[
+        str, Body(min_length=1, description="Stable delivery ID; reuse for retries.")
+    ],
+    arguments: Annotated[
+        str, Body(description="Raw command arguments, preserved unchanged.")
+    ] = "",
+    attachments: Annotated[
+        list[JsonValue] | None,
+        Body(
+            max_length=0,
+            description="Must be empty until browser uploads are supported.",
+        ),
+    ] = None,
+) -> CommandResponse:
+    """Execute explicit command intent against an existing conversation.
+
+    Every execution response is SSE. Each data field contains CommandStreamEvent
+    JSON, identified by event_kind. Direct results, refusals and matching retries
+    emit one command_outcome event. Agent activity precedes that outcome, which is
+    sent after cleanup and persistence. A failed stream closes without an outcome.
+    Authentication and request-validation errors remain non-2xx JSON responses.
+    """
+    agent = app.agents[context.agent_id]
+    return CommandResponse(
+        app.commands.execute(
+            agent,
+            context,
+            CommandInvocation(command_id=command_id, arguments=arguments),
+            delivery_id=delivery_id,
+        )
+    )

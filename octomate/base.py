@@ -165,6 +165,7 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
+        self.openapi_version = "3.2.0"  # Per-event SSE response schemas use itemSchema.
         self.threads = ThreadManager(users=self.users)
         self.commands = CommandManager(
             tentacles=self.tentacles,
