@@ -469,6 +469,7 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
             cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
         ),
     ).present_actions(
+        response_mode="live",
         action_manager=cast(DeferredActionManager, manager),
         conversation=conversation,
         agent_tentacle_id="inkling",
@@ -526,6 +527,7 @@ async def present_one_approval(
         presented_batch=FakePresentedBatch(approvals=[approval])
     )
     await feelers.present_actions(
+        response_mode="live",
         action_manager=cast(DeferredActionManager, manager),
         conversation=Conversation(thread_id=uuid7(), agent_tentacle_id="deepseek"),
         agent_tentacle_id="deepseek",

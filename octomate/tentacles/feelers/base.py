@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -25,6 +26,7 @@ from octomate.tentacles.feelers.output import (
     TimelineFeeler,
     TimelineState,
 )
+from octomate.types.deferred import DeferredResponseMode
 
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
@@ -76,6 +78,8 @@ class Feelers:
         target_mode: ResponseTargetMode,
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
+        response_mode: DeferredResponseMode,
+        batch_id: UUID7 | None = None,
     ) -> DeferredActionBatch:
         with channel_logfire.span(
             "present_actions",
@@ -91,6 +95,8 @@ class Feelers:
                 target_mode=target_mode,
                 decision=decision,
                 requests=requests,
+                response_mode=response_mode,
+                batch_id=batch_id,
             )
             approvals = list(batch.approvals)
             questions = list(batch.questions)

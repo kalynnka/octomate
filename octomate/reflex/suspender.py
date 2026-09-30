@@ -121,6 +121,7 @@ class ReflexSuspender:
                 # On-stream round-trip: persist the batch and hand it back as one
                 # event for the consumer to render + mark as a unit.
                 batch = await self.action_manager.create_batch(
+                    response_mode="resume",
                     conversation=conversation,
                     agent_tentacle_id=self.agent_tentacle_id,
                     run_name=self.run_name,
@@ -139,6 +140,7 @@ class ReflexSuspender:
                 )
 
             batch = await self.channel.feelers.present_actions(
+                response_mode="resume",
                 action_manager=self.action_manager,
                 conversation=conversation,
                 agent_tentacle_id=self.agent_tentacle_id,

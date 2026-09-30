@@ -17,6 +17,7 @@ from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
     DeferredBatchStatus,
+    DeferredResponseMode,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +42,12 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
         String,
         nullable=False,
         default="pending",
+    )
+    response_mode: Mapped[DeferredResponseMode] = mapped_column(
+        String,
+        nullable=False,
+        server_default="live",
+        comment="Whether a reply answers a live request or resumes a suspended run.",
     )
     source_address: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     target_address: Mapped[JsonValue] = mapped_column(JSON, nullable=False)

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import cast
 
 from arcanus import Relation
+from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
@@ -49,7 +50,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.types.deferred import DeferredBatchStatus
+from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 
 
@@ -455,16 +456,19 @@ class CreateBatchCall:
     target_mode: ResponseTargetMode
     decision: SummonDecision | None
     requests: DeferredToolRequests
-    batch_id: uuid.UUID
+    response_mode: DeferredResponseMode
+    batch_id: UUID7
 
 
 @dataclass
 class FakePresentedBatch:
     """What `create_batch` hands back: the persisted actions to present."""
 
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    id: UUID7 = field(default_factory=uuid7)
     questions: list[DeferredQuestion] = field(default_factory=list)
     approvals: list[DeferredApproval] = field(default_factory=list)
+    response_mode: DeferredResponseMode = "resume"
+    agent_tentacle_id: str = "inkling"
 
 
 @dataclass
@@ -478,12 +482,13 @@ class FakeDeferredBatch:
     # The conversation the suspended run was in — which names the thread it ran
     # in, and so the sub-thread a chat room's kick opened.
     conversation_id: uuid.UUID = field(default_factory=uuid.uuid4)
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    id: UUID7 = field(default_factory=uuid7)
     agent_tentacle_id: str = "inkling"
     run_name: str | None = "react"
     target_mode: ResponseTargetMode = "main"
     decision: SummonDecision | None = None
     status: DeferredBatchStatus = "resolved"
+    response_mode: DeferredResponseMode = "resume"
     completed: bool = True
 
     def build_results(self) -> DeferredToolResults:
@@ -496,9 +501,7 @@ class FakeActionManager:
     presented_batch: FakePresentedBatch | None = None
     create_calls: list[CreateBatchCall] = field(default_factory=list)
     presented: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, DeferredBatchStatus, bool]] = field(
-        default_factory=list
-    )
+    marked: list[tuple[UUID7, DeferredBatchStatus, bool]] = field(default_factory=list)
 
     async def create_batch(
         self,
@@ -511,8 +514,14 @@ class FakeActionManager:
         target_mode: ResponseTargetMode,
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
+        response_mode: DeferredResponseMode,
+        batch_id: UUID7 | None = None,
     ) -> FakePresentedBatch:
         batch = self.presented_batch or FakePresentedBatch()
+        batch.response_mode = response_mode
+        batch.agent_tentacle_id = agent_tentacle_id
+        if batch_id is not None:
+            batch.id = batch_id
         self.create_calls.append(
             CreateBatchCall(
                 conversation=conversation,
@@ -523,6 +532,7 @@ class FakeActionManager:
                 target_mode=target_mode,
                 decision=decision,
                 requests=requests,
+                response_mode=response_mode,
                 batch_id=batch.id,
             )
         )
@@ -543,14 +553,14 @@ class FakeActionManager:
             raise ValueError(f"unknown deferred action batch {awake.batch_id}")
         return self.batch
 
-    async def get_batch(self, batch_id: uuid.UUID) -> FakeDeferredBatch:
+    async def get_batch(self, batch_id: UUID7) -> FakeDeferredBatch:
         if self.batch is None:
             raise ValueError(f"unknown deferred action batch {batch_id}")
         return self.batch
 
     async def mark_batch(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         status: DeferredBatchStatus,
         *,
         completed: bool = False,

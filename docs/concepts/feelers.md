@@ -70,11 +70,14 @@ Tools the timeline never draws: `ask_questions`, `send`, `commission`, `whisper`
 
 Presenting a batch creates it, presents approvals then questions, and records each
 card's platform message id against its action, so the card and the row stay linked.
+The caller supplies the batch's response mode: a live request or a suspended run
+to resume. Live bridges allocate the batch id and register its response waiter
+before presentation begins. Feelers do not decide whether a run is suspended.
 Answering is per channel, and two designs coexist:
 
 - **Slack and Lark** carry the batch's state in the button payload: ids, the
   actions, the page, and the answers so far. A press validates the payload and
-  kicks the graph when the batch is complete.
+  delivers a response when the batch is complete.
 - **Discord** carries ids only, in the button's custom id, and reloads the batch
   from the database under a per-batch lock. Approvals survive a restart; answers
   typed but not submitted do not.

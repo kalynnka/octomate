@@ -8,7 +8,9 @@ from datetime import UTC, datetime
 
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import noload
+from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Manager
@@ -23,7 +25,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.telemetry import deferred_logfire
-from octomate.types.deferred import DeferredBatchStatus
+from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 
 
 class DeferredActionManager(Manager):
@@ -40,6 +42,8 @@ class DeferredActionManager(Manager):
         target_mode: ResponseTargetMode,
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
+        response_mode: DeferredResponseMode,
+        batch_id: UUID7 | None = None,
     ) -> DeferredActionBatch:
         with deferred_logfire.span("deferred.create_batch", run_name=run_name) as span:
             actions = DeferredActionCollection.validate_python(requests)
@@ -50,6 +54,8 @@ class DeferredActionManager(Manager):
                 action for action in actions if isinstance(action, DeferredApproval)
             ]
             batch = DeferredActionBatch(
+                id=batch_id or uuid7(),
+                response_mode=response_mode,
                 conversation_id=conversation.id,
                 agent_tentacle_id=agent_tentacle_id,
                 run_name=run_name,
@@ -110,7 +116,7 @@ class DeferredActionManager(Manager):
 
     async def get_batch(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
     ) -> DeferredActionBatch:
         async with async_session() as session:
             batch = await session.get(DeferredActionBatch, batch_id)
@@ -203,7 +209,7 @@ class DeferredActionManager(Manager):
 
     async def mark_batch(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         status: DeferredBatchStatus,
         *,
         completed: bool = False,

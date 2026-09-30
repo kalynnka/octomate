@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from arcanus import RelationCollection
@@ -10,6 +10,7 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
+from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -21,6 +22,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.schemas.triage import SummonDecision
+from octomate.types.deferred import DeferredResponseMode
 from tests.support.managers import a_thread
 
 
@@ -52,12 +54,18 @@ def _requests() -> DeferredToolRequests:
     )
 
 
-async def _create_batch() -> DeferredActionBatch:
+async def _create_batch(
+    response_mode: DeferredResponseMode = "resume",
+    *,
+    batch_id: UUID | None = None,
+) -> DeferredActionBatch:
     address = _key()
     conversation = await ConversationManager().ensure(
         await a_thread(), agent_tentacle_id="inkling"
     )
     return await DeferredActionManager().create_batch(
+        batch_id=batch_id,
+        response_mode=response_mode,
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="react",
@@ -71,9 +79,49 @@ async def _create_batch() -> DeferredActionBatch:
             reason="needs input",
             hint="needs input",
             summon="needs input",
-        ),
+        )
+        if response_mode == "resume"
+        else None,
         requests=_requests(),
     )
+
+
+@pytest.mark.parametrize("batch_id", [None, uuid7()], ids=["generated", "supplied"])
+async def test_create_batch_uses_uuid7(
+    in_memory_engine: AsyncEngine,
+    batch_id: UUID | None,
+) -> None:
+    created = await _create_batch(batch_id=batch_id)
+
+    assert created.id.version == 7
+    if batch_id is not None:
+        assert created.id == batch_id
+    reloaded = await DeferredActionManager().get_batch(created.id)
+    assert reloaded.id == created.id
+
+
+@pytest.mark.parametrize(
+    "batch_id",
+    [UUID(int=0), UUID(int=0, version=1), uuid4()],
+    ids=["nil", "uuid1", "uuid4"],
+)
+async def test_create_batch_rejects_non_uuid7_before_persistence(
+    in_memory_engine: AsyncEngine,
+    batch_id: UUID,
+) -> None:
+    with pytest.raises(ValidationError) as error:
+        await _create_batch(batch_id=batch_id)
+
+    assert error.value.errors()[0]["type"] == "uuid_version"
+    async with async_session() as session:
+        assert not await session.list(DeferredActionBatch)
+
+
+def test_deferred_reply_rejects_non_uuid7_batch_id() -> None:
+    with pytest.raises(ValidationError) as error:
+        DeferredActionBatchResponse.model_validate({"batch_id": str(uuid4())})
+
+    assert error.value.errors()[0]["type"] == "uuid_version"
 
 
 def test_deferred_action_batch_accepts_validated_actions() -> None:
@@ -84,6 +132,7 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
     address = _key()
 
     batch = DeferredActionBatch(
+        response_mode="resume",
         conversation_id=uuid7(),
         agent_tentacle_id="inkling",
         run_name="react",
@@ -107,15 +156,18 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
     assert [action.kind for action in batch.approvals] == ["approval"]
 
 
+@pytest.mark.parametrize("response_mode", ["live", "resume"])
 async def test_deferred_action_batch_relationships_filter_by_kind(
     in_memory_engine: AsyncEngine,
+    response_mode: DeferredResponseMode,
 ) -> None:
-    created = await _create_batch()
+    created = await _create_batch(response_mode)
 
     assert [action.batch_id for action in created.questions] == [created.id]
     assert [action.batch_id for action in created.approvals] == [created.id]
 
     reloaded = await DeferredActionManager().get_batch(created.id)
+    assert reloaded.response_mode == response_mode
 
     assert [action.kind for action in reloaded.questions] == ["question"]
     assert [action.kind for action in reloaded.approvals] == ["approval"]

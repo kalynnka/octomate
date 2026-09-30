@@ -227,6 +227,7 @@ async def create_batch(
         ),
     )
     return await DeferredActionManager().create_batch(
+        response_mode="resume",
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="react",

@@ -105,7 +105,7 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
                 assert await task == {"answers": {}}
                 batch = await octomate.deferred_actions.get_batch(batch_id)
                 assert batch.status == "expired"
-                assert tentacle.pending == {}
+                assert tentacle.pendings == {}
                 return
             await octomate.kick(
                 DeferredActionBatchResponse(

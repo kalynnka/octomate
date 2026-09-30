@@ -16,6 +16,7 @@ from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 import anyio
+from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -233,7 +234,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # waiter, instead of resuming durably through the triage graph. In-process
     # agents populate `pending` (batch id -> waiter); the rest never touch it.
     in_process: ClassVar[bool] = False
-    pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
+    pendings: dict[UUID7, asyncio.Future[DeferredActionBatchResponse]]
 
     permission_modes: tuple[PermissionMode, ...] = ()
 

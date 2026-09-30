@@ -1190,6 +1190,7 @@ async def test_batch_resolve_resolves_and_streams(
         ]
     )
     batch = await octomate.deferred_actions.create_batch(
+        response_mode="resume",
         conversation=conversation,
         agent_tentacle_id="inkling",
         run_name="react",

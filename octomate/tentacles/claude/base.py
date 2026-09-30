@@ -49,7 +49,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import UUID7, TypeAdapter, ValidationError
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
@@ -175,7 +175,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         super().__init__(id=id, octomate=octomate)
         self.config = config
         self.description = description or self.description
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         # One live Claude client per conversation, keyed by conversation id: a new
@@ -395,9 +395,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         requests: DeferredToolRequests,
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        """Present a deferred batch as approval/question cards through the channel,
-        then park a future until the human response arrives via
-        `try_resolve_live_deferred`. The Claude session stays open in-process while
+        """Register a reply waiter before presenting approval/question cards.
+        The human response arrives through `Octomate.kick`.
+        The Claude session stays open in-process while
         this awaits, so the answer is not durable across an Octomate restart.
 
         Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
@@ -409,30 +409,34 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 f"no channel {conversation_address.channel_tentacle_id!r} to "
                 f"present a Claude approval/question"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=conversation,
-            agent_tentacle_id=self.id,
-            run_name=run_name,
-            source_address=conversation_address,
-            target_address=conversation_address,
-            target_mode="sub" if conversation_address.channel_thread_id else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
+            batch = await channel.feelers.present_actions(
+                response_mode="live",
+                batch_id=batch_id,
+                action_manager=self.octomate.deferred_actions,
+                conversation=conversation,
+                agent_tentacle_id=self.id,
+                run_name=run_name,
+                source_address=conversation_address,
+                target_address=conversation_address,
+                target_mode="sub" if conversation_address.channel_thread_id else "main",
+                decision=None,
+                requests=requests,
             )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
+            self.pendings.pop(batch_id, None)
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
@@ -495,10 +499,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
         await super().__aexit__(exc_type, exc_value, traceback)
-        for future in list(self.pending.values()):
+        for future in list(self.pendings.values()):
             if not future.done():
                 future.cancel()
-        self.pending.clear()
+        self.pendings.clear()
         # Interrupt any run still streaming so its client/transport tears down
         # instead of orphaning a subprocess or SSH connection at shutdown.
         for client in self.live_clients.values():

@@ -195,6 +195,7 @@ async def test_pending_actions_do_not_split_continuing_text(
         for action in actions:
             action.batch_id = batch_id
         batch = DeferredActionBatch(
+            response_mode="resume",
             id=batch_id,
             conversation_id=conversation.id,
             agent_tentacle_id="codex",
@@ -219,6 +220,7 @@ async def test_pending_actions_do_not_split_continuing_text(
 
     async def present(request: DeferredToolRequests) -> None:
         await channel.feelers.present_actions(
+            response_mode="live",
             action_manager=manager,
             conversation=conversation,
             agent_tentacle_id="codex",

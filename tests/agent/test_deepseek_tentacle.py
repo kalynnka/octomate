@@ -23,10 +23,11 @@ from octomate_protocol.deepseek import (
     RpcResult,
 )
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
-from pydantic import HttpUrl, SecretStr
+from pydantic import UUID7, HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
+from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -55,6 +56,7 @@ from octomate.tentacles.deepseek.wire import (
     StreamErrorFrame,
 )
 from octomate.tentacles.feelers.base import Feelers
+from octomate.types.deferred import DeferredResponseMode
 from octomate.types.json import JsonObject, JsonValue
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
@@ -307,8 +309,17 @@ class FakeFeelers:
     presented: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def present_actions(
-        self, *, requests: object, **_: object
+        self,
+        *,
+        requests: DeferredToolRequests,
+        batch_id: UUID7,
+        agent_tentacle_id: str,
+        response_mode: DeferredResponseMode,
+        **_: object,
     ) -> FakePresentedBatch:
+        self.batch.id = batch_id
+        self.batch.agent_tentacle_id = agent_tentacle_id
+        self.batch.response_mode = response_mode
         self.requests.append(requests)
         self.presented.set()
         return self.batch
@@ -324,14 +335,20 @@ def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
 
 @dataclass
 class RecordingDeferredActions:
+    batch: FakePresentedBatch
+
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
+        return self.batch
+
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
 
     async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
         self.resolved.append(awake)
 
     async def mark_batch(
-        self, batch_id: uuid.UUID, status: str, *, completed: bool = False
+        self, batch_id: UUID7, status: str, *, completed: bool = False
     ) -> None:
         self.marked.append((batch_id, status))
 
@@ -370,11 +387,9 @@ def bridge_context(
     )
 
 
-async def wait_for_pending(
-    tentacle: DeepseekTentacle, feelers: FakeFeelers
-) -> uuid.UUID:
+async def wait_for_pending(tentacle: DeepseekTentacle, feelers: FakeFeelers) -> UUID7:
     await asyncio.wait_for(feelers.presented.wait(), timeout=5)
-    return next(iter(tentacle.pending))
+    return next(iter(tentacle.pendings))
 
 
 def interaction_octomate(
@@ -974,7 +989,7 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
         args=ApprovalRequest(tool_name="bash"),
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     conversations = FakeConversationManager()
     octomate = interaction_octomate(feelers, deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
@@ -1006,7 +1021,7 @@ async def test_a_declined_approval_answers_rejected() -> None:
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
@@ -1041,7 +1056,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(
         FakeConversationManager(),
@@ -1077,7 +1092,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     conversations = FakeConversationManager()
     octomate = interaction_octomate(feelers, deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
@@ -1123,7 +1138,9 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
 async def test_a_non_interactive_run_declines_without_a_card() -> None:
     FakeDeepseekApi.reset()
     feelers = FakeFeelers(batch=FakePresentedBatch())
-    octomate = interaction_octomate(feelers, RecordingDeferredActions())
+    octomate = interaction_octomate(
+        feelers, RecordingDeferredActions(batch=feelers.batch)
+    )
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
     tentacle.client = cast(
@@ -1185,7 +1202,7 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
         args={"question": "Anything else?"},
     )
     feelers = FakeFeelers(batch=FakePresentedBatch(questions=[first, second]))
-    deferred_actions = RecordingDeferredActions()
+    deferred_actions = RecordingDeferredActions(batch=feelers.batch)
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
@@ -1228,6 +1245,9 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
             {"id": "q2", "selected": [], "custom": "ship it"},
         ],
     }
+    [requests] = feelers.requests
+    assert isinstance(requests, DeferredToolRequests)
+    assert uuid.UUID(requests.calls[0].tool_call_id).version == 7
 
 
 async def test_starts_its_own_runtime_beside_native_dsh(

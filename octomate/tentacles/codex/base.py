@@ -66,7 +66,7 @@ from openai_codex.generated.v2_all import (
     TurnStatus,
     UserInput,
 )
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import UUID7, SecretStr, TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -416,7 +416,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.live_turns = {}
         self.conversation_locks = SessionLocks()
         self.bridge_contexts = {}
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         self.models = {}
@@ -763,10 +763,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                     cancelled = True
             await self.session_tailer.shutdown()
             self.bridge_contexts.clear()
-            for future in list(self.pending.values()):
+            for future in list(self.pendings.values()):
                 if not future.done():
                     future.cancel()
-            self.pending.clear()
+            self.pendings.clear()
             if self.pool is not None:
                 await self.pool.aclose()
                 self.pool = None
@@ -788,32 +788,36 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{context.conversation_address.channel_tentacle_id!r} to present "
                 "a Codex approval/question"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=context.conversation,
-            agent_tentacle_id=self.id,
-            run_name=context.run_name,
-            source_address=context.conversation_address,
-            target_address=context.conversation_address,
-            target_mode="sub"
-            if context.conversation_address.channel_thread_id
-            else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
+            batch = await channel.feelers.present_actions(
+                response_mode="live",
+                batch_id=batch_id,
+                action_manager=self.octomate.deferred_actions,
+                conversation=context.conversation,
+                agent_tentacle_id=self.id,
+                run_name=context.run_name,
+                source_address=context.conversation_address,
+                target_address=context.conversation_address,
+                target_mode="sub"
+                if context.conversation_address.channel_thread_id
+                else "main",
+                decision=None,
+                requests=requests,
             )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
+            self.pendings.pop(batch_id, None)
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 

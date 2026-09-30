@@ -38,7 +38,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import HttpUrl, ValidationError
+from pydantic import UUID7, HttpUrl, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -211,7 +211,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.subscribers = {}
         self.bridge_contexts = {}
         self.interaction_tasks = {}
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         self.models = {}
@@ -519,10 +519,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             for task in list(self.interaction_tasks.values()):
                 task.cancel()
             self.interaction_tasks.clear()
-            for future in list(self.pending.values()):
+            for future in list(self.pendings.values()):
                 if not future.done():
                     future.cancel()
-            self.pending.clear()
+            self.pendings.clear()
             self.bridge_contexts.clear()
             await self.client.__aexit__(exc_type, exc_value, traceback)
             if self.process is not None:
@@ -682,7 +682,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 ToolCallPart(
                     tool_name="deepseek_user_input",
                     args={"questions": questions},
-                    tool_call_id=str(uuid4()),
+                    tool_call_id=str(uuid7()),
                     provider_name=DEEPSEEK_PROVIDER_NAME,
                 )
             ]
@@ -724,32 +724,36 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 f"{context.conversation_address.channel_tentacle_id!r} to present "
                 "a dsh approval/question"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=context.conversation,
-            agent_tentacle_id=self.id,
-            run_name=context.run_name,
-            source_address=context.conversation_address,
-            target_address=context.conversation_address,
-            target_mode="sub"
-            if context.conversation_address.channel_thread_id
-            else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
+            batch = await channel.feelers.present_actions(
+                response_mode="live",
+                batch_id=batch_id,
+                action_manager=self.octomate.deferred_actions,
+                conversation=context.conversation,
+                agent_tentacle_id=self.id,
+                run_name=context.run_name,
+                source_address=context.conversation_address,
+                target_address=context.conversation_address,
+                target_mode="sub"
+                if context.conversation_address.channel_thread_id
+                else "main",
+                decision=None,
+                requests=requests,
             )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
+            self.pendings.pop(batch_id, None)
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
