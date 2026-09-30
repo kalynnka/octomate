@@ -40,6 +40,7 @@ from lark_oapi.core.model import BaseRequest, Config, RawResponse, RequestOption
 from pydantic import SecretStr, TypeAdapter
 from uuid_utils import uuid7
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.telemetry import lark_logfire
 from octomate.tentacles.channel import (
@@ -287,7 +288,21 @@ class LarkInk(Ink[LarkOutboundMessage]):
         data, file_name = result
         return DownloadedImage(data=data, file_name=file_name)
 
-    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+    async def thread_locations(
+        self, user_id: str, source_address: ChannelAddress | None = None
+    ) -> list[ThreadLocationVariant]:
+        if source_address is not None:
+            if source_address.channel_thread_id or source_address.chat_type == "thread":
+                return []
+            return [
+                SubThreadLocation(
+                    key=source_address.chat_id,
+                    label="New sub-thread here",
+                    chat_type=source_address.chat_type,
+                    chat_id=source_address.chat_id,
+                    shared=source_address.shared,
+                )
+            ]
         return [
             SubThreadLocation(
                 key="", label="New sub-thread in DM", chat_type="dm", chat_id=""

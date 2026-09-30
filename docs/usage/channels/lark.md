@@ -49,6 +49,11 @@ one-to-one chat with the bot or mention it in a group and verify a reply.
 A sub-thread is opened by sending the hint and replying under it. Lark identifies
 a thread reply by its root message id, which is what the continuation is keyed on.
 
+
+Teleport and Summon use the current group or DM as the parent for a new sub-thread.
+They do not offer nested sub-threads inside an existing thread. Entry from another
+platform uses the linked account's DM.
+
 ## Rendering
 
 Everything is cards. The answer streams into a CardKit card with streaming mode on.

@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable, Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import ClassVar
 from unittest.mock import AsyncMock, Mock
 
@@ -400,7 +400,11 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
     guild._channels = {channel.id: channel, other.id: other}
     member = Mock(spec=discord.Member)
     bot = Mock(spec=discord.Member)
-    monkeypatch.setattr(discord.Client, "guilds", property(lambda self: [guild]))
+
+    def guilds(self: discord.Client) -> list[discord.Guild]:
+        raise AssertionError("Discovery must not enumerate every server")
+
+    monkeypatch.setattr(discord.Client, "guilds", property(guilds))
     monkeypatch.setattr(discord.Guild, "me", property(lambda self: bot))
     monkeypatch.setattr(discord.Guild, "get_member", lambda self, user_id: member)
     fetch_member = AsyncMock(return_value=member)
@@ -429,7 +433,31 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
 
     monkeypatch.setattr(discord.TextChannel, "permissions_for", permissions)
     profile = UserProfile(channel_tentacle_id="discord", channel_user_id="100")
-    destinations = await tentacle.thread_destinations(profile)
+    source_address = ChannelAddress(
+        channel_tentacle_id=tentacle.id,
+        chat_type="group",
+        chat_id=str(channel.id),
+        user_id="100",
+        shared=True,
+    )
+    resolve = AsyncMock(return_value=channel)
+    monkeypatch.setattr(tentacle.ink, "resolve_messageable", resolve)
+    assert await tentacle.thread_destinations(profile) == []
+    assert (
+        await tentacle.thread_destinations(
+            profile, replace(source_address, chat_type="dm", shared=False)
+        )
+        == []
+    )
+    assert (
+        await tentacle.thread_destinations(
+            profile,
+            replace(source_address, chat_type="thread", channel_thread_id="500"),
+        )
+        == []
+    )
+    resolve.assert_not_awaited()
+    destinations = await tentacle.thread_destinations(profile, source_address)
     if denied:
         assert destinations == []
         return

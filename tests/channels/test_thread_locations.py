@@ -8,6 +8,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import SubThreadLocation, ThreadLocation
 from octomate.tentacles.lark.ink import LarkInk
@@ -45,7 +46,7 @@ async def test_location_handles_survive_multiple_choices_and_reordering(
     assert await channel.thread_destinations(profile) == [shared]
     discover.return_value = []
     assert await channel.thread_destinations(profile) == []
-    assert all(call.args == ("alice",) for call in discover.await_args_list)
+    assert all(call.args == ("alice", None) for call in discover.await_args_list)
 
 
 async def test_unlinked_identity_cannot_discover_locations(
@@ -103,3 +104,51 @@ async def test_trunkline_location_uses_registered_identity_from_any_channel() ->
         )
         == []
     )
+
+
+@pytest.mark.parametrize("platform", ["slack", "lark"])
+@pytest.mark.parametrize("surface", ["dm", "group", "thread"])
+async def test_locations_respect_the_current_parent(
+    platform: str, surface: str
+) -> None:
+    ink = (
+        SlackInk(SecretStr("test"))
+        if platform == "slack"
+        else LarkInk("test", SecretStr("test"))
+    )
+    source_address = ChannelAddress(
+        channel_tentacle_id=platform,
+        chat_type="dm" if surface == "dm" else "group",
+        chat_id="current-chat",
+        user_id="alice",
+        shared=surface != "dm",
+        channel_thread_id="existing-thread" if surface == "thread" else None,
+    )
+    locations = await ink.thread_locations("alice", source_address)
+    if surface == "thread":
+        assert locations == []
+        return
+    [location] = locations
+    assert isinstance(location, SubThreadLocation)
+    assert location.chat_type == source_address.chat_type
+    assert location.chat_id == source_address.chat_id
+    assert location.shared == source_address.shared
+
+
+async def test_foreign_channel_context_does_not_leak_into_discovery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = FakeChannelTentacle("chat")
+    discover = AsyncMock(return_value=[])
+    monkeypatch.setattr(channel.ink, "thread_locations", discover)
+    await channel.thread_destinations(
+        UserProfile(channel_tentacle_id="chat", channel_user_id="alice"),
+        ChannelAddress(
+            channel_tentacle_id="elsewhere",
+            chat_type="group",
+            chat_id="secret",
+            user_id="other",
+            shared=True,
+        ),
+    )
+    discover.assert_awaited_once_with("alice", None)

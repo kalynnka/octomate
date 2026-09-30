@@ -146,7 +146,21 @@ class RecordingInk(Ink[NativeMessage]):
     # failing at the moment of asking.
     dm_opens: bool = True
 
-    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+    async def thread_locations(
+        self, user_id: str, source_address: ChannelAddress | None = None
+    ) -> list[ThreadLocationVariant]:
+        if source_address is not None:
+            if source_address.channel_thread_id or source_address.chat_type == "thread":
+                return []
+            return [
+                SubThreadLocation(
+                    key=source_address.chat_id,
+                    label="New sub-thread here",
+                    chat_type=source_address.chat_type,
+                    chat_id=source_address.chat_id,
+                    shared=source_address.shared,
+                )
+            ]
         return [
             SubThreadLocation(key="", label="New thread", chat_type="dm", chat_id="")
         ]

@@ -202,8 +202,14 @@ class Ink[MessageT](ABC):
         same native field collapse them in their ink implementation.
         """
 
-    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
-        """List zero or more thread locations without opening a chat or posting."""
+    async def thread_locations(
+        self, user_id: str, source_address: ChannelAddress | None = None
+    ) -> list[ThreadLocationVariant]:
+        """List locations without opening a chat or posting.
+
+        The source address is this channel's current conversation, or None for entry from
+        elsewhere. Use its parent surface; do not offer nested sub-threads.
+        """
         return []
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
@@ -454,13 +460,17 @@ class ChannelTentacle(
             return None
         return profile.channel_user_id or None
 
-    async def thread_destinations(self, profile: UserProfile) -> list[Destination]:
+    async def thread_destinations(
+        self, profile: UserProfile, source_address: ChannelAddress | None = None
+    ) -> list[Destination]:
         """Translate this user's platform locations into stable gateway destinations."""
         user_id = self.thread_user_id(profile)
         if user_id is None:
             return []
+        if source_address is not None and source_address.channel_tentacle_id != self.id:
+            source_address = None
         destinations: list[Destination] = []
-        for location in await self.ink.thread_locations(user_id):
+        for location in await self.ink.thread_locations(user_id, source_address):
             address = ChannelAddress(
                 channel_tentacle_id=self.id,
                 chat_type=location.chat_type,
@@ -468,8 +478,9 @@ class ChannelTentacle(
                 user_id=user_id,
                 shared=location.shared,
             )
-            if isinstance(location, SubThreadLocation) and not self.accepts_sub_thread(
-                address
+            if isinstance(location, SubThreadLocation) and (
+                (source_address is not None and bool(source_address.channel_thread_id))
+                or not self.accepts_sub_thread(address)
             ):
                 continue
             destinations.append(

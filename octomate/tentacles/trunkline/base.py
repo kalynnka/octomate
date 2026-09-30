@@ -155,7 +155,9 @@ class TrunklineInk(Ink[WireEvent]):
     async def inspect(self) -> UserProfile:
         return UserProfile(channel_user_id="trunkline", name="Trunkline")
 
-    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
+    async def thread_locations(
+        self, user_id: str, source_address: ChannelAddress | None = None
+    ) -> list[ThreadLocationVariant]:
         return [
             ThreadLocation(
                 key="",

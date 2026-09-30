@@ -51,11 +51,14 @@ it, so `mention_only` accepts a mention **or** a reply. Once an agent owns a thr
 messages there need neither. Sub-threads are created from a text channel only,
 public, named from the hint.
 
-Teleport and Summon destination menus list server text channels where your linked
-Discord account can view and send messages in threads, and the bot can view, send,
-and create public threads. Membership and permissions are checked again when the
-thread opens. Discord DMs are not offered as fresh-thread destinations; their
-existing conversations are never overwritten.
+From a server text channel, Summon lists eligible text channels in that same
+server. The current channel appears once as `thread`; Teleport keeps shared
+history in that local sub-thread. Your account must be able to view and send
+messages in threads, and the bot must be able to view, send and create public
+threads. Membership and permissions are checked again when a named destination
+opens. Discovery never scans other servers. Without a server context, including
+entry from Trunkline, Discord offers no destinations. DMs and existing threads
+also offer no new sub-thread locations.
 
 ## Rendering
 

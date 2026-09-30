@@ -30,7 +30,7 @@ async def open_crossing(
     channel = ctx.deps.channel(landing.address.channel_tentacle_id)
     profile = ctx.state.user_profile
     if profile is not None:
-        destinations = await channel.thread_destinations(profile)
+        destinations = await channel.thread_destinations(profile, source_address)
         if profile.channel_tentacle_id != channel.id:
             linked = await ctx.deps.thread_manager.users.profile(
                 channel.id, landing.address.user_id

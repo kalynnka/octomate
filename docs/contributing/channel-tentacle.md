@@ -117,22 +117,25 @@ gateway consults before offering a spell. Claim the SDK's loggers through
 an acknowledgement deadline, run `ingest` as a detached task; a turn parked on an
 approval must not hold the ack.
 
-For gateway destinations, implement `Ink.thread_locations(user_id)`. Return zero,
+For gateway destinations, implement `Ink.thread_locations(user_id, source_address)`. Return zero,
 one, or many `ThreadLocationVariant` records after checking platform access. Discovery
 must not open a chat or post a message; the default returns no locations. Each
 record is either a `ThreadLocation` for an independent thread or a
 `SubThreadLocation` whose `chat_type` identifies its DM or group parent. Both
 carry a label, chat ID and shared-history flag. The location key stays
 stable within the channel regardless of list order or size; an empty key names
-the default location. Slack and Lark offer sub-threads in a linked DM; Discord offers
-sub-threads in eligible server text channels. Trunkline offers standalone private
-threads.
+the default location. The source address is the current `ChannelAddress` when it belongs
+to this channel; otherwise it is `None`. Slack and Lark use the current DM or group,
+or the linked DM on entry from elsewhere. Discord requires a server-channel
+context and lists eligible text channels in that server only. Existing threads
+have no nested sub-thread locations. Trunkline offers standalone private threads.
 
-The base tentacle's `thread_destinations(profile)` translates these records into
+The base tentacle's `thread_destinations(profile, source_address)` translates these records into
 `Destination` addresses and handles (`channel-id/location-key`, or just
 `channel-id` for the default). `thread_user_id(profile)` resolves the linked
 platform identity; Trunkline uses the registered Octomate identity instead.
-The gateway owns agent eligibility and history transfer.
+The gateway exposes the current parent location once, as `thread`, using the same
+discovery result as named destinations. It owns agent eligibility and history transfer.
 
 `start_thread(address, hint)` creates the selected isolated thread. The default
 opens an unresolved DM through Ink before calling `start_sub_thread` once.

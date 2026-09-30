@@ -58,6 +58,11 @@ that message becomes the thread. A private hand-off opens a thread inside your D
 the same way. Teleport and Summon into a new DM thread post one opener at the
 DM root and continue in that thread.
 
+
+Teleport and Summon use the current group or DM as the parent for a new sub-thread.
+They do not offer nested sub-threads inside an existing thread. Entry from another
+platform uses the linked account's DM.
+
 Text over Slack's limit is uploaded as a Markdown file with a one-line note.
 
 ## Rendering

@@ -1035,3 +1035,23 @@ def test_a_decision_carries_no_brief_over_the_cap() -> None:
     assert len(SummonDecision.model_validate(fields).summon) == 8_000
     with pytest.raises(ValidationError, match="at most 8000 characters"):
         SummonDecision.model_validate({**fields, "summon": "x" * 8_001})
+
+
+@pytest.mark.parametrize("offered", [False, True])
+async def test_local_thread_uses_cached_channel_discovery(
+    monkeypatch: pytest.MonkeyPatch, offered: bool
+) -> None:
+    session = _capability("shared_main").session
+    channel = session.channels["im"]
+    discover = AsyncMock(wraps=channel.ink.thread_locations)
+    if not offered:
+        discover.return_value = []
+    monkeypatch.setattr(channel.ink, "thread_locations", discover)
+
+    expected = ["thread"] if offered else []
+    assert await session.destination_handles("summon") == expected
+    assert await session.destination_handles("teleport") == expected
+    menu = await session.operations
+    assert [one.target.handle for one in menu.summon.destinations] == expected
+    assert (await session.destinations())["summon"] == []
+    discover.assert_awaited_once_with("alice", session.conversation_address)

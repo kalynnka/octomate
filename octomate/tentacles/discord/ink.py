@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 import discord
 import httpx
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import (
@@ -212,28 +213,37 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
                     "Discord typing hint failed for %s", channel_id, exc_info=True
                 )
 
-    async def thread_locations(self, user_id: str) -> list[ThreadLocationVariant]:
-        """Server text channels where the requester and bot can share a new thread."""
-        locations: list[ThreadLocationVariant] = []
-        for guild in self.client.guilds:
-            member = guild.get_member(int(user_id))
-            if member is None:
-                try:
-                    member = await guild.fetch_member(int(user_id))
-                except discord.NotFound:
-                    continue
-            locations.extend(
-                SubThreadLocation(
-                    key=str(channel.id),
-                    label=f"{guild.name} / #{channel.name} (public thread)",
-                    chat_type="group",
-                    chat_id=str(channel.id),
-                    shared=True,
-                )
-                for channel in guild.text_channels
-                if self.thread_permissions(channel, member)
+    async def thread_locations(
+        self, user_id: str, source_address: ChannelAddress | None = None
+    ) -> list[ThreadLocationVariant]:
+        """Eligible text channels in the current conversation's server only."""
+        if (
+            source_address is None
+            or source_address.channel_thread_id
+            or source_address.chat_type != "group"
+        ):
+            return []
+        parent = await self.resolve_messageable(source_address.chat_id)
+        if not isinstance(parent, discord.TextChannel):
+            return []
+        guild = parent.guild
+        member = guild.get_member(int(user_id))
+        if member is None:
+            try:
+                member = await guild.fetch_member(int(user_id))
+            except discord.NotFound:
+                return []
+        return [
+            SubThreadLocation(
+                key=str(channel.id),
+                label=f"{guild.name} / #{channel.name} (public thread)",
+                chat_type="group",
+                chat_id=str(channel.id),
+                shared=True,
             )
-        return locations
+            for channel in guild.text_channels
+            if self.thread_permissions(channel, member)
+        ]
 
     def thread_permissions(
         self, channel: discord.TextChannel, member: discord.Member

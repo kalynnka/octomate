@@ -75,7 +75,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 
 Every Trunkline conversation is a private thread; there is no DM surface or
 nested sub-thread. It never needs profile linking: you are your signed-in account.
-Teleport and Summon can create a new Trunkline thread directly. The destination
+Teleport and Summon can create a new Trunkline thread directly. Discord is not
+offered when entering from Trunkline because no Discord server context is selected.
+The destination
 list also includes eligible Discord server channels for your linked account;
 selecting one creates a public Discord thread. Existing Discord DMs are omitted
 because they cannot hold an isolated new thread.

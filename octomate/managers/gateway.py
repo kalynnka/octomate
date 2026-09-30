@@ -56,6 +56,7 @@ from octomate.schemas.triage import (
     ThreadLanding,
     ThreadTarget,
 )
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
@@ -65,7 +66,6 @@ if TYPE_CHECKING:
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
-    from octomate.schemas.user import UserProfile
     from octomate.tentacles.channel import ChannelTentacle
 
 # Why `scheme` has nowhere to land, and the sentence each reason refuses with.
@@ -142,6 +142,9 @@ class OctomateSession:
     # validates a chosen route against. A crossing validates against its own.
     other_routes: list[AgentRoute] = field(init=False, repr=False)
 
+    # The current chat's candidate, discovered alongside named destinations.
+    local_thread: Destination | None = field(default=None, init=False)
+
     # Discovery is lazy and reused for this gateway session.
     destination_cache: GatewayDestinations | None = field(
         default=None, init=False, repr=False
@@ -172,8 +175,7 @@ class OctomateSession:
             return True
         return address.chat_type != "group"
 
-    @property
-    def allow_sub_thread(self) -> bool:
+    async def allow_sub_thread(self) -> bool:
         """Whether a new sub-thread can be opened from this run's own surface.
 
         False inside one: every channel that has threads routes them `flat_thread`,
@@ -194,7 +196,10 @@ class OctomateSession:
         if address.channel_thread_id:
             return False
         channel = self.channels.get(address.channel_tentacle_id)
-        return channel is None or channel.accepts_sub_thread(address)
+        if channel is None:
+            return True
+        await self.destinations()
+        return self.local_thread is not None
 
     @property
     def private_blocked_by(self) -> PrivateBlocker | None:
@@ -268,10 +273,11 @@ class OctomateSession:
             summon=[],
             teleport=[],
         )
-        if self.users is None or self.user_profile is None:
-            self.destination_cache = places
-            return places
-        linked = await self.users.linked_profiles(self.user_profile)
+        linked = (
+            await self.users.linked_profiles(self.user_profile)
+            if self.users is not None and self.user_profile is not None
+            else []
+        )
         for profile in linked:
             channel = self.channels.get(profile.channel_tentacle_id)
             if channel is None or not channel.surfaces.direct_message:
@@ -295,22 +301,32 @@ class OctomateSession:
             places["send"].append(destination)
             places["scheme"].append(destination)
         profiles = {profile.channel_tentacle_id: profile for profile in linked}
-        profiles[self.user_profile.channel_tentacle_id] = self.user_profile
+        if self.user_profile is not None:
+            profiles[self.user_profile.channel_tentacle_id] = self.user_profile
+        source = self.conversation_address
+        if source is not None and source.channel_tentacle_id not in profiles:
+            profiles[source.channel_tentacle_id] = UserProfile(
+                channel_tentacle_id=source.channel_tentacle_id,
+                channel_user_id=source.user_id,
+            )
         for channel in self.channels.values():
             routes = self.channel_routes.get(channel.id, [])
             if not routes:
                 continue
             profile = profiles.get(channel.id, self.user_profile)
-            for destination in await channel.thread_destinations(profile):
-                # A DM source already offers its own sub-thread as `thread`.
-                source = self.conversation_address
-                if (
-                    source is not None
-                    and source.channel_tentacle_id == channel.id
-                    and destination.address.chat_type == "dm"
-                ):
-                    continue
+            if profile is None:
+                continue
+            for destination in await channel.thread_destinations(profile, source):
                 destination = replace(destination, routes=tuple(routes))
+                if (
+                    not self.native
+                    and source is not None
+                    and not source.channel_thread_id
+                    and source.chat_type in {"dm", "group"}
+                    and destination.address == replace(source, channel_thread_id=None)
+                ):
+                    self.local_thread = destination
+                    continue
                 places["summon"].append(destination)
                 # Shared history may only move into its own local sub-thread.
                 if source is None or not source.shared:
@@ -326,7 +342,7 @@ class OctomateSession:
         Teleport's `here` target requires a project and is validated separately.
         """
         handles = [HERE_TARGET.handle] if spell == "summon" and self.allow_here else []
-        if self.allow_sub_thread:
+        if await self.allow_sub_thread():
             handles.append(THREAD_TARGET.handle)
         return handles + [one.handle for one in (await self.destinations())[spell]]
 
@@ -344,7 +360,7 @@ class OctomateSession:
         local = (
             self.channel_routes.get(address.channel_tentacle_id, []) if address else []
         )
-        if self.allow_sub_thread:
+        if await self.allow_sub_thread():
             destinations.append(
                 OperationDestination(
                     target=THREAD_TARGET, label="New sub-thread", routes=local

@@ -36,10 +36,12 @@ so Octomate can find you there. Available destinations depend on the channel;
 ask the agent to list them if your requested move is unavailable.
 
 Each channel creates its own destination. Trunkline opens a new private thread,
-including when the source is already in Trunkline. Discord offers server text
-channels where your linked account and the bot can participate; the bot opens a
-new public thread there. Other thread-capable channels can open a sub-thread in
-your linked account's direct messages. Existing Discord DMs and NapCat are not
+including when the source is already in Trunkline. From a Slack or Lark group or
+DM, `thread` opens under that same chat; entry from another platform uses your
+linked DM. Existing threads do not offer nested sub-threads. From a Discord
+server channel, Summon offers eligible text channels in that same server; the
+current channel appears once as `thread`. Discord is not listed on entry from
+another platform because no server context has been selected. Existing Discord DMs and NapCat are not
 Teleport destinations: neither can create an isolated thread.
 
 Teleport requires independent history copying: driven Codex, Claude and Inkling
