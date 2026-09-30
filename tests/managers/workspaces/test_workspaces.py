@@ -146,7 +146,7 @@ async def manager(request: pytest.FixtureRequest, tmp_path: Path) -> WorkspaceMa
 async def a_mirror(path: Path, files: dict[str, str]) -> Path:
     """A pristine mirror to fork from — what `MirrorManager.sync` leaves behind,
     built here directly so this unit's tests turn on nothing but git."""
-    path.mkdir(parents=True, exist_ok=True)
+    await asyncio.to_thread(path.mkdir, parents=True, exist_ok=True)
     for name, content in files.items():
         (path / name).write_text(content)
     await run_git("init", "-b", "main", str(path))

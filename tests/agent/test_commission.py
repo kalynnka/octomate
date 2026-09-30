@@ -25,6 +25,7 @@ from octomate.capabilities.gateway import (
 )
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.runs import AgentRun
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     WHISPER_TOOL_NAME,
@@ -155,7 +156,8 @@ async def test_commissioning_a_live_name_again_is_refused() -> None:
     await commission(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Go."
     )
-    conversations.store[(THREAD, "claude", "repo-audit")].runs.append("run-child")
+    child = conversations.store[(THREAD, "claude", "repo-audit")]
+    child.runs.append(AgentRun(id="run-child", conversation_id=child.id))
 
     with pytest.raises(ModelRetry, match="already at work"):
         await commission(
@@ -270,7 +272,7 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
             SlowAgent(id="claude", allow_reception_run=True, delay=0.1),
         ),
     }
-    gate, _, conversations, ctx = await _gate(agents=agents)
+    gate, _, conversations, _ = await _gate(agents=agents)
     parent_id = conversations.store[(THREAD, "inkling", "")].id
     commission = _tool(gate, COMMISSION_TOOL_NAME)
 
@@ -311,5 +313,5 @@ async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
     assert not bare.commissioning
     assert COMMISSION_TOOL_NAME not in bare.get_instructions()
 
-    gate, _, _, ctx = await _gate()
+    gate, _, _, _ = await _gate()
     assert COMMISSION_TOOL_NAME in gate.get_instructions()

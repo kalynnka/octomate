@@ -5,7 +5,7 @@ from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import TracebackType
-from typing import Any, Generic, TypeVar
+from typing import Any
 
 import anyio
 import logfire
@@ -42,7 +42,6 @@ from pydantic_graph import (
     GraphRunContext,
     TypeExpression,
 )
-from typing_extensions import TypeAliasType
 
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.harness.deferred import DeferredSuspender, ResolverChoice
@@ -55,19 +54,11 @@ from octomate.schemas.runs import AgentRun as PersistedAgentRun
 from octomate.telemetry import react_logfire
 
 logger = logging.getLogger(__name__)
-# The react graph is generic machinery: the run's output type is whatever the
-# builder's agent/output_type produce, so neither type variable is bounded.
-ReactOutputT = TypeVar("ReactOutputT")
-ReactOutputCoT = TypeVar("ReactOutputCoT", covariant=True)
-ReactDepsT = TypeVar("ReactDepsT")
-
 # The events a react run streams: the normalized `StreamEvents` union (Pydantic AI
 # passthrough + output/display events + a suspended run's deferred-action batch)
 # plus the terminal result.
-ReactStreamEvent = TypeAliasType(
-    "ReactStreamEvent",
-    StreamEvents[ReactOutputT] | AgentRunResultEvent[ReactOutputT],
-    type_params=(ReactOutputT,),
+type ReactStreamEvent[ReactOutputT] = (
+    StreamEvents[ReactOutputT] | AgentRunResultEvent[ReactOutputT]
 )
 
 
@@ -145,9 +136,8 @@ class RunPersistence:
 
 
 @dataclass
-class PersistRunFailure(
+class PersistRunFailure[ReactDepsT](
     AbstractCapability[ReactDepsT],
-    Generic[ReactDepsT],
 ):
     persistence: RunPersistence
     previous_message_count: int
@@ -186,9 +176,8 @@ class PersistRunFailure(
 
 
 @dataclass
-class PersistStreamRunFailure(
+class PersistStreamRunFailure[ReactDepsT](
     PersistRunFailure[ReactDepsT],
-    Generic[ReactDepsT],
 ):
     async def wrap_run_event_stream(
         self,
@@ -205,7 +194,7 @@ class PersistStreamRunFailure(
 
 
 @dataclass
-class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
+class ReactDeps[ReactOutputT, ReactDepsT]:
     agent: Agent[ReactDepsT, ReactOutputT]
     conversation_manager: ConversationManager
     agent_deps: ReactDepsT
@@ -234,7 +223,7 @@ class ReactDeps(Generic[ReactOutputT, ReactDepsT]):
     spec: dict[str, Any] | AgentSpec | None = None
 
 
-async def resolve_conversation(
+async def resolve_conversation[ReactOutputT, ReactDepsT](
     ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]],
 ) -> Conversation:
     """The node's conversation: the pre-ensured one when the run is addressed
@@ -259,13 +248,12 @@ async def resolve_conversation(
 
 
 @dataclass
-class StartTurn(
+class StartTurn[ReactOutputT, ReactDepsT](
     BaseNode[
         ReactState,
         ReactDeps[ReactOutputT, ReactDepsT],
         AgentRunResult[ReactOutputT],
     ],
-    Generic[ReactOutputT, ReactDepsT],
 ):
     user_prompt: str | Sequence[UserContent] | None
 
@@ -286,13 +274,12 @@ class StartTurn(
 
 
 @dataclass
-class ResumeTurn(
+class ResumeTurn[ReactOutputT, ReactDepsT](
     BaseNode[
         ReactState,
         ReactDeps[ReactOutputT, ReactDepsT],
         AgentRunResult[ReactOutputT],
     ],
-    Generic[ReactOutputT, ReactDepsT],
 ):
     deferred_results: DeferredToolResults
 
@@ -307,13 +294,12 @@ class ResumeTurn(
 
 
 @dataclass
-class RunAgent(
+class RunAgent[ReactOutputT, ReactDepsT](
     BaseNode[
         ReactState,
         ReactDeps[ReactOutputT, ReactDepsT],
         AgentRunResult[ReactOutputT],
     ],
-    Generic[ReactOutputT, ReactDepsT],
 ):
     user_prompt: str | Sequence[UserContent] | None = None
     deferred_results: DeferredToolResults | None = None
@@ -452,13 +438,12 @@ class RunAgent(
 
 
 @dataclass
-class ResolveDeferred(
+class ResolveDeferred[ReactOutputT, ReactDepsT](
     BaseNode[
         ReactState,
         ReactDeps[ReactOutputT, ReactDepsT],
         AgentRunResult[ReactOutputT],
     ],
-    Generic[ReactOutputT, ReactDepsT],
 ):
     requests: DeferredToolRequests
     result: AgentRunResult[ReactOutputT]
@@ -511,14 +496,12 @@ class ResolveDeferred(
         return End(self.result)
 
 
-ReactGraphInput = TypeAliasType(
-    "ReactGraphInput",
-    StartTurn[ReactOutputT, ReactDepsT] | ResumeTurn[ReactOutputT, ReactDepsT],
-    type_params=(ReactOutputT, ReactDepsT),
+type ReactGraphInput[ReactOutputT, ReactDepsT] = (
+    StartTurn[ReactOutputT, ReactDepsT] | ResumeTurn[ReactOutputT, ReactDepsT]
 )
 
 
-def build_react_graph(
+def build_react_graph[ReactOutputT, ReactDepsT](
     start_node: ReactGraphInput[ReactOutputT, ReactDepsT],
 ) -> Graph[
     ReactState,
@@ -558,7 +541,7 @@ def build_react_graph(
     return builder.build()
 
 
-async def iter_react_graph_events(
+async def iter_react_graph_events[ReactOutputT, ReactDepsT](
     start_node: StartTurn[ReactOutputT, ReactDepsT]
     | ResumeTurn[ReactOutputT, ReactDepsT],
     *,
@@ -597,7 +580,7 @@ async def iter_react_graph_events(
         raise error
 
 
-class ReactEventStream(Generic[ReactOutputCoT]):
+class ReactEventStream[ReactOutputCoT]:
     """Deterministic-cleanup handle over a react event stream: entering the
     context yields the underlying generator, exiting closes it. Mirrors
     pydantic-ai's ``AgentEventStream``, but typed over ``ReactStreamEvent`` — a

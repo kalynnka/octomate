@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
@@ -70,7 +70,7 @@ class DirectoryUpstream(BaseModel):
 
 # Not one optional url: the two kinds carry different fields and drive different
 # sync code, so the branch lives in the type rather than in an `if url is None`.
-UpstreamVariant: TypeAlias = Annotated[
+type UpstreamVariant = Annotated[
     RemoteUpstream | DirectoryUpstream, Field(discriminator="kind")
 ]
 
