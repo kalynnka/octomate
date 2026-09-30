@@ -1961,7 +1961,7 @@ wheels = [
 
 [[package]]
 name = "octomate"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -2078,7 +2078,7 @@ docs = [
 
 [[package]]
 name = "octomate-cli"
-version = "0.0.3"
+version = "0.0.4"
 source = { editable = "cli" }
 dependencies = [
     { name = "octomate-protocol" },

@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.3...octomate-cli-v0.0.4) (2026-09-30)
+
+
+### Bug Fixes
+
+* **cli:** wait for macOS process reaping during restart ([c5b19dd](https://github.com/kalynnka/octomate/commit/c5b19dda3d8212c449ce78e76e16b9cc9d4b96e2))
+* **cli:** wait for macOS process reaping during restart ([5589838](https://github.com/kalynnka/octomate/commit/55898381df80046c31205dc96e04dab0459bb91f))
+* deduplicate native resumes and authenticate DeepSeek ingestion ([#101](https://github.com/kalynnka/octomate/issues/101)) ([816622e](https://github.com/kalynnka/octomate/commit/816622e3fd7ce01e7ce3580203bbfc886fbd62ff))
+* harden secret files and update multipart dependency ([#110](https://github.com/kalynnka/octomate/issues/110)) ([f0bdf54](https://github.com/kalynnka/octomate/commit/f0bdf54194f228d1be1955c51675ec2ff026c378))
+
 ## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.2...octomate-cli-v0.0.3) (2026-09-23)
 
 
