@@ -1,14 +1,14 @@
 """A chat thread says which project it is about, on every driven runtime.
 
 Three operations, all gateway spells: the `projects` facet of `inspect`, `teleport`
-with a `project`, and `dispel`. They ride the identity the gateway already carries — a registered
+with a `project`, and `dismiss`. They ride the identity the gateway already carries — a registered
 user or a visitor, a driven turn or a native session, a thread or none — so the
 gate is a refusal in the tool body rather than a tool that comes and goes. The
 gateway validates the project and the ref and records the move; binding the thread
 is the graph's, on the thread that turns out to be landed in. The ref is resolved
 against the mirror *before* any move, because a thread binds once — a branch that
 turns out not to exist has to leave the thread free to ask again for the one that
-was meant. A `dispel` is recorded the same way and performed by the graph once the
+was meant. A `dismiss` is recorded the same way and performed by the graph once the
 turn is out of the tree.
 """
 
@@ -230,7 +230,7 @@ async def test_a_thread_binds_once(tmp_path: Path) -> None:
         )
 
 
-async def test_a_bound_threads_agent_may_dispel_its_workspace(tmp_path: Path) -> None:
+async def test_a_bound_threads_agent_may_dismiss_its_workspace(tmp_path: Path) -> None:
     # Recorded, not done: the release is the graph's once the turn is out of the
     # tree. No registered user is needed — a release costs a fork, never work.
     harness = await a_harness(tmp_path, registered=False)
@@ -238,22 +238,22 @@ async def test_a_bound_threads_agent_may_dispel_its_workspace(tmp_path: Path) ->
     assert project is not None
     await harness.threads.bind(harness.thread.id, project)
 
-    sentence = await harness.session.dispel()
+    sentence = await harness.session.dismiss()
 
-    assert harness.session.dispelling
+    assert harness.session.dismissing
     assert sentence.startswith("Releasing this thread's workspace when this turn ends")
 
 
-async def test_a_thread_about_no_project_has_nothing_to_dispel(tmp_path: Path) -> None:
+async def test_a_thread_about_no_project_has_nothing_to_dismiss(tmp_path: Path) -> None:
     harness = await a_harness(tmp_path)
 
     with pytest.raises(GatewayRefusal, match="about no project"):
-        await harness.session.dispel()
+        await harness.session.dismiss()
 
-    assert not harness.session.dispelling
+    assert not harness.session.dismissing
 
 
-async def test_a_native_session_may_list_but_neither_move_nor_dispel(
+async def test_a_native_session_may_list_but_neither_move_nor_dismiss(
     tmp_path: Path,
 ) -> None:
     harness = await a_harness(tmp_path)
@@ -267,7 +267,7 @@ async def test_a_native_session_may_list_but_neither_move_nor_dispel(
             hint="h", destination=HERE_TARGET, project="inky"
         )
     with pytest.raises(GatewayRefusal, match="lives in your terminal"):
-        await harness.session.dispel()
+        await harness.session.dismiss()
 
 
 async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
@@ -281,7 +281,7 @@ async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
     with pytest.raises(RuntimeError):
         await session.teleport(hint="h", destination=HERE_TARGET, project="inky")
     with pytest.raises(RuntimeError):
-        await session.dispel()
+        await session.dismiss()
 
 
 async def test_inkling_hears_a_refusal_as_a_retry(tmp_path: Path) -> None:
@@ -293,7 +293,7 @@ async def test_inkling_hears_a_refusal_as_a_retry(tmp_path: Path) -> None:
     with pytest.raises(ModelRetry, match="no registered user"):
         await capability.teleport(FAKE_CONTEXT, "into inky", HERE_TARGET, "inky")
     with pytest.raises(ModelRetry, match="about no project"):
-        await capability.dispel(FAKE_CONTEXT)
+        await capability.dismiss(FAKE_CONTEXT)
 
 
 async def test_inkling_defers_the_move_for_the_graph_to_perform(tmp_path: Path) -> None:
@@ -336,12 +336,12 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
                 {"hint": "h", "destination": {"kind": "here"}, "project": "kraken"},
             )
         with pytest.raises(ToolError, match="about no project"):
-            await client.call_tool("gateway_dispel", {})
+            await client.call_tool("gateway_dismiss", {})
         project = harness.workspaces.projects.get("inky")
         assert project is not None
         await harness.threads.bind(harness.thread.id, project)
-        dispelled = await client.call_tool("gateway_dispel", {})
+        dismissed = await client.call_tool("gateway_dismiss", {})
 
     assert listed.data == "- inky"
-    assert harness.session.dispelling
-    assert str(dispelled.data).startswith("Releasing this thread's workspace")
+    assert harness.session.dismissing
+    assert str(dismissed.data).startswith("Releasing this thread's workspace")

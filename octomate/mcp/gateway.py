@@ -35,7 +35,7 @@ from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     DIRECT_TARGET,
-    DISPEL_TOOL_NAME,
+    DISMISS_TOOL_NAME,
     HERE_TARGET,
     INSPECT_TOOL_NAME,
     SCHEME_TOOL_NAME,
@@ -63,7 +63,7 @@ GATEWAY_SPELLS: tuple[str, ...] = (
     TELEPORT_TOOL_NAME,
     SCHEME_TOOL_NAME,
     SEND_TOOL_NAME,
-    DISPEL_TOOL_NAME,
+    DISMISS_TOOL_NAME,
 )
 
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
@@ -349,8 +349,9 @@ def mount_gateway(
         return notice
 
     @mcp.tool(
-        name=DISPEL_TOOL_NAME, description=capability_contract(GatewayCapability.dispel)
+        name=DISMISS_TOOL_NAME,
+        description=capability_contract(GatewayCapability.dismiss),
     )
     @spoken
-    async def dispel(session: OctomateSession = octomate_session) -> str:
-        return await session.dispel()
+    async def dismiss(session: OctomateSession = octomate_session) -> str:
+        return await session.dismiss()

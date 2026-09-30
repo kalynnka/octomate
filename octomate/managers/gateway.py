@@ -125,7 +125,7 @@ class OctomateSession:
     # here or sub-thread to land on, every destination is a crossing, and a summon
     # or scheme is kicked as its own turn instead of being read after this one.
     native: bool = False
-    # What the project spells work with — a `teleport` that binds, `dispel`, the
+    # What the project spells work with — a `teleport` that binds, `dismiss`, the
     # `projects` facet: the ledger a binding is written to and read from, and the
     # registry and forks. Both None on a gateway built only to route.
     threads: ThreadManager | None = None
@@ -134,9 +134,9 @@ class OctomateSession:
     # `commission` as the fallback only when it is actually on offer.
     commissioning: bool = field(default=False, init=False)
     decision: GatewayDecision | None = field(default=None, init=False)
-    # Whether `dispel` was cast: the thread's workspace goes when the turn ends,
+    # Whether `dismiss` was cast: the thread's workspace goes when the turn ends,
     # the graph's doing once the run is out of it.
-    dispelling: bool = field(default=False, init=False)
+    dismissing: bool = field(default=False, init=False)
     # Every route on this run's own channel but the current agent's own — the info
     # shared with the agent to decide where to go, and what a spell landing here
     # validates a chosen route against. A crossing validates against its own.
@@ -773,7 +773,7 @@ class OctomateSession:
         self.decision = decision
         return decision
 
-    async def dispel(self) -> str:
+    async def dismiss(self) -> str:
         """Record that this thread's workspace may go: its agent has said the work
         in it is done. Validated here, where a refusal reaches the model; the
         release is the graph's, once the turn ends and its work is saved, so no
@@ -790,7 +790,7 @@ class OctomateSession:
             )
         if self.thread_id is None or self.threads is None:
             raise RuntimeError(
-                "a dispel needs the thread this turn is in, and the ledger it is "
+                "a dismiss needs the thread this turn is in, and the ledger it is "
                 "read from"
             )
         thread = await self.threads.get(self.thread_id)
@@ -801,7 +801,7 @@ class OctomateSession:
                 "This thread is about no project, and its tree is thrown away when "
                 "this turn ends — there is nothing to release."
             )
-        self.dispelling = True
+        self.dismissing = True
         return (
             "Releasing this thread's workspace when this turn ends, once its work is "
             "saved to the project's mirror. Nothing is lost — a later message here "

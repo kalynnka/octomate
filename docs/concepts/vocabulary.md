@@ -12,7 +12,7 @@
 | Reflex | The graph, and the package holding it |
 | Claim | What a route advertises: an ability and the efforts it accepts |
 | Route | An `(agent, model)` pair a channel can reach, with its claim; also the graph node that picks one |
-| Spell | A gateway tool: inspect, summon, teleport, scheme, send, dispel |
+| Spell | A gateway tool: inspect, summon, teleport, scheme, send, dismiss |
 | Spill | An oversized tool return held out of the context until the model asks |
 | Segment | One piece of a message: text, markdown, mention, image, file, card, reply |
 | Surface | The place a thread is on: itself, or the chat room it was opened in |

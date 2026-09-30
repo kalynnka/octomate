@@ -132,7 +132,7 @@ def test_the_instruction_names_the_tools_by_their_served_names() -> None:
         "gateway_teleport",
         "gateway_scheme",
         "gateway_send",
-        "gateway_dispel",
+        "gateway_dismiss",
         "history_search",
     ):
         assert f"`{name}`" in instruction

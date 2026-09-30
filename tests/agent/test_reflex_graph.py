@@ -2353,7 +2353,7 @@ async def test_send_falls_back_to_here_when_the_platform_will_not_open() -> None
     assert all(chat_id == "team" for chat_id, *_ in im.sent)
 
 
-async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
+async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     in_memory_engine: AsyncEngine, tmp_path: Path
 ) -> None:
     # Cast mid-run and performed after it: the turn's work reaches the mirror,
@@ -2382,7 +2382,7 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
         (workspace.path / "work.md").write_text("done")
     agent = FakeAgent(
         id="other",
-        reception_dispel=True,
+        reception_dismiss=True,
         reception_output="all done",
         allow_reception_run=True,
     )

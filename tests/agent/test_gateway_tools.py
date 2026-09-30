@@ -122,7 +122,7 @@ async def a_native_call(
 async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     # The accomplice spells are deliberately absent: external runtimes bring
     # their own subagent systems.
-    server, _session, _channel, _threads = a_turn()
+    server, session, _channel, _threads = a_turn()
 
     tools = [
         tool
@@ -136,7 +136,7 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
         "gateway_teleport",
         "gateway_scheme",
         "gateway_send",
-        "gateway_dispel",
+        "gateway_dismiss",
         "history_search",
         "history_read_before",
         "history_read_after",
@@ -146,6 +146,11 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
         *map(gateway_tool, GATEWAY_SPELLS),
         *map(history_tool, HISTORY_TOOLS),
     ] == [tool.name for tool in tools]
+    assert "gateway_dispel" not in {tool.name for tool in tools}
+    capability = GatewayCapability(session=session)
+    assert capability.toolset is not None
+    assert "dismiss" in capability.toolset.tools
+    assert "dispel" not in capability.toolset.tools
 
 
 async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
@@ -156,7 +161,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         "gateway_teleport": GatewayCapability.teleport,
         "gateway_scheme": GatewayCapability.scheme,
         "gateway_send": GatewayCapability.send,
-        "gateway_dispel": GatewayCapability.dispel,
+        "gateway_dismiss": GatewayCapability.dismiss,
         "history_search": HistoryCapability.search_thread_history,
         "history_read_after": HistoryCapability.read_thread_history_after,
     }
@@ -184,7 +189,7 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert "### Writing a brief" in inkling
 
     mcp = gateway_instructions(gateway_tool)
-    for name in ("inspect", "summon", "teleport", "scheme", "send", "dispel"):
+    for name in ("inspect", "summon", "teleport", "scheme", "send", "dismiss"):
         assert f"`gateway_{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp

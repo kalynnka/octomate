@@ -410,14 +410,14 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 if (
                     octomate_session is not None
-                    and octomate_session.dispelling
+                    and octomate_session.dismissing
                     and state.thread is not None
                 ):
                     # The agent said this thread's work is done: its tree goes now
                     # that the run is out of it, saved first and kept if that failed.
-                    result = await ctx.deps.workspaces.dispel(state.thread)
+                    result = await ctx.deps.workspaces.dismiss(state.thread)
                     span.set_attribute(
-                        "react.dispelled",
+                        "react.dismissed",
                         result,
                     )
                 if isinstance(output, DeferredToolRequests):

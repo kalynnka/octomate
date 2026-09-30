@@ -93,7 +93,7 @@ Delegated work cannot stop to ask you for approvals or answers. Give it enough
 context and a task it can complete with the access already available. If it needs
 your involvement, use a handoff instead.
 
-## Finish project work { #dispel }
+## Finish project work { #dismiss }
 
 Once you have reviewed and delivered the result, you can ask the agent to release
 the workspace. Use this when the task is finished, rather than for an ordinary

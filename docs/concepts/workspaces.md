@@ -92,7 +92,7 @@ first turn is mostly new files.
 The snapshot is pushed to the mirror's local path under
 `refs/octomate/threads/<thread_id>`. A ref namespace rather than `refs/heads/` keeps
 `git branch` clean and keeps the refs out of ordinary clones. The workspace records
-the same commit under `refs/octomate/saved`, which is what the sweep and `dispel`
+the same commit under `refs/octomate/saved`, which is what the sweep and `dismiss`
 consult: a `git status` cannot tell whether the mirror has seen the tree, because
 nothing here commits, so every saved workspace is also dirty.
 
@@ -110,7 +110,7 @@ anything the mirror has not seen. Being wrong costs a slow resume, never lost wo
 so the heuristic does not need to be clever. The chat directory is never visited:
 the sweep only looks at entries named by a thread id.
 
-`dispel` is the same release on the agent's word instead of the timer. The release
+`dismiss` is the same release on the agent's word instead of the timer. The release
 waits for the turn to end rather than happening in the call, because a run's
 working directory is fixed when its process spawns and nothing is pulled out from
 under a run still in it.

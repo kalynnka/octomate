@@ -10,7 +10,7 @@ opaque on its own, so the instruction opens with plain words for what they actua
   history forward. Deferred, so the graph can fork the history and resume. With a
   `project`, the place is that project's workspace — the door out of a throwaway
   tree into one whose work is kept — and `here` stays in this thread to bind it.
-- `dispel`: give a project thread's workspace back once the work in it is done.
+- `dismiss`: give a project thread's workspace back once the work in it is done.
   Recorded, and performed by the graph when the turn ends and its work is saved.
 - `commission`: draw another agent into working a self-contained task in the background
   and return its report — an ordinary awaited tool call, never a deferral; the caller
@@ -57,7 +57,7 @@ from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
-    DISPEL_TOOL_NAME,
+    DISMISS_TOOL_NAME,
     GATEWAY_TOOLSET_ID,
     HERE_TARGET,
     INSPECT_TOOL_NAME,
@@ -147,10 +147,10 @@ first thing they read; nothing is posted here, so close out your own reply by sa
 the work is moving, not what it is. Only from a group, on a platform that has direct
 messages; the tool says so when it does not apply.
 
-### `{dispel}` — give the workspace back when the work is done
+### `{dismiss}` — give the workspace back when the work is done
 A thread about a project keeps its workspace between turns, which is what makes its
 next turn a resume. When the work is finished for good — merged, delivered, or
-dropped — say so with `{dispel}`: the tree is released when this turn ends, after
+dropped — say so with `{dismiss}`: the tree is released when this turn ends, after
 this turn's work is saved to the project's mirror, and a later message here forks it
 afresh from there, so nothing is lost but the disk. Not for a pause — a thread
 waiting on someone keeps its tree, and idle ones are swept on their own. Wrap up in
@@ -214,7 +214,7 @@ def gateway_instructions(tool_name: Callable[[str], str]) -> str:
         "teleport": tool_name(TELEPORT_TOOL_NAME),
         "scheme": tool_name(SCHEME_TOOL_NAME),
         "send": tool_name(SEND_TOOL_NAME),
-        "dispel": tool_name(DISPEL_TOOL_NAME),
+        "dismiss": tool_name(DISMISS_TOOL_NAME),
     }
     return GATEWAY_INSTRUCTION_TEMPLATE.format(
         **names
@@ -241,7 +241,7 @@ refine or extend that work instead of commissioning a new accomplice.
 @dataclass
 class GatewayCapability(AbstractCapability[None]):
     """The gateway spells as one turn's toolset: inspect, summon, teleport, scheme,
-    send and dispel, plus the accomplice spells when there is a thread to run
+    send and dismiss, plus the accomplice spells when there is a thread to run
     them in."""
 
     # The turn's policy and decision slot, shared with the graph that acts on it.
@@ -271,7 +271,7 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=TELEPORT_TOOL_NAME, retries=2)(self.teleport)
         toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
         toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
-        toolset.tool(name=DISPEL_TOOL_NAME, retries=2)(self.dispel)
+        toolset.tool(name=DISMISS_TOOL_NAME, retries=2)(self.dismiss)
         if (
             self.session.agents is not None
             and self.conversations is not None
@@ -533,7 +533,7 @@ class GatewayCapability(AbstractCapability[None]):
             metadata=[MessageSentEvent(segments=segments, destination=address)],
         )
 
-    async def dispel(self, ctx: RunContext[None]) -> str:
+    async def dismiss(self, ctx: RunContext[None]) -> str:
         """Give this thread's workspace back, now that the work in it is done —
         merged, delivered, or dropped for good, not paused. It is released when
         this turn ends, after this turn's work is saved to the project's mirror,
@@ -542,7 +542,7 @@ class GatewayCapability(AbstractCapability[None]):
         window the sweep would otherwise wait out.
         """
         try:
-            return await self.session.dispel()
+            return await self.session.dismiss()
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
 
