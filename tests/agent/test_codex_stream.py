@@ -319,6 +319,16 @@ def stream_client() -> tuple[TestClient, CodexTentacle]:
             "codex",
             octomate,
             config=CodexConfig(permission_mode="auto_review"),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            auth=octomate.auth,
+            gateway_manager=octomate.gateway,
         )
     )
 
@@ -477,7 +487,21 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     client, tentacle = stream_client()
     driver = (
         tentacle.octomate.connect(
-            CodexTentacle("other-codex", tentacle.octomate, config=CodexConfig())
+            CodexTentacle(
+                "other-codex",
+                tentacle.octomate,
+                config=CodexConfig(),
+                commands=tentacle.octomate.commands,
+                projects=tentacle.octomate.projects,
+                threads=tentacle.octomate.threads,
+                conversations=tentacle.octomate.conversations,
+                deferred_actions=tentacle.octomate.deferred_actions,
+                workspaces=tentacle.octomate.workspaces,
+                users=tentacle.octomate.users,
+                bearers=tentacle.octomate.bearers,
+                auth=tentacle.octomate.auth,
+                gateway_manager=tentacle.octomate.gateway,
+            )
         )
         if other_tentacle
         else tentacle

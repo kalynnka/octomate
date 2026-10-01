@@ -129,6 +129,7 @@ def agent() -> ExecutingAgent:
 @pytest.fixture
 async def app(user: User, agent: DiscoveringAgent) -> Octomate:
     app = Octomate()
+    agent.commands = app.commands
     app.connect(agent)
     app.connect(FakeChannelTentacle(octomate=app))
     app.dependency_overrides[current_user] = lambda: user

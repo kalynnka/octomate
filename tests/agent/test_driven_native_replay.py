@@ -58,7 +58,12 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
 
     if runtime == "claude":
         tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
-        ingest = ClaudeHookIngest(octomate, tailer)
+        ingest = ClaudeHookIngest(
+            tailer,
+            conversations=octomate.conversations,
+            projects=octomate.projects,
+            threads=octomate.threads,
+        )
         await ingest.handle(
             ClaudeHookInput(
                 hook_event_name="UserPromptSubmit",
@@ -70,7 +75,12 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
         )
     elif runtime == "codex":
         codex_tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
-        codex_ingest = CodexHookIngest(octomate, codex_tailer)
+        codex_ingest = CodexHookIngest(
+            codex_tailer,
+            conversations=octomate.conversations,
+            projects=octomate.projects,
+            threads=octomate.threads,
+        )
         await codex_ingest.handle(
             CodexHookInput(
                 hook_event_name="UserPromptSubmit",

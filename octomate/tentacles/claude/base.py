@@ -10,7 +10,6 @@ import asyncio
 import contextlib
 import logging
 import uuid
-import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -24,9 +23,9 @@ from typing import (
     overload,
 )
 
+import anyio
 from claude_agent_sdk import (
     ClaudeAgentOptions,
-    ClaudeSDKClient,
     HookContext,
     HookInput,
     HookJSONOutput,
@@ -81,6 +80,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.commands import CommandCatalog, CommandContext
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -101,9 +101,9 @@ from octomate.telemetry import (
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.claude.catalog import ClaudeServerInfo
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
+from octomate.tentacles.claude.ink import ClaudeInk
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.claude.transcript import relocate_session
@@ -118,6 +118,15 @@ from octomate.types.permissions import (
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.commands import CommandManager
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.deferred import DeferredActionManager
+    from octomate.managers.mcp import McpManager
+    from octomate.managers.project import ProjectManager
+    from octomate.managers.thread import ThreadManager
+    from octomate.managers.user import UserManager
+    from octomate.managers.workspaces import WorkspaceManager
+    from octomate.mcp.base import KnownBearers
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +150,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     """
 
     config: ClaudeCodeConfig = field(init=False)
+    ink: ClaudeInk = field(init=False, repr=False)
+    conversations: ConversationManager = field(init=False, repr=False)
+    deferred_actions: DeferredActionManager = field(init=False, repr=False)
+    workspaces: WorkspaceManager = field(init=False, repr=False)
+    users: UserManager = field(init=False, repr=False)
+    bearers: KnownBearers = field(init=False, repr=False)
+    mcp: McpManager = field(init=False, repr=False)
     native_id: ClassVar[str] = CLAUDE_NATIVE_ID
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
@@ -170,22 +186,36 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: ClaudeCodeConfig,
+        commands: CommandManager,
+        projects: ProjectManager,
+        threads: ThreadManager,
+        conversations: ConversationManager,
+        deferred_actions: DeferredActionManager,
+        workspaces: WorkspaceManager,
+        users: UserManager,
+        bearers: KnownBearers,
+        mcp: McpManager,
         description: str | None = None,
     ) -> None:
-        super().__init__(id=id, octomate=octomate)
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            commands=commands,
+            projects=projects,
+            threads=threads,
+        )
+        self.conversations = conversations
+        self.deferred_actions = deferred_actions
+        self.workspaces = workspaces
+        self.users = users
+        self.bearers = bearers
+        self.mcp = mcp
         self.config = config
         self.description = description or self.description
         self.pending = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
-        # One live Claude client per conversation, keyed by conversation id: a new
-        # turn interrupts the prior run for the same conversation (Phase 6). Not
-        # thread id — a thread also holds subagent conversations, whose runs must
-        # neither interrupt the thread's own live run nor each other. Weak values
-        # so a finished run's client drops out on its own once it is collected.
-        self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
-            weakref.WeakValueDictionary()
-        )
+        self.ink = ClaudeInk()
         self.models = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
@@ -193,16 +223,17 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # Assembles native sessions' turns from streamed transcript lines — the
         # stream is the only assembler; the server never opens a transcript.
         self.session_tailer = ClaudeTranscriptTailer(
-            self.octomate.conversations,
-            self.octomate.threads,
+            self.conversations,
+            self.threads,
             self.session_locks,
         )
         # Live hook ingest: writes the human ledger and relays the stream's drains.
-        # Reads the same managers this tentacle writes, through the bound `octomate`.
         self.session_ingest = ClaudeHookIngest(
-            self.octomate,
             self.session_tailer,
             self.session_locks,
+            conversations=self.conversations,
+            projects=self.projects,
+            threads=self.threads,
         )
 
     def routers(self) -> tuple[APIRouter]:
@@ -223,8 +254,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         route takes `hook_sender` — the verified bearer resolved to their own
         profile, on the guard's single per-request check — as the ledger's
         principal."""
-        verifier = hook_guard(self.octomate.bearers)
-        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
+        verifier = hook_guard(self.bearers)
+        resolve_sender = hook_sender(self.users, self.native_id, verifier)
         router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
 
         @router.post(
@@ -296,13 +327,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # TODO: assign remote sessions their project once projects can span machines.
         client = websocket.client
         if client is not None and client.host in {"127.0.0.1", "::1"}:
-            holder = (
-                self.octomate.projects.resolve(Path(hello.cwd)) if hello.cwd else None
-            )
-            project = self.octomate.projects.get(holder) if holder is not None else None
+            holder = self.projects.resolve(Path(hello.cwd)) if hello.cwd else None
+            project = self.projects.get(holder) if holder is not None else None
         else:
             project = None
-        await self.octomate.threads.ensure(
+        await self.threads.ensure(
             ThreadKey(self.native_id, "thread", hello.session_id),
             project=project,
         )
@@ -410,7 +439,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 f"present a Claude approval/question"
             )
         batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
+            action_manager=self.deferred_actions,
             conversation=conversation,
             agent_tentacle_id=self.id,
             run_name=run_name,
@@ -429,11 +458,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 asyncio.shield(future), self.config.approval_timeout
             )
         except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+            await self.deferred_actions.mark_batch(batch.id, "expired")
             return batch, None
         finally:
             self.pending.pop(batch.id, None)
-        await self.octomate.deferred_actions.resolve_batch(response)
+        await self.deferred_actions.resolve_batch(response)
         return batch, response
 
     @property
@@ -441,19 +470,71 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # Omitting --model preserves Claude's own settings and resume selection.
         return None
 
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        """Initialize a non-persisting SDK client in the resolved workspace.
+
+        The SDK caches initialize metadata, so an explicit refresh needs a new
+        client. Match driven settings and resume identity without sending a query
+        or preparing the workspace. Octomate's SDK MCP server exposes tools only;
+        there are no MCP prompts to add to this catalog.
+        """
+        if context.cwd is None or not await anyio.Path(context.cwd).is_dir():
+            return CommandCatalog(
+                context=context,
+                status="unavailable",
+                message="Claude command discovery requires an existing workspace.",
+            )
+        conversation = context.conversation
+        project = (
+            await self.run_project(conversation.thread_id)
+            if conversation is not None
+            else None
+        )
+        external_id = conversation.external_id if conversation is not None else None
+        session_id = external_id or str(uuid7())
+        async with self.driving(session_id):
+            info = await self.ink.inspect(
+                ClaudeAgentOptions(
+                    cwd=str(context.cwd),
+                    add_dirs=[str(root) for root in project.extra_roots]
+                    if project
+                    else [],
+                    model=context.model,
+                    permission_mode=context.permission_mode
+                    if is_claude_mode(context.permission_mode)
+                    else self.config.permission_mode,
+                    resume=external_id,
+                    session_id=None if external_id else session_id,
+                    extra_args={"safe-mode": None, "no-session-persistence": None},
+                    strict_mcp_config=True,
+                )
+            )
+        if info.commands is None:
+            return CommandCatalog(
+                context=context,
+                status="unsupported",
+                message="This Claude runtime does not expose command metadata.",
+            )
+        return CommandCatalog(
+            context=context,
+            status="ready",
+            descriptors=set(info.commands),
+            limitations=[
+                "Claude safe mode disables local commands, skills and plugins.",
+                "Claude command execution is not implemented yet.",
+            ],
+        )
+
     async def discover_models(self) -> None:
         session_id = str(uuid7())
-        async with (
-            self.driving(session_id),
-            ClaudeSDKClient(
-                options=ClaudeAgentOptions(
+        async with self.driving(session_id):
+            info = await self.ink.inspect(
+                ClaudeAgentOptions(
                     session_id=session_id,
                     extra_args={"safe-mode": None},
                     strict_mcp_config=True,
                 )
-            ) as client,
-        ):
-            info = ClaudeServerInfo.model_validate(await client.get_server_info())
+            )
         provider = info.account.api_provider
         if provider is None or provider == "firstParty":
             provider = "anthropic"
@@ -482,6 +563,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         self.set_model_catalog(models, claims)
 
     async def __aenter__(self) -> ClaudeCodeTentacle:
+        self.commands.invalidate(agent_id=self.id)
         await self.discover_models()
         return await super().__aenter__()
 
@@ -494,17 +576,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         """Cancel any approvals/questions still awaiting a human so their parked
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
+        self.commands.invalidate(agent_id=self.id)
         await super().__aexit__(exc_type, exc_value, traceback)
         for future in list(self.pending.values()):
             if not future.done():
                 future.cancel()
         self.pending.clear()
-        # Interrupt any run still streaming so its client/transport tears down
-        # instead of orphaning a subprocess or SSH connection at shutdown.
-        for client in self.live_clients.values():
-            with contextlib.suppress(Exception):
-                await client.interrupt()
-        self.live_clients.clear()
+        await self.ink.close()
         # Cancel any live transcript follow loops.
         await self.session_tailer.shutdown()
 
@@ -531,7 +609,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(
+            conversation = await self.conversations.get(
                 conversation_id, with_history=False
             )
             if (
@@ -543,7 +621,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     f"({self.id!r}, {thread_id})"
                 )
         else:
-            conversation = await self.octomate.conversations.ensure(
+            conversation = await self.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
                 with_history=False,
@@ -619,9 +697,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             if approved and response is not None and response.allow_session:
                 session_allowed.add(tool_name)
-                await self.octomate.conversations.grant_session_tool(
-                    conversation, tool_name
-                )
+                await self.conversations.grant_session_tool(conversation, tool_name)
             if approved:
                 return PermissionResultAllow(updated_input=input_data)
             if response is None:
@@ -715,7 +791,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         project = await self.run_project(conversation.thread_id)
         # Settled here, forked when the run enters it below: the options this builds
         # have to name the directory before the process that will run there exists.
-        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        workspace = self.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
         octomate_session = next(
             (
@@ -733,8 +809,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         if octomate_session is not None:
             mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
                 octomate_session,
-                self.octomate.threads,
-                manager=self.octomate.mcp,
+                self.threads,
+                manager=self.mcp,
             )
         appended = "\n\n".join(
             part
@@ -815,64 +891,42 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         if not prompt_text:
             raise ValueError("ClaudeCodeTentacle requires a non-empty text prompt")
 
-        # Parked, not dropped: remote runs are off because nothing makes a workspace
-        # on another machine. Restoring is this block, the import, the span label and
-        # `transport=transport` on the client — never the config validator alone.
-        # transport = (
-        #     SSHTransport(prompt_text, options, ssh=self.config.ssh)
-        #     if self.config.ssh is not None
-        #     else None
-        # )
         with claude_logfire.span(
             "ClaudeCodeTentacle {agent_id} {run_name} [{conversation_address}]",
             agent_id=self.id,
             run_name=run_name or "claude",
             conversation_address=str(conversation_address),
             **agent_input_message_attributes(user_prompt),
-            # transport=(
-            #     f"ssh:{self.config.ssh.host}"
-            #     if self.config.ssh is not None
-            #     else "local"
-            # ),
             transport="local",
         ):
             # Entered first so it leaves last: the tree exists before the CLI is
             # launched into it, and a chat thread's is only thrown away once the CLI
             # holding it open has been waited out.
-            # async with ClaudeSDKClient(options=options, transport=transport) as client:
             # The SDK injects the active W3C context when connecting. Starting a
             # client inside each run's span also reparents resumed sessions.
             async with (
                 workspace,
                 self.driving(session_id),
-                ClaudeSDKClient(options=options) as client,
+                contextlib.aclosing(
+                    self.ink.stream(
+                        prompt_text,
+                        options=options,
+                        conversation_id=conversation.id,
+                        should_interrupt=lambda: (
+                            octomate_session is not None
+                            and isinstance(octomate_session.decision, TeleportDecision)
+                        ),
+                    )
+                ) as messages,
             ):
-                # One live run per conversation: register this client and interrupt
-                # any prior run for the same conversation so a mid-run follow-up
-                # supersedes it. The weak-value map drops this entry once the run
-                # ends and the client is collected — no manual deregistration.
-                previous = self.live_clients.get(conversation.id)
-                self.live_clients[conversation.id] = client
-                if previous is not None and previous is not client:
-                    with contextlib.suppress(Exception):
-                        await previous.interrupt()
-                await client.query(prompt_text)
-                interrupted = False
-                async for message in client.receive_response():
+                self.commands.invalidate(
+                    agent_id=self.id, conversation_id=conversation.id
+                )
+                async for message in messages:
                     for event in accumulator.consume(message):
                         yield event
-                    if (
-                        not interrupted
-                        and octomate_session is not None
-                        and isinstance(octomate_session.decision, TeleportDecision)
-                    ):
-                        # Moving mid-run: the move is the graph's to perform, and
-                        # this process is still where it was, so the turn ends now
-                        # — as the deferral the graph performs and resumes from.
-                        interrupted = True
-                        await client.interrupt()
             run_id = str(uuid7())
-            recorded_run = await self.octomate.conversations.record_agent_run(
+            recorded_run = await self.conversations.record_agent_run(
                 conversation,
                 run_id=run_id,
                 messages=accumulator.messages,
@@ -900,16 +954,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         "prompt-source bindings require a persisted user ModelRequest"
                     )
                 source_message_ids = list(source_thread_message_ids)
-                await self.octomate.threads.bind_messages(
+                await self.threads.bind_messages(
                     source_message_ids,
                     prompt_request.id,
                     kind="request_source",
                     run_id=recorded_run.id,
                 )
-                source_thread = await self.octomate.threads.ensure(
+                source_thread = await self.threads.ensure(
                     source_thread_address or conversation_address
                 )
-                await self.octomate.threads.advance_prompt_cursor(
+                await self.threads.advance_prompt_cursor(
                     source_thread,
                     source_message_ids[-1],
                 )

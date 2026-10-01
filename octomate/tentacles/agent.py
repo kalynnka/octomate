@@ -59,7 +59,11 @@ from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
 
 if TYPE_CHECKING:
+    from octomate.base import Octomate
     from octomate.capabilities.harness.deferred import DeferredSuspender
+    from octomate.managers.commands import CommandManager
+    from octomate.managers.project import ProjectManager
+    from octomate.managers.thread import ThreadManager
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
 # agent includes DeferredToolRequests in it); run-level output_type overrides are
@@ -71,6 +75,24 @@ type AgentSpecInput = JsonObject | AgentSpec
 
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
+
+    commands: CommandManager
+    projects: ProjectManager
+    threads: ThreadManager
+
+    def __init__(
+        self,
+        id: str,
+        octomate: Octomate,
+        *,
+        commands: CommandManager,
+        projects: ProjectManager,
+        threads: ThreadManager,
+    ) -> None:
+        super().__init__(id=id, octomate=octomate)
+        self.commands = commands
+        self.projects = projects
+        self.threads = threads
 
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
@@ -302,7 +324,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         hits. Prefix matching filters a copy by command name; it does not imply
         argument-value completion. Runtime adapters implement `probe_commands`.
         """
-        catalog = await self.octomate.commands.discover(self, context, refresh=refresh)
+        catalog = await self.commands.discover(self, context, refresh=refresh)
         catalog.descriptors = {
             descriptor
             for descriptor in catalog.descriptors
@@ -409,14 +431,14 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         thread is what this adds; judging what it names is the registry's, and is
         `ProjectManager.of`.
         """
-        if not self.octomate.projects.roots:
+        if not self.projects.roots:
             # Nothing registered: no thread can be in a project, so a run is what it
             # was before there were projects, down to not reading the thread.
             return None
-        thread = await self.octomate.threads.get(thread_id)
+        thread = await self.threads.get(thread_id)
         if thread is None:
             raise ValueError(f"unknown thread {thread_id}")
-        return await self.octomate.projects.of(thread)
+        return await self.projects.of(thread)
 
     @overload
     async def run(

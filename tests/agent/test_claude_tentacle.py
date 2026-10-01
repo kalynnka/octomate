@@ -44,6 +44,7 @@ from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.types.json import JsonObject
 from tests.support.managers import (
@@ -136,10 +137,20 @@ def _tentacle(
     *,
     config: ClaudeCodeConfig | None = None,
 ) -> ClaudeCodeTentacle:
+    host = Octomate(conversations=conversations)
     return ClaudeCodeTentacle(
         "claude",
-        Octomate(conversations=conversations),
+        host,
         config=config or ClaudeCodeConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
     )
 
 
@@ -148,7 +159,7 @@ async def test_run_stream_events_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
     instrument: bool,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     trace_environment = TraceEnvironment(
         "https://logfire.example/v1/traces", SecretStr("test-token")
     )
@@ -156,6 +167,9 @@ async def test_run_stream_events_proxies_events_and_persists(
     monkeypatch.setattr(claude_base, "octomate_trace_environment", trace_config)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations, config=ClaudeCodeConfig(instrument=instrument))
+    # A driven turn must use the managers supplied at construction.
+    for name in ("commands", "conversations", "threads", "workspaces"):
+        monkeypatch.delattr(tentacle.octomate, name)
 
     events = []
     async with tentacle.run_stream_events(
@@ -187,6 +201,42 @@ async def test_run_stream_events_proxies_events_and_persists(
     assert messages  # user prompt + assistant turns
 
 
+async def test_closing_a_stream_closes_its_sdk_client_before_the_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = asyncio.Event()
+    workspace_exit = ChatWorkspace.__aexit__
+
+    async def close_client(
+        client: FakeClaudeClient,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        closed.set()
+
+    async def close_workspace(
+        workspace: ChatWorkspace,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        assert closed.is_set()
+        await workspace_exit(workspace, exc_type, exc, traceback)
+
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(FakeClaudeClient, "__aexit__", close_client)
+    monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
+    tentacle = _tentacle(FakeConversationManager())
+    async with tentacle.run_stream_events(
+        "work", conversation_address=KEY, thread_id=_THREAD
+    ) as stream:
+        await anext(stream)
+        assert not closed.is_set()
+    assert closed.is_set()
+    assert not tentacle.ink.live_clients
+
+
 async def test_prompt_hook_identity_is_retained_on_the_driven_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -206,7 +256,7 @@ async def test_prompt_hook_identity_is_retained_on_the_driven_run(
             callback = options.hooks["UserPromptSubmit"][0].hooks[0]
             assert await callback(hook_input, None, HookContext(signal=None)) == {}
 
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", IdentifiedClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", IdentifiedClient)
     conversations = FakeConversationManager()
     await _tentacle(conversations).run(
         "go", conversation_address=KEY, thread_id=_THREAD
@@ -223,7 +273,7 @@ async def test_a_run_addressed_by_conversation_id_lands_there(
 ) -> None:
     # The tentacle resolves the pre-ensured conversation by id — it never learns
     # why the conversation exists, only where to run.
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     parent = await conversations.ensure(_THREAD, agent_tentacle_id="inkling")
     child = await conversations.ensure(
@@ -307,7 +357,7 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
 
     monkeypatch.setattr(FakeClaudeClient, "__aenter__", enter)
     monkeypatch.setattr(FakeClaudeClient, "__aexit__", leave)
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     monkeypatch.setattr(Workspace, "__aenter__", open_workspace)
     monkeypatch.setattr(ChatWorkspace, "__aexit__", close_workspace)
 
@@ -338,7 +388,7 @@ async def test_instructions_land_in_the_system_prompt(
 ) -> None:
     # Run-level instructions (an accomplice's framing included) append to the
     # Claude Code system-prompt preset; the user prompt stays untouched.
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
 
@@ -364,7 +414,7 @@ async def test_a_non_interactive_run_declines_approvals_and_questions(
     # A hand has no user: approvals and questions die instantly instead of
     # becoming cards — the same policy the native runtimes apply to their own
     # subagents.
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
 
@@ -395,7 +445,7 @@ async def test_a_non_interactive_run_declines_approvals_and_questions(
 
 
 async def test_run_resumes_prior_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "claude", "")] = FakeConversation(
         external_id="prev-sess"
@@ -444,7 +494,7 @@ class LiteralClaudeClient(FakeClaudeClient):
 async def test_run_with_output_type_returns_structured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", StructuredClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", StructuredClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     result = await tentacle.run(
@@ -466,7 +516,7 @@ async def test_run_with_output_type_returns_structured(
 async def test_run_uses_literal_output_schema(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", LiteralClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", LiteralClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     result = await tentacle.run(
@@ -486,7 +536,7 @@ async def test_run_uses_literal_output_schema(
 async def test_run_extracts_structured_candidate_from_union(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", StructuredClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", StructuredClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     result = await tentacle.run(
@@ -506,7 +556,7 @@ async def test_run_extracts_structured_candidate_from_union(
 async def test_run_rejects_deferred_output_type(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", StructuredClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", StructuredClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     with pytest.raises(ValueError, match="DeferredToolRequests"):
@@ -519,7 +569,7 @@ async def test_run_rejects_deferred_output_type(
 
 
 async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(
         FakeConversationManager(),
         config=ClaudeCodeConfig(),
@@ -533,7 +583,7 @@ async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None
 async def test_local_transport_passes_no_custom_transport(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
@@ -547,7 +597,7 @@ async def test_local_transport_passes_no_custom_transport(
 async def test_run_tags_sdk_session_as_cli_entrypoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
@@ -560,7 +610,7 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
 async def test_models_are_discovered_on_connect(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
     assert tentacle.models == {}
     async with tentacle:
@@ -630,7 +680,7 @@ async def test_new_run_interrupts_the_prior_live_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     GatedClaudeClient.instances = []
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", GatedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", GatedClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     # The live map keys on the conversation, not the thread — a thread also
@@ -639,7 +689,9 @@ async def test_new_run_interrupts_the_prior_live_run(
         _THREAD, agent_tentacle_id="claude"
     )
     first = asyncio.ensure_future(_drive(tentacle, "first"))
-    await _spin_until(lambda: tentacle.live_clients.get(conversation.id) is not None)
+    await _spin_until(
+        lambda: tentacle.ink.live_clients.get(conversation.id) is not None
+    )
     client_a = GatedClaudeClient.instances[0]
 
     # A second turn on the same conversation supersedes the first: its client is
@@ -654,34 +706,38 @@ async def test_new_run_interrupts_the_prior_live_run(
 
     assert client_a.interrupted
     # B superseded A: the live entry for the conversation is now B's client.
-    assert tentacle.live_clients.get(conversation.id) is GatedClaudeClient.instances[1]
+    assert (
+        tentacle.ink.live_clients.get(conversation.id) is GatedClaudeClient.instances[1]
+    )
 
 
 async def test_shutdown_interrupts_live_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     GatedClaudeClient.instances = []
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", GatedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", GatedClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     conversation = await tentacle.octomate.conversations.ensure(
         _THREAD, agent_tentacle_id="claude"
     )
     run = asyncio.ensure_future(_drive(tentacle, "hi"))
-    await _spin_until(lambda: tentacle.live_clients.get(conversation.id) is not None)
+    await _spin_until(
+        lambda: tentacle.ink.live_clients.get(conversation.id) is not None
+    )
     client = GatedClaudeClient.instances[0]
 
     await tentacle.__aexit__()
 
     assert client.interrupted
-    assert len(tentacle.live_clients) == 0
+    assert len(tentacle.ink.live_clients) == 0
     await run
 
 
 async def test_completed_run_releases_its_client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     tentacle = _tentacle(FakeConversationManager())
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
@@ -689,7 +745,7 @@ async def test_completed_run_releases_its_client(
     # Weak-value map: a finished run's client is unreferenced, so its entry drops
     # on its own — no manual deregistration.
     gc.collect()
-    assert len(tentacle.live_clients) == 0
+    assert len(tentacle.ink.live_clients) == 0
 
 
 def test_missing_metadata_can_be_configured() -> None:
@@ -706,7 +762,7 @@ def test_missing_metadata_can_be_configured() -> None:
 async def test_a_gateway_capability_mounts_the_in_process_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
     session = OctomateSession(channel_routes={}, current_agent_id="claude")
@@ -740,7 +796,7 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
 async def test_without_the_gateway_no_server_and_no_instruction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
 
@@ -811,7 +867,7 @@ class BindingClaudeClient(FakeClaudeClient):
 async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", BindingClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", BindingClaudeClient)
     BindingClaudeClient.instances = []
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -851,7 +907,7 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
 async def test_a_resumed_run_opens_from_what_the_graph_resolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "claude", "")] = FakeConversation(
         external_id="prev-sess"

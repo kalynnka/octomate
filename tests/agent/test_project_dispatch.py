@@ -36,9 +36,9 @@ from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import base as codex_base
+from octomate.tentacles.codex import ink as codex_ink
 from tests.agent.test_codex_tentacle import FakeCodex, reset_fake_codex, text_script
 from tests.support.agents import RecordingClaudeClient
 from tests.support.managers import FakeConversationManager, a_project, a_registry
@@ -73,6 +73,15 @@ def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
         "claude",
         octomate,
         config=ClaudeCodeConfig(),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        mcp=octomate.mcp,
     )
 
 
@@ -95,6 +104,16 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     async with tentacle:
         async with tentacle.run_stream_events(
@@ -107,8 +126,8 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
 
 @pytest.fixture(autouse=True)
 def _fakes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", RecordingClaudeClient)
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
 
 

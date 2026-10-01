@@ -217,7 +217,13 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         request_limit: int = 256,
         gateway: bool = True,
     ) -> None:
-        super().__init__(id=id, octomate=octomate)
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+        )
         self.permission_mode = permission_mode
         self.request_limit = request_limit
         self.gateway = gateway

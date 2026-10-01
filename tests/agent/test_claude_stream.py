@@ -247,7 +247,20 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        ClaudeCodeTentacle("claude", octomate, config=ClaudeCodeConfig())
+        ClaudeCodeTentacle(
+            "claude",
+            octomate,
+            config=ClaudeCodeConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            mcp=octomate.mcp,
+        )
     )
 
     @asynccontextmanager
@@ -434,7 +447,18 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     driver = (
         tentacle.octomate.connect(
             ClaudeCodeTentacle(
-                "other-claude", tentacle.octomate, config=ClaudeCodeConfig()
+                "other-claude",
+                tentacle.octomate,
+                config=ClaudeCodeConfig(),
+                commands=tentacle.octomate.commands,
+                projects=tentacle.octomate.projects,
+                threads=tentacle.octomate.threads,
+                conversations=tentacle.octomate.conversations,
+                deferred_actions=tentacle.octomate.deferred_actions,
+                workspaces=tentacle.octomate.workspaces,
+                users=tentacle.octomate.users,
+                bearers=tentacle.octomate.bearers,
+                mcp=tentacle.octomate.mcp,
             )
         )
         if other_tentacle

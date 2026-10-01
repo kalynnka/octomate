@@ -195,7 +195,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         config: DeepseekConfig,
         description: str | None = None,
     ) -> None:
-        super().__init__(id=id, octomate=octomate)
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+        )
         self.config = config
         self.description = description or self.description
         self.process = None

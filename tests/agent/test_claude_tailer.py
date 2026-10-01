@@ -340,7 +340,13 @@ def wired(octomate: Octomate) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]
     registry so hook ledger writes and tailer run commits serialize."""
     locks = SessionLocks()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads, locks)
-    return ClaudeHookIngest(octomate, tailer, locks), tailer
+    return ClaudeHookIngest(
+        tailer,
+        locks,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    ), tailer
 
 
 def hook_event(
@@ -554,7 +560,12 @@ async def test_the_commit_reuses_live_ledger_rows() -> None:
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     # The hooks already wrote p1's ledger; the commit binds those rows, not duplicates.
-    ingest = ClaudeHookIngest(octomate, tailer)
+    ingest = ClaudeHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
     await ingest.record_prompt(
         hook("p1", prompt="list the files"), "list the files", SENDER
     )

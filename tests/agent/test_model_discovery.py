@@ -21,7 +21,7 @@ from octomate.config.agents import Claim, ClaudeCodeConfig, CodexConfig, Deepsee
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
@@ -54,12 +54,13 @@ async def test_claude_uses_native_metadata_before_config(
         ],
     }
     client.__aenter__.return_value = client
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", MagicMock(return_value=client))
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", MagicMock(return_value=client))
     prefix = "bedrock" if provider == "bedrock" else "anthropic"
     configured = Claim("Configured fallback", efforts=("medium",))
+    host = Octomate()
     tentacle = ClaudeCodeTentacle(
         "claude",
-        Octomate(),
+        host,
         config=ClaudeCodeConfig(
             claims={
                 f"{prefix}:future-model": configured,
@@ -67,6 +68,15 @@ async def test_claude_uses_native_metadata_before_config(
                 f"{prefix}:small": configured,
             }
         ),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
     )
 
     async with tentacle:
@@ -89,10 +99,24 @@ async def test_claude_uses_native_metadata_before_config(
 async def test_claude_discovery_claims_its_session_through_client_cleanup(
     monkeypatch: pytest.MonkeyPatch, fails: bool
 ) -> None:
-    tentacle = ClaudeCodeTentacle("claude", Octomate(), config=ClaudeCodeConfig())
+    host = Octomate()
+    tentacle = ClaudeCodeTentacle(
+        "claude",
+        host,
+        config=ClaudeCodeConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
+    )
     client = AsyncMock()
     factory = MagicMock(return_value=client)
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", factory)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", factory)
 
     async def enter() -> AsyncMock:
         options = factory.call_args.kwargs["options"]
@@ -178,12 +202,23 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         ),
     ]
     prefix = provider or "openai"
+    host = Octomate()
     tentacle = CodexTentacle(
         "codex",
-        Octomate(),
+        host,
         config=CodexConfig(
             claims={f"{prefix}:future-model": Claim("Old metadata", efforts=("low",))}
         ),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
     )
     async with tentacle:
         assert tentacle.models == {
@@ -215,7 +250,22 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
         ConfigReadResponse.model_validate({"config": {}, "origins": {}}),
         ModelListResponse(data=[]),
     ]
-    tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig())
+    host = Octomate()
+    tentacle = CodexTentacle(
+        "codex",
+        host,
+        config=CodexConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
+    )
     with pytest.raises(ValueError, match="no available models"):
         async with tentacle:
             pytest.fail("An empty catalog must not start successfully")
@@ -324,9 +374,22 @@ def harness(
         }
         client.__aenter__.return_value = client
         monkeypatch.setattr(
-            claude_base, "ClaudeSDKClient", MagicMock(return_value=client)
+            claude_ink, "ClaudeSDKClient", MagicMock(return_value=client)
         )
-        return ClaudeCodeTentacle("claude", octomate, config=ClaudeCodeConfig())
+        return ClaudeCodeTentacle(
+            "claude",
+            octomate,
+            config=ClaudeCodeConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            mcp=octomate.mcp,
+        )
     if request.param == "codex":
         codex_catalog.request.side_effect = [
             ConfigReadResponse.model_validate(
@@ -339,7 +402,21 @@ def harness(
                 data=[codex_model("included"), codex_model("excluded", default=True)]
             ),
         ]
-        return CodexTentacle("codex", octomate, config=CodexConfig())
+        return CodexTentacle(
+            "codex",
+            octomate,
+            config=CodexConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            auth=octomate.auth,
+            gateway_manager=octomate.gateway,
+        )
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
     FakeDeepseekApi.results["session/modelCatalog"] = OkResult(

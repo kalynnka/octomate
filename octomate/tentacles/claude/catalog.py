@@ -1,7 +1,27 @@
-"""The model metadata in Claude Code's initialize response."""
+"""Model and command metadata in Claude Code's initialize response."""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
+
+from octomate.schemas.commands import CommandDescriptor
+
+
+class ClaudeCommandDescriptor(CommandDescriptor, frozen=True):
+    """A native initialize command normalized for the shared catalog."""
+
+    id: str = Field(
+        min_length=1,
+        validation_alias=AliasChoices("id", "name"),
+        description="Claude's canonical command name, used for invocation.",
+    )
+    argument_hint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("argument_hint", "argumentHint"),
+        description="The runtime's argument hint, including an empty hint.",
+    )
+    aliases: tuple[str, ...] = Field(
+        default=(), description="Additional command names advertised by Claude."
+    )
 
 
 class ClaudeModelInfo(BaseModel):
@@ -25,7 +45,12 @@ class ClaudeAccountInfo(BaseModel):
 
 
 class ClaudeServerInfo(BaseModel):
-    """Claude Code's initialize response: the model catalog and the account."""
+    """Claude Code's initialize response, cached by the SDK during connection."""
 
     models: list[ClaudeModelInfo] = Field(min_length=1)
     account: ClaudeAccountInfo = Field(default_factory=ClaudeAccountInfo)
+    commands: list[ClaudeCommandDescriptor] | None = Field(
+        default=None,
+        description="Native command metadata; omitted means discovery is unsupported, "
+        "while an empty list is a successful empty catalog.",
+    )

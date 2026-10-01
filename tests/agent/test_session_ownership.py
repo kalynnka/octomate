@@ -11,7 +11,21 @@ from tests.support.agents import FakeAgent
 async def test_unregistered_agents_keep_overlapping_claims_until_the_last_release() -> (
     None
 ):
-    driver = ClaudeCodeTentacle("claude", Octomate(), config=ClaudeCodeConfig())
+    host = Octomate()
+    driver = ClaudeCodeTentacle(
+        "claude",
+        host,
+        config=ClaudeCodeConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
+    )
 
     async def failed_run() -> None:
         async with driver.driving("session"):

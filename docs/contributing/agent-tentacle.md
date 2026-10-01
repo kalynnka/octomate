@@ -5,6 +5,26 @@ conversation, stream what happens in Octomate's event vocabulary, raise approval
 and questions as deferred requests, and advertise its models. Inkling is the
 smallest complete example; Claude Code is the one to read for a subprocess harness.
 
+Wrap each agent's third-party SDK in its `ink.py` and expose that wrapper as the
+tentacle's `ink`. The wrapper follows its SDK's operations and resource lifetime;
+there is no shared agent Ink base class or required method set. Codex owns one
+shared client, while Claude opens a client for each inspection or turn. Managers,
+approval decisions and persistence stay in the tentacle; operation callbacks pass
+through method arguments. Claude and Codex use this structure; dsh and Inkling
+still keep their SDK ownership inline pending migration.
+
+Pass managers explicitly when constructing Claude and Codex tentacles. Their
+shared discovery and project lookup use the injected command, project and thread
+managers, and their hook ingest receives the same conversation, project and
+thread managers. The retained Octomate reference supplies the channel registry
+and deployment configuration.
+
+`ClaudeInk` owns initialization reads, SDK message streaming, interruption and the
+weak map of active clients keyed by conversation ID. The tentacle supplies SDK
+options and the per-turn interruption callback, translates native messages, and
+records the result. Closing a stream closes its SDK context before the workspace
+is released.
+
 Codex keeps its SDK operations in `CodexInk`: client startup and shutdown,
 notifications, discovery queries, MCP configuration, and native thread and turn
 operations. `CodexTentacle` loads conversations and saves their native thread IDs
@@ -49,8 +69,9 @@ The optional `probe_commands` and `execute_command` hooks use the
 without starting a turn. Each agent exposes `discover_commands` for cached discovery,
 refresh and command-name completion, backed by the host's command manager and an HTTP
 endpoint. The host also provides guarded execution through its command manager and
-HTTP API. Codex implements skill discovery and execution. The other runtime
-adapters and channel command controls are not wired yet.
+HTTP API. Codex implements skill discovery and execution; Claude implements
+command discovery. Claude execution, the remaining runtime adapters and channel
+command controls are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval

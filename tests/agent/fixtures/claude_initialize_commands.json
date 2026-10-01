@@ -1,0 +1,52 @@
+{
+  "sdk_version": "0.2.152",
+  "cli_version": "2.1.259",
+  "initialize": {
+    "commands": [
+      {
+        "name": "debug",
+        "description": "Enable debug logging for this session and help diagnose issues",
+        "argumentHint": "[issue description]"
+      },
+      {
+        "name": "clear",
+        "description": "Start a new session with empty context; previous session stays on disk (resumable with /resume)",
+        "argumentHint": "[name]",
+        "aliases": [
+          "reset",
+          "new"
+        ]
+      },
+      {
+        "name": "context",
+        "description": "Show current context usage",
+        "argumentHint": ""
+      }
+    ],
+    "models": [
+      {
+        "value": "default",
+        "resolvedModel": "claude-opus-5[1m]",
+        "displayName": "Default (recommended)",
+        "description": "Use the default model (currently Opus 5 (1M context)) \u00b7 $5/$25 per Mtok",
+        "supportsEffort": true,
+        "supportedEffortLevels": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "supportsAdaptiveThinking": true,
+        "supportsFastMode": true,
+        "supportsAutoMode": true
+      }
+    ]
+  },
+  "project_command_without_safe_mode": {
+    "name": "fixture-review",
+    "description": "Review the fixture workspace (project)",
+    "argumentHint": "target"
+  },
+  "project_command_with_safe_mode": []
+}

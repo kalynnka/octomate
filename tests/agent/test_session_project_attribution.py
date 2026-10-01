@@ -52,7 +52,12 @@ def repo(path: Path) -> Path:
 async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -> str:
     """Ingest one native Claude turn, and answer with its thread's project."""
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
-    ingest = ClaudeHookIngest(octomate, tailer)
+    ingest = ClaudeHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
     await ingest.handle(
         ClaudeHookInput.model_validate(
             {
@@ -75,7 +80,12 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
 async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) -> str:
     """Ingest one native Codex turn, and answer with its thread's project."""
     tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
-    ingest = CodexHookIngest(octomate, tailer)
+    ingest = CodexHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
     await ingest.handle(
         CodexHookInput.model_validate(
             {
@@ -271,7 +281,12 @@ async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> N
     it. The hook still creates the thread: it is the last event carrying a cwd, and
     a backfill tail attaching later would otherwise create it unfiled."""
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
-    ingest = ClaudeHookIngest(octomate, tailer)
+    ingest = ClaudeHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
     await ingest.handle(
         ClaudeHookInput.model_validate(
             {

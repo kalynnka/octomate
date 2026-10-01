@@ -47,7 +47,21 @@ async def execution(
         )
     )
     agent = app.connect(
-        CodexTentacle("codex", app, config=CodexConfig(permission_mode="auto_review"))
+        CodexTentacle(
+            "codex",
+            app,
+            config=CodexConfig(permission_mode="auto_review"),
+            commands=app.commands,
+            projects=app.projects,
+            threads=app.threads,
+            conversations=app.conversations,
+            deferred_actions=app.deferred_actions,
+            workspaces=app.workspaces,
+            users=app.users,
+            bearers=app.bearers,
+            auth=app.auth,
+            gateway_manager=app.gateway,
+        )
     )
     user = await a_user("alice")
     thread = await app.threads.ensure(KEY)

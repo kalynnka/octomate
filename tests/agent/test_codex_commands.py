@@ -84,7 +84,22 @@ async def agent(
     inspector: tuple[AsyncMock, asyncio.Queue[Notification | CodexError]],
 ) -> AsyncGenerator[CodexTentacle]:
     client, _ = inspector
-    tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig())
+    host = Octomate()
+    tentacle = CodexTentacle(
+        "codex",
+        host,
+        config=CodexConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
+    )
     client.request.side_effect = [
         ConfigReadResponse.model_validate({"config": {}, "origins": {}}),
         ModelListResponse(data=[codex_model("test-model")]),
@@ -112,7 +127,22 @@ async def test_models_and_skills_share_client(
         settings,
         models,
     ]
-    agent = CodexTentacle("codex", Octomate(), config=CodexConfig())
+    host = Octomate()
+    agent = CodexTentacle(
+        "codex",
+        host,
+        config=CodexConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
+    )
     shared = agent.ink.client
     client.start.assert_not_awaited()
 
@@ -408,7 +438,22 @@ async def test_cancelled_startup_is_drained_before_close(
         await release.wait()
 
     client.start.side_effect = start
-    agent = CodexTentacle("codex", Octomate(), config=CodexConfig())
+    host = Octomate()
+    agent = CodexTentacle(
+        "codex",
+        host,
+        config=CodexConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
+    )
     shared = agent.ink.client
     startup = asyncio.create_task(agent.__aenter__())
     await asyncio.wait_for(entered.wait(), 1)

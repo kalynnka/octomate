@@ -125,6 +125,16 @@ from octomate.types.permissions import PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.auth import AuthManager
+    from octomate.managers.commands import CommandManager
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.deferred import DeferredActionManager
+    from octomate.managers.gateway import GatewayManager
+    from octomate.managers.project import ProjectManager
+    from octomate.managers.thread import ThreadManager
+    from octomate.managers.user import UserManager
+    from octomate.managers.workspaces import WorkspaceManager
+    from octomate.mcp.base import KnownBearers
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +202,13 @@ class CodexTentacle(AgentTentacle[str, None]):
     config: CodexConfig = field(init=False)
     provider: str = field(init=False)
     ink: CodexInk = field(init=False, repr=False)
+    conversations: ConversationManager = field(init=False, repr=False)
+    deferred_actions: DeferredActionManager = field(init=False, repr=False)
+    workspaces: WorkspaceManager = field(init=False, repr=False)
+    users: UserManager = field(init=False, repr=False)
+    bearers: KnownBearers = field(init=False, repr=False)
+    auth: AuthManager | None = field(init=False, repr=False)
+    gateway_manager: GatewayManager = field(init=False, repr=False)
     live_turns: dict[uuid.UUID, AsyncTurnHandle] = field(
         default_factory=dict, init=False
     )
@@ -245,9 +262,32 @@ class CodexTentacle(AgentTentacle[str, None]):
         octomate: Octomate,
         *,
         config: CodexConfig,
+        commands: CommandManager,
+        projects: ProjectManager,
+        threads: ThreadManager,
+        conversations: ConversationManager,
+        deferred_actions: DeferredActionManager,
+        workspaces: WorkspaceManager,
+        users: UserManager,
+        bearers: KnownBearers,
+        auth: AuthManager | None,
+        gateway_manager: GatewayManager,
         description: str | None = None,
     ) -> None:
-        super().__init__(id=id, octomate=octomate)
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            commands=commands,
+            projects=projects,
+            threads=threads,
+        )
+        self.conversations = conversations
+        self.deferred_actions = deferred_actions
+        self.workspaces = workspaces
+        self.users = users
+        self.bearers = bearers
+        self.auth = auth
+        self.gateway_manager = gateway_manager
         self.config = config
         self.description = description or self.description
         self.api_keys = {}
@@ -262,14 +302,16 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.provider = "openai"
         self.session_locks = SessionLocks()
         self.session_tailer = CodexTranscriptTailer(
-            self.octomate.conversations,
-            self.octomate.threads,
+            self.conversations,
+            self.threads,
             self.session_locks,
         )
         self.session_ingest = CodexHookIngest(
-            self.octomate,
             self.session_tailer,
             self.session_locks,
+            conversations=self.conversations,
+            projects=self.projects,
+            threads=self.threads,
         )
         deployment = self.octomate.config
         self.ink = CodexInk(
@@ -299,8 +341,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         the same 401 before any socket opens. Each route takes `hook_sender` — the
         verified bearer resolved to their own profile, on the guard's single
         per-request check — as the ledger's principal."""
-        verifier = hook_guard(self.octomate.bearers)
-        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
+        verifier = hook_guard(self.bearers)
+        resolve_sender = hook_sender(self.users, self.native_id, verifier)
         router = APIRouter(tags=["codex"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/codex", summary="Codex native-session hook pipe")
@@ -374,9 +416,9 @@ class CodexTentacle(AgentTentacle[str, None]):
         local_client = client is not None and client.host in {"127.0.0.1", "::1"}
         project = None
         if local_client and hello.cwd:
-            holder = self.octomate.projects.resolve(Path(hello.cwd))
-            project = self.octomate.projects.get(holder) if holder is not None else None
-        await self.octomate.threads.ensure(
+            holder = self.projects.resolve(Path(hello.cwd))
+            project = self.projects.get(holder) if holder is not None else None
+        await self.threads.ensure(
             ThreadKey(self.native_id, "thread", hello.session_id),
             project=project,
         )
@@ -547,7 +589,7 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
         """Reuse one MCP key per user, replacing it when its lifetime expires."""
-        auth = self.octomate.auth
+        auth = self.auth
         if user_id is None or auth is None:
             return None
         async with self.api_key_lock:
@@ -575,7 +617,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         """Revoke user credentials at tentacle shutdown."""
         async with self.api_key_lock:
             api_keys, self.api_keys = self.api_keys, {}
-            auth = self.octomate.auth
+            auth = self.auth
             if auth is None:
                 return
             for issued in api_keys.values():
@@ -603,7 +645,7 @@ class CodexTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> CodexTentacle:
         await self.ink.start(
-            invalidate_commands=lambda agent_id: self.octomate.commands.invalidate(
+            invalidate_commands=lambda agent_id: self.commands.invalidate(
                 agent_id=agent_id
             )
         )
@@ -657,7 +699,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 "a Codex approval/question"
             )
         batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
+            action_manager=self.deferred_actions,
             conversation=context.conversation,
             agent_tentacle_id=self.id,
             run_name=context.run_name,
@@ -678,11 +720,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 asyncio.shield(future), self.config.approval_timeout
             )
         except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+            await self.deferred_actions.mark_batch(batch.id, "expired")
             return batch, None
         finally:
             self.pending.pop(batch.id, None)
-        await self.octomate.deferred_actions.resolve_batch(response)
+        await self.deferred_actions.resolve_batch(response)
         return batch, response
 
     async def handle_sdk_request(
@@ -792,7 +834,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         if approved and response is not None and response.allow_session:
             context.session_allowed.add(tool_name)
-            await self.octomate.conversations.grant_session_tool(
+            await self.conversations.grant_session_tool(
                 context.conversation,
                 tool_name,
             )
@@ -920,15 +962,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         name = await self.ink.thread_name(codex_thread)
         if not name or not name.strip():
             return
-        await self.octomate.conversations.set_name(conversation, name)
+        await self.conversations.set_name(conversation, name)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.octomate.threads.get(
-            conversation.thread_id, with_messages=False
-        )
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
         if thread is None:
             raise ValueError(f"unknown thread {conversation.thread_id}")
-        await self.octomate.threads.rename(thread, name)
+        await self.threads.rename(thread, name)
 
     async def _iter_events(
         self,
@@ -964,7 +1004,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(
+            conversation = await self.conversations.get(
                 conversation_id, with_history=False
             )
             if (
@@ -976,7 +1016,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     f"({self.id!r}, {thread_id})"
                 )
         else:
-            conversation = await self.octomate.conversations.ensure(
+            conversation = await self.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
                 with_history=False,
@@ -1065,7 +1105,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         # project — and the workspace is what makes that boundary this run's rather
         # than everyone's checkout.
         project = await self.run_project(conversation.thread_id)
-        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        workspace = self.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
 
         async with contextlib.AsyncExitStack() as resources:
@@ -1081,15 +1121,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             await resources.enter_async_context(
                 self.conversation_locks.hold(str(conversation.id))
             )
-            conversation = await self.octomate.conversations.get(
+            conversation = await self.conversations.get(
                 conversation.id, with_history=False
             )
             # Keep the workspace alive until the native turn finishes.
             await resources.enter_async_context(workspace)
-            self.octomate.commands.invalidate(
-                agent_id=self.id, conversation_id=conversation.id
-            )
-            session = self.octomate.gateway.get(conversation.id)
+            self.commands.invalidate(agent_id=self.id, conversation_id=conversation.id)
+            session = self.gateway_manager.get(conversation.id)
             user_id = (
                 session.user_profile.user_id
                 if session is not None and session.user_profile is not None
@@ -1113,9 +1151,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             codex_thread_id = codex_thread.id
             if conversation.external_id != codex_thread_id:
-                await self.octomate.conversations.set_external_id(
-                    conversation, codex_thread_id
-                )
+                await self.conversations.set_external_id(conversation, codex_thread_id)
             await resources.enter_async_context(self.driving(codex_thread_id))
             self.bridge_contexts[codex_thread_id] = CodexBridgeContext(
                 conversation=conversation,
@@ -1152,7 +1188,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             await self.sync_session_name(conversation, codex_thread)
 
         run_id = str(uuid7())
-        recorded_run = await self.octomate.conversations.record_agent_run(
+        recorded_run = await self.conversations.record_agent_run(
             conversation,
             run_id=run_id,
             messages=accumulator.messages,
@@ -1180,16 +1216,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                     "prompt-source bindings require a persisted user ModelRequest"
                 )
             source_message_ids = list(source_thread_message_ids)
-            await self.octomate.threads.bind_messages(
+            await self.threads.bind_messages(
                 source_message_ids,
                 prompt_request.id,
                 kind="request_source",
                 run_id=recorded_run.id,
             )
-            source_thread = await self.octomate.threads.ensure(
+            source_thread = await self.threads.ensure(
                 source_thread_address or conversation_address
             )
-            await self.octomate.threads.advance_prompt_cursor(
+            await self.threads.advance_prompt_cursor(
                 source_thread,
                 source_message_ids[-1],
             )

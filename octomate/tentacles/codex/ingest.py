@@ -31,7 +31,9 @@ from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.locks import SessionLocks
 
 if TYPE_CHECKING:
-    from octomate import Octomate
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.project import ProjectManager
+    from octomate.managers.thread import ThreadManager
     from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 
 logger = logging.getLogger(__name__)
@@ -44,13 +46,24 @@ class CodexHookIngest:
     server never opens a rollout, so a hook's `transcript_path` is recorded context,
     never something to follow."""
 
+    conversations: ConversationManager
+    projects: ProjectManager
+    threads: ThreadManager
+    tailer: CodexTranscriptTailer
+    locks: SessionLocks
+
     def __init__(
         self,
-        octomate: Octomate,
         tailer: CodexTranscriptTailer,
         locks: SessionLocks | None = None,
+        *,
+        conversations: ConversationManager,
+        projects: ProjectManager,
+        threads: ThreadManager,
     ) -> None:
-        self.octomate = octomate
+        self.conversations = conversations
+        self.projects = projects
+        self.threads = threads
         self.tailer = tailer
         self.locks = locks if locks is not None else SessionLocks()
 
@@ -65,7 +78,7 @@ class CodexHookIngest:
         if (
             event.agent_id is None
             and event.turn_id
-            and await self.octomate.conversations.driven_run(
+            and await self.conversations.driven_run(
                 CODEX_NATIVE_ID, event.session_id, event.turn_id
             )
             is not None
@@ -89,13 +102,11 @@ class CodexHookIngest:
         }:
             async with self.locks.hold(event.session_id):
                 thread = await self.session_thread(event)
-                conversation = await self.octomate.conversations.ensure(
+                conversation = await self.conversations.ensure(
                     thread.id, agent_tentacle_id=CODEX_NATIVE_ID
                 )
-                await self.octomate.conversations.set_name(
-                    conversation, event.session_name
-                )
-                await self.octomate.threads.rename(thread, event.session_name)
+                await self.conversations.set_name(conversation, event.session_name)
+                await self.threads.rename(thread, event.session_name)
         if event.hook_event_name == "Stop":
             await self.on_stop(event, sender)
             return
@@ -150,9 +161,7 @@ class CodexHookIngest:
 
     async def start_session(self, event: CodexHookInput) -> None:
         thread = await self.session_thread(event)
-        await self.octomate.conversations.ensure(
-            thread.id, agent_tentacle_id=CODEX_NATIVE_ID
-        )
+        await self.conversations.ensure(thread.id, agent_tentacle_id=CODEX_NATIVE_ID)
 
     async def session_thread(self, event: CodexHookInput) -> Thread:
         """This session's thread, filed under the project already holding the
@@ -165,9 +174,9 @@ class CodexHookIngest:
         directory, which would attribute every session to whatever project Octomate
         itself was started in.
         """
-        holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
-        project = self.octomate.projects.get(holder) if holder is not None else None
-        return await self.octomate.threads.ensure(
+        holder = self.projects.resolve(Path(event.cwd)) if event.cwd else None
+        project = self.projects.get(holder) if holder is not None else None
+        return await self.threads.ensure(
             ThreadKey(CODEX_NATIVE_ID, "thread", event.session_id),
             project=project,
         )
@@ -178,11 +187,11 @@ class CodexHookIngest:
         thread = await self.session_thread(event)
         # A hook can fire more than once (a retry, a repeated Stop); the per-turn
         # turn_id + direction dedups so a re-fire is a no-op.
-        if event.turn_id and await self.octomate.threads.find_message(
+        if event.turn_id and await self.threads.find_message(
             thread.id, event.turn_id, "inbound"
         ):
             return
-        await self.octomate.threads.record_inbound(
+        await self.threads.record_inbound(
             MessageEvent(
                 tentacle_id=CODEX_NATIVE_ID,
                 message_id=event.turn_id or "",
@@ -198,11 +207,11 @@ class CodexHookIngest:
         self, event: CodexHookInput, answer: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.turn_id and await self.octomate.threads.find_message(
+        if event.turn_id and await self.threads.find_message(
             thread.id, event.turn_id, "outbound"
         ):
             return
-        await self.octomate.threads.record_outbound(
+        await self.threads.record_outbound(
             thread,
             agent_tentacle_id=CODEX_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],
@@ -214,9 +223,7 @@ class CodexHookIngest:
         if not event.turn_id:
             return
         thread = await self.session_thread(event)
-        prompt = await self.octomate.threads.find_message(
-            thread.id, event.turn_id, "inbound"
-        )
+        prompt = await self.threads.find_message(thread.id, event.turn_id, "inbound")
         if prompt is None or prompt.message_text is None:
             return
         messages: list[ModelMessage] = [
@@ -229,10 +236,10 @@ class CodexHookIngest:
             messages.append(
                 ModelResponse(parts=[TextPart(event.last_assistant_message)])
             )
-        conversation = await self.octomate.conversations.ensure(
+        conversation = await self.conversations.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
-        await self.octomate.conversations.record_external_run(
+        await self.conversations.record_external_run(
             conversation,
             run_id=event.turn_id,
             messages=messages,

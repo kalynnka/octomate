@@ -345,7 +345,9 @@ def test_catalog_and_outcome_reject_unknown_states(context: CommandContext) -> N
 async def test_default_hooks_are_unsupported_without_starting_a_turn(
     tmp_path: Path,
 ) -> None:
-    agent = Octomate().connect(FakeAgent())
+    app = Octomate()
+    agent = app.connect(FakeAgent())
+    agent.commands = app.commands
     user_id = uuid7()
     context = CommandContext(
         agent_id=agent.id,

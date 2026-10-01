@@ -99,7 +99,13 @@ def write_rollout(path: Path) -> None:
 def wired(octomate: Octomate) -> tuple[CodexHookIngest, CodexTranscriptTailer]:
     locks = SessionLocks()
     tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads, locks)
-    return CodexHookIngest(octomate, tailer, locks), tailer
+    return CodexHookIngest(
+        tailer,
+        locks,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    ), tailer
 
 
 async def feed_records(

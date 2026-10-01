@@ -24,7 +24,21 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
     in_memory_engine: AsyncEngine, answer: str | None
 ) -> None:
     octomate = Octomate()
-    tentacle = CodexTentacle("codex", octomate, config=CodexConfig(approval_timeout=5))
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(approval_timeout=5),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
     octomate.connect(tentacle)
     octomate.connect(
         TrunklineTentacle(

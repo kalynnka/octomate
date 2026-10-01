@@ -32,7 +32,9 @@ from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.locks import SessionLocks
 
 if TYPE_CHECKING:
-    from octomate import Octomate
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.project import ProjectManager
+    from octomate.managers.thread import ThreadManager
 
     # The injected instance only needs its type here.
     from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
@@ -60,13 +62,24 @@ class ClaudeHookIngest:
     tailer's rebuilt run and the hooks' sketch are always the same run.
     """
 
+    conversations: ConversationManager
+    projects: ProjectManager
+    threads: ThreadManager
+    tailer: ClaudeTranscriptTailer
+    locks: SessionLocks
+
     def __init__(
         self,
-        octomate: Octomate,
         tailer: ClaudeTranscriptTailer,
         locks: SessionLocks | None = None,
+        *,
+        conversations: ConversationManager,
+        projects: ProjectManager,
+        threads: ThreadManager,
     ) -> None:
-        self.octomate = octomate
+        self.conversations = conversations
+        self.projects = projects
+        self.threads = threads
         self.tailer = tailer
         # Serialize a session's events so the existence check and the write can't race
         # (Claude fires the next event without waiting for our commit). Shared with the
@@ -81,7 +94,7 @@ class ClaudeHookIngest:
         if (
             event.agent_id is None
             and event.prompt_id
-            and await self.octomate.conversations.driven_run(
+            and await self.conversations.driven_run(
                 CLAUDE_NATIVE_ID, event.session_id, event.prompt_id
             )
             is not None
@@ -194,16 +207,16 @@ class ClaudeHookIngest:
         assert event.agent_id
         assert event.prompt_id
         thread = await self.session_thread(event)
-        parent = await self.octomate.conversations.ensure(
+        parent = await self.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
-        child = await self.octomate.conversations.ensure(
+        child = await self.conversations.ensure(
             thread.id,
             agent_tentacle_id=CLAUDE_NATIVE_ID,
             subagent_id=event.agent_id,
             parent_conversation_id=parent.id,
         )
-        await self.octomate.conversations.record_external_run(
+        await self.conversations.record_external_run(
             child,
             run_id=f"{event.agent_id}:{event.prompt_id}",
             messages=[
@@ -224,9 +237,7 @@ class ClaudeHookIngest:
         itself arrives only through the stream; nothing here follows the path a hook
         claims."""
         thread = await self.session_thread(event)
-        await self.octomate.conversations.ensure(
-            thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
-        )
+        await self.conversations.ensure(thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID)
 
     async def session_thread(self, event: ClaudeHookInput) -> Thread:
         """This session's thread, filed under the project already holding the directory
@@ -245,9 +256,9 @@ class ClaudeHookIngest:
         # Only a cwd the hook actually carried: `Path("")` is the process's own
         # directory, which would attribute every session to whatever project
         # Octomate itself was started in.
-        holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
-        project = self.octomate.projects.get(holder) if holder is not None else None
-        return await self.octomate.threads.ensure(
+        holder = self.projects.resolve(Path(event.cwd)) if event.cwd else None
+        project = self.projects.get(holder) if holder is not None else None
+        return await self.threads.ensure(
             ThreadKey(
                 channel_tentacle_id=CLAUDE_NATIVE_ID,
                 chat_type="thread",
@@ -263,11 +274,11 @@ class ClaudeHookIngest:
         thread = await self.session_thread(event)
         # A hook can fire more than once (retries, a repeated `Stop`); the per-turn
         # prompt_id + direction dedups so a re-fire is a no-op.
-        if event.prompt_id and await self.octomate.threads.find_message(
+        if event.prompt_id and await self.threads.find_message(
             thread.id, event.prompt_id, "inbound"
         ):
             return
-        await self.octomate.threads.record_inbound(
+        await self.threads.record_inbound(
             MessageEvent(
                 tentacle_id=CLAUDE_NATIVE_ID,
                 message_id=event.prompt_id or "",
@@ -296,9 +307,7 @@ class ClaudeHookIngest:
         if not event.prompt_id:
             return  # no per-turn key: nothing to write a run under
         thread = await self.session_thread(event)
-        prompt = await self.octomate.threads.find_message(
-            thread.id, event.prompt_id, "inbound"
-        )
+        prompt = await self.threads.find_message(thread.id, event.prompt_id, "inbound")
         if prompt is None or prompt.message_text is None:
             # The prompt hook never landed (Octomate came up mid-turn). Leave the turn
             # to the tailer, which rebuilds it from the transcript either way.
@@ -318,10 +327,10 @@ class ClaudeHookIngest:
             messages.append(
                 ModelResponse(parts=[TextPart(content=event.last_assistant_message)])
             )
-        conversation = await self.octomate.conversations.ensure(
+        conversation = await self.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
-        await self.octomate.conversations.record_external_run(
+        await self.conversations.record_external_run(
             conversation,
             run_id=event.prompt_id,
             messages=messages,
@@ -334,11 +343,11 @@ class ClaudeHookIngest:
         self, event: ClaudeHookInput, answer: str, sender: UserProfile
     ) -> None:
         thread = await self.session_thread(event)
-        if event.prompt_id and await self.octomate.threads.find_message(
+        if event.prompt_id and await self.threads.find_message(
             thread.id, event.prompt_id, "outbound"
         ):
             return
-        await self.octomate.threads.record_outbound(
+        await self.threads.record_outbound(
             thread,
             agent_tentacle_id=CLAUDE_NATIVE_ID,
             segments=[MarkdownSegment(data={"text": answer})],

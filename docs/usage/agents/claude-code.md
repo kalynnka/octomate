@@ -44,6 +44,30 @@ client per conversation: a new message while a turn is running interrupts it.
 
 Effort maps directly onto the CLI's scale, except `minimal`, which becomes `low`.
 
+## Runtime commands
+
+The command catalog reads Claude's SDK initialization metadata without sending a
+prompt. It preserves command names, descriptions and argument hints; aliases are
+retained as Claude-specific metadata. Discovery requires an existing workspace
+and uses its model, permission mode, project directories and saved session ID.
+It does not create the workspace or persist an inspection session.
+
+Discovery uses the same safe mode and strict MCP configuration as driven turns.
+Only Octomate's tool-only MCP server can be mounted during a turn, so there are no
+MCP prompts to add to the command catalog. Local commands, skills and plugins stay
+disabled. With SDK 0.2.152 and bundled CLI 2.1.259, a test workspace command remained
+absent even with `setting_sources=["project"]`; it appeared when safe mode was
+removed. Omitting `setting_sources` uses the SDK's normal filesystem defaults;
+safe mode is the restriction here. Loading local commands would require a separate
+configuration opt-in for both discovery and execution, which Octomate does not yet
+expose. See the [SDK command guide](https://code.claude.com/docs/en/agent-sdk/slash-commands).
+
+The SDK caches initialization metadata per client. The host caches the catalog
+until refresh, context changes, eviction or invalidation when a driven turn starts
+or the tentacle starts or stops. Refresh opens a new inspection client to obtain a
+new runtime snapshot. Missing command metadata reports unsupported; an empty
+command list is a successful empty catalog.
+
 ## Approvals and questions
 
 Two bridges, both landing on the same cards:
@@ -79,6 +103,8 @@ relics from transcripts older than the per-file subagent layout.
 
 ## Not yet
 
+- **Command execution through Octomate** is not wired yet; discovery does not make
+  the advertised commands executable through the command API.
 - **Remote hosts.** An `ssh` block is parsed and warned about, not honoured. Runs
   stay local until workspaces can be forked on another machine.
 - **Structured output** returns whatever the CLI produced, validated once, with no
