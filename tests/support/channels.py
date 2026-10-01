@@ -47,8 +47,6 @@ from octomate.tentacles.channel import (
     Chromo,
     DownloadedImage,
     Ink,
-    SubThreadLocation,
-    ThreadLocationVariant,
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.deferred import (
@@ -146,24 +144,21 @@ class RecordingInk(Ink[NativeMessage]):
     # failing at the moment of asking.
     dm_opens: bool = True
 
-    async def thread_locations(
-        self, user_id: str, source_address: ChannelAddress | None = None
-    ) -> list[ThreadLocationVariant]:
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
         if source_address is not None:
             if source_address.channel_thread_id or source_address.chat_type == "thread":
                 return []
-            return [
-                SubThreadLocation(
-                    key=source_address.chat_id,
-                    label="New sub-thread here",
-                    chat_type=source_address.chat_type,
-                    chat_id=source_address.chat_id,
-                    shared=source_address.shared,
-                )
-            ]
-        return [
-            SubThreadLocation(key="", label="New thread", chat_type="dm", chat_id="")
-        ]
+            return [source_address]
+        return [address]
+
+    async def prepare_address(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> ChannelAddress:
+        if address.chat_type == "thread":
+            raise ValueError("A thread cannot contain another thread.")
+        return address
 
     async def inspect(self) -> UserProfile:
         return self.self_profile
@@ -352,6 +347,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
             chat_id=address.chat_id,
             user_id=address.user_id,
             channel_thread_id="hint-thread",
+            shared=address.shared,
         )
 
 

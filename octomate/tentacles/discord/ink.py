@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import TypedDict
 from urllib.parse import urlparse
@@ -19,8 +20,6 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import (
     DownloadedImage,
     Ink,
-    SubThreadLocation,
-    ThreadLocationVariant,
 )
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from octomate.tentacles.feelers.output import IMMessageID
@@ -213,9 +212,9 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
                     "Discord typing hint failed for %s", channel_id, exc_info=True
                 )
 
-    async def thread_locations(
-        self, user_id: str, source_address: ChannelAddress | None = None
-    ) -> list[ThreadLocationVariant]:
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
         """Eligible text channels in the current conversation's server only."""
         if (
             source_address is None
@@ -227,16 +226,16 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
         if not isinstance(parent, discord.TextChannel):
             return []
         guild = parent.guild
-        member = guild.get_member(int(user_id))
+        member = guild.get_member(int(address.user_id))
         if member is None:
             try:
-                member = await guild.fetch_member(int(user_id))
+                member = await guild.fetch_member(int(address.user_id))
             except discord.NotFound:
                 return []
         return [
-            SubThreadLocation(
-                key=str(channel.id),
-                label=f"{guild.name} / #{channel.name} (public thread)",
+            ChannelAddress(
+                channel_tentacle_id=address.channel_tentacle_id,
+                user_id=address.user_id,
                 chat_type="group",
                 chat_id=str(channel.id),
                 shared=True,
@@ -260,6 +259,28 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
             and bot.create_public_threads
             and bot.send_messages_in_threads
         )
+
+    async def prepare_address(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> ChannelAddress:
+        if (
+            address.chat_type != "group"
+            or not address.chat_id
+            or address.channel_thread_id
+        ):
+            raise ValueError("Discord requires a server text channel as parent.")
+        try:
+            destination = await self.resolve_messageable(address.chat_id)
+            if not isinstance(destination, discord.TextChannel):
+                raise ValueError("Discord requires a server text channel as parent.")
+            member = await destination.guild.fetch_member(int(address.user_id))
+        except (discord.HTTPException, TypeError) as error:
+            raise ValueError(
+                "The Discord parent or membership is inaccessible."
+            ) from error
+        if not self.thread_permissions(destination, member):
+            raise ValueError("The requester or bot cannot use this Discord parent.")
+        return replace(address, shared=True)
 
     async def start_public_thread(
         self, chat_id: str, hint_text: str, *, user_id: str | None = None

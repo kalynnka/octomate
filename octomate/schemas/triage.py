@@ -1,12 +1,11 @@
-"""The gateway's vocabulary: spell names, the places a spell can name, the
-landings they resolve to, and the decisions a run leaves."""
+"""Gateway spell names and the decisions a run leaves."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Annotated, Literal, NamedTuple, TypedDict
+from typing import Annotated, Literal, NamedTuple
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
@@ -59,20 +58,11 @@ class SpellTarget(BaseModel):
     """Base of the places a spell's `destination` argument can name.
 
     A variant per place rather than one free string, so a tool definition says what
-    it accepts instead of documenting it in prose. Only the channel one carries a
-    value, and it has to: which channels a person is on is runtime state, and a tool
-    definition that varied with it would fork the provider's prompt cache at the very
-    front of the prefix. So the *shape* is declared here and the *policy* — which of
-    these this surface can actually reach — stays a refusal in the tool body.
-
-    `handle` is what the gateway resolves against, and what `inspect` prints.
+    it accepts instead of documenting it in prose. Channel IDs are runtime values:
+    the schema stays stable while the tool validates reachability and access.
     """
 
     model_config = ConfigDict(frozen=True)
-
-    @property
-    def handle(self) -> str:
-        raise NotImplementedError
 
 
 class HereTarget(SpellTarget):
@@ -80,134 +70,23 @@ class HereTarget(SpellTarget):
 
     kind: Literal["here"] = "here"
 
-    @property
-    def handle(self) -> str:
-        return "here"
-
-
-class ThreadTarget(SpellTarget):
-    """A new sub-thread of this chat."""
-
-    kind: Literal["thread"] = "thread"
-
-    @property
-    def handle(self) -> str:
-        return "thread"
-
 
 class DirectTarget(SpellTarget):
-    """The asking user's direct messages on this channel."""
+    """The asking user's direct messages on a connected channel."""
 
     kind: Literal["dm"] = "dm"
 
-    @property
-    def handle(self) -> str:
-        return "dm"
-
-
-class ChannelTarget(SpellTarget):
-    """A named destination resolved by the gateway and its owning channel."""
-
-    kind: Literal["channel"] = "channel"
-    channel: str = Field(
-        description="The destination handle, copied exactly from `inspect` or the operation menu."
+    channel: str | None = Field(
+        default=None,
+        description="The connected channel ID; omit for this conversation's channel.",
     )
 
-    @property
-    def handle(self) -> str:
-        return self.channel
 
+type SchemeTarget = DirectTarget
+type SendTarget = Annotated[HereTarget | DirectTarget, Field(discriminator="kind")]
 
-# One union per spell, naming exactly the places that spell can go. They differ:
-# `here` is where a summon hands over and a send delivers, and where a teleport
-# stays put only to bind this thread to a project — otherwise it would just be the
-# agent carrying on; `dm` is where a scheme lands, and a summon into someone's
-# direct messages is a scheme by another name.
-type SummonTarget = Annotated[
-    HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
-]
-type TeleportTarget = Annotated[
-    HereTarget | ThreadTarget | ChannelTarget, Field(discriminator="kind")
-]
-type SchemeTarget = Annotated[DirectTarget | ChannelTarget, Field(discriminator="kind")]
-type SendTarget = Annotated[
-    HereTarget | DirectTarget | ChannelTarget, Field(discriminator="kind")
-]
-
-# The three that carry nothing are the same value every time, so they are made once:
-# a spell defaults to one, and `built_in_destinations` takes its handles from them
-# rather than repeating the strings the variants already own.
 HERE_TARGET = HereTarget()
-THREAD_TARGET = ThreadTarget()
 DIRECT_TARGET = DirectTarget()
-
-
-@dataclass(frozen=True)
-class Destination:
-    """Somewhere a turn or a message can be put, named once for every spell.
-
-    The model names a `handle` and nothing else — never a chat id, never a user id.
-    That is what keeps an agent from addressing anyone it likes, and it is why the
-    resolved `address` is built here rather than accepted from the model.
-
-    `address` is what the rest of the system already speaks: `thread_manager.ensure`,
-    `conversations.ensure`, `feelers.*.present` and `open_dm` all take one. Every
-    destination names somewhere that already exists and someone can be reached at,
-    which is why a sub-thread — a place made on the way — is not one of them.
-    """
-
-    handle: str
-    # What this place is, in words, for `inspect` to show.
-    label: str
-    address: ChannelAddress
-    # Who can take a handoff there, when that is not the same list as here: which
-    # agents serve a channel is that channel's own config, so a place on another one
-    # answers with its own. Empty for this run's own surface, whose routes `inspect`
-    # already lists whole, and for a place only `send` and `scheme` can reach.
-    routes: tuple[AgentRoute, ...] = ()
-
-    def __str__(self) -> str:
-        line = f"- {self.handle}: {self.label}"
-        if not self.routes:
-            return line
-        return "\n".join([line, *(f"  {route}" for route in self.routes)])
-
-
-class GatewayDestinations(TypedDict):
-    """Named destinations by spell; local targets and agent routes validate separately."""
-
-    send: list[Destination]
-    scheme: list[Destination]
-    summon: list[Destination]
-    teleport: list[Destination]
-
-
-class HereLanding(BaseModel):
-    """Take over this same conversation, in place — no new surface."""
-
-    kind: Literal["here"] = "here"
-
-
-class ThreadLanding(BaseModel):
-    """Open a new sub-thread of the current chat and land inside it. Carries no
-    address: the node already holds the one the run is on."""
-
-    kind: Literal["thread"] = "thread"
-
-
-class CrossingLanding(BaseModel):
-    """Create an isolated thread at a destination resolved by its owning channel."""
-
-    kind: Literal["crossing"] = "crossing"
-    address: ChannelAddress = Field(
-        description="A channel-owned thread destination. A DM parent may leave "
-        "chat_id empty until opened; a server channel names its existing chat_id."
-    )
-
-
-type SummonLanding = Annotated[
-    HereLanding | ThreadLanding | CrossingLanding, Field(discriminator="kind")
-]
 
 
 class SummonDecision(BaseModel):
@@ -219,10 +98,12 @@ class SummonDecision(BaseModel):
     model: AgentRouteModelName | None = Field(
         description="Selected model, or null to use the harness's native default."
     )
-    destination: SummonLanding = Field(
-        default_factory=ThreadLanding,
-        description="Where the handoff lands, resolved by the gateway. The model names "
-        "a handle; an address is built here, never accepted from it.",
+    destination: ChannelAddress | None = Field(
+        default=None,
+        description="The address to use; None means the current conversation.",
+    )
+    new_thread: bool = Field(
+        default=True, description="Create a thread at the address before handing over."
     )
     effort: ThinkingEffort | None = None
     hint: str
@@ -255,8 +136,8 @@ class SchemeDecision(BaseModel):
     )
     brief: str = Field(max_length=8_000)
     destination: ChannelAddress = Field(
-        description="Which direct messages, resolved by the gateway. The model names a "
-        "handle; the address comes from the identity registry, never from the model."
+        description="Which direct messages, resolved by the gateway using the "
+        "requesting user's linked identity, never a model-supplied user ID."
     )
 
 
@@ -274,15 +155,13 @@ class TeleportDecision(BaseModel):
         description="The driven agent selected to resume the history at the destination."
     )
     hint: str = Field(description="The short, user-facing thread-starter message.")
-    crossing: CrossingLanding | None = Field(
+    destination: ChannelAddress | None = Field(
         default=None,
-        description="The far channel's direct messages when the teleport crosses, "
-        "resolved by the gateway; None keeps it a sub-thread of the current chat.",
+        description="The address to use; None means the current conversation.",
     )
-    here: bool = Field(
-        default=False,
-        description="Stay in this thread, opening nothing. Only a teleport that "
-        "binds a project stays put — otherwise it would be the agent carrying on.",
+    new_thread: bool = Field(
+        default=True,
+        description="Create a thread at the address; false only binds the current thread to a project.",
     )
     project: str | None = Field(
         default=None,
@@ -298,13 +177,15 @@ class TeleportDecision(BaseModel):
     def metadata(self) -> dict[str, str | bool]:
         """What the deferral carries, as plain values: enough for the graph to
         rebuild this decision at its boundary."""
-        crossing = self.crossing
         return {
             "kind": TELEPORT_DEFER_KIND,
             "hint": self.hint,
-            "channel": crossing.address.channel_tentacle_id if crossing else "",
-            "user": crossing.address.user_id if crossing else "",
-            "here": self.here,
+            "destination": TypeAdapter(ChannelAddress)
+            .dump_json(self.destination)
+            .decode()
+            if self.destination is not None
+            else "",
+            "new_thread": self.new_thread,
             "project": self.project or "",
             "ref": self.ref or "",
         }

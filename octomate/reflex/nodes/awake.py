@@ -39,7 +39,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Route | ResumeDeferred | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> Route | ResumeDeferred | Summon | Teleport | Scheme | End[ReflexGraphResult]:
         if isinstance(self.signal, DeferredActionBatchResponse):
             return ResumeDeferred(awake=self.signal)
 
@@ -84,7 +84,8 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     request=TeleportRequest(
                         tool_call_id=None,
                         hint=decision.hint,
-                        crossing=decision.crossing,
+                        destination=decision.destination,
+                        new_thread=decision.new_thread,
                     ),
                     origin=source,
                     agent_id=agent.id,
@@ -102,7 +103,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     None,
                 ),
             )
-            return Handoff(require_new_thread=True)
+            return Summon(require_new_thread=True)
 
         if isinstance(self.signal, GatewayNativeSignal):
             # A native session's spell, already validated at the gateway: enter
@@ -130,7 +131,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ctx.state.decision = decision
             ctx.state.target = source_target
             ctx.state.run_name = "summon"
-            return Handoff()
+            return Summon()
 
         if not self.signal:
             reflex_logfire.info("awake short-circuit: empty signal")
@@ -174,10 +175,10 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         return Route()
 
 
-# `Handoff` and `Scheme` share an import cycle with `react`, which closes it at its
+# `Summon` and `Scheme` share an import cycle with `react`, which closes it at its
 # own bottom — so they only exist once `react` has run. The `route` import above
 # already pulls `react` in, and importing them here, after it, is what `react`
 # itself does for the same reason.
-from octomate.reflex.nodes.handoff import Handoff  # noqa: E402
 from octomate.reflex.nodes.scheme import Scheme  # noqa: E402
+from octomate.reflex.nodes.summon import Summon  # noqa: E402
 from octomate.reflex.nodes.teleport import Teleport  # noqa: E402

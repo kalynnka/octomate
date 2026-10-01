@@ -9,7 +9,6 @@ from pydantic_graph import GraphRunContext
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.triage import CrossingLanding
 from octomate.schemas.user import UserProfile
 
 logger = logging.getLogger(__name__)
@@ -17,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 async def open_crossing(
     ctx: GraphRunContext[ReflexState, ReflexDeps],
-    landing: CrossingLanding,
+    destination: ChannelAddress,
     source_address: ChannelAddress,
     hint_text: str,
     agent_tentacle_id: str,
@@ -27,22 +26,21 @@ async def open_crossing(
     The existing opener is recorded with its requesting user so the destination
     remains visible in their console. No fallback may reuse an existing chat.
     """
-    channel = ctx.deps.channel(landing.address.channel_tentacle_id)
+    channel = ctx.deps.channel(destination.channel_tentacle_id)
     profile = ctx.state.user_profile
     if profile is not None:
-        destinations = await channel.thread_destinations(profile, source_address)
         if profile.channel_tentacle_id != channel.id:
             linked = await ctx.deps.thread_manager.users.profile(
-                channel.id, landing.address.user_id
+                channel.id, destination.user_id
             )
             if linked is not None and linked.user_id == profile.user_id:
                 profile = linked
-            elif not any(one.address == landing.address for one in destinations):
+            elif channel.thread_user_id(profile) != destination.user_id:
                 raise ValueError(
                     "The destination profile is no longer linked to this user."
                 )
     try:
-        opened = await channel.start_thread(landing.address, hint_text)
+        opened = await channel.start_thread(destination, hint_text)
     except Exception:
         logger.warning(
             "Channel %s could not create the destination thread",
@@ -50,6 +48,14 @@ async def open_crossing(
             exc_info=True,
         )
         return None
+    if destination == source_address:
+        await ctx.deps.record_move(
+            source_address,
+            hint_text,
+            agent_tentacle_id=agent_tentacle_id,
+            platform_message_id=opened.channel_thread_id,
+        )
+        return opened
     if profile is not None:
         if profile.channel_tentacle_id != channel.id:
             profile = UserProfile(

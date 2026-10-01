@@ -206,7 +206,7 @@ class MessageSentEvent(DisplayEvent):
     destination: ChannelAddress | None = Field(
         default=None,
         description="None for this conversation. Otherwise the address the gate "
-        "already resolved from the handle the model named, so the consumer delivers "
+        "already resolved from the target the model named, so the consumer delivers "
         "without re-deciding anything and a refused destination never reaches one.",
     )
 

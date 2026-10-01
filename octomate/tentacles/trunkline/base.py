@@ -68,7 +68,7 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.thread import Thread
-from octomate.schemas.triage import HereLanding, SummonDecision
+from octomate.schemas.triage import SummonDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
     ChannelOutput,
@@ -77,8 +77,6 @@ from octomate.tentacles.channel import (
     DownloadedImage,
     IMMessageID,
     Ink,
-    ThreadLocation,
-    ThreadLocationVariant,
     ThreadStrategy,
 )
 from octomate.tentacles.feelers.deferred import ApprovalFeeler, QuestionFeeler
@@ -155,16 +153,26 @@ class TrunklineInk(Ink[WireEvent]):
     async def inspect(self) -> UserProfile:
         return UserProfile(channel_user_id="trunkline", name="Trunkline")
 
-    async def thread_locations(
-        self, user_id: str, source_address: ChannelAddress | None = None
-    ) -> list[ThreadLocationVariant]:
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
         return [
-            ThreadLocation(
-                key="",
-                label="New thread",
-                chat_id=user_id,
+            ChannelAddress(
+                address.channel_tentacle_id, "thread", address.user_id, address.user_id
             )
         ]
+
+    async def prepare_address(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> ChannelAddress:
+        if (
+            address.chat_type != "thread"
+            or address.chat_id != address.user_id
+            or address.shared
+            or address.channel_thread_id
+        ):
+            raise ValueError("Trunkline requires a new thread for its requesting user.")
+        return address
 
     async def get_user_profile(self, user_id: str) -> UserProfile:
         return UserProfile(channel_user_id=user_id, name="Console")
@@ -605,7 +613,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                         raise ValueError("The operation did not reach a destination.")
                     if (
                         isinstance(signal.decision, SummonDecision)
-                        and not isinstance(signal.decision.destination, HereLanding)
+                        and signal.decision.new_thread
                         and result.target.address == signal.source
                     ):
                         raise ValueError("The destination could not create a thread.")

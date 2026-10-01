@@ -21,6 +21,7 @@ from typing import cast
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -34,8 +35,9 @@ from octomate.managers.mcp import McpManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.mcp.server import octomate_mcp
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
-from octomate.schemas.triage import HERE_TARGET, ProjectSummary, TeleportDecision
+from octomate.schemas.triage import ProjectSummary, TeleportDecision
 from octomate.schemas.user import UserProfile
 from tests.support.managers import (
     FakeThreadManager,
@@ -101,6 +103,13 @@ async def a_harness(
             if registered
             else UserProfile(channel_tentacle_id="im", channel_user_id="U-visitor")
         ),
+        conversation_address=ChannelAddress(
+            key.channel_tentacle_id,
+            key.chat_type,
+            key.chat_id,
+            "U1",
+            key.channel_thread_id,
+        ),
         thread_id=thread.id,
         threads=threads,
         workspaces=workspaces,
@@ -124,7 +133,7 @@ async def test_a_visitor_is_refused_the_projects_and_the_move(tmp_path: Path) ->
         await harness.session.inspect("projects")
     with pytest.raises(GatewayRefusal, match="no registered user"):
         await harness.session.teleport(
-            hint="into inky", destination=HERE_TARGET, project="inky"
+            hint="into inky", new_thread=False, project="inky"
         )
 
 
@@ -142,11 +151,15 @@ async def test_a_teleport_into_a_project_validates_it_and_records_the_move(
     harness = await a_harness(tmp_path)
 
     decision = await harness.session.teleport(
-        hint="into inky", destination=HERE_TARGET, project="inky"
+        hint="into inky", new_thread=False, project="inky"
     )
 
     assert decision == TeleportDecision(
-        agent_id="inkling", hint="into inky", here=True, project="inky"
+        agent_id="inkling",
+        hint="into inky",
+        destination=harness.session.conversation_address,
+        new_thread=False,
+        project="inky",
     )
     assert harness.session.decision is decision
     # Nothing bound yet: that is the graph's, on the thread it lands in. The mirror
@@ -164,7 +177,7 @@ async def test_staying_put_without_a_project_is_the_agent_carrying_on(
     harness = await a_harness(tmp_path)
 
     with pytest.raises(GatewayRefusal, match="you carrying on"):
-        await harness.session.teleport(hint="staying", destination=HERE_TARGET)
+        await harness.session.teleport(hint="staying", new_thread=False)
 
 
 async def test_an_unregistered_project_is_refused_with_the_list(
@@ -175,11 +188,9 @@ async def test_an_unregistered_project_is_refused_with_the_list(
     harness = await a_harness(tmp_path)
 
     with pytest.raises(GatewayRefusal, match=r"Available: inky\."):
-        await harness.session.teleport(
-            hint="h", destination=HERE_TARGET, project="kraken"
-        )
+        await harness.session.teleport(hint="h", new_thread=False, project="kraken")
     with pytest.raises(GatewayRefusal, match=r"Available: inky\."):
-        await harness.session.teleport(hint="h", destination=HERE_TARGET, project="off")
+        await harness.session.teleport(hint="h", new_thread=False, project="off")
 
 
 async def test_a_ref_that_does_not_resolve_is_refused_before_any_move(
@@ -191,14 +202,14 @@ async def test_a_ref_that_does_not_resolve_is_refused_before_any_move(
 
     with pytest.raises(GatewayRefusal, match="no 'nope' to start from"):
         await harness.session.teleport(
-            hint="h", destination=HERE_TARGET, project="inky", ref="nope"
+            hint="h", new_thread=False, project="inky", ref="nope"
         )
 
     assert harness.session.decision is None
     # And the branch that was meant can still be named.
     await run_git("branch", "feat/theirs", cwd=inky(harness))
     decision = await harness.session.teleport(
-        hint="h", destination=HERE_TARGET, project="inky", ref="feat/theirs"
+        hint="h", new_thread=False, project="inky", ref="feat/theirs"
     )
     assert decision.ref == "feat/theirs"
 
@@ -210,10 +221,8 @@ async def test_only_a_thread_binds_and_a_dm_is_told_to_open_one(
     # project in it, and the way out is a sub-thread — `destination` `thread`.
     harness = await a_harness(tmp_path, key=ThreadKey("im", "dm", "u1"))
 
-    with pytest.raises(GatewayRefusal, match="`destination` `thread`"):
-        await harness.session.teleport(
-            hint="h", destination=HERE_TARGET, project="inky"
-        )
+    with pytest.raises(GatewayRefusal, match="`new_thread=true`"):
+        await harness.session.teleport(hint="h", new_thread=False, project="inky")
 
     assert not inky(harness).exists()
 
@@ -225,9 +234,7 @@ async def test_a_thread_binds_once(tmp_path: Path) -> None:
     await harness.threads.bind(harness.thread.id, project)
 
     with pytest.raises(GatewayRefusal, match="binds once"):
-        await harness.session.teleport(
-            hint="h", destination=HERE_TARGET, project="inky"
-        )
+        await harness.session.teleport(hint="h", new_thread=False, project="inky")
 
 
 async def test_a_bound_threads_agent_may_dismiss_its_workspace(tmp_path: Path) -> None:
@@ -263,9 +270,7 @@ async def test_a_native_session_may_list_but_neither_move_nor_dismiss(
         ProjectSummary(name="inky", description=None)
     ]
     with pytest.raises(GatewayRefusal, match="requires a new destination"):
-        await harness.session.teleport(
-            hint="h", destination=HERE_TARGET, project="inky"
-        )
+        await harness.session.teleport(hint="h", new_thread=False, project="inky")
     with pytest.raises(GatewayRefusal, match="lives in your terminal"):
         await harness.session.dismiss()
 
@@ -273,13 +278,17 @@ async def test_a_native_session_may_list_but_neither_move_nor_dismiss(
 async def test_a_gateway_built_without_the_managers_is_a_wiring_bug() -> None:
     users, profile = await a_registered_profile()
     session = OctomateSession(
-        channel_routes={}, current_agent_id="inkling", users=users, user_profile=profile
+        channel_routes={},
+        current_agent_id="inkling",
+        users=users,
+        user_profile=profile,
+        conversation_address=ChannelAddress("im", "thread", "room", "U1", "thread"),
     )
 
     with pytest.raises(RuntimeError):
         await session.inspect("projects")
     with pytest.raises(RuntimeError):
-        await session.teleport(hint="h", destination=HERE_TARGET, project="inky")
+        await session.teleport(hint="h", new_thread=False, project="inky")
     with pytest.raises(RuntimeError):
         await session.dismiss()
 
@@ -291,7 +300,9 @@ async def test_inkling_hears_a_refusal_as_a_retry(tmp_path: Path) -> None:
     with pytest.raises(ModelRetry, match="no registered user"):
         await capability.inspect(FAKE_CONTEXT, "projects")
     with pytest.raises(ModelRetry, match="no registered user"):
-        await capability.teleport(FAKE_CONTEXT, "into inky", HERE_TARGET, "inky")
+        await capability.teleport(
+            FAKE_CONTEXT, "into inky", project="inky", new_thread=False
+        )
     with pytest.raises(ModelRetry, match="about no project"):
         await capability.dismiss(FAKE_CONTEXT)
 
@@ -301,14 +312,18 @@ async def test_inkling_defers_the_move_for_the_graph_to_perform(tmp_path: Path) 
     capability = GatewayCapability(session=harness.session)
 
     with pytest.raises(CallDeferred) as deferred:
-        await capability.teleport(FAKE_CONTEXT, "into inky", HERE_TARGET, "inky")
+        await capability.teleport(
+            FAKE_CONTEXT, "into inky", project="inky", new_thread=False
+        )
 
+    assert harness.session.conversation_address is not None
     assert deferred.value.metadata == {
         "kind": "teleport",
         "hint": "into inky",
-        "channel": "",
-        "user": "",
-        "here": True,
+        "destination": TypeAdapter(ChannelAddress)
+        .dump_json(harness.session.conversation_address)
+        .decode(),
+        "new_thread": False,
         "project": "inky",
         "ref": "",
     }
@@ -333,7 +348,12 @@ async def test_an_mcp_runtime_reads_the_list_and_hears_a_refusal_as_a_tool_error
         with pytest.raises(ToolError, match=r"Available: inky\."):
             await client.call_tool(
                 "gateway_teleport",
-                {"hint": "h", "destination": {"kind": "here"}, "project": "kraken"},
+                {
+                    "hint": "h",
+                    "destination": None,
+                    "new_thread": False,
+                    "project": "kraken",
+                },
             )
         with pytest.raises(ToolError, match="about no project"):
             await client.call_tool("gateway_dismiss", {})

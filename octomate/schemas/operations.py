@@ -2,17 +2,14 @@
 
 from pydantic import BaseModel, Field
 
-from octomate.schemas.triage import AgentRoute, SummonTarget
-
-
-class OperationDestination(BaseModel):
-    target: SummonTarget
-    label: str
-    routes: list[AgentRoute] = Field(default_factory=list)
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.triage import AgentRoute
 
 
 class OperationAvailability(BaseModel):
-    destinations: list[OperationDestination] = Field(default_factory=list)
+    destinations: list[ChannelAddress] = Field(default_factory=list)
+    here: ChannelAddress | None = None
+    routes: dict[str, list[AgentRoute]] = Field(default_factory=dict)
     reason: str | None = None
 
 

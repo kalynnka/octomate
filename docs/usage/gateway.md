@@ -35,14 +35,31 @@ First [link your profiles](../installation/accounts.md#link-your-channel-profile
 so Octomate can find you there. Available destinations depend on the channel;
 ask the agent to list them if your requested move is unavailable.
 
-Each channel creates its own destination. Trunkline opens a new private thread,
-including when the source is already in Trunkline. From a Slack or Lark group or
-DM, `thread` opens under that same chat; entry from another platform uses your
-linked DM. Existing threads do not offer nested sub-threads. From a Discord
-server channel, Summon offers eligible text channels in that same server; the
-current channel appears once as `thread`. Discord is not listed on entry from
-another platform because no server context has been selected. Existing Discord DMs and NapCat are not
-Teleport destinations: neither can create an isolated thread.
+Each channel creates a thread at the selected address. Trunkline opens a new
+private thread, including when the source is already in Trunkline. Slack and Lark
+open a sub-thread under the current DM or group, or under your linked DM when
+arriving from another platform. Existing threads cannot contain new sub-threads.
+Discord suggests eligible text channels in the source server, without enumerating
+all servers. Discord DMs and NapCat cannot host an isolated thread.
+
+Teleport and Summon accept a `destination` address and a `new_thread` flag, which
+defaults to true. A null destination uses the current conversation's address.
+The address uses the same fields as the conversation address:
+connected channel, chat type, chat ID, user ID and optional thread ID. Discovery
+suggests addresses; it is not an allowlist. To choose an agent for an address,
+use `inspect` with `reveal="routes"` and its `channel_tentacle_id` as `channel`. The channel validates each submitted
+address before creating anything, and the user must match your linked identity.
+
+A known Discord text channel can be selected directly, including from a private
+conversation on another platform. Its address has `chat_type="group"` and the
+text-channel ID in `chat_id`. Discord checks membership and thread permissions;
+a guild ID, DM, existing thread or forum is refused. Slack and Lark currently
+support their default DM and the current parent, rather than arbitrary chat IDs.
+
+With `new_thread=false`, Summon takes over the current conversation in place.
+Teleport uses that setting only to bind the current thread to a project.
+Neither operation reuses an unrelated existing conversation. A failed thread
+creation does not silently turn into an in-place operation.
 
 Teleport requires independent history copying: driven Codex, Claude and Inkling
 support it; DeepSeek does not yet. In Trunkline, an owned native Codex session can
@@ -71,7 +88,11 @@ See [Projects](projects.md) for choosing a project and starting point.
 The agent can move the task out of the group with a brief for the agent answering
 your DMs. This is **scheme**. Continue in the private conversation that appears;
 it may be handled by a different agent. This option needs a channel with direct
-messages.
+messages. Its destination is `{"kind": "dm"}` for this channel, or
+`{"kind": "dm", "channel": "discord"}` for your linked account on another channel.
+The recipient comes from your linked profile. Moving into the current channel's
+DM requires a shared source; another channel's linked DM can also be selected
+from a private conversation.
 
 ## Send a result without moving the conversation { #send }
 
@@ -79,7 +100,10 @@ messages.
 
 The agent can send progress, a result or a file to a supported destination while
 your current conversation continues. This is **send**; it does not hand the task
-to another agent.
+to another agent. It accepts `{"kind": "here"}` or the same DM targets as Scheme.
+When choosing a DM from an inspected address, use its `channel_tentacle_id` as the
+target's `channel`. Native sessions without a current conversation must name that
+channel explicitly.
 
 ## Delegate a smaller task
 

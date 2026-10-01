@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from pydantic import SecretStr, ValidationError
+from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -22,7 +22,6 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
-from octomate.schemas.triage import ChannelTarget
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.discord.base import DiscordTentacle
@@ -93,24 +92,29 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     options = await client.get(f"{path}/operations")
     assert options.status_code == 200, options.text
     data = options.json()
-    assert [one["target"] for one in data["teleport"]["destinations"]] == [
-        {"kind": "channel", "channel": "trunkline"},
-        {"kind": "channel", "channel": "far"},
+    assert [one["channel_tentacle_id"] for one in data["teleport"]["destinations"]] == [
+        "trunkline",
+        "far",
     ]
-    assert [one["target"]["kind"] for one in data["summon"]["destinations"]] == [
-        "here",
-        "channel",
-        "channel",
-    ]
+    assert data["summon"]["here"]["channel_thread_id"] == case.thread.channel_thread_id
     assert all(
         route["agent_id"] == "second"
-        for dest in data["summon"]["destinations"]
-        for route in dest["routes"]
+        for routes in data["summon"]["routes"].values()
+        for route in routes
     )
     response = await client.post(
         f"{path}/summon",
         json={
-            "destination": {"kind": "here"},
+            "destination": TypeAdapter(ChannelAddress).dump_python(
+                ChannelAddress(
+                    case.thread.channel_tentacle_id,
+                    case.thread.chat_type,
+                    case.thread.chat_id,
+                    str(case.owner.id),
+                    case.thread.channel_thread_id,
+                )
+            ),
+            "new_thread": False,
             "agent_id": "second",
             "model": "test",
             "brief": "Investigate the existing work",
@@ -128,9 +132,18 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     assert updated.latest_handoff.source_conversation_id is not None
 
 
+@pytest.mark.parametrize("explicit_parent", [False, True])
 async def test_teleport_creates_independent_owned_destination(
-    case: Case, client: httpx.AsyncClient
+    case: Case,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit_parent: bool,
 ) -> None:
+    destination = TypeAdapter(ChannelAddress).dump_python(
+        ChannelAddress("far", "dm", "", "alice")
+    )
+    if explicit_parent:
+        destination.update(chat_type="group", chat_id="another-room", shared=True)
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
     case.agent.models["opus"] = "picked-model"
     await case.app.conversations.record_agent_run(
@@ -147,7 +160,7 @@ async def test_teleport_creates_independent_owned_destination(
     response = await client.post(
         f"/api/trunkline/threads/{case.thread.id}/teleport",
         json={
-            "destination": {"kind": "channel", "channel": "far"},
+            "destination": destination,
             "hint": "Work here",
         },
     )
@@ -160,6 +173,10 @@ async def test_teleport_creates_independent_owned_destination(
     ]
     event = next(frame for frame in frames if frame["event_kind"] == "gateway")
     assert event["destination"]["channel_tentacle_id"] == "far"
+    if explicit_parent:
+        assert event["destination"]["chat_id"] == "another-room"
+        assert event["destination"]["shared"]
+        assert case.far.opened_dms == []
     assert case.agent.turns[-1].deferred_results is None
     assert "Current channel address:" in str(case.agent.turns[-1].prompt)
     threads = await case.app.thread_manager.list_threads(user_id=case.owner.id)
@@ -182,7 +199,15 @@ async def test_actions_require_thread_ownership(
     case.app.dependency_overrides[current_user] = lambda: other
     path = f"/api/trunkline/threads/{case.thread.id}"
     assert (await client.get(f"{path}/operations")).status_code == 404
-    body = {"destination": {"kind": "channel", "channel": "far"}, "hint": "go"}
+    body = {
+        "destination": {
+            "channel_tentacle_id": "far",
+            "chat_type": "dm",
+            "chat_id": "",
+            "user_id": "alice",
+        },
+        "hint": "go",
+    }
     if operation == "summon":
         body.update(agent_id="second", model="test", brief="Take over")
     assert (await client.post(f"{path}/{operation}", json=body)).status_code == 404
@@ -196,7 +221,16 @@ async def test_validation_precedes_side_effects(
     invalid = await client.post(
         f"{path}/summon",
         json={
-            "destination": {"kind": "here"},
+            "destination": TypeAdapter(ChannelAddress).dump_python(
+                ChannelAddress(
+                    case.thread.channel_tentacle_id,
+                    case.thread.chat_type,
+                    case.thread.chat_id,
+                    str(case.owner.id),
+                    case.thread.channel_thread_id,
+                )
+            ),
+            "new_thread": False,
             "agent_id": "first",
             "model": "test",
             "brief": "Take over",
@@ -206,7 +240,15 @@ async def test_validation_precedes_side_effects(
     assert invalid.status_code == 409
     invalid = await client.post(
         f"{path}/teleport",
-        json={"destination": {"kind": "channel", "channel": "unlinked"}, "hint": "go"},
+        json={
+            "destination": {
+                "channel_tentacle_id": "unlinked",
+                "chat_type": "dm",
+                "chat_id": "",
+                "user_id": "alice",
+            },
+            "hint": "go",
+        },
     )
     assert invalid.status_code == 409
     assert not case.far.opened_dms
@@ -221,7 +263,15 @@ async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> 
     async with case.app.gateway.driving(session):
         response = await client.post(
             f"/api/trunkline/threads/{case.thread.id}/teleport",
-            json={"destination": {"kind": "channel", "channel": "far"}, "hint": "go"},
+            json={
+                "destination": {
+                    "channel_tentacle_id": "far",
+                    "chat_type": "dm",
+                    "chat_id": "",
+                    "user_id": "alice",
+                },
+                "hint": "go",
+            },
         )
     assert response.status_code == 409
     assert not case.far.opened_dms
@@ -233,7 +283,15 @@ async def test_failed_open_reports_stream_error(
     monkeypatch.setattr(case.far.ink, "open_dm", AsyncMock(return_value=None))
     response = await client.post(
         f"/api/trunkline/threads/{case.thread.id}/teleport",
-        json={"destination": {"kind": "channel", "channel": "far"}, "hint": "go"},
+        json={
+            "destination": {
+                "channel_tentacle_id": "far",
+                "chat_type": "dm",
+                "chat_id": "",
+                "user_id": "alice",
+            },
+            "hint": "go",
+        },
     )
     assert "run_error" in response.text
     assert '"event_kind":"gateway"' not in response.text
@@ -263,7 +321,7 @@ async def test_summon_requires_the_requested_thread_to_open(
     response = await client.post(
         f"/api/trunkline/threads/{thread.id}/summon",
         json={
-            "destination": {"kind": "thread"},
+            "destination": TypeAdapter(ChannelAddress).dump_python(address),
             "agent_id": "second",
             "model": "test",
             "brief": "Investigate in a new thread",
@@ -314,7 +372,15 @@ async def test_unsupported_fork_harness_is_not_offered(
     assert "forking" in options["teleport"]["reason"]
     refused = await client.post(
         f"{path}/teleport",
-        json={"destination": {"kind": "channel", "channel": "far"}, "hint": "go"},
+        json={
+            "destination": {
+                "channel_tentacle_id": "far",
+                "chat_type": "dm",
+                "chat_id": "",
+                "user_id": "alice",
+            },
+            "hint": "go",
+        },
     )
     assert refused.status_code == 409
     assert not case.far.opened_dms
@@ -339,13 +405,18 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []
     assert any(
-        one["target"] == {"kind": "channel", "channel": "trunkline"}
+        one["channel_tentacle_id"] == "trunkline"
         for one in options["summon"]["destinations"]
     )
     response = await client.post(
         f"{path}/teleport",
         json={
-            "destination": {"kind": "channel", "channel": "trunkline"},
+            "destination": {
+                "channel_tentacle_id": "trunkline",
+                "chat_type": "thread",
+                "chat_id": str(case.owner.id),
+                "user_id": str(case.owner.id),
+            },
             "hint": "export",
         },
     )
@@ -368,16 +439,17 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
             channel_tentacle_id="far", chat_type="dm", chat_id="alice", user_id="alice"
         ),
     )
-    assert all(
-        one.handle != "trunkline" for one in (await gateway.destinations())["send"]
+    destinations = await gateway.destinations()
+    destination = ChannelAddress(
+        "trunkline", "thread", str(case.owner.id), str(case.owner.id)
     )
-    [destination] = (await gateway.destinations())["teleport"]
-    assert destination.handle == "trunkline"
-    assert destination.address.chat_type == "thread"
-    assert destination.address.channel_thread_id is None
-    await gateway.teleport(
-        destination=ChannelTarget(channel="trunkline"), hint="Work in browser"
+    assert destination in destinations
+    assert not any(
+        one.channel_tentacle_id == "trunkline" and one.chat_type == "dm"
+        for one in destinations
     )
+    assert await gateway.prepare_address(destination) == destination
+    await gateway.teleport(destination=destination, hint="Work in browser")
     assert gateway.decision is not None
 
 
@@ -399,12 +471,20 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     assert options["teleport"]["destinations"] == []
     assert "No eligible destinations" in options["teleport"]["reason"]
     assert any(
-        one["target"] == {"kind": "channel", "channel": "trunkline"}
+        one["channel_tentacle_id"] == "trunkline"
         for one in options["summon"]["destinations"]
     )
     response = await client.post(
         f"{path}/teleport",
-        json={"destination": {"kind": "channel", "channel": "far"}, "hint": "go"},
+        json={
+            "destination": {
+                "channel_tentacle_id": "far",
+                "chat_type": "dm",
+                "chat_id": "",
+                "user_id": "alice",
+            },
+            "hint": "go",
+        },
     )
     assert response.status_code == 409
     assert not case.far.opened_dms
@@ -461,7 +541,7 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
     )
     options = await session.operations
     assert all(
-        destination.target.handle != "discord"
+        destination.channel_tentacle_id != "discord"
         for destination in options.teleport.destinations + options.summon.destinations
     )
     dm = ChannelAddress(
@@ -489,7 +569,12 @@ async def test_new_trunkline_destination_is_owned_and_independent(
     case: Case, client: httpx.AsyncClient, operation: str
 ) -> None:
     body = {
-        "destination": {"kind": "channel", "channel": "trunkline"},
+        "destination": {
+            "channel_tentacle_id": "trunkline",
+            "chat_type": "thread",
+            "chat_id": str(case.owner.id),
+            "user_id": str(case.owner.id),
+        },
         "hint": "New workspace",
     }
     if operation == "summon":

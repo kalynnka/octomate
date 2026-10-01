@@ -20,8 +20,6 @@ from octomate.telemetry import slack_logfire
 from octomate.tentacles.channel import (
     DownloadedImage,
     Ink,
-    SubThreadLocation,
-    ThreadLocationVariant,
 )
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownChunker
 from octomate.tentacles.slack.schema import (
@@ -82,26 +80,25 @@ class SlackInk(Ink[SlackOutboundMessage]):
             title=profile.get("title") or None,
         )
 
-    async def thread_locations(
-        self, user_id: str, source_address: ChannelAddress | None = None
-    ) -> list[ThreadLocationVariant]:
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
         if source_address is not None:
             if source_address.channel_thread_id or source_address.chat_type == "thread":
                 return []
-            return [
-                SubThreadLocation(
-                    key=source_address.chat_id,
-                    label="New sub-thread here",
-                    chat_type=source_address.chat_type,
-                    chat_id=source_address.chat_id,
-                    shared=source_address.shared,
-                )
-            ]
-        return [
-            SubThreadLocation(
-                key="", label="New sub-thread in DM", chat_type="dm", chat_id=""
+            return [source_address]
+        return [address]
+
+    async def prepare_address(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> ChannelAddress:
+        if address == source_address and address.chat_type in {"dm", "group"}:
+            return address
+        if address.chat_type != "dm" or address.chat_id or address.shared:
+            raise ValueError(
+                "This channel supports the current chat or the user's default DM."
             )
-        ]
+        return address
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The `D…` channel id of the bot's 1:1 with `user_id`.

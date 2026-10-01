@@ -32,8 +32,7 @@ from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.schemas.triage import (
     DIRECT_TARGET,
     HERE_TARGET,
-    ChannelTarget,
-    Destination,
+    DirectTarget,
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
@@ -133,7 +132,7 @@ def test_send_tool_exposes_no_channel_fields() -> None:
     # cached prompt segment, so it would fork the prefix at the front.
     schema = tool.tool_def.parameters_json_schema
     assert isinstance(schema, dict)
-    assert sorted(_destination_kinds(schema)) == ["channel", "dm", "here"]
+    assert sorted(_destination_kinds(schema)) == ["dm", "here"]
     # And no id from this run reaches any of it.
     rendered = json.dumps(schema)
     for runtime_state in ("im", "alice", "room", "lark"):
@@ -264,70 +263,54 @@ async def test_send_to_dm_from_a_private_thread_is_not_refused() -> None:
     assert result.metadata == [MessageSentEvent(segments=segments, destination=None)]
 
 
-async def test_send_reaches_another_channel_the_asker_is_registered_on() -> None:
-    # The cross-channel case: the model names a channel and nothing else. Who is
-    # fixed — whoever asked — and their account there came from the identity
-    # registry when the gate was built, so no user id ever reaches the tool args.
-    lark = Destination(
-        handle="lark",
-        label="their direct messages on Lark",
-        address=ChannelAddress(
-            channel_tentacle_id="lark",
-            chat_type="dm",
-            chat_id="",
-            user_id="ou_alice",
-        ),
-    )
+async def test_send_reaches_another_channel_the_asker_is_registered_on(
+    in_memory_engine: None,
+) -> None:
+    await a_user("luhui", profiles={"im": "alice", "lark": "ou_alice"})
+    users = UserManager()
     capability = _gate()
-    # Seeded rather than computed: this is about resolving a handle, not about
-    # reaching the identity registry, which `test_user` covers.
-    capability.session.destination_cache = {
-        "send": [*capability.session.built_in_destinations, lark],
-        "scheme": [lark],
-        "summon": [],
-        "teleport": [],
-    }
+    capability.session.users = users
+    capability.session.user_profile = await users.ensure_profile(
+        "im", UserProfile(channel_user_id="alice")
+    )
+    capability.session.channels["lark"] = FakeChannelTentacle(
+        "lark", config=ChannelConfig(type="fake", agents=["other"])
+    )
+    # Discovery is not an allowlist: this target has not been enumerated.
+    capability.session.destination_cache = []
     assert capability.toolset is not None
     send = capability.toolset.tools["send"].function
     segments: list[MessageSegment] = [MarkdownSegment(data={"text": "the summary"})]
 
     result = await send(
-        cast(RunContext[Any], None), segments, ChannelTarget(channel="lark")
+        cast(RunContext[Any], None), segments, DirectTarget(channel="lark")
     )
 
     assert result.metadata == [
-        MessageSentEvent(segments=segments, destination=lark.address)
+        MessageSentEvent(
+            segments=segments,
+            destination=ChannelAddress(
+                channel_tentacle_id="lark",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
+            ),
+        )
     ]
-
-    # A channel it was never told about is refused, with the list it could have used.
-    with pytest.raises(ModelRetry, match="No such destination 'napcat'"):
+    with pytest.raises(ModelRetry, match="No connected channel 'napcat'"):
         await send(
-            cast(RunContext[Any], None), segments, ChannelTarget(channel="napcat")
+            cast(RunContext[Any], None), segments, DirectTarget(channel="napcat")
         )
 
 
 async def test_inspect_reveals_where_else_the_asker_can_be_reached() -> None:
     # The only carrier for a per-user list: a tool result. In the schema it would
     # fork the cached tool block, in the instructions the cached system block.
-    lark = Destination(
-        handle="lark",
-        label="their direct messages on Lark",
-        address=ChannelAddress(
-            channel_tentacle_id="lark",
-            chat_type="dm",
-            chat_id="",
-            user_id="ou_alice",
-        ),
-    )
+    lark = ChannelAddress("lark", "dm", "", "ou_123")
     capability = _gate()
-    # Seeded rather than computed: this is about resolving a handle, not about
-    # reaching the identity registry, which `test_user` covers.
-    capability.session.destination_cache = {
-        "send": [*capability.session.built_in_destinations, lark],
-        "scheme": [lark],
-        "summon": [],
-        "teleport": [],
-    }
+    capability.session.destination_cache = [
+        lark,
+    ]
     assert capability.toolset is not None
     inspect_tool = capability.toolset.tools["inspect"].function
 
@@ -367,9 +350,9 @@ async def test_the_gate_works_out_where_else_the_asker_is(
     session.channels = {"im": FakeChannelTentacle(), "lark": lark, "mute": mute}
     session.agents = {"other": cast(Any, object())}
 
-    assert [one.handle for one in (await session.destinations())["send"]] == [
-        "dm",
-        "lark",
+    assert await session.destinations() == [
+        ChannelAddress("im", "dm", "", "alice"),
+        ChannelAddress("lark", "dm", "", "ou_alice"),
     ]
     # Computed once and kept: a gateway lasts one turn.
     assert await session.destinations() is await session.destinations()

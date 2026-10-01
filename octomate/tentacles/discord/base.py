@@ -253,5 +253,6 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         thread_id = await self.ink.start_public_thread(
             address.chat_id or address.user_id,
             hint_text,
+            user_id=address.user_id,
         )
         return replace(address, chat_type="thread", channel_thread_id=thread_id)

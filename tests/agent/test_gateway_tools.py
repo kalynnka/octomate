@@ -14,6 +14,7 @@ from inspect import cleandoc
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
@@ -31,11 +32,9 @@ from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
-    CrossingLanding,
     SchemeDecision,
     SummonDecision,
     TeleportDecision,
-    ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
 from octomate.types.threads import CLAUDE_NATIVE_ID
@@ -52,7 +51,7 @@ CLAUDE_ROUTE = AgentRoute(
 SUMMON_ARGUMENTS = {
     "agent_id": "claude",
     "model": "opus",
-    "destination": {"kind": "thread"},
+    "destination": None,
     "hint": "Working on it",
     "reason": "needs coding",
     "summon": "Please investigate the failing test.",
@@ -196,6 +195,29 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     # The other runtimes bring their own handoff skills.
     assert "Writing a brief" not in mcp
 
+    for instructions in (inkling, mcp):
+        for argument in (
+            "ChannelAddress",
+            "destination=null",
+            "channel=destination.channel_tentacle_id",
+            "new_thread=true",
+            "new_thread=false",
+            "channel_thread_id=null",
+            'kind="here"',
+            'kind="dm"',
+        ):
+            assert f"`{argument}`" in instructions
+        assert "discovery is optional" in instructions
+        assert "known address directly" in instructions
+        for obsolete in (
+            "`destination`: `here`",
+            "`destination` is `thread`",
+            '`destination="here"`',
+            "`parent` chat ID",
+            "Only from a group",
+        ):
+            assert obsolete not in instructions
+
 
 async def test_schemas_carry_no_runtime_state() -> None:
     # The same discipline as the Inkling toolset: tool definitions are cached
@@ -216,12 +238,12 @@ async def test_summon_records_the_decision_it_validated() -> None:
     async with Client(server) as client:
         result = await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
-    assert result.data == "Summoning claude (opus) → thread."
+    assert result.data == "Summoning claude (opus) → im/group/room/-/alice."
     assert session.decision == SummonDecision(
         action="summon",
         agent_id="claude",
         model="opus",
-        destination=ThreadLanding(),
+        destination=session.conversation_address,
         effort=None,
         hint="Working on it",
         reason="needs coding",
@@ -284,7 +306,7 @@ async def test_teleport_records_and_tells_the_runtime_to_wrap_up() -> None:
     assert result.data == TELEPORT_RECORDED
     assert isinstance(session.decision, TeleportDecision)
     assert session.decision.hint == "carrying on in a thread"
-    assert session.decision.crossing is None
+    assert session.decision.destination == session.conversation_address
 
 
 async def test_send_here_delivers_immediately_to_the_conversation() -> None:
@@ -333,8 +355,12 @@ async def test_a_native_session_inspects_only_crossings(
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
     assert routes.data == "- (none)"
-    assert "their direct messages on" in places.data
-    assert await session.destination_handles("summon") == ["im"]
+    assert json.loads(places.data) == [
+        TypeAdapter(ChannelAddress).dump_python(ChannelAddress("im", "dm", "", "alice"))
+    ]
+    assert (await session.operations).summon.destinations == [
+        ChannelAddress("im", "dm", "", "alice")
+    ]
 
 
 async def test_a_native_session_with_no_linked_accounts_inspects_nowhere(
@@ -352,7 +378,7 @@ async def test_a_native_session_with_no_linked_accounts_inspects_nowhere(
     assert session.user_profile is not None
     assert result.data == "- (none)"
     # The truthful dead end: no linked account, so nowhere left to land.
-    assert "`summon` has nowhere left to land, so answer it." in str(refusal.value)
+    assert "requires a destination" in str(refusal.value)
     assert kicks == []
 
 
@@ -385,7 +411,7 @@ async def test_a_native_send_here_is_refused(
 
     assert str(refusal.value) == (
         "This session has no conversation of its own to land a send on — "
-        'name a destination from `inspect` (`reveal="destinations"`).'
+        'use a destination with kind="dm" and an explicit connected channel ID.'
     )
     assert threads.outbounds == []
 
@@ -421,7 +447,7 @@ async def test_a_native_send_delivers_to_a_crossing(
             "gateway_send",
             {
                 "segments": [{"type": "markdown", "data": {"text": "for you"}}],
-                "destination": {"kind": "channel", "channel": "im"},
+                "destination": {"kind": "dm", "channel": "im"},
             },
         )
 
@@ -441,10 +467,18 @@ async def test_a_native_summon_kicks_its_handoff_at_once(
     async with Client(server) as client:
         result = await client.call_tool(
             "gateway_summon",
-            {**SUMMON_ARGUMENTS, "destination": {"kind": "channel", "channel": "im"}},
+            {
+                **SUMMON_ARGUMENTS,
+                "destination": {
+                    "channel_tentacle_id": "im",
+                    "chat_type": "dm",
+                    "chat_id": "",
+                    "user_id": "alice",
+                },
+            },
         )
 
-    assert result.data == "Summoning claude (opus) → im."
+    assert result.data == "Summoning claude (opus) → im/dm//-/alice."
     [signal] = kicks
     assert signal.agent_id == CLAUDE_NATIVE_ID
     assert signal.user_profile is session.user_profile
@@ -452,10 +486,8 @@ async def test_a_native_summon_kicks_its_handoff_at_once(
     assert signal.source.channel_tentacle_id == CLAUDE_NATIVE_ID
     assert isinstance(signal.decision, SummonDecision)
     assert signal.decision.summon == "Please investigate the failing test."
-    assert signal.decision.destination == CrossingLanding(
-        address=ChannelAddress(
-            channel_tentacle_id="im", chat_type="dm", chat_id="", user_id="alice"
-        )
+    assert signal.decision.destination == ChannelAddress(
+        channel_tentacle_id="im", chat_type="dm", chat_id="", user_id="alice"
     )
 
 
@@ -470,7 +502,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
             {
                 "hint": "carrying on with you directly",
                 "brief": "The operator asked for a summary.",
-                "destination": {"kind": "channel", "channel": "im"},
+                "destination": {"kind": "dm", "channel": "im"},
             },
         )
 

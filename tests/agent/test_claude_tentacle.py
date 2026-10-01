@@ -766,7 +766,10 @@ class BindingClaudeClient(FakeClaudeClient):
                     name="mcp__octomate__gateway_teleport",
                     input={
                         "hint": "into inky",
-                        "destination": {"kind": "here"},
+                        "destination": TypeAdapter(ChannelAddress).dump_python(
+                            KEY, mode="json"
+                        ),
+                        "new_thread": False,
                         "project": "inky",
                     },
                 ),
@@ -775,7 +778,11 @@ class BindingClaudeClient(FakeClaudeClient):
         )
         assert BindingClaudeClient.session is not None
         BindingClaudeClient.session.decision = TeleportDecision(
-            agent_id="claude", hint="into inky", here=True, project="inky"
+            agent_id="claude",
+            hint="into inky",
+            destination=KEY,
+            new_thread=False,
+            project="inky",
         )
         yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="bound")])
         await self.released.wait()
@@ -822,7 +829,10 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     assert call.tool_name == "teleport"
     assert output.metadata[call.tool_call_id]["kind"] == "teleport"
     assert output.metadata[call.tool_call_id]["project"] == "inky"
-    assert output.metadata[call.tool_call_id]["here"] is True
+    assert output.metadata[call.tool_call_id]["destination"] == (
+        TypeAdapter(ChannelAddress).dump_json(KEY).decode()
+    )
+    assert output.metadata[call.tool_call_id]["new_thread"] is False
     # Suspended through the one entry the graph resumes from, and recorded as far
     # as it got.
     assert suspender.suspended == [output]

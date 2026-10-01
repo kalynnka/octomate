@@ -24,6 +24,7 @@ from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from claude_agent_sdk.types import Message as ClaudeMessage
+from pydantic import TypeAdapter
 from pydantic_ai import (
     AgentCapability,
     AgentRunResult,
@@ -63,20 +64,15 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
     DISMISS_TOOL_NAME,
-    HERE_TARGET,
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_DEFER_KIND,
     TELEPORT_TOOL_NAME,
-    THREAD_TARGET,
-    ChannelTarget,
     Claim,
-    CrossingLanding,
-    HereLanding,
+    DirectTarget,
     SchemeDecision,
     SchemeTarget,
     SummonDecision,
-    SummonTarget,
 )
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput
@@ -111,9 +107,19 @@ def _teleport_requests(
             "call_teleport": {
                 "kind": TELEPORT_DEFER_KIND,
                 "hint": hint,
-                "channel": destination if crossing else "",
-                "user": "ou_alice" if crossing else "",
-                "here": destination == "here",
+                "destination": TypeAdapter(ChannelAddress)
+                .dump_json(
+                    ChannelAddress(
+                        channel_tentacle_id=destination,
+                        chat_type="dm",
+                        chat_id="",
+                        user_id="ou_alice",
+                    )
+                )
+                .decode()
+                if crossing
+                else "",
+                "new_thread": destination != "here",
                 "project": project or "",
                 "ref": "",
             }
@@ -155,22 +161,7 @@ def scheme_target(
     far = decision.destination.channel_tentacle_id
     if here is not None and far == here.channel_tentacle_id:
         return DIRECT_TARGET
-    return ChannelTarget(channel=far)
-
-
-def summon_target(decision: SummonDecision) -> SummonTarget:
-    """What a model would have named to produce `decision`'s landing.
-
-    A fake configured with a decision still calls the *real* summon tool, which
-    takes the target and resolves the landing itself — so a replay has to run the
-    conversion backwards.
-    """
-    landing = decision.destination
-    if isinstance(landing, CrossingLanding):
-        return ChannelTarget(channel=landing.address.channel_tentacle_id)
-    if isinstance(landing, HereLanding):
-        return HERE_TARGET
-    return THREAD_TARGET
+    return DirectTarget(channel=far)
 
 
 @dataclass
@@ -365,7 +356,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 cast(RunContext[None], None),
                 agent_id=summon_decision.agent_id,
                 model=summon_decision.model,
-                destination=summon_target(summon_decision),
+                destination=summon_decision.destination,
+                new_thread=summon_decision.new_thread,
                 reason=summon_decision.reason,
                 hint=summon_decision.hint,
                 summon=summon_decision.summon,
@@ -449,7 +441,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     cast(RunContext[None], None),
                     agent_id=summon_decision.agent_id,
                     model=summon_decision.model,
-                    destination=summon_target(summon_decision),
+                    destination=summon_decision.destination,
+                    new_thread=summon_decision.new_thread,
                     reason=summon_decision.reason,
                     hint=summon_decision.hint,
                     summon=summon_decision.summon,

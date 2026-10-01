@@ -31,10 +31,9 @@ from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadMessage
 from octomate.schemas.triage import (
     Claim,
-    HereLanding,
     SummonDecision,
-    ThreadLanding,
 )
+from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
@@ -91,6 +90,7 @@ def _event(
         chat_type="thread" if thread_id else chat_type,
         chat_id="team" if chat_type == "group" else "alice",
         user_id=user_id,
+        sender=UserProfile(channel_tentacle_id=tentacle_id, channel_user_id=user_id),
         channel_thread_id=thread_id,
         segments=[TextSegment(data={"text": text})],
     )
@@ -175,7 +175,7 @@ async def test_entry_agent_summons_into_a_sub_thread() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=ThreadLanding(),
+            destination=None,
             reason="needs code work",
             hint="Working on it",
             summon="Please debug this.",
@@ -205,7 +205,8 @@ async def test_summon_here_transmits_current_dm_ownership() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=HereLanding(),
+            destination=None,
+            new_thread=False,
             reason="you own this DM now",
             hint="Taking over",
             summon="Continue with the user directly.",
@@ -236,7 +237,7 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=ThreadLanding(),
+            destination=None,
             reason="needs code work",
             hint="Working on it",
             summon="Please debug this.",
@@ -270,7 +271,7 @@ async def test_owner_survives_cold_manager_reload() -> None:
                 action="summon",
                 agent_id="claude",
                 model="opus",
-                destination=ThreadLanding(),
+                destination=None,
                 reason="needs code work",
                 hint="Working on it",
                 summon="Please debug this.",
@@ -307,7 +308,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
             action="summon",
             agent_id="first",
             model="test",
-            destination=ThreadLanding(),
+            destination=None,
             reason="needs first pass",
             hint="First pass",
             summon="First agent brief.",
@@ -320,7 +321,8 @@ async def test_chained_summon_updates_thread_owner() -> None:
             action="summon",
             agent_id="second",
             model="test",
-            destination=HereLanding(),
+            destination=None,
+            new_thread=False,
             reason="needs second pass",
             hint="Second pass",
             summon="Second agent brief.",
@@ -378,7 +380,7 @@ async def test_teleport_forks_history_into_a_sub_thread_and_resumes() -> None:
     # agent short-circuits react, so it records no messages to fork here.)
 
 
-async def test_teleport_on_main_only_channel_stays_put() -> None:
+async def test_teleport_on_main_only_channel_refuses_the_move() -> None:
     octomate = Octomate()
     entry = FakeAgent(
         reception_teleport="try to move",
@@ -389,11 +391,12 @@ async def test_teleport_on_main_only_channel_stays_put() -> None:
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="do it")]))
+    with pytest.raises(ValueError, match="nothing was teleported"):
+        await octomate.kick(UserMessageSignal([_event(text="do it")]))
 
     assert channel.sub_threads == []
     assert entry.turns[-1].address == _key()
-    assert channel.sent[-1][2][0]["text"] == "stayed here"
+    assert len(entry.turns) == 1
 
 
 async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> None:
@@ -406,7 +409,8 @@ async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> No
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=HereLanding(),
+            destination=None,
+            new_thread=False,
             reason="needs work",
             hint="needs work",
             summon="Please investigate this in main.",
@@ -450,7 +454,7 @@ async def test_reception_model_is_resolved_from_agent() -> None:
             action="summon",
             agent_id="claude",
             model="openai:gpt-4o-mini",
-            destination=ThreadLanding(),
+            destination=None,
             reason="needs stronger model",
             hint="needs stronger model",
             summon="Use the stronger model.",
@@ -628,7 +632,7 @@ async def test_a_summon_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=ThreadLanding(),
+            destination=None,
             reason="needs code work",
             hint="Working on it",
             summon="Please debug this.",

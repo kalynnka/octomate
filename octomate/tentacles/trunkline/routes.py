@@ -69,7 +69,6 @@ from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey, ThreadMessage
-from octomate.schemas.triage import SummonTarget, TeleportTarget
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline.base import (
@@ -129,12 +128,14 @@ class DirectiveBody(BaseModel):
 
 
 class TeleportBody(TypedDict):
-    destination: TeleportTarget
+    destination: ChannelAddress
+    new_thread: NotRequired[bool]
     hint: Annotated[str, Field(min_length=1, max_length=1_000)]
 
 
 class SummonBody(TypedDict):
-    destination: SummonTarget
+    destination: ChannelAddress
+    new_thread: NotRequired[bool]
     agent_id: str
     model: str
     brief: Annotated[str, Field(min_length=1, max_length=8_000)]
@@ -280,7 +281,7 @@ def build_trunkline_router(
         session: Annotated[OctomateSession, Depends(thread_gateway)],
     ) -> StreamingResponse:
         try:
-            await session.teleport(destination=body["destination"], hint=body["hint"])
+            await session.teleport(**body)
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
         return channel.stream_kick(session.thread_operation())
@@ -295,6 +296,7 @@ def build_trunkline_router(
                 agent_id=body["agent_id"],
                 model=body["model"],
                 destination=body["destination"],
+                new_thread=body.get("new_thread", True),
                 hint=body["hint"],
                 reason="Summon requested from Trunkline",
                 summon=body["brief"],

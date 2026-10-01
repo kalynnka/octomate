@@ -1,5 +1,5 @@
 """The collapsed dispatch graph at the node level: Awake, Route, React,
-Handoff, and ResumeDeferred — driven with the canonical fake
+Summon, and ResumeDeferred — driven with the canonical fake
 agent/channel/managers. End-to-end behavior lives in test_dispatch.py."""
 
 from __future__ import annotations
@@ -68,11 +68,7 @@ from octomate.schemas.triage import (
     INSPECT_TOOL_NAME,
     AgentRoute,
     Claim,
-    CrossingLanding,
-    HereLanding,
     SchemeDecision,
-    SummonLanding,
-    ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
@@ -234,14 +230,16 @@ def _deferred_results() -> DeferredToolResults:
 
 def _summon(
     agent_id: str = "other",
-    destination: SummonLanding | None = None,
+    destination: ChannelAddress | None = None,
+    new_thread: bool = True,
     effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
     return SummonDecision(
         action="summon",
         agent_id=agent_id,
         model="test",
-        destination=destination or ThreadLanding(),
+        destination=destination,
+        new_thread=new_thread,
         effort=effort,
         reason="needs work",
         hint="Working on it",
@@ -538,7 +536,7 @@ async def test_reception_mounts_gate_capability() -> None:
     assert routes == []
     # One list for every spell: this run is a DM, so `dm` is not among them — it is
     # already where it would go — and nothing links this asker to another channel.
-    assert [one.handle for one in places] == ["here"]
+    assert places == [address]
 
 
 async def test_non_stream_reception_presents_only_the_final_output() -> None:
@@ -909,11 +907,11 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
 
 async def test_summon_here_takes_over_current_conversation() -> None:
     # A `here` summon materializes no new surface: the summoned agent runs in the
-    # current conversation (Handoff's here branch).
+    # current conversation (Summon's here branch).
     address = _key()
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination=HereLanding()),
+        reception_summon=_summon(agent_id="second", destination=None, new_thread=False),
         allow_reception_run=True,
     )
     second = FakeAgent(
@@ -946,7 +944,7 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     thread = _thread(address)
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination=HereLanding()),
+        reception_summon=_summon(agent_id="second", destination=None, new_thread=False),
         allow_reception_run=True,
     )
     second = FakeAgent(
@@ -1256,7 +1254,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     assert second.turns == []
 
 
-async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
+async def test_summon_thread_refuses_handoff_on_sub_thread_failure() -> None:
     class FailingSubThreadChannel(FakeChannelTentacle):
         async def start_sub_thread(
             self, address: ChannelAddress, hint_text: str
@@ -1266,7 +1264,7 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
     address = _key()
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination=ThreadLanding()),
+        reception_summon=_summon(agent_id="second", destination=None),
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
@@ -1286,7 +1284,7 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
 
     assert not isinstance(result, DeferredResult)
     assert result.target.mode == "main"
-    assert second.turns[0].address == address
+    assert second.turns == []
 
 
 async def test_summon_thread_leaves_a_group_main_unclaimed_when_the_open_fails() -> (
@@ -1309,7 +1307,7 @@ async def test_summon_thread_leaves_a_group_main_unclaimed_when_the_open_fails()
     address = _group_key()
     entry = FakeAgent(
         id="other",
-        reception_summon=_summon(agent_id="second", destination=ThreadLanding()),
+        reception_summon=_summon(agent_id="second", destination=None),
         allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
@@ -1347,13 +1345,11 @@ async def _crossing_state(
     users = im.octomate.users
     await a_user("luhui", profiles={"im": "alice", "far": "ou_alice"})
     address = _group_key()
-    far_landing = CrossingLanding(
-        address=ChannelAddress(
-            channel_tentacle_id="far",
-            chat_type="dm",
-            chat_id="",
-            user_id="ou_alice",
-        )
+    far_landing = ChannelAddress(
+        channel_tentacle_id="far",
+        chat_type="dm",
+        chat_id="",
+        user_id="ou_alice",
     )
     entry = FakeAgent(
         id="other",
@@ -1518,13 +1514,11 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
             action="summon",
             agent_id="second",
             model="test",
-            destination=CrossingLanding(
-                address=ChannelAddress(
-                    channel_tentacle_id="far",
-                    chat_type="dm",
-                    chat_id="",
-                    user_id="ou_alice",
-                )
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
             ),
             reason="needs work",
             hint="Working on it",
@@ -1616,7 +1610,7 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     assert im.recording_ink.sent[-1][2][0]["text"] == "carrying on over there"
 
 
-async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
+async def test_a_teleport_crossing_that_never_opens_refuses_the_move() -> None:
     address = _key()
     entry = FakeAgent(
         id="other",
@@ -1634,21 +1628,19 @@ async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
     )
     target = _source_target(address)
 
-    result = await _run(
-        React(),
-        state=ReflexState(
-            source_target=target,
-            target=target,
-            decision=_summon(),
-            thread=_thread(address),
-        ),
-        deps=_summon_deps(im, entry, second, far),
-    )
+    with pytest.raises(ValueError, match="nothing was teleported"):
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=_thread(address),
+            ),
+            deps=_summon_deps(im, entry, second, far),
+        )
 
-    # The deferral still has to be resolved or the run hangs on it: stay put and
-    # answer here, with nothing forked anywhere.
-    assert not isinstance(result, DeferredResult)
-    assert entry.turns[-1].address == address
+    assert len(entry.turns) == 1
     assert far.sub_threads == []
 
 

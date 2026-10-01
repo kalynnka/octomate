@@ -117,32 +117,33 @@ gateway consults before offering a spell. Claim the SDK's loggers through
 an acknowledgement deadline, run `ingest` as a detached task; a turn parked on an
 approval must not hold the ack.
 
-For gateway destinations, implement `Ink.thread_locations(user_id, source_address)`. Return zero,
-one, or many `ThreadLocationVariant` records after checking platform access. Discovery
-must not open a chat or post a message; the default returns no locations. Each
-record is either a `ThreadLocation` for an independent thread or a
-`SubThreadLocation` whose `chat_type` identifies its DM or group parent. Both
-carry a label, chat ID and shared-history flag. The location key stays
-stable within the channel regardless of list order or size; an empty key names
-the default location. The source address is the current `ChannelAddress` when it belongs
-to this channel; otherwise it is `None`. Slack and Lark use the current DM or group,
-or the linked DM on entry from elsewhere. Discord requires a server-channel
-context and lists eligible text channels in that server only. Existing threads
-have no nested sub-thread locations. Trunkline offers standalone private threads.
+Gateway moves use `ChannelAddress` throughout. Implement
+`Ink.suggest_addresses(address, source_address)` for optional discovery. The first
+address carries the connected channel and linked user; the source is the current
+conversation on this channel, or `None` when arriving from elsewhere. Return
+addresses without creating chats or posting. The gateway caches these suggestions
+per session; execution does not require discovery.
 
-The base tentacle's `thread_destinations(profile, source_address)` translates these records into
-`Destination` addresses and handles (`channel-id/location-key`, or just
-`channel-id` for the default). `thread_user_id(profile)` resolves the linked
-platform identity; Trunkline uses the registered Octomate identity instead.
-The gateway exposes the current parent location once, as `thread`, using the same
-discovery result as named destinations. It owns agent eligibility and history transfer.
+Implement `Ink.prepare_address(address, source_address)` to validate one address
+and return its platform-verified form. Check the parent type, requester and bot
+access, and shared visibility. Refuse an unsupported address without opening a
+thread. The base implementation refuses. `ChannelTentacle.prepare_address` checks
+channel ownership and prevents nesting, then delegates platform work to Ink.
+The gateway verifies the address's user against the requesting user's linked
+identity through `thread_user_id(profile)`; Trunkline uses their registered
+Octomate identity.
 
-`start_thread(address, hint)` creates the selected isolated thread. The default
-opens an unresolved DM through Ink before calling `start_sub_thread` once.
-Override it for platform-specific creation: Trunkline creates a top-level thread;
-Discord rechecks membership and permissions before opening. Keep client lookups,
+Slack and Lark support the current DM or group and the linked user's unresolved
+DM. Discord validates a text-channel address directly; its discovery lists only
+the source server's eligible channels. Trunkline prepares an independent private
+thread. No target, location or landing wrapper is needed between these calls.
+
+`start_thread(address, hint)` creates a thread at the prepared address and returns
+its final address. The default resolves an empty DM `chat_id` through Ink before
+calling `start_sub_thread` once. Trunkline creates a top-level thread; Discord
+rechecks membership and permissions before opening. Keep client lookups,
 permissions and API calls in Ink. Refuse a failed open rather than returning an
-existing conversation.
+existing conversation. Both local and cross-channel gateway moves use this path.
 
 `ingest` is the base class's and does everything from decoding to kicking the
 graph, including the redelivery guard and the mention gate.

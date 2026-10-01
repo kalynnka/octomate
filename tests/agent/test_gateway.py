@@ -4,7 +4,7 @@ from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.settings import ThinkingEffort
@@ -13,28 +13,25 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.config import ChannelConfig
 from octomate.config.agents import AgentRouteModelName
-from octomate.managers.gateway import GatewayManager, OctomateSession, PrivateBlocker
+from octomate.managers.gateway import (
+    GatewayManager,
+    GatewayRefusal,
+    OctomateSession,
+    PrivateBlocker,
+)
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
-    HERE_TARGET,
     INSPECT_TOOL_NAME,
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
-    THREAD_TARGET,
     AgentRoute,
-    ChannelTarget,
     Claim,
-    CrossingLanding,
-    Destination,
-    HereLanding,
     SchemeDecision,
     SummonDecision,
-    SummonLanding,
-    SummonTarget,
-    ThreadLanding,
+    TeleportDecision,
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
@@ -117,14 +114,16 @@ def _blocked(reason: PrivateBlocker) -> GatewayCapability:
 def _decision(
     agent_id: str = "claude",
     model: AgentRouteModelName = "opus",
-    destination: SummonLanding | None = None,
+    destination: ChannelAddress | None = None,
+    new_thread: bool = True,
     effort: ThinkingEffort | None = None,
 ) -> SummonDecision:
     return SummonDecision(
         action="summon",
         agent_id=agent_id,
         model=model,
-        destination=destination or ThreadLanding(),
+        destination=destination,
+        new_thread=new_thread,
         effort=effort,
         reason="needs coding",
         hint="Working on it",
@@ -167,7 +166,7 @@ def test_summon_decision_defaults_to_thread_destination() -> None:
             hint="Working on it",
             summon="Please investigate the failing test.",
         ).destination
-        == ThreadLanding()
+        is None
     )
 
 
@@ -180,13 +179,15 @@ async def test_summon_capability_accepts_exact_route() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination=THREAD_TARGET,
+        destination=None,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
     )
 
-    assert capability.decision == _decision()
+    assert capability.decision == _decision(
+        destination=capability.session.conversation_address
+    )
 
 
 def test_gate_instruction_explains_each_spell_in_plain_words() -> None:
@@ -223,11 +224,7 @@ async def test_inspect_tool_returns_other_routes() -> None:
             claim=CLAUDE_CLAIM,
         )
     ]
-    # The same list every spell resolves against — built-ins, then anywhere the
-    # asker is registered. A sub-thread is not among them: `summon` names one
-    # through its own literal, and a resolved handle is always somewhere a person
-    # can be delivered to.
-    assert [one.handle for one in places] == ["here", "dm"]
+    assert places == [ChannelAddress("im", "dm", "", "alice")]
 
 
 async def test_inspect_computes_only_the_facet_it_was_asked_for() -> None:
@@ -255,10 +252,8 @@ async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) 
 
     first = await session.destinations()
 
-    assert first == {"send": [], "scheme": [], "summon": [], "teleport": []}
+    assert first == []
     assert await session.destinations() is first
-    assert await session.destination_handles("summon") == ["here", "thread"]
-    assert await session.destination_handles("teleport") == ["thread"]
     assert await session.inspect("destinations") == []
     await session.operations
     discover.assert_awaited_once_with(session.user_profile)
@@ -267,30 +262,22 @@ async def test_destination_discovery_is_cached(monkeypatch: pytest.MonkeyPatch) 
 @pytest.mark.parametrize("agent_id", ["codex", "claude", "inkling"])
 async def test_native_summon_accepts_any_distinct_driven_agent(agent_id: str) -> None:
     route = AgentRoute(agent_id=agent_id, model="test", claim=CLAUDE_CLAIM)
-    destination = Destination(
-        handle="far",
-        label="new thread",
-        address=ChannelAddress(
-            channel_tentacle_id="far", chat_type="dm", chat_id="alice", user_id="alice"
-        ),
-        routes=(route,),
-    )
     session = OctomateSession(
-        channel_routes={}, current_agent_id=CODEX_NATIVE_ID, native=True
+        channel_routes={"far": [route]},
+        current_agent_id=CODEX_NATIVE_ID,
+        native=True,
+        channels={"far": FakeChannelTentacle("far")},
+        user_profile=UserProfile(channel_tentacle_id="far", channel_user_id="alice"),
     )
-    session.destination_cache = {
-        "send": [],
-        "scheme": [],
-        "summon": [destination],
-        "teleport": [],
-    }
 
     operations = await session.operations
-    assert operations.summon.destinations[0].routes == [route]
+    assert operations.summon.routes["far"] == [route]
     await session.summon(
         agent_id=agent_id,
         model="test",
-        destination=ChannelTarget(channel="far"),
+        destination=ChannelAddress(
+            channel_tentacle_id="far", chat_type="dm", chat_id="", user_id="alice"
+        ),
         hint="Continue",
         reason="replacement",
         summon="Carry on from this brief.",
@@ -309,7 +296,7 @@ async def test_summon_capability_rejects_self_summon() -> None:
             FAKE_CONTEXT,
             agent_id="inkling",
             model="opus",
-            destination=THREAD_TARGET,
+            destination=None,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -336,7 +323,7 @@ async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> N
             FAKE_CONTEXT,
             agent_id=agent_id,
             model=model,
-            destination=THREAD_TARGET,
+            destination=None,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -352,14 +339,16 @@ async def test_summon_carries_a_claimed_effort() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination=THREAD_TARGET,
+        destination=None,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
         effort="high",
     )
 
-    assert capability.decision == _decision(effort="high")
+    assert capability.decision == _decision(
+        destination=capability.session.conversation_address, effort="high"
+    )
 
 
 async def test_summon_refuses_an_unclaimed_effort() -> None:
@@ -372,7 +361,7 @@ async def test_summon_refuses_an_unclaimed_effort() -> None:
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=THREAD_TARGET,
+            destination=None,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -419,12 +408,13 @@ async def test_summon_here_refused_when_disallowed() -> None:
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    with pytest.raises(ModelRetry, match="group's main channel"):
+    with pytest.raises(ModelRetry, match="Only the current conversation"):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=HERE_TARGET,
+            destination=None,
+            new_thread=False,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -441,13 +431,16 @@ async def test_summon_here_allowed_on_bounded_surface() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination=HERE_TARGET,
+        destination=None,
+        new_thread=False,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
     )
 
-    assert capability.decision == _decision(destination=HereLanding())
+    assert capability.decision == _decision(
+        destination=capability.session.conversation_address, new_thread=False
+    )
 
 
 async def test_summon_tool_records_decision() -> None:
@@ -459,14 +452,16 @@ async def test_summon_tool_records_decision() -> None:
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination=THREAD_TARGET,
+        destination=None,
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
     )
 
-    assert result == "Summoning claude (opus) → thread."
-    assert capability.decision == _decision()
+    assert result == "Summoning claude (opus) → im/group/room/-/alice."
+    assert capability.decision == _decision(
+        destination=capability.session.conversation_address
+    )
 
 
 async def test_teleport_defers_the_run() -> None:
@@ -498,31 +493,20 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
     assert capability.toolset is not None
     teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
 
-    with pytest.raises(ModelRetry, match="nowhere left to land"):
+    with pytest.raises(ModelRetry, match=r"cannot contain|Only the current"):
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
 
 
-def test_each_spell_declares_only_the_places_it_goes() -> None:
-    """The schema is the refusal for a place a spell never goes, so the body never
-    has to be. `here` is where a summon hands over and a send delivers, and where
-    a teleport stays put only to bind a project — the body refuses it without one;
-    `dm` is what a scheme means, and a summon into someone's direct messages is a
-    scheme by another name."""
+def test_move_spells_use_addresses_and_explicit_creation_intent() -> None:
     capability = _capability()
     assert capability.toolset is not None
-
-    assert _destination_kinds(capability, SUMMON_TOOL_NAME) == [
-        "channel",
-        "here",
-        "thread",
-    ]
-    assert _destination_kinds(capability, TELEPORT_TOOL_NAME) == [
-        "channel",
-        "here",
-        "thread",
-    ]
-    assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["channel", "dm"]
-    assert _destination_kinds(capability, SEND_TOOL_NAME) == ["channel", "dm", "here"]
+    for name in [SUMMON_TOOL_NAME, TELEPORT_TOOL_NAME]:
+        schema = capability.toolset.tools[name].tool_def.parameters_json_schema
+        assert "ChannelAddress" in schema["$defs"]
+        assert schema["properties"]["new_thread"]["default"] is True
+        assert not any(key.endswith("Target") for key in schema["$defs"])
+    assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["dm"]
+    assert _destination_kinds(capability, SEND_TOOL_NAME) == ["dm", "here"]
 
 
 @pytest.mark.parametrize(
@@ -542,12 +526,12 @@ async def test_summon_thread_refused_where_no_sub_thread_can_be_opened(
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    with pytest.raises(ModelRetry, match="No sub-thread to open here"):
+    with pytest.raises(ModelRetry, match="cannot contain"):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=THREAD_TARGET,
+            destination=None,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -613,7 +597,9 @@ async def test_summon_crosses_to_a_sub_thread_of_their_dms_elsewhere(
         FAKE_CONTEXT,
         agent_id="claude",
         model="opus",
-        destination=ChannelTarget(channel="far"),
+        destination=ChannelAddress(
+            channel_tentacle_id="far", chat_type="dm", chat_id="", user_id="ou_alice"
+        ),
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
@@ -621,10 +607,10 @@ async def test_summon_crosses_to_a_sub_thread_of_their_dms_elsewhere(
 
     assert isinstance(capability.decision, SummonDecision)
     landing = capability.decision.destination
-    assert isinstance(landing, CrossingLanding)
-    assert landing.address.channel_tentacle_id == "far"
-    assert landing.address.user_id == "ou_alice"
-    assert landing.address.chat_id == ""
+    assert isinstance(landing, ChannelAddress)
+    assert landing.channel_tentacle_id == "far"
+    assert landing.user_id == "ou_alice"
+    assert landing.chat_id == ""
 
 
 async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
@@ -642,13 +628,21 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    assert (await capability.session.destinations())["summon"] == []
-    with pytest.raises(ModelRetry, match="No destination 'far'"):
+    assert all(
+        one.channel_tentacle_id != "far"
+        for one in (await capability.session.operations).summon.destinations
+    )
+    with pytest.raises(ModelRetry, match="cannot contain a thread"):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=ChannelTarget(channel="far"),
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
+            ),
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -671,15 +665,15 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
 
     # `codex` is on no route here, and `inspect` says where it is instead.
     assert only_far not in capability.session.other_routes
-    assert [
-        one.routes for one in (await capability.session.destinations())["summon"]
-    ] == [(only_far,)]
+    assert (await capability.session.operations).summon.routes["far"] == [only_far]
 
     await summon(
         FAKE_CONTEXT,
         agent_id="codex",
         model="opus",
-        destination=ChannelTarget(channel="far"),
+        destination=ChannelAddress(
+            channel_tentacle_id="far", chat_type="dm", chat_id="", user_id="ou_alice"
+        ),
         reason="needs coding",
         hint="Working on it",
         summon="Please investigate the failing test.",
@@ -693,7 +687,12 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=ChannelTarget(channel="far"),
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
+            ),
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -714,11 +713,24 @@ async def test_teleport_crosses_only_out_of_a_conversation_nobody_else_reads(
     under this person's name alone — so the crossing is not offered at all, while
     the group's own sub-thread still is."""
     capability = await _crossable(shape, far_routes=(INKLING_ROUTE,))
-    assert await capability.session.destination_handles("teleport") == destinations
-    places = await capability.session.destinations()
-    assert [one.handle for one in places["summon"]] == ["far"]
-    assert [one.handle for one in places["teleport"]] == destinations[1:]
-    assert all(one.handle != "here" for one in places["scheme"])
+    menu = await capability.session.operations
+    assert menu.teleport.destinations == [
+        capability.session.conversation_address
+        if target == "thread"
+        else ChannelAddress(
+            channel_tentacle_id=target, chat_type="dm", chat_id="", user_id="ou_alice"
+        )
+        for target in destinations
+    ]
+    # Discovery is not a policy whitelist: a shared source may inspect the far
+    # channel even though its history cannot teleport there.
+    assert any(
+        one
+        == ChannelAddress(
+            channel_tentacle_id="far", chat_type="dm", chat_id="", user_id="ou_alice"
+        )
+        for one in await capability.session.destinations()
+    )
 
 
 async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
@@ -732,7 +744,14 @@ async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
 
     with pytest.raises(ModelRetry, match="does not run you \\(inkling\\)"):
         await teleport(
-            FAKE_CONTEXT, hint="carrying on", destination=ChannelTarget(channel="far")
+            FAKE_CONTEXT,
+            hint="carrying on",
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
+            ),
         )
 
 
@@ -745,25 +764,170 @@ async def test_teleport_defers_a_crossing_with_the_far_account_named(
 
     with pytest.raises(CallDeferred) as deferred:
         await teleport(
-            FAKE_CONTEXT, hint="carrying on", destination=ChannelTarget(channel="far")
+            FAKE_CONTEXT,
+            hint="carrying on",
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="dm",
+                chat_id="",
+                user_id="ou_alice",
+            ),
         )
 
-    # Two plain strings, which is all the far end needs: `open_dm` takes the account,
-    # and the conversation it names does not exist until that call.
+    assert isinstance(capability.decision, TeleportDecision)
+    assert capability.decision.destination is not None
     assert deferred.value.metadata == {
         "kind": "teleport",
         "hint": "carrying on",
-        "channel": "far",
-        "user": "ou_alice",
-        "here": False,
+        "destination": TypeAdapter(ChannelAddress)
+        .dump_json(capability.decision.destination)
+        .decode(),
+        "new_thread": True,
         "project": "",
         "ref": "",
     }
 
 
-@pytest.mark.parametrize("destination", [HERE_TARGET, THREAD_TARGET])
+@pytest.mark.parametrize("spell", ["teleport", "summon"])
+@pytest.mark.parametrize("parent", [None, "other-room"])
+async def test_channel_target_does_not_require_discovery(
+    in_memory_engine: None,
+    monkeypatch: pytest.MonkeyPatch,
+    spell: str,
+    parent: str | None,
+) -> None:
+    capability = await _crossable(
+        "private_main", far_routes=(INKLING_ROUTE, CLAUDE_ROUTE)
+    )
+    session = capability.session
+    ink = session.channels["far"].ink
+    location = ChannelAddress(
+        channel_tentacle_id="far",
+        user_id="ou_alice",
+        chat_type="group" if parent else "dm",
+        chat_id=parent or "",
+        shared=parent is not None,
+    )
+    lookup = AsyncMock(return_value=location)
+    discover = AsyncMock(side_effect=AssertionError("Do not enumerate destinations"))
+    monkeypatch.setattr(ink, "prepare_address", lookup)
+    monkeypatch.setattr(session, "destinations", discover)
+    target = location
+
+    if spell == "teleport":
+        decision = await session.teleport(hint="Continue here", destination=target)
+        assert decision.destination is not None
+        crossing = decision.destination
+        assert decision.agent_id == "inkling"
+    else:
+        await session.summon(
+            agent_id="claude",
+            model="opus",
+            destination=target,
+            hint="Continue here",
+            reason="Needs coding",
+            summon="Investigate the test.",
+        )
+        assert isinstance(session.decision, SummonDecision)
+        assert isinstance(session.decision.destination, ChannelAddress)
+        crossing = session.decision.destination
+        assert session.decision.agent_id == "claude"
+
+    assert crossing == ChannelAddress(
+        channel_tentacle_id="far",
+        chat_type=location.chat_type,
+        chat_id=location.chat_id,
+        user_id="ou_alice",
+        shared=location.shared,
+    )
+    lookup.assert_awaited_once_with(target, None)
+    discover.assert_not_awaited()
+    assert session.destination_cache is None
+
+
+@pytest.mark.parametrize(
+    "blocked", ["shared", "unlinked", "unknown", "parent", "agent"]
+)
+async def test_explicit_teleport_parent_keeps_policy_checks(
+    in_memory_engine: None, monkeypatch: pytest.MonkeyPatch, blocked: str
+) -> None:
+    capability = await _crossable(
+        "shared_main" if blocked == "shared" else "private_main",
+        far_routes=(CLAUDE_ROUTE,) if blocked == "agent" else (INKLING_ROUTE,),
+    )
+    session = capability.session
+    if blocked == "unlinked":
+        session.users = None
+    lookup = AsyncMock(
+        return_value=ChannelAddress(
+            channel_tentacle_id="far",
+            user_id="ou_alice",
+            chat_type="group",
+            chat_id="room",
+            shared=True,
+        )
+    )
+    if blocked == "parent":
+        lookup.side_effect = ValueError("Parent is inaccessible")
+    monkeypatch.setattr(session.channels["far"].ink, "prepare_address", lookup)
+
+    with pytest.raises(
+        GatewayRefusal,
+        match={
+            "shared": "Shared history",
+            "unlinked": "Link your profile",
+            "unknown": "No connected channel",
+            "parent": "Parent is inaccessible",
+            "agent": "does not run you",
+        }[blocked],
+    ):
+        await session.teleport(
+            hint="Continue",
+            destination=ChannelAddress(
+                channel_tentacle_id="missing" if blocked == "unknown" else "far",
+                chat_type="group",
+                chat_id="room",
+                user_id="ou_alice",
+            ),
+        )
+    assert session.decision is None
+    if blocked in {"shared", "unlinked", "unknown"}:
+        lookup.assert_not_awaited()
+
+
+def test_explicit_teleport_parent_must_not_be_empty() -> None:
+    with pytest.raises(ValidationError):
+        TypeAdapter(ChannelAddress | None).validate_python(
+            {"kind": "channel", "channel": "far", "parent": ""}
+        )
+
+
+async def test_explicit_parent_requires_a_channel_validator(
+    in_memory_engine: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    capability = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
+    monkeypatch.setattr(
+        capability.session.channels["far"].ink,
+        "prepare_address",
+        AsyncMock(side_effect=ValueError("unsupported parent")),
+    )
+    with pytest.raises(GatewayRefusal, match="unsupported parent"):
+        await capability.session.teleport(
+            hint="Continue",
+            destination=ChannelAddress(
+                channel_tentacle_id="far",
+                chat_type="group",
+                chat_id="room",
+                user_id="ou_alice",
+            ),
+        )
+    assert capability.session.decision is None
+
+
+@pytest.mark.parametrize("new_thread", [False, True])
 async def test_summon_refused_outright_where_neither_place_exists(
-    destination: SummonTarget,
+    new_thread: bool,
 ) -> None:
     """A group's main channel on a channel that opens no sub-thread — napcat's
     groups, with nobody linked anywhere else. Ownership cannot land in place, there
@@ -773,12 +937,13 @@ async def test_summon_refused_outright_where_neither_place_exists(
     assert capability.toolset is not None
     summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
 
-    with pytest.raises(ModelRetry, match="nowhere left to land"):
+    with pytest.raises(ModelRetry, match=r"cannot contain|Only the current"):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=destination,
+            destination=None,
+            new_thread=new_thread,
             reason="needs coding",
             hint="Working on it",
             summon="Please investigate the failing test.",
@@ -883,7 +1048,7 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
         brief="Finish the migration write-up for this user.",
     )
 
-    assert result == "Taking this to their direct messages here."
+    assert result == "Taking this to your direct messages on im."
     assert capability.decision == SchemeDecision(
         hint="Picking this up with you here.",
         destination=ChannelAddress(
@@ -983,7 +1148,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
             {
                 "agent_id": "claude",
                 "model": "opus",
-                "destination": {"kind": "thread"},
+                "destination": None,
                 "reason": "needs coding",
                 "hint": "Working on it",
                 "summon": over,
@@ -994,7 +1159,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
             FAKE_CONTEXT,
             agent_id="claude",
             model="opus",
-            destination=THREAD_TARGET,
+            destination=None,
             reason="needs coding",
             hint="Working on it",
             summon=over,
@@ -1040,20 +1205,104 @@ def test_a_decision_carries_no_brief_over_the_cap() -> None:
 
 
 @pytest.mark.parametrize("offered", [False, True])
-async def test_local_thread_uses_cached_channel_discovery(
+async def test_operation_menu_uses_cached_channel_discovery(
     monkeypatch: pytest.MonkeyPatch, offered: bool
 ) -> None:
     session = _capability("shared_main").session
     channel = session.channels["im"]
-    discover = AsyncMock(wraps=channel.ink.thread_locations)
+    discover = AsyncMock(wraps=channel.ink.suggest_addresses)
     if not offered:
         discover.return_value = []
-    monkeypatch.setattr(channel.ink, "thread_locations", discover)
+    monkeypatch.setattr(channel.ink, "suggest_addresses", discover)
 
-    expected = ["thread"] if offered else []
-    assert await session.destination_handles("summon") == expected
-    assert await session.destination_handles("teleport") == expected
+    expected = [
+        ChannelAddress("im", "dm", "", "alice"),
+        *([session.conversation_address] if offered else []),
+    ]
     menu = await session.operations
-    assert [one.target.handle for one in menu.summon.destinations] == expected
-    assert (await session.destinations())["summon"] == []
-    discover.assert_awaited_once_with("alice", session.conversation_address)
+    assert menu.summon.destinations == expected
+    assert await session.destinations() == expected
+    discover.assert_awaited_once_with(
+        ChannelAddress("im", "dm", "", "alice"), session.conversation_address
+    )
+
+
+@pytest.mark.parametrize("spell", ["teleport", "summon"])
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("supported", [False, True])
+async def test_local_thread_validation_does_not_discover_destinations(
+    monkeypatch: pytest.MonkeyPatch, spell: str, shape: Shape, supported: bool
+) -> None:
+    session = _capability(
+        shape, channel=FakeChannelTentacle() if supported else _NoSubThreadChannel()
+    ).session
+    discover = AsyncMock(side_effect=AssertionError("Do not enumerate destinations"))
+    monkeypatch.setattr(session, "destinations", discover)
+
+    async def invoke() -> None:
+        if spell == "teleport":
+            await session.teleport(hint="Continue here", destination=None)
+        else:
+            await session.summon(
+                agent_id="claude",
+                model="opus",
+                destination=None,
+                hint="Continue here",
+                reason="Needs coding",
+                summon="Investigate the test.",
+            )
+
+    if supported and shape in {"private_main", "shared_main"}:
+        await invoke()
+        assert session.decision is not None
+    else:
+        with pytest.raises(GatewayRefusal, match="cannot contain"):
+            await invoke()
+        assert session.decision is None
+    discover.assert_not_awaited()
+    assert session.destination_cache is None
+
+
+@pytest.mark.parametrize("spell", ["teleport", "summon"])
+async def test_move_refuses_an_address_for_another_user(
+    in_memory_engine: None, monkeypatch: pytest.MonkeyPatch, spell: str
+) -> None:
+    session = (
+        await _crossable("private_main", far_routes=(INKLING_ROUTE, CLAUDE_ROUTE))
+    ).session
+    prepare = AsyncMock()
+    monkeypatch.setattr(session.channels["far"], "prepare_address", prepare)
+    destination = ChannelAddress("far", "dm", "", "somebody-else")
+    request = (
+        session.teleport(hint="Continue", destination=destination)
+        if spell == "teleport"
+        else session.summon(
+            agent_id="claude",
+            model="opus",
+            hint="Continue",
+            reason="Review",
+            summon="Review the work",
+            destination=destination,
+        )
+    )
+    with pytest.raises(GatewayRefusal, match="requesting user"):
+        await request
+    prepare.assert_not_awaited()
+    assert session.decision is None
+
+
+async def test_inspect_routes_for_an_address_does_not_discover_destinations(
+    in_memory_engine: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capability = await _crossable(
+        "private_main", far_routes=(CLAUDE_ROUTE, INKLING_ROUTE)
+    )
+    discover = AsyncMock(side_effect=AssertionError("Do not enumerate destinations"))
+    monkeypatch.setattr(capability.session, "destinations", discover)
+    assert await capability.inspect(FAKE_CONTEXT, "routes", channel="far") == [
+        CLAUDE_ROUTE
+    ]
+    capability.session.users = None
+    with pytest.raises(ModelRetry, match="Link your profile"):
+        await capability.inspect(FAKE_CONTEXT, "routes", channel="far")
+    discover.assert_not_awaited()

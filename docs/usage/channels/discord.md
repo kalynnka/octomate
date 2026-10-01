@@ -52,13 +52,20 @@ messages there need neither. Sub-threads are created from a text channel only,
 public, named from the hint.
 
 From a server text channel, Summon lists eligible text channels in that same
-server. The current channel appears once as `thread`; Teleport keeps shared
-history in that local sub-thread. Your account must be able to view and send
+server. Teleport keeps shared history under the current text-channel address. Your account must be able to view and send
 messages in threads, and the bot must be able to view, send and create public
 threads. Membership and permissions are checked again when a named destination
 opens. Discovery never scans other servers. Without a server context, including
-entry from Trunkline, Discord offers no destinations. DMs and existing threads
+entry from Trunkline, Discord suggests no parent addresses. DMs and existing threads
 also offer no new sub-thread locations.
+
+Teleport and Summon can target a known text channel directly with a connected channel ID
+and the text-channel ID in the address's `chat_id`, including from a private conversation on another platform.
+The channel validates that parent without enumerating servers and rechecks access before
+posting. The requesting user needs a linked Discord profile. This accepts text
+channels only, not a guild ID, DM, existing thread or forum channel. See
+[Teleport](../gateway.md#teleport) for the address contract. An empty `chat_id` is
+refused: Discord has no default isolated thread destination.
 
 ## Rendering
 

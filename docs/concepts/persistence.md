@@ -61,7 +61,13 @@ Every schema change is an Alembic revision produced by
 then adjusted: a docstring saying why, a data backfill if needed, an inferred
 operation dropped if unwanted. The schema operations are never typed by hand, and a
 column's comment reaches the migration by being generated from the model. If
-autogenerate produces nothing, the model change is missing.
+autogenerate produces nothing for a schema change, the model change is missing.
+Data-only revisions use the generated file for the transformation without adding
+schema operations.
+
+Saved deferred handoffs carry a neutral destination address and a separate
+`new_thread` flag. A data migration converts the earlier `here`, `thread`, and
+`crossing` destination variants; runtime schemas accept the current format only.
 
 The migration environment resolves the database exactly as the server does, from
 `OCTOMATE_DB_URL`, then `db_url` in the config home, then the default. It runs in

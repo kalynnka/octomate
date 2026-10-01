@@ -49,7 +49,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Teleport | Scheme | End[ReflexGraphResult]:
         """React, and leave the turn's workspace in the mirror however it ends.
 
         In a `finally` because a turn that raised still did whatever it did on
@@ -72,7 +72,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def react(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Teleport | Scheme | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -491,7 +491,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         agent_id=gateway_decision.agent_id,
                         reason=gateway_decision.reason,
                     )
-                    return Handoff()
+                    return Summon()
 
                 return End(
                     ReflexResult(
@@ -506,8 +506,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 # hints, and pydantic-graph resolves those hints against this module's globals when
 # the graph is built — so `if TYPE_CHECKING` is not enough, the names must really be
 # here. Importing them at the top would deadlock the cycle (react would be half-built
-# when handoff asked for it), so the cycle is closed here instead, after `React`
+# when summon asked for it), so the cycle is closed here instead, after `React`
 # exists. `nodes/__init__` imports this module first to keep that order.
-from octomate.reflex.nodes.handoff import Handoff  # noqa: E402
 from octomate.reflex.nodes.scheme import Scheme  # noqa: E402
+from octomate.reflex.nodes.summon import Summon  # noqa: E402
 from octomate.reflex.nodes.teleport import Teleport  # noqa: E402

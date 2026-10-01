@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
+from pydantic import TypeAdapter
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -14,7 +15,6 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
-    CrossingLanding,
     ResponseTargetMode,
     RunName,
     SummonDecision,
@@ -34,13 +34,9 @@ class TeleportRequest:
     hint: str
     # The deferred call to resolve into the resumed run.
     tool_call_id: str | None
-    # Where it goes, when that is not a sub-thread of the chat it is already in. The
-    # gateway refused a channel this agent does not run and one that opens no
-    # sub-thread, so the node has a place to open and no fallback to choose.
-    crossing: CrossingLanding | None = None
-    # Stay in this thread, opening nothing: the move is into a project's workspace
-    # and this thread is what gets bound. Refused by the gateway without a project.
-    here: bool = False
+    # None uses the run's current address as the parent.
+    destination: ChannelAddress | None = None
+    new_thread: bool = True
     # The project the thread landed in is bound to, and the ref its workspace starts
     # from; None carries the conversation only.
     project: str | None = None
@@ -81,25 +77,15 @@ class ReflexSuspender:
         for call in requests.calls:
             meta = requests.metadata.get(call.tool_call_id, {})
             if meta.get("kind") == TELEPORT_DEFER_KIND:
-                # The gate names the far channel and the account on it as two plain
-                # strings; the address is built back here, at the boundary, so the
-                # node is handed a typed landing rather than a metadata dict.
-                far = str(meta.get("channel") or "")
+                destination = str(meta.get("destination") or "")
                 self.teleport = TeleportRequest(
                     tool_call_id=call.tool_call_id,
                     hint=str(meta.get("hint") or ""),
-                    here=bool(meta.get("here")),
+                    new_thread=bool(meta.get("new_thread", True)),
                     project=str(meta.get("project") or "") or None,
                     ref=str(meta.get("ref") or "") or None,
-                    crossing=CrossingLanding(
-                        address=ChannelAddress(
-                            channel_tentacle_id=far,
-                            chat_type="dm",
-                            chat_id="",
-                            user_id=str(meta.get("user") or ""),
-                        )
-                    )
-                    if far
+                    destination=TypeAdapter(ChannelAddress).validate_json(destination)
+                    if destination
                     else None,
                 )
                 return None

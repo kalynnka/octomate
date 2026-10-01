@@ -23,7 +23,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token, get_http_headers
-from pydantic import Field
+from pydantic import Field, TypeAdapter
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability
@@ -31,6 +31,7 @@ from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
 from octomate.schemas.awakes import GatewayNativeSignal
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -41,12 +42,9 @@ from octomate.schemas.triage import (
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
-    THREAD_TARGET,
     InspectFacet,
     SchemeTarget,
     SendTarget,
-    SummonTarget,
-    TeleportTarget,
 )
 from octomate.types.threads import NATIVE_TENTACLE_IDS
 
@@ -226,11 +224,21 @@ def mount_gateway(
     )
     @spoken
     async def inspect(
-        reveal: InspectFacet, session: OctomateSession = octomate_session
+        reveal: InspectFacet,
+        channel: str | None = None,
+        session: OctomateSession = octomate_session,
     ) -> str:
+        if reveal == "destinations":
+            addresses = await session.inspect("destinations", channel)
+            return (
+                TypeAdapter(list[ChannelAddress]).dump_json(addresses).decode()
+                if addresses
+                else "- (none)"
+            )
         # Lines, never the list: FastMCP renders an empty list as no content at all.
         return (
-            "\n".join(str(one) for one in await session.inspect(reveal)) or "- (none)"
+            "\n".join(str(one) for one in await session.inspect(reveal, channel))
+            or "- (none)"
         )
 
     @mcp.tool(
@@ -240,17 +248,19 @@ def mount_gateway(
     async def summon(
         agent_id: str,
         model: str,
-        destination: SummonTarget,
+        destination: ChannelAddress | None,
         hint: str,
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
+        new_thread: bool = True,
         session: OctomateSession = octomate_session,
     ) -> str:
         sentence = await session.summon(
             agent_id=agent_id,
             model=model,
             destination=destination,
+            new_thread=new_thread,
             hint=hint,
             reason=reason,
             summon=summon,
@@ -271,13 +281,18 @@ def mount_gateway(
     @spoken
     async def teleport(
         hint: str,
-        destination: TeleportTarget = THREAD_TARGET,
+        destination: ChannelAddress | None = None,
         project: str | None = None,
         ref: str | None = None,
+        new_thread: bool = True,
         session: OctomateSession = octomate_session,
     ) -> str:
         await session.teleport(
-            hint=hint, destination=destination, project=project, ref=ref
+            hint=hint,
+            destination=destination,
+            new_thread=new_thread,
+            project=project,
+            ref=ref,
         )
         return TELEPORT_RECORDED
 
@@ -317,7 +332,7 @@ def mount_gateway(
         if target is None:
             raise GatewayRefusal(
                 "This session has no conversation of its own to land a send on — "
-                f'name a destination from `{INSPECT_TOOL_NAME}` (`reveal="destinations"`).'
+                'use a destination with kind="dm" and an explicit connected channel ID.'
             )
         notice = "sent"
         if address is not None:

@@ -32,7 +32,6 @@ from octomate.schemas.triage import (
     AgentRoute,
     Claim,
     SummonDecision,
-    ThreadLanding,
 )
 from octomate.tentacles.claude.mcp import octomate_mcp_server, sdk_tool
 from octomate.tentacles.mcp import BareMcpTentacle
@@ -52,7 +51,7 @@ CLAUDE_ROUTE = AgentRoute(
 SUMMON_ARGUMENTS = {
     "agent_id": "claude",
     "model": "opus",
-    "destination": {"kind": "thread"},
+    "destination": None,
     "hint": "Working on it",
     "reason": "needs coding",
     "summon": "Please investigate the failing test.",
@@ -147,13 +146,13 @@ async def test_summon_records_the_decision_and_answers_with_the_sentence() -> No
 
     result = await tools["gateway_summon"].handler(dict(SUMMON_ARGUMENTS))
 
-    assert the_text(result) == "Summoning claude (opus) → thread."
+    assert the_text(result) == "Summoning claude (opus) → im/group/room/-/alice."
     assert "is_error" not in result
     assert session.decision == SummonDecision(
         action="summon",
         agent_id="claude",
         model="opus",
-        destination=ThreadLanding(),
+        destination=session.conversation_address,
         effort=None,
         hint="Working on it",
         reason="needs coding",

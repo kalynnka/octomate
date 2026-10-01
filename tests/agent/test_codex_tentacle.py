@@ -771,7 +771,12 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             thread.id, agent_tentacle_id="codex"
         )
         node = Teleport(
-            request=TeleportRequest(hint="continue", tool_call_id="move", here=here),
+            request=TeleportRequest(
+                hint="continue",
+                tool_call_id="move",
+                destination=KEY,
+                new_thread=not here,
+            ),
             origin=origin,
             agent_id="codex",
         )
@@ -2040,7 +2045,11 @@ class BindingFakeTurn(FakeTurn):
         yield first
         assert BindingFakeTurn.session is not None
         BindingFakeTurn.session.decision = TeleportDecision(
-            agent_id="codex", hint="into inky", here=True, project="inky"
+            agent_id="codex",
+            hint="into inky",
+            destination=KEY,
+            new_thread=False,
+            project="inky",
         )
         for event in rest:
             yield event

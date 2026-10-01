@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
@@ -23,7 +24,7 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import SummonDecision, TeleportDecision
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,
@@ -139,3 +140,41 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
     assert event.batch_id == str(batch.id)
     assert event.questions == [question]
     assert event.approvals == [approval]
+
+
+@pytest.mark.parametrize("surface", ["dm", "group", "thread"])
+async def test_teleport_deferral_preserves_the_validated_destination(
+    surface: str,
+) -> None:
+    address = ChannelAddress(
+        channel_tentacle_id="far",
+        chat_type="dm"
+        if surface == "dm"
+        else "group"
+        if surface == "group"
+        else "thread",
+        chat_id="" if surface == "dm" else "parent",
+        user_id="alice",
+        shared=surface == "group",
+    )
+    decision = TeleportDecision(
+        agent_id="inkling", hint="Continue", destination=address
+    )
+    suspender = ReflexSuspender(
+        channel=FakeChannelTentacle(),
+        action_manager=DeferredActionManager(),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+    )
+
+    assert await suspender.suspend(decision.deferral("move")) is None
+
+    assert suspender.teleport is not None
+    assert suspender.teleport.destination == decision.destination
+    assert suspender.teleport.tool_call_id == "move"
+    assert suspender.suspended_batch_id is None

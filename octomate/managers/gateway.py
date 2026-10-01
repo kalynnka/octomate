@@ -15,7 +15,7 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
 from octomate.managers.base import Manager
@@ -24,24 +24,16 @@ from octomate.schemas.awakes import GatewayNativeSignal, GatewayThreadSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.operations import (
     OperationAvailability,
-    OperationDestination,
     ThreadOperations,
 )
 from octomate.schemas.thread import ATTRIBUTABLE_KINDS
 from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
-    HERE_TARGET,
     INSPECT_TOOL_NAME,
     SUMMON_TOOL_NAME,
-    THREAD_TARGET,
     AgentRoute,
-    ChannelTarget,
-    CrossingLanding,
-    Destination,
+    DirectTarget,
     GatewayDecision,
-    GatewayDestinations,
-    HereLanding,
     HereTarget,
     InspectFacet,
     ProjectSummary,
@@ -49,12 +41,7 @@ from octomate.schemas.triage import (
     SchemeTarget,
     SendTarget,
     SummonDecision,
-    SummonLanding,
-    SummonTarget,
     TeleportDecision,
-    TeleportTarget,
-    ThreadLanding,
-    ThreadTarget,
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
@@ -130,9 +117,6 @@ class OctomateSession:
     # registry and forks. Both None on a gateway built only to route.
     threads: ThreadManager | None = None
     workspaces: WorkspaceManager | None = None
-    # Whether the mounted gateway offers the accomplice spells; `no_landing` names
-    # `commission` as the fallback only when it is actually on offer.
-    commissioning: bool = field(default=False, init=False)
     decision: GatewayDecision | None = field(default=None, init=False)
     # Whether `dismiss` was cast: the thread's workspace goes when the turn ends,
     # the graph's doing once the run is out of it.
@@ -142,11 +126,8 @@ class OctomateSession:
     # validates a chosen route against. A crossing validates against its own.
     other_routes: list[AgentRoute] = field(init=False, repr=False)
 
-    # The current chat's candidate, discovered alongside named destinations.
-    local_thread: Destination | None = field(default=None, init=False)
-
     # Discovery is lazy and reused for this gateway session.
-    destination_cache: GatewayDestinations | None = field(
+    destination_cache: list[ChannelAddress] | None = field(
         default=None, init=False, repr=False
     )
 
@@ -175,32 +156,6 @@ class OctomateSession:
             return True
         return address.chat_type != "group"
 
-    async def allow_sub_thread(self) -> bool:
-        """Whether a new sub-thread can be opened from this run's own surface.
-
-        False inside one: every channel that has threads routes them `flat_thread`,
-        so a thread is the last one there is. False too where the platform opens
-        none at all. Both spells that target a sub-thread ask this, and both refuse
-        rather than landing somewhere they did not name.
-
-        True for a gateway with no surface to judge by, as `allow_here` is: refusing
-        what it cannot see would block a spell the graph resolves correctly anyway.
-        False for a native one, whose terminal is not a surface Octomate can open
-        anything from.
-        """
-        if self.native:
-            return False
-        address = self.conversation_address
-        if address is None:
-            return True
-        if address.channel_thread_id:
-            return False
-        channel = self.channels.get(address.channel_tentacle_id)
-        if channel is None:
-            return True
-        await self.destinations()
-        return self.local_thread is not None
-
     @property
     def private_blocked_by(self) -> PrivateBlocker | None:
         """Why `scheme` has nowhere to land from this run, or None when it does.
@@ -221,85 +176,15 @@ class OctomateSession:
             return "no_user"
         return None
 
-    @property
-    def built_in_destinations(self) -> list[Destination]:
-        """The places every run has: this chat, and its direct messages. Each is
-        offered only where it can actually be reached.
-
-        A sub-thread is not among them. `summon` names one through its own
-        `destination` literal, and the spells that resolve a handle — `scheme` and
-        `send` — deliver to a person, so every place they can name is somewhere
-        private."""
-        address = self.conversation_address
-        if address is None:
-            return []
-        built_in: list[Destination] = []
-        if self.allow_here:
-            built_in.append(
-                Destination(
-                    handle=HERE_TARGET.handle,
-                    label="this conversation",
-                    address=address,
-                )
-            )
-        if self.private_blocked_by is None:
-            built_in.append(
-                Destination(
-                    handle=DIRECT_TARGET.handle,
-                    label="their direct messages here",
-                    address=replace(
-                        address,
-                        chat_type="dm",
-                        chat_id="",
-                        channel_thread_id=None,
-                        shared=False,
-                    ),
-                )
-            )
-        return built_in
-
-    async def destinations(self) -> GatewayDestinations:
-        """Discover named destinations once per gateway, grouped by spell.
-
-        Delivery uses linked DMs; Teleport/Summon ask channels for new-thread
-        destinations. Route and history checks stay with each spell's validator.
-        """
+    async def destinations(self) -> list[ChannelAddress]:
+        """Cache optional address suggestions; execution validates its address independently."""
         if self.destination_cache is not None:
             return self.destination_cache
-        delivery = self.built_in_destinations
-        places = GatewayDestinations(
-            send=delivery,
-            scheme=[one for one in delivery if one.handle != HERE_TARGET.handle],
-            summon=[],
-            teleport=[],
-        )
         linked = (
             await self.users.linked_profiles(self.user_profile)
             if self.users is not None and self.user_profile is not None
             else []
         )
-        for profile in linked:
-            channel = self.channels.get(profile.channel_tentacle_id)
-            if channel is None or not channel.surfaces.direct_message:
-                continue
-            if not any(
-                self.agents is None or agent_id in self.agents
-                for agent_id in channel.agent_ids
-            ):
-                continue
-            destination = Destination(
-                handle=channel.id,
-                label=f"their direct messages on {channel.name}",
-                address=ChannelAddress(
-                    channel_tentacle_id=channel.id,
-                    chat_type="dm",
-                    chat_id="",
-                    user_id=profile.channel_user_id,
-                ),
-                routes=tuple(self.channel_routes.get(channel.id, [])),
-            )
-            places["send"].append(destination)
-            places["scheme"].append(destination)
         profiles = {profile.channel_tentacle_id: profile for profile in linked}
         if self.user_profile is not None:
             profiles[self.user_profile.channel_tentacle_id] = self.user_profile
@@ -309,94 +194,71 @@ class OctomateSession:
                 channel_tentacle_id=source.channel_tentacle_id,
                 channel_user_id=source.user_id,
             )
+        addresses: list[ChannelAddress] = []
+        if source is not None and self.private_blocked_by is None:
+            addresses.append(
+                ChannelAddress(source.channel_tentacle_id, "dm", "", source.user_id)
+            )
         for channel in self.channels.values():
-            routes = self.channel_routes.get(channel.id, [])
-            if not routes:
-                continue
             profile = profiles.get(channel.id, self.user_profile)
             if profile is None:
                 continue
-            for destination in await channel.thread_destinations(profile, source):
-                destination = replace(destination, routes=tuple(routes))
-                if (
-                    not self.native
-                    and source is not None
-                    and not source.channel_thread_id
-                    and source.chat_type in {"dm", "group"}
-                    and destination.address == replace(source, channel_thread_id=None)
-                ):
-                    self.local_thread = destination
-                    continue
-                places["summon"].append(destination)
-                # Shared history may only move into its own local sub-thread.
-                if source is None or not source.shared:
-                    places["teleport"].append(destination)
-        self.destination_cache = places
-        return places
-
-    async def destination_handles(
-        self, spell: Literal["summon", "teleport"]
-    ) -> list[str]:
-        """Local targets followed by the spell's cached named destinations.
-
-        Teleport's `here` target requires a project and is validated separately.
-        """
-        handles = [HERE_TARGET.handle] if spell == "summon" and self.allow_here else []
-        if await self.allow_sub_thread():
-            handles.append(THREAD_TARGET.handle)
-        return handles + [one.handle for one in (await self.destinations())[spell]]
+            user_id = channel.thread_user_id(profile)
+            if (
+                user_id is not None
+                and channel.surfaces.direct_message
+                and any(
+                    self.agents is None or agent_id in self.agents
+                    for agent_id in channel.agent_ids
+                )
+                and (
+                    source is None
+                    or source.channel_tentacle_id != channel.id
+                    or self.private_blocked_by is None
+                )
+            ):
+                addresses.append(ChannelAddress(channel.id, "dm", "", user_id))
+            if self.channel_routes.get(channel.id):
+                addresses.extend(await channel.suggest_addresses(profile, source))
+        self.destination_cache = list(dict.fromkeys(addresses))
+        return self.destination_cache
 
     @property
     async def operations(self) -> ThreadOperations:
-        """Offer only destinations and routes that the action validators accept."""
-        destinations: list[OperationDestination] = []
-        if self.allow_here:
-            destinations.append(
-                OperationDestination(
-                    target=HERE_TARGET, label="This thread", routes=self.other_routes
-                )
-            )
-        address = self.conversation_address
-        local = (
-            self.channel_routes.get(address.channel_tentacle_id, []) if address else []
-        )
-        if await self.allow_sub_thread():
-            destinations.append(
-                OperationDestination(
-                    target=THREAD_TARGET, label="New sub-thread", routes=local
-                )
-            )
-        destinations.extend(
-            OperationDestination(
-                target=ChannelTarget(channel=one.handle),
-                label=one.label,
-                routes=list(one.routes),
-            )
-            for one in (await self.destinations())["summon"]
-        )
-        summon = [
-            destination.model_copy(
-                update={
-                    "routes": [
-                        route
-                        for route in destination.routes
-                        if route.agent_id != self.current_agent_id
-                    ]
-                }
-            )
-            for destination in destinations
-            if any(
-                route.agent_id != self.current_agent_id for route in destination.routes
-            )
+        """Offer addresses and channel routes without introducing another target type."""
+        suggestions = [
+            address
+            for address in await self.destinations()
+            if address.chat_type == "thread"
+            or self.channels[address.channel_tentacle_id].accepts_sub_thread(address)
         ]
+        source = self.conversation_address
+        routes = {
+            channel: [
+                route for route in routes if route.agent_id != self.current_agent_id
+            ]
+            for channel, routes in self.channel_routes.items()
+        }
+        here = (
+            source
+            if self.allow_here
+            and source is not None
+            and routes.get(source.channel_tentacle_id)
+            else None
+        )
+        summon = [one for one in suggestions if routes.get(one.channel_tentacle_id)]
         reason = self.teleport_unavailable
-        handles = [] if reason else await self.destination_handles("teleport")
         teleport = [
-            destination
-            for destination in destinations
-            if destination.target.handle in handles
-            and any(
-                self.is_compatible_agent(route.agent_id) for route in destination.routes
+            one
+            for one in suggestions
+            if not reason
+            and (source is None or not source.shared or one == source)
+            and (
+                one == source
+                or any(
+                    self.is_compatible_agent(route.agent_id)
+                    for route in self.channel_routes.get(one.channel_tentacle_id, [])
+                )
             )
         ]
         return ThreadOperations(
@@ -411,8 +273,10 @@ class OctomateSession:
             ),
             summon=OperationAvailability(
                 destinations=summon,
+                here=here,
+                routes=routes,
                 reason=None
-                if summon
+                if summon or here
                 else "No other agents are available at an eligible destination.",
             ),
         )
@@ -441,60 +305,69 @@ class OctomateSession:
                 return "The source agent does not support independent session forking."
         return None
 
-    def no_landing(self, handle: str, handles: list[str], *, spell: str) -> str:
-        """Why `handle` is nowhere `spell` can land, and what is instead.
-
-        A refused reserved word is told which wall it hit, because the wall is what
-        stops the model trying the same door again; an unrecognised one just gets
-        the list. An empty list is the dead end — there is no "instead" to offer,
-        so the sentence says to answer it in place rather than name a way out.
-        """
-        if handle == HERE_TARGET.handle:
-            why = "Cannot take over a group's main channel in place. "
-        elif handle == THREAD_TARGET.handle:
-            why = (
-                "No sub-thread to open here: this conversation is already a thread, "
-                "or the channel opens none. "
-            )
-        else:
-            why = (
-                f"No destination {handle!r}: not a channel this person is on that "
-                "opens sub-threads. "
-            )
-        if not handles:
-            fallback = (
-                f", or `{COMMISSION_TOOL_NAME}` an agent to work it in the background."
-                if self.commissioning
-                else "."
-            )
-            return f"{why}`{spell}` has nowhere left to land, so answer it{fallback}"
-        return f"{why}Use one of these instead, copied exactly: {', '.join(handles)}."
-
-    async def destination(
-        self, handle: str, *, spell: Literal["send", "scheme", "summon", "teleport"]
-    ) -> Destination:
-        """The place `handle` names, or a `GatewayRefusal` listing what it could
-        have named. The model never names an address — this is where one comes from.
-        """
-        places = (await self.destinations())[spell]
-        found = next((one for one in places if one.handle == handle), None)
-        if found is not None:
-            return found
-        available = "\n".join(str(one) for one in places) or "- (none)"
-        # A built-in that is missing was withheld for a reason, and the reason is
-        # what teaches the model something: say which wall it hit rather than
-        # implying the place does not exist.
-        why = ""
+    async def channel_profile(self, channel: ChannelTentacle) -> UserProfile:
+        """The requester's identity usable by this channel, never supplied by a tool."""
+        profile = self.user_profile
+        source = self.conversation_address
         if (
-            handle == DIRECT_TARGET.handle
-            and (blocker := self.private_blocked_by) is not None
+            profile is None
+            and source is not None
+            and source.channel_tentacle_id == channel.id
         ):
-            why = f"{PRIVATE_REFUSALS[blocker]} "
-        elif handle == HERE_TARGET.handle and not self.allow_here:
-            why = "Cannot take over a group's main channel in place. "
-        raise GatewayRefusal(
-            f"{why}No such destination {handle!r} for {spell}. Copy one of these "
-            f"exactly:\n{available}"
+            profile = UserProfile(
+                channel_tentacle_id=channel.id, channel_user_id=source.user_id
+            )
+        if profile is not None and channel.thread_user_id(profile) is not None:
+            return profile
+        if profile is not None and self.users is not None:
+            linked = await self.users.linked_profiles(profile)
+            found = next(
+                (one for one in linked if one.channel_tentacle_id == channel.id), None
+            )
+            if found is not None:
+                return found
+        raise GatewayRefusal("Link your profile on the destination channel first.")
+
+    async def prepare_address(self, destination: ChannelAddress) -> ChannelAddress:
+        """Verify identity, then let the owning channel validate its address."""
+        channel = self.channels.get(destination.channel_tentacle_id)
+        if channel is None:
+            raise GatewayRefusal(
+                f"No connected channel {destination.channel_tentacle_id!r}."
+            )
+        profile = await self.channel_profile(channel)
+        if destination.user_id != channel.thread_user_id(profile):
+            raise GatewayRefusal("The address does not belong to the requesting user.")
+        try:
+            return await channel.prepare_address(destination, self.conversation_address)
+        except ValueError as error:
+            raise GatewayRefusal(str(error)) from error
+
+    async def direct_destination(self, target: DirectTarget) -> ChannelAddress:
+        """Resolve the requesting user's DM on the selected channel."""
+        source = self.conversation_address
+        local = target.channel is None or (
+            source is not None and target.channel == source.channel_tentacle_id
+        )
+        if local and (blocker := self.private_blocked_by) is not None:
+            raise GatewayRefusal(PRIVATE_REFUSALS[blocker])
+        channel_id = target.channel or (source.channel_tentacle_id if source else "")
+        channel = self.channels.get(channel_id)
+        if channel is None:
+            raise GatewayRefusal(f"No connected channel {channel_id!r}.")
+        if not channel.surfaces.direct_message:
+            raise GatewayRefusal("This channel has no direct messages.")
+        if not local and not any(
+            self.agents is None or agent_id in self.agents
+            for agent_id in channel.agent_ids
+        ):
+            raise GatewayRefusal("No connected agent serves the destination channel.")
+        profile = await self.channel_profile(channel)
+        return ChannelAddress(
+            channel_tentacle_id=channel.id,
+            chat_type="dm",
+            chat_id="",
+            user_id=profile.channel_user_id,
         )
 
     def claimed_route(
@@ -540,30 +413,47 @@ class OctomateSession:
         return route
 
     @overload
-    async def inspect(self, reveal: Literal["routes"]) -> list[AgentRoute]: ...
+    async def inspect(
+        self, reveal: Literal["routes"], channel: str | None = None
+    ) -> list[AgentRoute]: ...
 
     @overload
-    async def inspect(self, reveal: Literal["destinations"]) -> list[Destination]: ...
+    async def inspect(
+        self, reveal: Literal["destinations"], channel: str | None = None
+    ) -> list[ChannelAddress]: ...
 
     @overload
-    async def inspect(self, reveal: Literal["projects"]) -> list[ProjectSummary]: ...
+    async def inspect(
+        self, reveal: Literal["projects"], channel: str | None = None
+    ) -> list[ProjectSummary]: ...
 
     async def inspect(
-        self, reveal: InspectFacet
-    ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
-        """One facet of what this conversation can reach: the routes here, every
-        place it can go, or the projects it can be about. Only the asked facet is
-        computed — the places reach the identity registry."""
+        self, reveal: InspectFacet, channel: str | None = None
+    ) -> list[AgentRoute] | list[ChannelAddress] | list[ProjectSummary]:
+        """Reveal current or selected-channel routes, suggested addresses, or projects.
+
+        Only the requested facet is computed; address discovery consults linked
+        identities and does not limit which addresses execution can validate.
+        """
+        if channel is not None:
+            if reveal != "routes":
+                raise GatewayRefusal(
+                    "Only routes can be inspected for a specific channel."
+                )
+            target = self.channels.get(channel)
+            if target is None:
+                raise GatewayRefusal(f"No connected channel {channel!r}.")
+            await self.channel_profile(target)
+            return [
+                route
+                for route in self.channel_routes.get(channel, [])
+                if route.agent_id != self.current_agent_id
+            ]
         match reveal:
             case "routes":
                 return self.other_routes
             case "destinations":
-                destinations = await self.destinations()
-                places: dict[str, Destination] = {}
-                for spell in ("send", "scheme", "summon", "teleport"):
-                    for one in destinations[spell]:
-                        places.setdefault(one.handle, one)
-                return list(places.values())
+                return await self.destinations()
             case "projects":
                 return await self.projects()
 
@@ -592,59 +482,63 @@ class OctomateSession:
         *,
         agent_id: str,
         model: str,
-        destination: SummonTarget,
+        destination: ChannelAddress | None = None,
+        new_thread: bool = True,
         hint: str,
         reason: str,
         summon: str,
         effort: ThinkingEffort | None = None,
     ) -> str:
-        """Validate and record a handoff decision, returning the sentence the
-        summoning agent is told. The move itself is the graph's, after the turn."""
-        handles = await self.destination_handles("summon")
-        if destination.handle not in handles:
-            raise GatewayRefusal(
-                self.no_landing(destination.handle, handles, spell="summon")
-            )
+        """Validate an address and record a handoff for the graph to perform."""
         if agent_id == self.current_agent_id:
             raise GatewayRefusal(
                 f"Cannot summon yourself {self.current_agent_id!r}. "
                 f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
             )
-        landing: SummonLanding = HereLanding()
-        # Against the routes of the channel it lands on: an agent is summonable
-        # where it is configured, so crossing to another one both widens what can be
-        # named and narrows it to what runs there.
-        offered: list[AgentRoute] | None = None
-        if isinstance(destination, ThreadTarget):
-            landing = ThreadLanding()
-        elif isinstance(destination, ChannelTarget):
-            where = await self.destination(destination.handle, spell="summon")
-            landing = CrossingLanding(address=where.address)
-            offered = [
-                route
-                for route in where.routes
-                if route.agent_id != self.current_agent_id
-            ]
+        destination = destination or self.conversation_address
+        if destination is None:
+            raise GatewayRefusal("Summon requires a destination address.")
+        if new_thread:
+            destination = await self.prepare_address(destination)
+        elif (
+            self.native
+            or not self.allow_here
+            or destination != self.conversation_address
+        ):
+            raise GatewayRefusal(
+                "Only the current conversation can be taken over in place."
+            )
         route = self.claimed_route(
-            agent_id, model, effort, spell="summon", offered=offered
+            agent_id,
+            model,
+            effort,
+            spell="summon",
+            offered=[
+                route
+                for route in self.channel_routes.get(
+                    destination.channel_tentacle_id, []
+                )
+                if route.agent_id != self.current_agent_id
+            ],
         )
         self.decision = SummonDecision(
-            action="summon",
             agent_id=route.agent_id,
             model=route.model,
-            destination=landing,
+            destination=destination,
+            new_thread=new_thread,
             effort=effort,
             hint=hint,
             reason=reason,
             summon=summon,
         )
-        return f"Summoning {route.agent_id} ({route.model}) → {destination.handle}."
+        return f"Summoning {route.agent_id} ({route.model}) → {destination}."
 
     async def teleport(
         self,
         *,
         hint: str,
-        destination: TeleportTarget = THREAD_TARGET,
+        destination: ChannelAddress | None = None,
+        new_thread: bool = True,
         project: str | None = None,
         ref: str | None = None,
     ) -> TeleportDecision:
@@ -654,7 +548,7 @@ class OctomateSession:
 
         A `project` makes the move one into that project's workspace: the thread
         landed in is bound to it — a new sub-thread or crossing, or this thread
-        when `destination` is `here`, the one case a teleport may stay put. The
+        when `new_thread` is false, the one case a teleport may stay put. The
         project and the ref are validated here, where a refusal reaches the model;
         the binding itself is the graph's, on the thread that turns out to be
         landed in. Binding is a trust act (a project's own `AGENTS.md` reaches the
@@ -667,7 +561,10 @@ class OctomateSession:
         agent_id = self.current_agent_id
         if self.native and (reason := self.teleport_unavailable):
             raise GatewayRefusal(reason)
-        if self.native and not isinstance(destination, ChannelTarget):
+        destination = destination or self.conversation_address
+        if destination is None:
+            raise GatewayRefusal("Teleport requires a destination address.")
+        if self.native and not new_thread:
             raise GatewayRefusal("Native teleport requires a new destination.")
         if project is not None and (
             self.users is None
@@ -678,7 +575,9 @@ class OctomateSession:
                 "This session speaks for no registered user, and binding a thread to "
                 "a project is a registered user's act."
             )
-        if isinstance(destination, HereTarget):
+        if not new_thread:
+            if destination != self.conversation_address:
+                raise GatewayRefusal("Only the current conversation can be reused.")
             if project is None:
                 raise GatewayRefusal(
                     "A teleport that stays put is you carrying on. Name a project to "
@@ -696,46 +595,43 @@ class OctomateSession:
                 raise GatewayRefusal(
                     f"This conversation is a {thread.kind}, and a DM or a group chat "
                     "outlives every project in it — only a thread binds. Teleport "
-                    f"with `destination` `thread` to open one about {project!r}."
+                    f"with `new_thread=true` to open one about {project!r}."
                 )
             current = await thread.project
             if current is not None:
                 raise GatewayRefusal(
                     f"This thread is already about {current.name!r}, and a thread "
                     "binds once — a different project is a different thread, which "
-                    "`destination` `thread` opens."
+                    "`new_thread=true` opens."
                 )
-            crossing = None
         else:
-            handles = await self.destination_handles("teleport")
-            if destination.handle not in handles:
+            source = self.conversation_address
+            if source is not None and source.shared and destination != source:
                 raise GatewayRefusal(
-                    self.no_landing(destination.handle, handles, spell="teleport")
+                    "Shared history may only move into a sub-thread of the current chat."
                 )
-            crossing = (
-                await self.destination(destination.handle, spell="teleport")
-                if isinstance(destination, ChannelTarget)
-                else None
-            )
-            if crossing is not None:
-                route = next(
-                    (
-                        route
-                        for route in crossing.routes
-                        if self.is_compatible_agent(route.agent_id)
-                    ),
-                    None,
-                )
-                if route is None:
-                    channel = self.channels[crossing.address.channel_tentacle_id]
-                    raise GatewayRefusal(
-                        f"{channel.name} has no agent that can import this native history."
-                        if self.native
-                        else f"{channel.name} does not run you ({self.current_agent_id}), "
-                        f"and a teleport takes you with it. Carry on here, or "
-                        f"`{SUMMON_TOOL_NAME}` an agent it does run."
+            destination = await self.prepare_address(destination)
+        if new_thread and (self.native or destination != self.conversation_address):
+            route = next(
+                (
+                    route
+                    for route in self.channel_routes.get(
+                        destination.channel_tentacle_id, []
                     )
-                agent_id = route.agent_id
+                    if self.is_compatible_agent(route.agent_id)
+                ),
+                None,
+            )
+            if route is None:
+                channel = self.channels[destination.channel_tentacle_id]
+                raise GatewayRefusal(
+                    f"{channel.name} has no agent that can import this native history."
+                    if self.native
+                    else f"{channel.name} does not run you ({self.current_agent_id}), "
+                    f"and a teleport takes you with it. Carry on here, or "
+                    f"`{SUMMON_TOOL_NAME}` an agent it does run."
+                )
+            agent_id = route.agent_id
         if reason := self.teleport_unavailable:
             raise GatewayRefusal(reason)
         if project is not None:
@@ -765,8 +661,8 @@ class OctomateSession:
         decision = TeleportDecision(
             agent_id=agent_id,
             hint=hint,
-            crossing=CrossingLanding(address=crossing.address) if crossing else None,
-            here=isinstance(destination, HereTarget),
+            destination=destination,
+            new_thread=new_thread,
             project=project,
             ref=ref,
         )
@@ -818,11 +714,9 @@ class OctomateSession:
     ) -> str:
         """Validate and record a scheme decision, returning the sentence the
         scheming agent is told. The move itself is the graph's, after the turn."""
-        where = await self.destination(destination.handle, spell="scheme")
-        self.decision = SchemeDecision(
-            hint=hint, brief=brief, destination=where.address
-        )
-        return f"Taking this to {where.label}."
+        address = await self.direct_destination(destination)
+        self.decision = SchemeDecision(hint=hint, brief=brief, destination=address)
+        return f"Taking this to your direct messages on {address.channel_tentacle_id}."
 
     async def resolve_send(self, destination: SendTarget) -> ChannelAddress | None:
         """The address a send delivers to, or None for this conversation itself.
@@ -830,13 +724,15 @@ class OctomateSession:
         Being in their direct messages already stops a `scheme` — nowhere to move
         the conversation to — but never a send: that *is* where it was asked to go,
         so it lands here rather than being refused."""
-        already_there = (
-            destination.handle == DIRECT_TARGET.handle
-            and self.private_blocked_by == "already_private"
-        )
-        if destination.handle == HERE_TARGET.handle or already_there:
+        if isinstance(destination, HereTarget):
             return None
-        return (await self.destination(destination.handle, spell="send")).address
+        source = self.conversation_address
+        local = destination.channel is None or (
+            source is not None and destination.channel == source.channel_tentacle_id
+        )
+        if local and self.private_blocked_by == "already_private":
+            return None
+        return await self.direct_destination(destination)
 
     def thread_operation(self) -> GatewayThreadSignal:
         """Package a validated user action for the graph's existing-thread entry."""

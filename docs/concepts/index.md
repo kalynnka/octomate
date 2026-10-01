@@ -21,7 +21,7 @@ the same reason.
                                     |
                                     v
                              the reflex graph
-              Awake -> Route -> React -> Handoff / Teleport / Scheme
+              Awake -> Route -> React -> Summon / Teleport / Scheme
                                     |
                                     v
                               AgentTentacle

@@ -3,13 +3,13 @@
 The spells decide where a turn goes, who handles it, and what it is about. Each is
 opaque on its own, so the instruction opens with plain words for what they actually do:
 
-- `inspect`: reveal the other agents this one can hand off to or put to work.
+- `inspect`: reveal agent routes, suggested addresses, or projects.
 - `summon`: hand the conversation to another agent (a handoff — they take over from a
   brief). The graph reads the recorded decision after the run.
-- `teleport`: continue the same agent in a new place (a sub-thread), carrying the
+- `teleport`: continue the same agent in a new thread, carrying the
   history forward. Deferred, so the graph can fork the history and resume. With a
   `project`, the place is that project's workspace — the door out of a throwaway
-  tree into one whose work is kept — and `here` stays in this thread to bind it.
+  tree into one whose work is kept — and `new_thread=false` binds the current thread.
 - `dismiss`: give a project thread's workspace back once the work in it is done.
   Recorded, and performed by the graph when the turn ends and its work is saved.
 - `commission`: draw another agent into working a self-contained task in the background
@@ -64,17 +64,13 @@ from octomate.schemas.triage import (
     SCHEME_TOOL_NAME,
     SUMMON_TOOL_NAME,
     TELEPORT_TOOL_NAME,
-    THREAD_TARGET,
     WHISPER_TOOL_NAME,
     AgentRoute,
-    Destination,
     GatewayDecision,
     InspectFacet,
     ProjectSummary,
     SchemeTarget,
     SendTarget,
-    SummonTarget,
-    TeleportTarget,
 )
 
 if TYPE_CHECKING:
@@ -89,14 +85,29 @@ COMMISSION_TIMEOUT = 900.0
 
 # The instruction prose, templated only where a spell is named: each runtime's
 # adapter renders the same contract under its own tool naming (`inspect` for Inkling,
-# `gateway_inspect` on the served server). Everything else — argument names, the
-# `here`/`thread`/`dm` handles — is the shared vocabulary and stays literal.
+# `gateway_inspect` on the served server). Argument names and address fields are
+# shared by both surfaces and stay literal.
 GATEWAY_INSTRUCTION_TEMPLATE = """\
 ## Gateway — decide where this conversation goes and who handles it
 
 These tools route the conversation. Default to handling it yourself: if you can answer
 well or do the work, do it and call none of them. Routing is the exception — reach for a
 tool only when one of the signals below clearly fires.
+
+### Addresses and discovery
+For `{summon}` and `{teleport}`, `destination` is a `ChannelAddress` object, or
+`destination=null` to use the current conversation's address. An address carries
+`channel_tentacle_id`, `chat_type`, `chat_id`, `user_id`, and optional
+`channel_thread_id` and `shared` visibility. Use known identifiers and preserve
+visibility; `user_id` must match the requesting user's linked identity on that
+channel. When no current conversation is attached, supply an explicit address.
+
+`{inspect}` with `reveal="destinations"` suggests addresses without creating anything.
+You can also supply a known address directly; discovery is optional, and each
+operation validates the address independently. Suggestions are not an exhaustive
+list or a guarantee that every spell can use each address.
+`new_thread=true` is the default: create a thread at the address. For creation,
+use `channel_thread_id=null`; an existing thread cannot contain another thread.
 
 ### `{summon}` — hand off to another agent
 Summon transfers the conversation to a specialist who takes over this turn *and its
@@ -112,31 +123,37 @@ Do NOT summon when:
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
 When one fires, call `{inspect}` with `reveal="routes"` first to see the agents and what
-each is for. Every route carries a claim: its ability (what that agent+model is for)
+each is for. For another destination channel, also pass
+`channel=destination.channel_tentacle_id` to inspect that channel's routes.
+Every route carries a claim: its ability (what that agent+model is for)
 and the effort levels it accepts — pick the route whose ability covers the work. Set
 `effort` only when the user explicitly asked for a level; otherwise leave it unset so
 the agent's own default applies. Then `{summon}` — copying its `agent_id` and `model`
 exactly from that route, and writing a self-contained brief since the other agent may
-not see this chat. Choose `destination`: `here` hands over this same conversation;
-`thread` opens a new sub-thread of the current chat; a destination handle from
-`{inspect}` with `reveal="destinations"` starts a new thread there. You yourself are
-not a valid summon target.
+not see this chat. Use `new_thread=false` to hand over the current conversation
+in place when supported, or keep `new_thread=true` to create a thread at the
+selected address. In-place takeover is refused on a group's main conversation
+and in native sessions. You yourself are not a valid summon target.
 
 ### `{teleport}` — relocate yourself
 Move this conversation into a new thread that *you* keep handling, carrying
 everything said so far. Use it for multi-step or long-running work that deserves its
 own thread but that you are the right one to do — no other agent involved.
-`destination` is `thread`, a sub-thread of the current chat, unless you copy a
-destination handle from `{inspect}` (`reveal="destinations"`) to start a new thread
-there. Moving elsewhere is offered only from a conversation nobody else can read,
-since everything said here travels with you.
+Omit `destination` or use null for the current address, or supply another address.
+Teleport requires attached conversation history that the agent can copy, and the
+destination must support continuing that agent. Shared history can only move into
+a sub-thread of the current chat; moving to another address requires a private
+source. If a requested new thread cannot be created, the move fails without
+silently continuing at its parent.
 
 To work on a project, add `project` (from `{inspect}` with `reveal="projects"`), and
 `ref` — a branch, tag or commit — only when the default branch is the wrong place to
 start: the thread you land in is bound to it and you resume in its workspace, where
 work is kept. A thread about no project runs in a throwaway tree, so do this before
-you start work, not after. From inside a thread, `destination="here"` binds this
-one; a thread binds once, and a different project is a different thread.
+you start work, not after. From inside a thread, use `destination=null`,
+`new_thread=false` and `project` to bind this one without opening another.
+Staying put requires a project; a thread binds once, and a different project is
+a different thread. Native sessions must move into a new thread.
 
 ### `{scheme}` — take it to the user privately
 Continue one-to-one with the person who asked, in their direct messages: for work that
@@ -144,8 +161,11 @@ is theirs alone, or that does not belong in front of the group. Whoever already 
 their direct messages picks it up, so write `brief` self-contained — it may not be you,
 and they cannot see this chat. `hint` opens the conversation over there and is the
 first thing they read; nothing is posted here, so close out your own reply by saying
-the work is moving, not what it is. Only from a group, on a platform that has direct
-messages; the tool says so when it does not apply.
+the work is moving, not what it is. Its destination is a target object with
+`kind="dm"`, optionally naming a connected `channel` ID for the user's linked
+account there. Omitting the destination uses this channel's DM; that local move
+requires a shared source. Another connected channel's DM can also be selected
+from a private source. The tool refuses unsupported or unlinked destinations.
 
 ### `{dismiss}` — give the workspace back when the work is done
 A thread about a project keeps its workspace between turns, which is what makes its
@@ -192,11 +212,16 @@ the way. Anything sent this way is already delivered: your final reply continues
 there — summarize or extend it, never restate it. If everything worth saying went out
 already, close with a short wrap-up rather than re-sending it.
 
-`destination` is `here` by default. `dm` delivers to the person who asked, privately —
+`destination` defaults to a target object with `kind="here"`. A target with
+`kind="dm"` delivers to the person who asked, privately —
 for something that is *for them*, like a summary sent over; say in your reply that you
 sent it. `dm` hands nothing over: you keep this conversation and nobody picks the work
 up there, so use `{scheme}` when the work itself should continue privately. Asking for
 `dm` while already in that person's direct messages is fine — it lands here.
+A DM target can name a connected `channel` ID to reach their linked account there.
+If no current conversation is attached, that channel must be explicit. Use the
+selected address's `channel_tentacle_id` as `channel`; the recipient is resolved
+from the user's linked profile.
 
 To thread onto a specific message in a busy chat, lead with a reply segment whose id
 is that message's `#msg:<id>` handle — it must be the first segment. To ping someone,
@@ -226,8 +251,9 @@ COMMISSION_INSTRUCTION = """\
 ### `commission` — put another agent to work in the background (you keep the conversation)
 Where `summon` hands the conversation away, `commission` does not: another agent works a
 self-contained task and the tool returns its report — the user sees only your reply.
-Pick the route from `inspect` exactly as for `summon`; the same claim and effort rules
-apply. Give the accomplice a short mnemonic `name`. The brief must stand alone: the
+Call `inspect` with `reveal="routes"` and no `channel` to choose a route from this
+conversation's channel; the same claim and effort rules as `summon` apply.
+Give the accomplice a short mnemonic `name`. The brief must stand alone: the
 accomplice cannot see this chat and has no user to ask, so include the goal, the
 relevant context, and what a finished result looks like. Several commissions in one
 reply run concurrently.
@@ -278,7 +304,7 @@ class GatewayCapability(AbstractCapability[None]):
             and self.session.thread_id is not None
             and self.session.conversation_address is not None
         ):
-            self.commissioning = self.session.commissioning = True
+            self.commissioning = True
             toolset.tool(name=COMMISSION_TOOL_NAME, retries=2)(self.commission)
             toolset.tool(name=WHISPER_TOOL_NAME, retries=2)(self.whisper)
         self.toolset = toolset
@@ -370,19 +396,22 @@ class GatewayCapability(AbstractCapability[None]):
         return str(output)
 
     async def inspect(
-        self, ctx: RunContext[None], reveal: InspectFacet
-    ) -> list[AgentRoute] | list[Destination] | list[ProjectSummary]:
+        self, ctx: RunContext[None], reveal: InspectFacet, channel: str | None = None
+    ) -> list[AgentRoute] | list[ChannelAddress] | list[ProjectSummary]:
         """Reveal one facet of what this conversation can reach.
 
         Args:
-            reveal: `routes` — the Octomate agent tentacles that can be summoned or
-                commissioned from here. `destinations` — anywhere other than here
-                that the person you are answering can be reached privately, each
-                with the agents that run there. `projects` — the projects this
-                deployment can work on, for `teleport`.
+            reveal: `routes` — agent/model choices on the current or selected channel.
+                Summon uses the destination's routes; commission uses the current
+                channel's routes.
+                `destinations` — optional address suggestions, validated independently
+                when used; known addresses need not appear in this list.
+                `projects` — the projects this deployment can work on, for `teleport`.
+            channel: For `routes`, a connected channel ID from an address. Omit
+                to inspect the current conversation's routes.
         """
         try:
-            return await self.session.inspect(reveal)
+            return await self.session.inspect(reveal, channel)
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
 
@@ -391,21 +420,27 @@ class GatewayCapability(AbstractCapability[None]):
         ctx: RunContext[None],
         agent_id: str,
         model: str,
-        destination: SummonTarget,
+        destination: ChannelAddress | None,
         hint: str,
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
+        new_thread: bool = True,
     ) -> str:
         """Hand this conversation to another Octomate agent, who takes it over.
 
         Args:
             agent_id: The target agent, copied exactly from an `inspect` route
-                (`reveal="routes"`) — use the selected destination's routes when
-                moving elsewhere.
+                (`reveal="routes"`) — pass the destination's `channel_tentacle_id`
+                as `channel` when moving elsewhere.
             model: That route's model, copied exactly.
-            destination: Where the other agent picks it up. Copy a destination
-                handle from `inspect` to start a new thread there.
+            destination: A known ChannelAddress, or null for the current conversation.
+                Discovery offers suggestions; the address is validated independently.
+                Its user must match the requesting user's linked identity. Supply an
+                explicit address when no current conversation is attached.
+            new_thread: Create a thread at the address. Set false only to hand
+                over the current conversation in place, where takeover is allowed.
+                For creation, the address must have no `channel_thread_id`.
             hint: A short, user-facing note announcing the handoff; used as the
                 opener when a new thread is started.
             reason: One line on why this agent fits — recorded with the handoff, not
@@ -428,6 +463,7 @@ class GatewayCapability(AbstractCapability[None]):
                 agent_id=agent_id,
                 model=model,
                 destination=destination,
+                new_thread=new_thread,
                 hint=hint,
                 reason=reason,
                 summon=summon,
@@ -440,9 +476,10 @@ class GatewayCapability(AbstractCapability[None]):
         self,
         ctx: RunContext[None],
         hint: str,
-        destination: TeleportTarget = THREAD_TARGET,
+        destination: ChannelAddress | None = None,
         project: str | None = None,
         ref: str | None = None,
+        new_thread: bool = True,
     ) -> str:
         """Continue this conversation yourself somewhere else; everything said so
         far comes with you. This turn ends on it, and you are re-awoken there with
@@ -450,11 +487,14 @@ class GatewayCapability(AbstractCapability[None]):
 
         Args:
             hint: The short, user-facing thread-starter message.
-            destination: Where to carry it, a sub-thread of this chat by default. A
-                destination handle starts a new thread there, offered
-                only out of a conversation nobody else can read — everything said
-                here goes with you, and it is not all yours to move. `here` stays
-                in this thread, and only to bind it to a `project`.
+            destination: The address at which to create a thread; omit for the
+                current chat. The owning channel validates it independently of
+                discovery and requires the requesting user's linked identity.
+                Shared history stays under its current parent. Teleport requires
+                attached history that the agent can copy.
+            new_thread: Create a thread before continuing. Set false only to bind
+                the current thread to a project without opening another one.
+                For creation, the address must have no `channel_thread_id`.
             project: A project's name, copied exactly from `inspect`
                 (`reveal="projects"`): the thread you land in is bound to it, and
                 you resume in its workspace, where work is kept.
@@ -463,13 +503,14 @@ class GatewayCapability(AbstractCapability[None]):
         """
         try:
             decision = await self.session.teleport(
-                hint=hint, destination=destination, project=project, ref=ref
+                hint=hint,
+                destination=destination,
+                new_thread=new_thread,
+                project=project,
+                ref=ref,
             )
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
-        # Plain values rather than the resolved landing: the far end is always
-        # somebody's direct messages, which is exactly what `open_dm` takes, and
-        # metadata rides through the deferral untyped either way.
         raise CallDeferred(metadata=decision.metadata())
 
     async def scheme(
@@ -498,9 +539,10 @@ class GatewayCapability(AbstractCapability[None]):
                 person has spoken in, so cite a message by its `#msg:<id>` handle and
                 say what to search for instead of pasting it. A brief over the size
                 budget is refused, never trimmed.
-            destination: Whose direct messages — `dm` by default, or a
-                destination handle from `inspect` (`reveal="destinations"`) to continue where
-                they already are.
+            destination: A target object with `kind="dm"`. Omit `channel` for this
+                channel's DM when moving from a shared source, or name another
+                connected channel ID, including from a private source. The user's
+                linked profile determines the recipient.
         """
         try:
             return await self.session.scheme(
@@ -521,8 +563,12 @@ class GatewayCapability(AbstractCapability[None]):
 
         Args:
             segments: What to deliver.
-            destination: Where to deliver it, this conversation by default. Say in
-                your reply when you sent it somewhere other than here.
+            destination: A target object with `kind="here"` (the default) or
+                `kind="dm"`. A DM target can name a connected `channel` ID; omit
+                it for this channel. With no current conversation, name a channel
+                explicitly. When choosing from an inspected address, use its
+                `channel_tentacle_id` as `channel`; the linked profile supplies the
+                recipient. Say in your reply when you sent it elsewhere.
         """
         try:
             address = await self.session.resolve_send(destination)
@@ -562,7 +608,7 @@ class GatewayCapability(AbstractCapability[None]):
             name: Your name for this accomplice — short and mnemonic, e.g.
                 `repo-audit`. `whisper` to it later to follow up.
             agent_id: The agent to draw in, copied exactly from an
-                `inspect` route.
+                `inspect` route for this conversation's channel (omit `channel`).
             model: That route's model, copied exactly.
             brief: The self-contained work order. The accomplice cannot see
                 this conversation and has no user to ask, so give the

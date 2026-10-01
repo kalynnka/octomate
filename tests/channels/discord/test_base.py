@@ -310,10 +310,12 @@ async def test_start_sub_thread_creates_a_public_thread_for_a_group(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     channel = DiscordTentacle("discord-main", Octomate(), config=config)
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str | None]] = []
 
-    async def start_public_thread(chat_id: str, hint_text: str) -> str:
-        calls.append((chat_id, hint_text))
+    async def start_public_thread(
+        chat_id: str, hint_text: str, *, user_id: str | None = None
+    ) -> str:
+        calls.append((chat_id, hint_text, user_id))
         return "500"
 
     monkeypatch.setattr(channel.ink, "start_public_thread", start_public_thread)
@@ -327,7 +329,7 @@ async def test_start_sub_thread_creates_a_public_thread_for_a_group(
 
     result = await channel.start_sub_thread(address, "Continue in a thread")
 
-    assert calls == [("400", "Continue in a thread")]
+    assert calls == [("400", "Continue in a thread", "100")]
     assert result == ChannelAddress(
         channel_tentacle_id=channel.id,
         chat_type="thread",
@@ -442,35 +444,37 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
     )
     resolve = AsyncMock(return_value=channel)
     monkeypatch.setattr(tentacle.ink, "resolve_messageable", resolve)
-    assert await tentacle.thread_destinations(profile) == []
+    assert await tentacle.suggest_addresses(profile) == []
     assert (
-        await tentacle.thread_destinations(
+        await tentacle.suggest_addresses(
             profile, replace(source_address, chat_type="dm", shared=False)
         )
         == []
     )
     assert (
-        await tentacle.thread_destinations(
+        await tentacle.suggest_addresses(
             profile,
             replace(source_address, chat_type="thread", channel_thread_id="500"),
         )
         == []
     )
     resolve.assert_not_awaited()
-    destinations = await tentacle.thread_destinations(profile, source_address)
+    destinations = await tentacle.suggest_addresses(profile, source_address)
     if denied:
         assert destinations == []
+        with pytest.raises(ValueError, match=r"inaccessible|cannot use"):
+            await tentacle.prepare_address(source_address)
         return
     destination, alternative = destinations
-    assert alternative.handle == f"discord/{other.id}"
-    assert alternative.address.chat_id == str(other.id)
-    assert "Development / #planning" in alternative.label
-    assert destination.handle == f"discord/{channel.id}"
-    assert "Development / #work" in destination.label
-    assert destination.address.shared
-    assert destination.address.chat_type == "group"
+    parent = await tentacle.prepare_address(source_address)
+    assert parent == source_address
+    fetch_member.reset_mock()
+    assert alternative == replace(source_address, chat_id=str(other.id))
+    assert destination == source_address
+    assert parent.shared
+    assert parent.chat_type == "group"
     assert (
-        await tentacle.thread_destinations(
+        await tentacle.suggest_addresses(
             UserProfile(channel_tentacle_id="unlinked", channel_user_id="100")
         )
         == []
@@ -482,12 +486,32 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
     )
     monkeypatch.setattr(discord.TextChannel, "send", sent)
     monkeypatch.setattr(discord.Message, "create_thread", opened)
-    address = await tentacle.start_thread(destination.address, "Continue here")
+    address = await tentacle.start_thread(parent, "Continue here")
     assert address.channel_thread_id == "500"
     fetch_member.assert_awaited_once_with(100)
     # Access is rechecked at execution, after the menu was opened.
     allowed.create_public_threads = False
     with pytest.raises(ValueError, match="no longer use"):
-        await tentacle.start_thread(destination.address, "Continue here")
+        await tentacle.start_thread(parent, "Continue here")
+    with pytest.raises(ValueError, match="no longer use"):
+        await tentacle.start_sub_thread(parent, "Continue here")
     sent.assert_awaited_once()
     opened.assert_awaited_once()
+
+
+@pytest.mark.parametrize("surface", ["dm", "thread", "forum"])
+async def test_explicit_discord_parent_refuses_non_text_channels(
+    monkeypatch: pytest.MonkeyPatch, surface: str
+) -> None:
+    ink = DiscordInk(discord.Client(intents=discord.Intents.none()))
+    resolve = AsyncMock(return_value=a_dm_channel() if surface == "dm" else a_thread())
+    if surface == "forum":
+        resolve.side_effect = TypeError("Forum channels cannot carry messages")
+    monkeypatch.setattr(ink, "resolve_messageable", resolve)
+    fetch = AsyncMock()
+    monkeypatch.setattr(discord.Guild, "fetch_member", fetch)
+
+    with pytest.raises(ValueError, match=r"text channel|inaccessible"):
+        await ink.prepare_address(ChannelAddress("discord", "group", "400", "100"))
+
+    fetch.assert_not_awaited()

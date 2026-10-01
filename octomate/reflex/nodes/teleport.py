@@ -3,8 +3,7 @@ somewhere else and resumes it there."""
 
 from __future__ import annotations
 
-import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, GraphRunContext
@@ -22,19 +21,14 @@ from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.telemetry import reflex_logfire
 
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
-    """A `teleport` deferred call: carry the running agent's history somewhere else
-    and resume it there — a fresh sub-thread of the current chat, of this person's
-    direct messages on another channel when the gate resolved a crossing, or this
-    very thread when the move is only into a project's workspace. The gate refuses
-    the call outright where no sub-thread can be opened, so what is left here is
-    the open that fails at the moment of asking — then resolve in place and stay
-    put. With a project, the thread landed in is bound to it and its workspace is
-    forked, so the resumed run starts in the project's code."""
+    """Create a thread at the prepared address, copy history and resume the agent.
+
+    An in-place move binds a project without creating a thread. A failed creation
+    refuses the move before any history is copied.
+    """
 
     request: TeleportRequest
     origin: ResponseTarget
@@ -54,45 +48,22 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         hint = self.request.hint or "Octomate is continuing this request here."
 
         new_target = origin
-        crossing = self.request.crossing
-        if self.request.here:
-            # Asked to stay: the move is into a project's workspace, and this
-            # thread is what gets bound. Nothing to open.
-            pass
-        elif crossing is not None:
-            crossed = await open_crossing(
-                ctx, crossing, origin_address, hint, self.agent_id
+        if self.request.new_thread:
+            destination = self.request.destination or origin_address
+            opened = await open_crossing(
+                ctx, destination, origin_address, hint, self.agent_id
             )
-            if crossed is not None:
-                far = ctx.deps.channel(crossed.channel_tentacle_id)
+            if opened is not None:
+                channel = ctx.deps.channel(opened.channel_tentacle_id)
                 new_target = ResponseTarget(
-                    channel_id=crossed.channel_tentacle_id,
-                    address=crossed,
-                    thread_strategy=far.thread_strategy,
+                    channel_id=channel.id,
+                    address=opened,
+                    thread_strategy=channel.thread_strategy,
                     mode="sub",
                 )
-        else:
-            channel = ctx.deps.channel(origin)
-            if channel.surfaces.sub_thread and not origin_address.channel_thread_id:
-                try:
-                    new_address = await channel.start_sub_thread(origin_address, hint)
-                    if new_address != origin_address:
-                        await ctx.deps.record_move(
-                            origin_address,
-                            hint,
-                            agent_tentacle_id=self.agent_id,
-                            platform_message_id=new_address.channel_thread_id,
-                        )
-                    new_target = replace(origin, address=new_address, mode="sub")
-                except Exception:
-                    logger.warning(
-                        "Channel %s failed to open a teleport sub-thread; staying put",
-                        origin.channel_id,
-                        exc_info=True,
-                    )
 
         new_address = new_target.address
-        if self.request.tool_call_id is None and new_address == origin_address:
+        if self.request.new_thread and new_address == origin_address:
             raise ValueError(
                 "The destination could not create a thread; nothing was teleported."
             )
@@ -184,7 +155,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 model_name=state.decision.model if state.decision is not None else None,
             )
             await agent.relocate(conversation, cwd=cwd)
-        elif self.request.here:
+        elif not self.request.new_thread:
             external_id = await agent.fork_session(conversation, cwd=cwd)
             if external_id is not None and external_id != conversation.external_id:
                 await ctx.deps.conversation_manager.set_external_id(

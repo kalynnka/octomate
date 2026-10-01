@@ -11,7 +11,7 @@ import asyncio
 import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import (
     TYPE_CHECKING,
@@ -39,7 +39,6 @@ from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
-from octomate.schemas.triage import Destination
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.base import Tentacle
@@ -83,35 +82,6 @@ class ChannelSurfaces:
 
     sub_thread: bool = False
     direct_message: bool = False
-
-
-@dataclass(frozen=True)
-class ThreadLocation:
-    """A location for a new independent thread, with no parent conversation."""
-
-    # Stable within the channel; an empty key names its default location.
-    key: str
-    label: str
-    chat_id: str
-    shared: bool = False
-    chat_type: Literal["thread"] = field(default="thread", init=False)
-
-
-@dataclass(frozen=True)
-class SubThreadLocation:
-    """A DM or group chat under which a new sub-thread can be opened."""
-
-    # Stable within the channel; an empty key names its default location.
-    key: str
-    label: str
-    # The parent chat's surface, not the type of the resulting thread.
-    chat_type: Literal["dm", "group"]
-    # Empty when the requesting user's DM must be opened at execution time.
-    chat_id: str
-    shared: bool = False
-
-
-type ThreadLocationVariant = ThreadLocation | SubThreadLocation
 
 
 @dataclass(frozen=True)
@@ -202,15 +172,17 @@ class Ink[MessageT](ABC):
         same native field collapse them in their ink implementation.
         """
 
-    async def thread_locations(
-        self, user_id: str, source_address: ChannelAddress | None = None
-    ) -> list[ThreadLocationVariant]:
-        """List locations without opening a chat or posting.
-
-        The source address is this channel's current conversation, or None for entry from
-        elsewhere. Use its parent surface; do not offer nested sub-threads.
-        """
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
+        """Suggest thread parents for this identity, without creating or posting."""
         return []
+
+    async def prepare_address(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> ChannelAddress:
+        """Validate one parent and resolve platform details without creating a thread."""
+        raise ValueError("This channel cannot prepare a thread at this address.")
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The chat id of this bot's 1:1 with `user_id`, opening it if needed.
@@ -460,37 +432,37 @@ class ChannelTentacle(
             return None
         return profile.channel_user_id or None
 
-    async def thread_destinations(
+    async def suggest_addresses(
         self, profile: UserProfile, source_address: ChannelAddress | None = None
-    ) -> list[Destination]:
-        """Translate this user's platform locations into stable gateway destinations."""
+    ) -> list[ChannelAddress]:
+        """Suggest addresses using the requesting user's linked channel identity."""
         user_id = self.thread_user_id(profile)
         if user_id is None:
             return []
         if source_address is not None and source_address.channel_tentacle_id != self.id:
             source_address = None
-        destinations: list[Destination] = []
-        for location in await self.ink.thread_locations(user_id, source_address):
-            address = ChannelAddress(
-                channel_tentacle_id=self.id,
-                chat_type=location.chat_type,
-                chat_id=location.chat_id,
-                user_id=user_id,
-                shared=location.shared,
+        return [
+            address
+            for address in await self.ink.suggest_addresses(
+                ChannelAddress(self.id, "dm", "", user_id), source_address
             )
-            if isinstance(location, SubThreadLocation) and (
-                (source_address is not None and bool(source_address.channel_thread_id))
-                or not self.accepts_sub_thread(address)
-            ):
-                continue
-            destinations.append(
-                Destination(
-                    handle=f"{self.id}/{location.key}" if location.key else self.id,
-                    label=f"{self.name} · {location.label}",
-                    address=address,
-                )
-            )
-        return destinations
+            if address.chat_type == "thread" or self.accepts_sub_thread(address)
+        ]
+
+    async def prepare_address(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> ChannelAddress:
+        """Validate the requested parent before any thread or history is created."""
+        if address.channel_tentacle_id != self.id:
+            raise ValueError("The address belongs to another channel.")
+        if address.channel_thread_id:
+            raise ValueError("A thread cannot contain another thread.")
+        if source_address is not None and source_address.channel_tentacle_id != self.id:
+            source_address = None
+        prepared = await self.ink.prepare_address(address, source_address)
+        if prepared.chat_type != "thread" and not self.accepts_sub_thread(prepared):
+            raise ValueError("This address cannot contain a thread.")
+        return prepared
 
     async def start_thread(self, address: ChannelAddress, hint: str) -> ChannelAddress:
         """Open an isolated destination, refusing to reuse an existing chat."""
