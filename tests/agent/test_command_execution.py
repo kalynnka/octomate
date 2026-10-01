@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator, Sequence
-from contextlib import nullcontext
+from contextlib import aclosing, nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.database import async_session
 from octomate.managers.commands import CommandManager
 from octomate.managers.gateway import OctomateSession
@@ -46,6 +46,8 @@ class ExecutingAgent(DiscoveringAgent):
     receipts: list[ThreadCommand] = field(default_factory=list)
     behavior: Literal[
         "direct",
+        "direct_cleanup_error",
+        "empty",
         "stream",
         "stream_complete",
         "stream_raise",
@@ -64,7 +66,7 @@ class ExecutingAgent(DiscoveringAgent):
         *,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
-    ) -> CommandOutcome | ReactEventStream[ChannelOutput]:
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[ChannelOutput], None]:
         async with async_session() as session:
             self.receipts = list(await session.list(ThreadCommand, limit=None))
         self.invocations.append(invocation)
@@ -74,9 +76,19 @@ class ExecutingAgent(DiscoveringAgent):
             raise RuntimeError("private runtime details")
         if self.behavior == "cancel":
             raise asyncio.CancelledError
+        if self.behavior == "empty":
+            return
         if self.behavior.startswith("stream"):
-            return ReactEventStream(self.events())
-        return CommandResult(segments=[TextSegment(data={"text": "Done"})])
+            async with aclosing(self.events()) as events:
+                async for event in events:
+                    yield event
+            return
+        try:
+            yield CommandResult(segments=[TextSegment(data={"text": "Done"})])
+        finally:
+            self.stream_closed = True
+            if self.behavior == "direct_cleanup_error":
+                raise RuntimeError("private cleanup details")
 
     async def events(self) -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
         try:
@@ -200,6 +212,29 @@ async def test_execution_uses_injected_managers_without_an_agent_host(
         assert isinstance(result, CommandResult)
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions
+
+
+@pytest.mark.parametrize("behavior", ["direct", "direct_cleanup_error", "empty"])
+async def test_direct_outcome_requires_a_result_and_successful_cleanup(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    behavior: Literal["direct", "direct_cleanup_error", "empty"],
+) -> None:
+    agent.behavior = behavior
+    invocation = CommandInvocation(command_id="skill")
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as result:
+        assert isinstance(result, CommandResult | CommandError)
+        assert result.status == ("completed" if behavior == "direct" else "failed")
+        assert agent.stream_closed is (behavior != "empty")
+    assert not app.gateway.sessions
+    async with app.commands.execute(
+        agent, context, invocation, delivery_id="command-1"
+    ) as repeated:
+        assert repeated == result
+    assert len(agent.invocations) == 1
 
 
 @pytest.mark.parametrize(

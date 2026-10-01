@@ -34,6 +34,7 @@ from claude_agent_sdk import (
     PermissionResultAllow,
     PermissionResultDeny,
     PreToolUseHookInput,
+    ResultMessage,
     ToolPermissionContext,
 )
 from claude_agent_sdk.types import SystemPromptPreset
@@ -80,7 +81,14 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.commands import CommandCatalog, CommandContext
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+    CommandResult,
+)
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -91,6 +99,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -101,6 +110,7 @@ from octomate.telemetry import (
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.ink import ClaudeInk
@@ -521,9 +531,53 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             descriptors=set(info.commands),
             limitations=[
                 "Claude safe mode disables local commands, skills and plugins.",
-                "Claude command execution is not implemented yet.",
             ],
         )
+
+    async def execute_command(
+        self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+        *,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
+        """Dispatch a native command, retaining direct output outside model history."""
+        conversation = context.conversation
+        if conversation is None:
+            raise ValueError("command execution requires a conversation")
+        catalog = await self.discover_commands(context)
+        descriptors = {
+            entry.id: entry
+            for entry in catalog.descriptors
+            if isinstance(entry, ClaudeCommandDescriptor)
+        }
+        descriptor = descriptors.get(invocation.command_id)
+        if descriptor is None:
+            yield CommandError(
+                status="stale", message="This command changed; refresh commands."
+            )
+            return
+        prompt = f"/{descriptor.name}"
+        if invocation.arguments:
+            prompt += f" {invocation.arguments}"
+        events = self._iter_events(
+            prompt,
+            command=descriptor,
+            conversation_address=context.address,
+            thread_id=conversation.thread_id,
+            conversation_id=conversation.id,
+            run_name=descriptor.name,
+            model=context.model,
+            deferred_suspender=deferred_suspender,
+            capabilities=capabilities,
+        )
+        try:
+            async with contextlib.aclosing(events):
+                async for event in events:
+                    yield event
+        except LookupError as error:
+            yield CommandError(status="stale", message=str(error))
 
     async def discover_models(self) -> None:
         session_id = str(uuid7())
@@ -604,7 +658,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
-    ) -> AsyncGenerator[ReactStreamEvent[str], None]:
+        command: ClaudeCommandDescriptor | None = None,
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
         cli_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
@@ -916,26 +971,54 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                             octomate_session is not None
                             and isinstance(octomate_session.decision, TeleportDecision)
                         ),
+                        command=command,
                     )
                 ) as messages,
             ):
                 self.commands.invalidate(
                     agent_id=self.id, conversation_id=conversation.id
                 )
+                command_result: ResultMessage | None = None
                 async for message in messages:
-                    for event in accumulator.consume(message):
+                    if command is not None and isinstance(message, ResultMessage):
+                        command_result = message
+                    for event in accumulator.consume(
+                        message, command=command is not None
+                    ):
                         yield event
+            if command is not None and command_result is None:
+                raise RuntimeError("Claude ended without a command result.")
             run_id = str(uuid7())
-            recorded_run = await self.conversations.record_agent_run(
-                conversation,
-                run_id=run_id,
-                messages=accumulator.messages,
-                name=run_name,
-                cwd=Path(run_cwd),
-                external_id=accumulator.session_id,
-                native_id=CLAUDE_NATIVE_ID,
-                native_turn_id=prompt_id,
-            )
+            recorded_run = None
+            if command is not None and accumulator.usage.requests == 0:
+                if accumulator.session_id:
+                    await self.conversations.set_external_id(
+                        conversation, accumulator.session_id
+                    )
+            else:
+                recorded_run = await self.conversations.record_agent_run(
+                    conversation,
+                    run_id=run_id,
+                    messages=accumulator.messages,
+                    name=run_name,
+                    cwd=Path(run_cwd),
+                    external_id=accumulator.session_id,
+                    native_id=CLAUDE_NATIVE_ID,
+                    native_turn_id=prompt_id,
+                )
+            if command_result is not None and command_result.is_error:
+                raise RuntimeError(
+                    command_result.result
+                    or "; ".join(command_result.errors or ())
+                    or f"Claude command failed: {command_result.subtype}"
+                )
+            if command is not None and recorded_run is None:
+                yield CommandResult(
+                    segments=[TextSegment(data={"text": accumulator.result_text})]
+                    if accumulator.result_text
+                    else []
+                )
+                return
             if source_thread_message_ids:
                 if recorded_run is None:
                     raise RuntimeError(
@@ -1221,22 +1304,31 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         spec: AgentSpecInput | None = None,
     ) -> ReactEventStream[str | RunOutputDataT]:
-        return ReactEventStream(
-            self._iter_events(
-                user_prompt,
-                conversation_address=conversation_address,
-                thread_id=thread_id,
-                source_thread_address=source_thread_address,
-                source_thread_message_ids=source_thread_message_ids,
-                run_name=run_name,
-                output_type=output_type,
-                model=model,
-                effort=effort,
-                conversation_id=conversation_id,
-                interactive=interactive,
-                instructions=instructions,
-                capabilities=capabilities,
-                deferred_tool_results=deferred_tool_results,
-                deferred_suspender=deferred_suspender,
-            )
+        source = self._iter_events(
+            user_prompt,
+            conversation_address=conversation_address,
+            thread_id=thread_id,
+            source_thread_address=source_thread_address,
+            source_thread_message_ids=source_thread_message_ids,
+            run_name=run_name,
+            output_type=output_type,
+            model=model,
+            effort=effort,
+            conversation_id=conversation_id,
+            interactive=interactive,
+            instructions=instructions,
+            capabilities=capabilities,
+            deferred_tool_results=deferred_tool_results,
+            deferred_suspender=deferred_suspender,
         )
+
+        async def events() -> AsyncGenerator[ReactStreamEvent[str], None]:
+            async with contextlib.aclosing(source):
+                async for event in source:
+                    if isinstance(event, CommandResult | CommandError):
+                        raise RuntimeError(
+                            "A Claude agent run yielded a command outcome"
+                        )
+                    yield event
+
+        return ReactEventStream(events())

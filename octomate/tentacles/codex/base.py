@@ -547,7 +547,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         *,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
-    ) -> CommandOutcome | ReactEventStream[str]:
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
         """Run a discovered skill in the selected conversation using SDK input."""
         conversation = context.conversation
         if conversation is None:
@@ -560,10 +560,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         }
         descriptor = descriptors.get(invocation.command_id)
         if descriptor is None:
-            return CommandError(
+            yield CommandError(
                 status="stale",
                 message="This skill is no longer available; refresh commands.",
             )
+            return
         inputs: list[InputItem] = [
             SkillInput(name=descriptor.name, path=str(descriptor.path))
         ]
@@ -571,7 +572,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         if invocation.arguments:
             inputs.append(TextInput(invocation.arguments))
             prompt += f" {invocation.arguments}"
-        return ReactEventStream(
+        async with contextlib.aclosing(
             self.observe_run(
                 self._iter_events(
                     prompt,
@@ -585,7 +586,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                     capabilities=capabilities,
                 )
             )
-        )
+        ) as events:
+            async for event in events:
+                yield event
 
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
         """Reuse one MCP key per user, replacing it when its lifetime expires."""

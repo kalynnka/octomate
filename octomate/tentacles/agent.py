@@ -353,15 +353,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
-    ) -> CommandOutcome | ReactEventStream[AgentOutputT]:
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[AgentOutputT], None]:
         """Invoke a revalidated runtime entry without passing through chat triage.
 
-        Direct controls return a CommandOutcome without invoking `run`. Entries
-        that run the agent return a lazy ReactEventStream: entering and consuming
-        it drives the runtime, with the same events, approvals, persistence and
-        cleanup as `run_stream_events`. The caller must hold the conversation's
-        active-turn guard until that stream closes, and forward the suspender and
-        capabilities for agent runs. Direct controls do not consume those inputs.
+        Direct controls yield one CommandOutcome without invoking `run`. Entries
+        that run the agent yield the same events as `run_stream_events`, ending
+        with an AgentRunResultEvent. Consuming this generator drives one native
+        invocation; closing it must release that invocation's resources. The
+        caller must close it even when abandoning the stream and hold the
+        conversation's active-turn guard through cleanup. Forward the suspender
+        and capabilities for agent runs; direct controls do not consume them.
 
         Resolve the opaque invocation id using this tentacle's current catalog.
         Execution behavior belongs to the invocation, not a fixed descriptor tag:
@@ -372,7 +373,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         catalog validation and delivery deduplication belong to the host caller;
         these adapter hooks do not establish any of them.
         """
-        return CommandError(
+        yield CommandError(
             status="unsupported",
             message=f"{self.id} does not support explicit command execution.",
         )

@@ -267,7 +267,10 @@ class ClaudeRunAccumulator:
             )
 
     def consume(
-        self, message: Message | TranscriptAssistantLine | TranscriptUserLine
+        self,
+        message: Message | TranscriptAssistantLine | TranscriptUserLine,
+        *,
+        command: bool = False,
     ) -> Iterator[StreamEvents[str]]:
         """Translate one message into the run's projections. Accepts both the SDK's
         live message stream and a transcript's typed lines (transcript.py) — a replay
@@ -283,6 +286,13 @@ class ClaudeRunAccumulator:
         elif isinstance(message, StreamEvent):
             yield from self._consume_stream_event(message)
         elif isinstance(message, AssistantMessage):
+            if command and message.model == "<synthetic>":
+                self.result_text = "\n".join(
+                    block.text
+                    for block in message.content
+                    if isinstance(block, TextBlock)
+                )
+                return
             yield from self._consume_assistant(message)
         elif isinstance(message, UserMessage):
             yield from self._consume_tool_results(message)

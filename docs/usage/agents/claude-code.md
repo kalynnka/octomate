@@ -68,6 +68,24 @@ or the tentacle starts or stops. Refresh opens a new inspection client to obtain
 new runtime snapshot. Missing command metadata reports unsupported; an empty
 command list is a successful empty catalog.
 
+Explicit execution sends the selected native command through SDK `query()` with
+the raw argument text and the conversation's saved session. The execution client
+checks its own initialization metadata before submitting the command; a removed
+or changed entry requires a refresh and is never sent as an ordinary prompt.
+Commands absent from the catalog are rejected. An advertised command that needs
+a terminal returns the runtime's refusal text.
+
+Direct output is saved on the command receipt without creating a model run.
+Commands that start model activity use the normal streaming, approval and run
+history path. SDK error results fail the receipt; successful direct text appears
+once. Attachments are not supported.
+
+`/clear` updates the conversation's resumable session ID from the SDK's final
+result. `/compact` leaves summarization to Claude. Neither command deletes or
+rewrites Octomate's recorded history. Native settings commands affect their SDK
+session; they do not change Octomate's saved model or permission settings, which
+are applied again on the next turn.
+
 ## Approvals and questions
 
 Two bridges, both landing on the same cards:
@@ -103,8 +121,6 @@ relics from transcripts older than the per-file subagent layout.
 
 ## Not yet
 
-- **Command execution through Octomate** is not wired yet; discovery does not make
-  the advertised commands executable through the command API.
 - **Remote hosts.** An `ssh` block is parsed and warned about, not honoured. Runs
   stay local until workspaces can be forked on another machine.
 - **Structured output** returns whatever the CLI produced, validated once, with no

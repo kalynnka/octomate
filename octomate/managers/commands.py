@@ -11,7 +11,7 @@ from cachetools import LRUCache
 from pydantic_ai import AgentCapability
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.managers.base import Manager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
@@ -379,12 +379,19 @@ class CommandManager(Manager):
                 message="Command execution did not finish; its effects may already have occurred.",
             )
             try:
-                result = await agent.execute_command(
-                    context,
-                    invocation,
-                    deferred_suspender=deferred_suspender,
-                    capabilities=capabilities,
+                stream = await stack.enter_async_context(
+                    aclosing(
+                        agent.execute_command(
+                            context,
+                            invocation,
+                            deferred_suspender=deferred_suspender,
+                            capabilities=capabilities,
+                        )
+                    )
                 )
+                result = await anext(stream)
+                if isinstance(result, CommandResult | CommandError):
+                    await stream.aclose()
             except asyncio.CancelledError:
                 await self.threads.record_command_outcome(receipt.id, interrupted)
                 raise
@@ -394,18 +401,19 @@ class CommandManager(Manager):
                     status="failed",
                     message="Command execution failed; its effects may already have occurred.",
                 )
-            if isinstance(result, ReactEventStream):
-                yield await stack.enter_async_context(
-                    self.record_stream(result, receipt.id, interrupted)
-                )
-            else:
+            if isinstance(result, CommandResult | CommandError):
                 await self.threads.record_command_outcome(receipt.id, result)
                 yield result
+            else:
+                yield await stack.enter_async_context(
+                    self.record_stream(stream, result, receipt.id, interrupted)
+                )
 
     @asynccontextmanager
     async def record_stream[OutputT](
         self,
-        stream: ReactEventStream[OutputT],
+        stream: AsyncGenerator[CommandOutcome | ReactStreamEvent[OutputT], None],
+        first_event: ReactStreamEvent[OutputT],
         receipt_id: uuid.UUID,
         interrupted: CommandError,
     ) -> AsyncGenerator[AsyncGenerator[ReactStreamEvent[OutputT], None]]:
@@ -418,15 +426,18 @@ class CommandManager(Manager):
         completed = asyncio.Event()
         outcome: CommandOutcome = interrupted
 
-        async def forward(
-            events: AsyncGenerator[ReactStreamEvent[OutputT], None],
-        ) -> AsyncGenerator[ReactStreamEvent[OutputT], None]:
-            async for event in events:
+        async def forward() -> AsyncGenerator[ReactStreamEvent[OutputT], None]:
+            yield first_event
+            async for event in stream:
+                if isinstance(event, CommandResult | CommandError):
+                    raise RuntimeError(
+                        "An agent command stream yielded a direct outcome"
+                    )
                 yield event
             completed.set()
 
         try:
-            async with stream as events, aclosing(forward(events)) as forwarded:
+            async with aclosing(stream), aclosing(forward()) as forwarded:
                 yield forwarded
             if completed.is_set():
                 outcome = CommandResult()

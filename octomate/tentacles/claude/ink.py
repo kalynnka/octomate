@@ -8,7 +8,7 @@ from collections.abc import AsyncGenerator, Callable
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 from claude_agent_sdk.types import Message
 
-from octomate.tentacles.claude.catalog import ClaudeServerInfo
+from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
 
 
 class ClaudeInk:
@@ -39,9 +39,15 @@ class ClaudeInk:
         options: ClaudeAgentOptions,
         conversation_id: uuid.UUID,
         should_interrupt: Callable[[], bool],
+        command: ClaudeCommandDescriptor | None = None,
     ) -> AsyncGenerator[Message]:
         """Stream a turn, superseding the prior client for this conversation."""
         async with ClaudeSDKClient(options=options) as client:
+            if command is not None:
+                info = ClaudeServerInfo.model_validate(await client.get_server_info())
+                commands = {entry.id: entry for entry in info.commands or ()}
+                if commands.get(command.id) != command:
+                    raise LookupError("This command changed; refresh commands.")
             previous = self.live_clients.get(conversation_id)
             self.live_clients[conversation_id] = client
             if previous is not None and previous is not client:

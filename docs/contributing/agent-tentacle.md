@@ -70,7 +70,7 @@ without starting a turn. Each agent exposes `discover_commands` for cached disco
 refresh and command-name completion, backed by the host's command manager and an HTTP
 endpoint. The host also provides guarded execution through its command manager and
 HTTP API. Codex implements skill discovery and execution; Claude implements
-command discovery. Claude execution, the remaining runtime adapters and channel
+command discovery and execution. The remaining runtime adapters and channel
 command controls are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
@@ -204,11 +204,16 @@ does not reconstruct runtime subclasses. Invocation requests carry only the
 selected ID, raw arguments and resolved attachments, not a client-supplied copy
 of the runtime descriptor.
 
-`execute_command` receives explicit intent and raw arguments. It returns a
-`CommandResult` with existing message segments, a `CommandError`, or a lazy
-`ReactEventStream` for an entry that runs the agent. For an agent run, forward the
-supplied suspender and capabilities through the adapter's normal approval and
-streaming implementation. Keep direct controls out of `run` and preserve raw
+`execute_command` receives explicit intent and raw arguments. It is a lazy async
+generator: a direct command yields one `CommandResult` with existing message
+segments or a `CommandError`; an entry that runs the agent yields normal agent
+events ending with `AgentRunResultEvent`. Closing the generator must release its
+SDK resources, including when the consumer abandons it. A command starts only
+one native invocation, even when its behavior becomes known after execution has
+begun. Direct output never needs a synthetic agent result or model history.
+For an agent run, forward the supplied suspender and capabilities through the
+adapter's normal approval and streaming implementation. Keep direct controls out
+of `run` and preserve raw
 arguments without injecting chat context. The default never interprets slash text
 or forwards unsupported commands to the model.
 

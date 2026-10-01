@@ -1,5 +1,6 @@
 """The command boundary distinguishes runtime capabilities and preserves input."""
 
+from contextlib import aclosing
 from dataclasses import replace
 from pathlib import Path
 
@@ -364,10 +365,13 @@ async def test_default_hooks_are_unsupported_without_starting_a_turn(
     )
 
     catalog = await agent.discover_commands(context)
-    outcome = await agent.execute_command(
-        context,
-        CommandInvocation(command_id="unknown", arguments=" /raw "),
-    )
+    async with aclosing(
+        agent.execute_command(
+            context,
+            CommandInvocation(command_id="unknown", arguments=" /raw "),
+        )
+    ) as events:
+        outcome = await anext(events)
 
     assert catalog.context.agent_id == agent.id
     assert catalog.status == "unsupported"
