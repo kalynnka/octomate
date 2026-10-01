@@ -93,6 +93,13 @@ Refresh rescans Codex's own skills cache; use it for changes the runtime has not
 reported. Native skill-loading errors appear in catalog limitations. If errors
 leave no enabled skills, discovery reports failed instead of an empty success.
 
+Explicit skill execution refreshes discovery for the selected conversation and
+resolves the skill from that catalog. Disabled, removed or out-of-scope skills are
+rejected. Codex receives a typed skill reference and the raw argument text, then
+runs through the same streaming, approval and history path as a driven turn.
+Arguments may be empty; attachments are not supported. A skill's path comes from
+discovery, never from a separate client-supplied path.
+
 ## Approvals and questions
 
 Codex's own approval requests, command execution and file changes, and its
@@ -124,7 +131,6 @@ for where new turns land and the limits for older history.
 
 ## Not yet
 
-- **Skill execution through the command API** remains unsupported; this adapter
-  currently implements discovery only.
+- **Native CLI slash commands** have no discovery or execution API in this adapter.
 - **Structured output** rides the turn's output schema; there is no retry loop.
 - **Images in a prompt** are dropped.

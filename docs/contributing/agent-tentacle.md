@@ -49,8 +49,8 @@ The optional `probe_commands` and `execute_command` hooks use the
 without starting a turn. Each agent exposes `discover_commands` for cached discovery,
 refresh and command-name completion, backed by the host's command manager and an HTTP
 endpoint. The host also provides guarded execution through its command manager and
-HTTP API. Codex implements skill discovery; runtime execution, the other runtime
-discovery adapters and channel command controls are not wired yet.
+HTTP API. Codex implements skill discovery and execution. The other runtime
+adapters and channel command controls are not wired yet.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval

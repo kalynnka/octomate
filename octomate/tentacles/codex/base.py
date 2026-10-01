@@ -40,7 +40,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from openai_codex import AsyncThread, AsyncTurnHandle
+from openai_codex import AsyncThread, AsyncTurnHandle, InputItem, SkillInput, TextInput
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import MethodNotFoundError
 from openai_codex.generated.v2_all import (
@@ -82,7 +82,14 @@ from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.commands import CommandCatalog, CommandContext, CommandDescriptor
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandDescriptor,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+)
 from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
@@ -491,6 +498,53 @@ class CodexTentacle(AgentTentacle[str, None]):
             ],
         )
 
+    async def execute_command(
+        self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+        *,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> CommandOutcome | ReactEventStream[str]:
+        """Run a discovered skill in the selected conversation using SDK input."""
+        conversation = context.conversation
+        if conversation is None:
+            raise ValueError("command execution requires a conversation")
+        catalog = await self.discover_commands(context)
+        descriptors = {
+            descriptor.id: descriptor
+            for descriptor in catalog.descriptors
+            if isinstance(descriptor, CodexCommandDescriptor)
+        }
+        descriptor = descriptors.get(invocation.command_id)
+        if descriptor is None:
+            return CommandError(
+                status="stale",
+                message="This skill is no longer available; refresh commands.",
+            )
+        inputs: list[InputItem] = [
+            SkillInput(name=descriptor.name, path=str(descriptor.path))
+        ]
+        prompt = f"/{descriptor.name}"
+        if invocation.arguments:
+            inputs.append(TextInput(invocation.arguments))
+            prompt += f" {invocation.arguments}"
+        return ReactEventStream(
+            self.observe_run(
+                self._iter_events(
+                    prompt,
+                    native_input=inputs,
+                    conversation_address=context.address,
+                    thread_id=conversation.thread_id,
+                    conversation_id=conversation.id,
+                    run_name=descriptor.name,
+                    model=context.model,
+                    deferred_suspender=deferred_suspender,
+                    capabilities=capabilities,
+                )
+            )
+        )
+
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
         """Reuse one MCP key per user, replacing it when its lifetime expires."""
         auth = self.octomate.auth
@@ -894,6 +948,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         capabilities: Sequence[AgentCapability[None]] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
+        native_input: list[InputItem] | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         sdk_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
@@ -1071,7 +1126,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             resources.callback(self.bridge_contexts.pop, codex_thread_id, None)
             turn = await self.ink.start_turn(
                 codex_thread,
-                prompt_text,
+                native_input if native_input is not None else prompt_text,
                 approval_mode=approval_mode,
                 sandbox=sandbox,
                 cwd=run_cwd,

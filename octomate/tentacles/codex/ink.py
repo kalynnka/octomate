@@ -12,7 +12,8 @@ from pathlib import Path
 
 import anyio
 from httpx import URL
-from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
+from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle, InputItem
+from openai_codex._inputs import _normalize_run_input, _to_wire_input
 from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError
@@ -30,13 +31,11 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     SkillsListEntry,
     SkillsListResponse,
-    TextUserInput,
     ThreadClosedNotification,
     ThreadResumeParams,
     ThreadStartParams,
     ThreadUnsubscribeResponse,
     TurnStartParams,
-    UserInput,
 )
 from pydantic import SecretStr, TypeAdapter
 
@@ -379,7 +378,7 @@ class CodexInk:
     async def start_turn(
         self,
         thread: AsyncThread,
-        prompt: str,
+        prompt: str | list[InputItem],
         *,
         approval_mode: ApprovalMode | None,
         sandbox: Sandbox,
@@ -404,22 +403,26 @@ class CodexInk:
                 summary=summary,
             )
         # The public SDK cannot reset an auto reviewer back to the user.
-        inputs = [UserInput(root=TextUserInput(type="text", text=prompt))]
+        inputs = _to_wire_input(_normalize_run_input(prompt))
         turn = await self.client._client.turn_start(
             thread.id,
-            prompt,
-            params=TurnStartParams(
-                thread_id=thread.id,
-                input=inputs,
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
-                sandbox_policy=_sandbox_policy(sandbox),
-                cwd=cwd,
-                effort=effort,
-                model=model,
-                output_schema=output_schema,
-                personality=personality,
-                summary=summary,
+            inputs,
+            params=TurnStartParams.model_validate(
+                {
+                    "thread_id": thread.id,
+                    "input": inputs,
+                    "approval_policy": AskForApproval(
+                        root=AskForApprovalValue.on_request
+                    ),
+                    "approvals_reviewer": ApprovalsReviewer.user,
+                    "sandbox_policy": _sandbox_policy(sandbox),
+                    "cwd": cwd,
+                    "effort": effort,
+                    "model": model,
+                    "output_schema": output_schema,
+                    "personality": personality,
+                    "summary": summary,
+                }
             ),
         )
         return AsyncTurnHandle(self.client, thread.id, turn.turn.id)

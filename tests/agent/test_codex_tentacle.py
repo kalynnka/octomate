@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock
 
 import anyio
 import pytest
-from openai_codex import AsyncCodex, AsyncThread
+from openai_codex import AsyncCodex, AsyncThread, InputItem, SkillInput, TextInput
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError, TransportClosedError
@@ -29,6 +29,8 @@ from openai_codex.generated.v2_all import (
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
+    SkillUserInput,
+    TextUserInput,
     ThreadClosedNotification,
     ThreadItem,
     ThreadReadResponse,
@@ -121,7 +123,7 @@ def driven_headers(call: ThreadCall) -> dict[str, str]:
 
 @dataclass
 class TurnCall:
-    prompt: str
+    prompt: str | list[InputItem]
     approval_mode: ApprovalMode | None
     cwd: str | None
     effort: ReasoningEffort | None
@@ -241,7 +243,7 @@ class FakeThread:
 
     async def turn(
         self,
-        input: str,
+        input: str | list[InputItem],
         *,
         approval_mode: ApprovalMode | None = None,
         cwd: str | None = None,
@@ -2463,7 +2465,10 @@ async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
     assert params.approvals_reviewer is ApprovalsReviewer.user
 
 
-async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> None:
+@pytest.mark.parametrize("skill", [False, True])
+async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
+    skill: bool,
+) -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = AsyncCodex()
     client._client = AsyncMock()
@@ -2495,7 +2500,9 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
     ):
         await tentacle.ink.start_turn(
             thread,
-            "work",
+            [SkillInput("review", "/review/SKILL.md"), TextInput("  work\n")]
+            if skill
+            else "work",
             approval_mode=approval,
             sandbox=sandbox,
             cwd="/workspace",
@@ -2513,6 +2520,13 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
         params = start.call_args.kwargs["params"]
         assert isinstance(params, TurnStartParams)
         assert params.thread_id == "warm-thread"
+        if skill:
+            assert params.input[0].root == SkillUserInput(
+                type="skill", name="review", path="/review/SKILL.md"
+            )
+            assert params.input[1].root == TextUserInput(type="text", text="  work\n")
+        else:
+            assert params.input[0].root == TextUserInput(type="text", text="work")
         assert params.approval_policy is not None
         assert params.approval_policy.root is policy
         assert params.approvals_reviewer is reviewer
