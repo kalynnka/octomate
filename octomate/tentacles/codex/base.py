@@ -63,6 +63,7 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     TextUserInput,
+    ThreadForkParams,
     ThreadResumeParams,
     ThreadStartParams,
     TurnStartParams,
@@ -655,7 +656,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         # Omission lets Codex resolve settings and an existing thread's selection.
         return None
 
-    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
+    async def fork_session(
+        self,
+        conversation: Conversation,
+        *,
+        cwd: Path,
+        last_turn_id: str | None = None,
+    ) -> str:
         """Copy Codex's stored history into an independent, durable thread."""
         if not conversation.external_id:
             raise ValueError("Cannot fork a Codex conversation without a session id")
@@ -668,12 +675,19 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         async with AsyncCodex(config=runtime) as client:
             config = await self.thread_config(client, str(cwd), None)
-            forked = await client.thread_fork(
-                conversation.external_id, cwd=str(cwd), config=config, ephemeral=False
+            forked = await client._client.thread_fork(
+                conversation.external_id,
+                ThreadForkParams(
+                    thread_id=conversation.external_id,
+                    cwd=str(cwd),
+                    config=config,
+                    ephemeral=False,
+                    last_turn_id=last_turn_id,
+                ),
             )
-        if forked.id == conversation.external_id:
+        if forked.thread.id == conversation.external_id:
             raise ValueError("Codex fork returned the source thread id")
-        return forked.id
+        return forked.thread.id
 
     async def fork(
         self,
@@ -719,7 +733,7 @@ class CodexTentacle(AgentTentacle[str, None]):
     async def read_fork_transcript(
         self, source: Conversation, *, owner_id: uuid.UUID
     ) -> tuple[bytes, ExternalAgentRun]:
-        """Read an owner's importable history through its latest uploaded terminal turn."""
+        """Read uploaded history and select its latest fully uploaded terminal turn."""
         if source.agent_tentacle_id != self.native_id or source.subagent_id:
             raise ValueError("Only root native Codex sessions can be forked here")
         if source.transcript_file_id is None or source.external_id is None:
@@ -755,7 +769,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             raise ValueError(
                 "The completed Codex turn has no supported permission preset"
             )
-        data = data[:end]
+        # Uploads may stop inside the next record; Codex selects the turn boundary.
+        data = data[: data.rfind(b"\n") + 1]
         self.import_metadata(data, external_id=source.external_id)
         return data, completed_run
 
@@ -783,10 +798,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             data, completed_run = await self.read_fork_transcript(
                 source, owner_id=owner_id
             )
+            assert completed_run.end_offset is not None
             async with (
                 self.octomate.files.partial_copy(
                     source.transcript_file_id,
-                    end=len(data),
+                    end=completed_run.end_offset,
                     owner_id=owner_id,
                     media_type="application/jsonl",
                 ) as snapshot,
@@ -799,7 +815,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                     agent_tentacle_id=self.id,
                     external_id=imported_id,
                 )
-                external_id = await self.fork_session(imported_source, cwd=cwd)
+                external_id = await self.fork_session(
+                    imported_source, cwd=cwd, last_turn_id=completed_run.id
+                )
                 await conversations.fork(
                     source,
                     target,

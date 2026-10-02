@@ -79,6 +79,11 @@ server-side, so nothing duplicates. An aborted turn is still committed as far as
 got. Codex has no session-end event, so a session ends by the tail's own idle
 drain.
 
+Forking or teleporting a native session uses its latest fully uploaded completed
+or aborted turn. Later turns stay in the source session, including any turn still
+in progress. The new conversation keeps the selected turn's model, permissions
+and an independent transcript snapshot.
+
 ## Not yet
 
 - **Structured output** rides the turn's output schema; there is no retry loop.

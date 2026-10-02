@@ -145,10 +145,19 @@ async def case(
     return ForkCase(tentacle, source, target, owner.id, prefix, pending, home, fork)
 
 
+@pytest.mark.parametrize("partial_tail", [b"", b'{"type":"event_msg","payload":'])
 async def test_fork_copies_only_completed_uploaded_history(
-    case: ForkCase, tmp_path: Path
+    case: ForkCase, tmp_path: Path, partial_tail: bytes
 ) -> None:
     tentacle = case.tentacle
+    files = tentacle.octomate.files
+    assert case.source.transcript_file_id is not None
+    await files.append(
+        case.source.transcript_file_id,
+        BytesIO(partial_tail),
+        offset=len(case.prefix + case.pending),
+        owner_id=case.owner_id,
+    )
     result = await tentacle.fork_transcript(
         case.source,
         case.target,
@@ -165,7 +174,6 @@ async def test_fork_copies_only_completed_uploaded_history(
     [part] = result.messages[0].parts
     assert isinstance(part, UserPromptPart)
     assert part.content == "completed"
-    files = tentacle.octomate.files
     assert (
         await files.read(result.transcript_file_id, owner_id=case.owner_id)
         == case.prefix
@@ -175,11 +183,15 @@ async def test_fork_copies_only_completed_uploaded_history(
     import_id = json.loads(opening)["payload"]["id"]
     assert import_id not in {case.source.external_id, result.external_id}
     assert UUID(import_id).version == 7
-    assert remainder == case.prefix.split(b"\n", 1)[1]
+    assert remainder == (case.prefix + case.pending).split(b"\n", 1)[1]
     assert imported.stat().st_mode & 0o777 == 0o600
     assert imported.parent.stat().st_mode & 0o777 == 0o700
     assert case.fork.call_args.args[0].external_id == import_id
-    assert case.fork.call_args.kwargs == {"cwd": tmp_path}
+    completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
+    assert case.fork.call_args.kwargs == {
+        "cwd": tmp_path,
+        "last_turn_id": completed_id,
+    }
     assert case.target.external_id is None
     assert case.target.transcript_file_id is None
     assert case.target.permission_mode is None
@@ -190,7 +202,7 @@ async def test_fork_copies_only_completed_uploaded_history(
     await files.append(
         case.source.transcript_file_id,
         BytesIO(b"later\n"),
-        offset=len(case.prefix + case.pending),
+        offset=len(case.prefix + case.pending + partial_tail),
         owner_id=case.owner_id,
     )
     assert (
@@ -428,6 +440,10 @@ async def test_fork_requires_a_matching_terminal_event(
     assert len(result.messages) == int(previous_completed) + int(terminal)
     assert result.runs[-1].model_name == ("other-model" if terminal else "gpt-6-luna")
     assert result.permission_mode == ("full_access" if terminal else "auto_review")
+    completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
+    assert case.fork.call_args.kwargs["last_turn_id"] == (
+        run_id if terminal else completed_id
+    )
 
 
 async def test_fork_rejects_an_offset_inside_a_line(

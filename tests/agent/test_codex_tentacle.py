@@ -30,6 +30,7 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     SandboxMode,
+    ThreadForkParams,
     ThreadItem,
     ThreadReadResponse,
     ThreadResumeParams,
@@ -284,6 +285,7 @@ class FakeCodex:
             _sync=None,
             thread_start=self.thread_start,
             thread_resume=self.thread_resume,
+            thread_fork=self.thread_fork,
             request=AsyncMock(
                 return_value=ConfigReadResponse.model_validate(
                     {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
@@ -318,6 +320,11 @@ class FakeCodex:
         return SimpleNamespace(
             thread=FakeThread(thread_id), model=params.model or self.model_name
         )
+
+    async def thread_fork(
+        self, thread_id: str, params: ThreadForkParams
+    ) -> SimpleNamespace:
+        return SimpleNamespace(thread=FakeThread("thread-fork"))
 
     def record_thread(self, params: ThreadStartParams | ThreadResumeParams) -> None:
         assert params.approval_policy is not None
@@ -746,7 +753,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("before", thread_id="thread-new"))
-    fork = AsyncMock(return_value=SimpleNamespace(id="thread-fork"))
+    fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
     octomate = Octomate()
     thread = await octomate.thread_manager.ensure(KEY)
@@ -795,9 +802,12 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             assert len(destination.messages) == len(source.messages)
         fork.assert_awaited_once_with(
             "thread-new",
-            cwd=str(octomate.workspaces.open(state.thread.id, None).path),
-            config={"mcp_servers": {}},
-            ephemeral=False,
+            ThreadForkParams(
+                thread_id="thread-new",
+                cwd=str(octomate.workspaces.open(state.thread.id, None).path),
+                config={"mcp_servers": {}},
+                ephemeral=False,
+            ),
         )
         FakeCodex.script = text_script("after", thread_id="thread-fork")
         await tentacle.run("after", conversation_address=KEY, thread_id=state.thread.id)
@@ -821,6 +831,37 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         await tentacle.run("again", conversation_address=KEY, thread_id=state.thread.id)
     assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
     assert fork.await_count == 1
+
+
+@pytest.mark.parametrize("last_turn_id", [None, "completed-turn"])
+async def test_codex_fork_passes_the_turn_cutoff(
+    monkeypatch: pytest.MonkeyPatch, last_turn_id: str | None
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex([])
+    fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork)
+    source = Conversation(
+        thread_id=uuid7(), agent_tentacle_id="codex", external_id="source"
+    )
+
+    result = await _tentacle(FakeConversationManager()).fork_session(
+        source, cwd=Path("/destination"), last_turn_id=last_turn_id
+    )
+
+    assert result == "thread-fork"
+    fork.assert_awaited_once_with(
+        "source",
+        ThreadForkParams(
+            thread_id="source",
+            cwd="/destination",
+            config={"mcp_servers": {}},
+            ephemeral=False,
+            last_turn_id=last_turn_id,
+        ),
+    )
+    assert source.external_id == "source"
+    assert FakeCodex.closed == 1
 
 
 async def test_codex_fork_failure_leaves_the_source_unchanged(
