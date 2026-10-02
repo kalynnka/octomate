@@ -1,19 +1,92 @@
 """The Ink execution boundary preserves native request and outcome semantics."""
 
+import asyncio
+from collections.abc import AsyncIterator
 from pathlib import Path
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
-from octomate_protocol.deepseek import ClientRequest
+from octomate_protocol.deepseek import ClientRequest, RpcError
 from pydantic import HttpUrl, TypeAdapter, ValidationError
 from pydantic_ai.exceptions import AgentRunError
+from websockets.asyncio.client import ClientConnection
 
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.ink import DeepseekInk
-from octomate.tentacles.deepseek.wire import CommandError, CommandSuccess
+from octomate.tentacles.deepseek.wire import (
+    CommandError,
+    CommandSuccess,
+    MuxFrame,
+    SessionEvent,
+    SessionEventFrame,
+    StreamErrorFrame,
+)
 from octomate.types.json import JsonObject, JsonValue
 
 BASE_URL = "http://127.0.0.1:3080/"
+
+
+async def test_subscriptions_capture_early_frames_and_isolate_sessions() -> None:
+    client = AsyncMock(spec=DeepseekApiClient)
+    socket = AsyncMock(spec=ClientConnection)
+    client.open_mux.return_value = socket
+    incoming: asyncio.Queue[tuple[str, MuxFrame] | None] = asyncio.Queue()
+    invalidate = Mock()
+
+    async def frames(socket: ClientConnection) -> AsyncIterator[tuple[str, MuxFrame]]:
+        while (item := await incoming.get()) is not None:
+            yield item
+            incoming.task_done()
+
+    async def follow(socket: ClientConnection, session_id: str) -> None:
+        incoming.put_nowait(
+            (
+                session_id,
+                SessionEventFrame(
+                    type="session/event",
+                    session_id=session_id,
+                    event=SessionEvent(type="turn/start", seq=1, time=1),
+                ),
+            )
+        )
+        await asyncio.wait_for(incoming.join(), 1)
+
+    client.mux_frames.side_effect = frames
+    client.follow.side_effect = follow
+    async with DeepseekInk(client) as ink:
+        await ink.start(answer_interaction=AsyncMock(), invalidate_commands=invalidate)
+        first = await ink.subscribe("first")
+        second = await ink.subscribe("second")
+        assert first.get_nowait().session_id == "first"
+        assert second.get_nowait().session_id == "second"
+        failure = StreamErrorFrame(
+            type="stream/error",
+            session_id="second",
+            error=RpcError(code="internal", message="session failed"),
+        )
+        incoming.put_nowait(("second", failure))
+        await asyncio.wait_for(incoming.join(), 1)
+        assert first.empty()
+        assert second.get_nowait() == failure
+        await ink.unsubscribe("first")
+
+        incoming.put_nowait(None)
+        assert ink.mux_task is not None
+        await asyncio.wait_for(ink.mux_task, 1)
+        assert not ink.running
+        assert first.empty()
+        disconnected = second.get_nowait()
+        assert isinstance(disconnected, StreamErrorFrame)
+        assert disconnected.error.message == "dsh event stream closed"
+        invalidate.assert_called_once_with()
+        await ink.unsubscribe("second")
+        assert not ink.subscribers
+
+    assert ink.mux_task is None
+    assert ink.mux_socket is None
+    socket.close.assert_awaited_once()
+    client.__aexit__.assert_awaited_once()
 
 
 @pytest.fixture

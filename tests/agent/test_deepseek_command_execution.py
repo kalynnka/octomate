@@ -145,7 +145,7 @@ async def scenario(
     try:
         async with agent:
             yield app, agent, channel, signal
-            assert not agent.subscribers
+            assert not agent.ink.subscribers
             assert not agent.bridge_contexts
             assert not agent.driven_sessions
     finally:

@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import suppress
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -49,7 +50,7 @@ async def agent(client: AsyncMock) -> AsyncGenerator[DeepseekTentacle]:
         await asyncio.Event().wait()
 
     task = asyncio.create_task(connected())
-    agent.mux_task = task
+    agent.ink.mux_task = task
     try:
         yield agent
     finally:
@@ -110,7 +111,7 @@ async def test_discovery_does_not_create_a_missing_session_or_connection(
     elif missing == "session":
         context.conversation.external_id = None
     else:
-        agent.mux_task = None
+        agent.ink.mux_task = None
     catalog = await agent.discover_commands(context)
     assert catalog.status == "unavailable"
     assert catalog.message
@@ -203,7 +204,6 @@ async def test_registry_notifications_invalidate_without_eager_reprobing(
     agent: DeepseekTentacle,
     client: AsyncMock,
     context: CommandContext,
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     incoming: asyncio.Queue[RemoteNotification | None] = asyncio.Queue()
 
@@ -213,9 +213,12 @@ async def test_registry_notifications_invalidate_without_eager_reprobing(
             incoming.task_done()
 
     client.mux_frames.side_effect = lambda socket: frames()
-    socket = AsyncMock()
-    pump = asyncio.create_task(agent.pump_mux(client, socket))
-    monkeypatch.setattr(agent, "mux_task", pump)
+    await agent.ink.start(
+        answer_interaction=agent.answer_interaction,
+        invalidate_commands=partial(agent.commands.invalidate, agent_id=agent.id),
+    )
+    pump = agent.ink.mux_task
+    assert pump is not None
     try:
         await agent.discover_commands(context)
         client.remote.return_value = OkResult(value=[])

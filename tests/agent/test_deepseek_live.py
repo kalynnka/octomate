@@ -251,7 +251,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         assert isinstance(reply, OkResult)
         await asyncio.wait_for(running, 10)
         await asyncio.wait_for(cancelled.wait(), 10)
-        assert not tentacle.subscribers
+        assert not tentacle.ink.subscribers
         assert not tentacle.bridge_contexts
     assert tentacle.process is None
     assert (home / "cordis.patch.yml").read_text() == native_patch
