@@ -25,6 +25,7 @@ from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.discord.base import DiscordTentacle
+from octomate.tentacles.discord.schema import DiscordAddress
 from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.tentacles.trunkline.base import TrunklineDirective
 from tests.support.agents import FakeAgent
@@ -404,6 +405,7 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []
+    assert "Shared history" in options["teleport"]["reason"]
     assert any(
         one["channel_tentacle_id"] == "trunkline"
         for one in options["summon"]["destinations"]
@@ -469,7 +471,7 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []
-    assert "No eligible destinations" in options["teleport"]["reason"]
+    assert "import this native history" in options["teleport"]["reason"]
     assert any(
         one["channel_tentacle_id"] == "trunkline"
         for one in options["summon"]["destinations"]
@@ -488,6 +490,41 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     )
     assert response.status_code == 409
     assert not case.far.opened_dms
+
+
+@pytest.mark.parametrize(
+    ("shared", "agent_id", "refusal"),
+    [
+        # Nothing suggested, yet browsing can still find a place to teleport to.
+        (False, "first", None),
+        (True, "first", "Shared history"),
+        (False, "absent", "runs this conversation's agent"),
+    ],
+)
+async def test_an_empty_offer_is_closed_only_by_what_rules_it_out(
+    case: Case, shared: bool, agent_id: str, refusal: str | None
+) -> None:
+    gateway = OctomateSession(
+        channel_routes=case.app.gateway.available_routes(
+            case.app.channels, case.app.agents
+        ),
+        current_agent_id=agent_id,
+        channels=case.app.channels,
+        conversation_address=ChannelAddress(
+            "far", "thread", "room", "alice", "topic", shared=shared
+        ),
+    )
+    gateway.destination_cache = []
+
+    operations = await gateway.operations
+
+    assert operations.teleport.destinations == []
+    if refusal is None:
+        assert operations.teleport.reason is None
+    else:
+        assert refusal in (operations.teleport.reason or "")
+    # Another agent is connected somewhere, so Summon stays open as well.
+    assert operations.summon.reason is None
 
 
 async def test_thread_capability_requires_own_channel_address(case: Case) -> None:
@@ -595,3 +632,88 @@ async def test_new_trunkline_destination_is_owned_and_independent(
     original = await case.app.thread_manager.get(case.thread.id)
     assert original is not None
     assert original.active_agent_tentacle_id == "first"
+
+
+async def test_address_listing_opens_one_level_and_authorizes_nothing(
+    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    server = DiscordAddress(
+        "far", "group", "", "alice", metadata={"name": "Development", "inside": "200"}
+    )
+    room = DiscordAddress(
+        "far",
+        "group",
+        "room",
+        "alice",
+        shared=True,
+        metadata={"name": "planning", "server": "Development"},
+    )
+    listing = AsyncMock(side_effect=[[server], [room]])
+    monkeypatch.setattr(case.far.ink, "list_addresses", listing)
+    path = f"/api/trunkline/threads/{case.thread.id}"
+
+    top = await client.get(f"{path}/channels/far/addresses")
+    opened = await client.get(
+        f"{path}/channels/far/addresses",
+        params={"inside": top.json()[0]["metadata"]["inside"]},
+    )
+
+    assert top.status_code == 200, top.text
+    assert top.json() == [TypeAdapter(ChannelAddress).dump_python(server)]
+    assert opened.json() == [TypeAdapter(ChannelAddress).dump_python(room)]
+    assert opened.json()[0]["metadata"] == {
+        "name": "planning",
+        "server": "Development",
+    }
+    # Each level is asked for as the requester's linked identity.
+    requester = ChannelAddress("far", "dm", "", "alice")
+    assert [call.args for call in listing.await_args_list] == [
+        (requester, None),
+        (requester, "200"),
+    ]
+    # Access lost after the listing is refused at execution, before anything opens.
+    monkeypatch.setattr(
+        case.far.ink,
+        "prepare_address",
+        AsyncMock(side_effect=ValueError("The requester can no longer use it.")),
+    )
+    refused = await client.post(
+        f"{path}/teleport",
+        json={"destination": opened.json()[0], "hint": "go"},
+    )
+    assert refused.status_code == 409
+    assert "no longer" in refused.json()["detail"]
+    assert not case.far.sub_threads
+
+
+async def test_address_listing_says_why_it_cannot_list(
+    case: Case, client: httpx.AsyncClient
+) -> None:
+    for channel_id in ("unlinked", "unserved"):
+        channel = case.app.connect(
+            FakeChannelTentacle(
+                channel_id,
+                case.app,
+                config=ChannelConfig(
+                    type="fake",
+                    agents=["first" if channel_id == "unlinked" else "absent"],
+                ),
+            )
+        )
+        await channel.probe()
+    path = f"/api/trunkline/threads/{case.thread.id}/channels"
+    refusals = {
+        "far": "cannot be browsed",
+        "missing": "No connected channel",
+        "unlinked": "Link your profile",
+        "unserved": "No connected agent",
+    }
+
+    for channel_id, sentence in refusals.items():
+        response = await client.get(f"{path}/{channel_id}/addresses")
+        assert response.status_code == 409, response.text
+        assert sentence in response.json()["detail"]
+
+    other = await a_user("other")
+    case.app.dependency_overrides[current_user] = lambda: other
+    assert (await client.get(f"{path}/far/addresses")).status_code == 404

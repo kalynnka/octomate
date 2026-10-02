@@ -63,12 +63,17 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   available action unless you choose another available one. Your choice stays
   selected when switching threads; an unavailable choice temporarily falls back
   to the first available action. Disabled choices show their reason. Teleport
-  asks for a destination. Summon also offers agent rows with model chips, an
-  editable brief, and an effort slider when the selected route supports it.
-  Choose **This conversation** in Summon to hand over in place when offered;
-  the other choices create a thread at the selected address. Agent and model
-  choices follow that address's connected channel.
-  Leave effort at Agent default to use the agent’s setting.
+  and Summon expand the composer instead of opening a dialog: the button, ×
+  or Esc returns to chat with your draft kept, and ⌘↵ submits.
+  Teleport needs a destination and takes an optional note, which opens the
+  thread there. Browse destinations one level at a time: the connected
+  channels, then what each holds, loaded as you open it. The filter narrows the
+  rows already loaded.
+  Summon uses your draft as the brief and hands this conversation over in
+  place whenever that is offered; otherwise it asks for a destination too. Its
+  chip picks the agent and model from the destination channel's routes, and
+  sets effort on a scale that marks the levels the model does not take. Leave
+  effort at Auto to use the agent's setting.
   Run output streams into the message panel. After the server confirms arrival,
   the console opens the destination thread if you are still viewing the source.
 - **Account**: change password, issue and revoke API keys, unlink channel profiles,
@@ -78,12 +83,14 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 
 Every Trunkline conversation is a private thread; there is no DM surface or
 nested sub-thread. It never needs profile linking: you are your signed-in account.
-Teleport and Summon can create a new Trunkline thread directly. Discord is not
-offered when entering from Trunkline because no Discord server context is selected.
-When viewing a Discord conversation, the destination list includes eligible text
-channels in its server for your linked account;
-selecting one creates a public Discord thread. Existing Discord DMs are omitted
-because they cannot hold an isolated new thread.
+Teleport and Summon can create a new Trunkline thread directly. Open Discord in
+the destination browser to list the servers you share with the bot, then the
+channels you can see in one; selecting one creates a public Discord thread. A
+channel a thread cannot start in is dimmed and shows why.
+When viewing a Discord conversation, its server's eligible channels are also
+suggested at the top of that level. Existing Discord DMs are omitted because they
+cannot hold an isolated new thread. Slack, Lark and NapCat show only their
+suggested destinations and say that they cannot be browsed.
 
 ### Thread operation API
 
@@ -91,12 +98,30 @@ The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
 Teleport and Summon destination addresses, an optional `here` address for in-place
 Summon, and agent/model `routes` keyed by connected channel ID, plus reasons when
 unavailable.
-The header uses this response to populate its choices and refreshes it when you
-open the action controls.
+The header uses this response to enable its choices and refreshes it when you
+open the action controls; an operation is unavailable only when its `reason` is
+set. An empty list of suggestions sets none by itself, since the destination
+browser can still find a place. Teleport's reason is set when the source agent is
+not connected or cannot fork its session, when the conversation is shared and its
+chat can start no sub-thread, or when no connected channel runs an agent that can
+continue the history. Trunkline treats every conversation from another channel as
+shared unless it is a direct message, so a Discord thread cannot teleport.
+Summon's reason is set only when no other agent is connected.
+
+`GET /api/trunkline/threads/{id}/channels/{channel}/addresses` lists one level of
+a connected channel's destinations, fetched when that level is opened. Each row
+is a `ChannelAddress` whose `metadata` carries its `name`. A row with
+`metadata.inside` is a place to open: pass that value as `?inside=` to list what
+it holds. A row without it is an address a thread can land in, unless
+`metadata.barred` says why it cannot. Discord lists servers, then the channels
+you can see in one. A channel that cannot be browsed, has no connected agent, or
+is not linked to your account answers 409 with the reason. A listed address is a
+suggestion: it is validated again when Teleport or Summon submits it. The
+destination browser calls it once per level opened.
 
 `POST /api/trunkline/threads/{id}/teleport` accepts a `ChannelAddress` as
 `destination`, a `new_thread` flag (true by default), and an opening hint.
-The console sends `new_thread=false` only for Summon's **This conversation** choice.
+The console sends `new_thread=false` only for Summon's in-place handover.
 `POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
 brief (up to 8,000 characters). Both require access to the source thread and
 refuse active gateway turns or pending approvals/questions. They stream native

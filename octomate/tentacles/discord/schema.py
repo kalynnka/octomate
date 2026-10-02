@@ -1,13 +1,27 @@
-"""Discord outbound message shape."""
+"""Discord address and outbound message shapes."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import discord
 from pydantic import BaseModel
 from typing_extensions import TypedDict
+
+from octomate.schemas.conversation import AddressMetadata, ChannelAddress
+
+
+class DiscordAddressMetadata(AddressMetadata, total=False):
+    # The server a text channel's `name` is unique within.
+    server: str
+
+
+@dataclass(frozen=True, eq=False)
+class DiscordAddress(ChannelAddress):
+    metadata: DiscordAddressMetadata = field(
+        default_factory=DiscordAddressMetadata, compare=False
+    )
 
 
 class DiscordMessageReference(TypedDict):

@@ -2,19 +2,22 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from unittest.mock import Mock
 
 import discord
 import httpx
 import pytest
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageData, ImageSegment
 from octomate.tentacles.discord import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from tests.channels.discord.fakes import (
     a_client_user,
     a_dm_channel,
+    a_guild,
     a_message,
     a_text_channel,
     a_thread,
@@ -498,3 +501,147 @@ async def test_start_public_thread_rejects_a_dm(
 
     with pytest.raises(TypeError, match="cannot start a public thread"):
         await DiscordInk(client).start_public_thread(str(channel.id), "hint")
+
+
+REQUESTER = ChannelAddress("discord", "dm", "", "100")
+
+
+@dataclass
+class Servers:
+    """The memberships a listing looked up, and what either side is held to in a
+    channel; one left out may do everything a thread needs."""
+
+    fetched: list[int] = field(default_factory=list)
+    requester: dict[int, discord.Permissions] = field(default_factory=dict)
+    bot: dict[int, discord.Permissions] = field(default_factory=dict)
+
+
+def a_server(guild_id: int, name: str, channels: dict[int, str]) -> discord.Guild:
+    guild = a_guild(guild_id)
+    guild.name = name
+    guild._channels = {}
+    for position, (channel_id, channel_name) in enumerate(channels.items()):
+        channel = a_text_channel(channel_id, guild=guild)
+        channel.name = channel_name
+        channel.position = position
+        guild._channels[channel_id] = channel
+    return guild
+
+
+@pytest.fixture
+def servers(client: discord.Client, monkeypatch: pytest.MonkeyPatch) -> Servers:
+    """Three servers the bot is in; the requester belongs to the first two."""
+    guilds = {
+        200: a_server(200, "Development", {400: "planning", 401: "general"}),
+        201: a_server(201, "Community", {402: "general", 403: "random", 405: "staff"}),
+        202: a_server(202, "Elsewhere", {404: "general"}),
+    }
+    record = Servers()
+    member = Mock(spec=discord.Member)
+
+    async def fetch_member(guild: discord.Guild, user_id: int) -> Mock:
+        record.fetched.append(guild.id)
+        if guild.id == 202:
+            raise discord.NotFound(
+                Mock(status=404, reason="Not Found"), "Unknown Member"
+            )
+        return member
+
+    def permissions(
+        channel: discord.TextChannel, who: discord.Member
+    ) -> discord.Permissions:
+        held = record.requester if who is member else record.bot
+        return held.get(
+            channel.id,
+            discord.Permissions(
+                view_channel=True,
+                send_messages=True,
+                create_public_threads=True,
+                send_messages_in_threads=True,
+            ),
+        )
+
+    monkeypatch.setattr(
+        discord.Client, "guilds", property(lambda self: list(guilds.values()))
+    )
+    monkeypatch.setattr(client, "get_guild", guilds.get)
+    monkeypatch.setattr(discord.Guild, "me", property(lambda self: Mock()))
+    monkeypatch.setattr(discord.Guild, "get_member", lambda self, user_id: None)
+    monkeypatch.setattr(discord.Guild, "fetch_member", fetch_member)
+    monkeypatch.setattr(discord.TextChannel, "permissions_for", permissions)
+    return record
+
+
+async def test_the_top_level_lists_the_servers_the_requester_shares(
+    client: discord.Client, servers: Servers
+) -> None:
+    ink = DiscordInk(client)
+
+    listed = await ink.list_addresses(REQUESTER)
+
+    assert [one.metadata for one in listed] == [
+        {"name": "Development", "inside": "200"},
+        {"name": "Community", "inside": "201"},
+    ]
+    assert sorted(servers.fetched) == [200, 201, 202]
+    # A server is a place to open, never one a thread can land in.
+    with pytest.raises(ValueError, match="text channel"):
+        await ink.prepare_address(listed[0])
+
+
+async def test_a_server_lists_what_the_requester_sees_and_bars_what_cannot_be_used(
+    client: discord.Client, servers: Servers
+) -> None:
+    servers.requester[403] = discord.Permissions.none()
+    servers.bot[405] = discord.Permissions.none()
+
+    listed = await DiscordInk(client).list_addresses(REQUESTER, "201")
+
+    assert listed == [
+        ChannelAddress("discord", "group", "402", "100", shared=True),
+        ChannelAddress("discord", "group", "405", "100", shared=True),
+    ]
+    assert [one.metadata for one in listed] == [
+        {"name": "general", "server": "Community"},
+        {
+            "name": "staff",
+            "server": "Community",
+            "barred": "The bot cannot see this channel.",
+        },
+    ]
+    # Opening one server looks membership up there and nowhere else.
+    assert servers.fetched == [201]
+
+
+@pytest.mark.parametrize(
+    ("side", "allowed", "barred"),
+    [
+        ("requester", discord.Permissions(view_channel=True), "You cannot post"),
+        ("bot", discord.Permissions(send_messages=True), "The bot cannot see"),
+        (
+            "bot",
+            discord.Permissions(view_channel=True, send_messages=True),
+            "The bot cannot start a thread",
+        ),
+    ],
+)
+async def test_a_barred_channel_says_which_side_cannot_use_it(
+    client: discord.Client,
+    servers: Servers,
+    side: str,
+    allowed: discord.Permissions,
+    barred: str,
+) -> None:
+    getattr(servers, side)[402] = allowed
+
+    listed = await DiscordInk(client).list_addresses(REQUESTER, "201")
+
+    assert barred in listed[0].metadata.get("barred", "")
+
+
+@pytest.mark.parametrize("inside", ["202", "999", "general"])
+async def test_a_server_the_requester_does_not_share_is_refused(
+    client: discord.Client, servers: Servers, inside: str
+) -> None:
+    with pytest.raises(ValueError, match="do not share"):
+        await DiscordInk(client).list_addresses(REQUESTER, inside)

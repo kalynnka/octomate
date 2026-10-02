@@ -55,9 +55,17 @@ From a server text channel, Summon lists eligible text channels in that same
 server. Teleport keeps shared history under the current text-channel address. Your account must be able to view and send
 messages in threads, and the bot must be able to view, send and create public
 threads. Membership and permissions are checked again when a named destination
-opens. Discovery never scans other servers. Without a server context, including
+opens. Suggestions never scan other servers. Without a server context, including
 entry from Trunkline, Discord suggests no parent addresses. DMs and existing threads
 also offer no new sub-thread locations.
+
+Other servers are reached by browsing, one level at a time: first the servers you
+share with the bot, then the channels you can see in one. A channel a thread
+cannot start in is listed with the reason, such as a private channel the bot was
+not added to, and cannot be picked. Listing servers checks your membership in
+each server the bot is in, and happens only when the Discord level is opened. It
+is served by the
+[thread operation API](trunkline.md#thread-operation-api).
 
 Teleport and Summon can target a known text channel directly with a connected channel ID
 and the text-channel ID in the address's `chat_id`, including from a private conversation on another platform.

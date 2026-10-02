@@ -3,13 +3,14 @@
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, TypeAdapter
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import UserProfile
+from octomate.tentacles.discord.schema import DiscordAddress
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.trunkline.base import TrunklineTentacle
@@ -129,3 +130,42 @@ async def test_foreign_channel_context_does_not_leak_into_discovery(
         ChannelAddress("elsewhere", "group", "secret", "other", shared=True),
     )
     discover.assert_awaited_once_with(ChannelAddress("chat", "dm", "", "alice"), None)
+
+
+async def test_listing_uses_the_linked_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    channel = FakeChannelTentacle("chat")
+    profile = UserProfile(channel_tentacle_id="chat", channel_user_id="alice")
+    with pytest.raises(ValueError, match="cannot be browsed"):
+        await channel.list_addresses(profile)
+    listing = AsyncMock(return_value=[])
+    monkeypatch.setattr(channel.ink, "list_addresses", listing)
+    with pytest.raises(ValueError, match="not linked"):
+        await channel.list_addresses(
+            UserProfile(channel_tentacle_id="other", channel_user_id="alice")
+        )
+    listing.assert_not_awaited()
+    await channel.list_addresses(profile, "200")
+    listing.assert_awaited_once_with(ChannelAddress("chat", "dm", "", "alice"), "200")
+
+
+def test_metadata_and_a_channel_subclass_leave_the_address_the_same() -> None:
+    plain = ChannelAddress("discord", "group", "400", "100", shared=True)
+    named = DiscordAddress(
+        "discord",
+        "group",
+        "400",
+        "100",
+        shared=True,
+        metadata={"name": "planning", "server": "Development"},
+    )
+    assert named == plain
+    assert plain == named
+    assert {plain, named} == {plain}
+    assert named != ChannelAddress("discord", "group", "401", "100", shared=True)
+    stored = TypeAdapter(ChannelAddress).dump_json(named)
+    assert TypeAdapter(ChannelAddress).validate_json(stored).metadata == named.metadata
+    # An address written before the field existed still reads.
+    legacy = '{"channel_tentacle_id":"discord","chat_type":"dm","chat_id":"","user_id":"100"}'
+    assert TypeAdapter(ChannelAddress).validate_json(legacy).metadata == {}

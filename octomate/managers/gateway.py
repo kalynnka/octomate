@@ -223,6 +223,24 @@ class OctomateSession:
         self.destination_cache = list(dict.fromkeys(addresses))
         return self.destination_cache
 
+    async def list_addresses(
+        self, channel_id: str, inside: str | None = None
+    ) -> list[ChannelAddress]:
+        """List one level of a connected channel when it is opened, as the
+        requester's linked identity.
+
+        A listed address is a suggestion: execution validates the one it is given."""
+        channel = self.channels.get(channel_id)
+        if channel is None:
+            raise GatewayRefusal(f"No connected channel {channel_id!r}.")
+        if not self.channel_routes.get(channel.id):
+            raise GatewayRefusal("No connected agent serves the destination channel.")
+        profile = await self.channel_profile(channel)
+        try:
+            return await channel.list_addresses(profile, inside)
+        except ValueError as error:
+            raise GatewayRefusal(str(error)) from error
+
     @property
     async def operations(self) -> ThreadOperations:
         """Offer addresses and channel routes without introducing another target type."""
@@ -261,23 +279,32 @@ class OctomateSession:
                 )
             )
         ]
+        # An empty offer closes nothing by itself: browsing can still find a place.
+        if not reason and not teleport:
+            if source is not None and source.shared:
+                reason = (
+                    "Shared history may only move into a sub-thread of the current "
+                    "chat, and none can start here."
+                )
+            elif not any(
+                self.is_compatible_agent(route.agent_id)
+                for offered in self.channel_routes.values()
+                for route in offered
+            ):
+                reason = (
+                    "No connected agent can import this native history."
+                    if self.native
+                    else "No connected channel runs this conversation's agent."
+                )
         return ThreadOperations(
-            teleport=OperationAvailability(
-                destinations=teleport,
-                reason=reason
-                or (
-                    None
-                    if teleport
-                    else "No eligible destinations for this agent and history."
-                ),
-            ),
+            teleport=OperationAvailability(destinations=teleport, reason=reason),
             summon=OperationAvailability(
                 destinations=summon,
                 here=here,
                 routes=routes,
                 reason=None
-                if summon or here
-                else "No other agents are available at an eligible destination.",
+                if any(routes.values())
+                else "No other agent is connected on any channel.",
             ),
         )
 

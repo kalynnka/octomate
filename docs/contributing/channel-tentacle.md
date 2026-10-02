@@ -124,6 +124,23 @@ conversation on this channel, or `None` when arriving from elsewhere. Return
 addresses without creating chats or posting. The gateway caches these suggestions
 per session; execution does not require discovery.
 
+Implement `Ink.list_addresses(address, inside)` when the platform's places can be
+browsed. It lists one level at a time, only when someone opens it: the top level
+when `inside` is `None`, otherwise what a listed address's `metadata["inside"]`
+names. Set `inside` on a place to open, such as a server, and leave it off an
+address a thread can land in. List only what the linked user can see; where a
+thread cannot land in one of those, say why in `metadata["barred"]` rather than
+leaving it out. The base implementation refuses, which the gateway reports as its
+reason. A listed address is a suggestion; execution still goes through
+`prepare_address`.
+
+What a channel knows for showing an address goes in `ChannelAddress.metadata`,
+never in a wrapper around it: `name`, `inside` and `barred` are shared, and a
+channel adds its own with a `TypedDict` extending `AddressMetadata` on its own
+`ChannelAddress` subclass, as `DiscordAddress` does for `server`. Metadata is
+excluded from equality and hashing, so a subclass with it is still the same
+address.
+
 Implement `Ink.prepare_address(address, source_address)` to validate one address
 and return its platform-verified form. Check the parent type, requester and bot
 access, and shared visibility. Refuse an unsupported address without opening a
@@ -135,7 +152,8 @@ Octomate identity.
 
 Slack and Lark support the current DM or group and the linked user's unresolved
 DM. Discord validates a text-channel address directly; its discovery lists only
-the source server's eligible channels. Trunkline prepares an independent private
+the source server's eligible channels, and its listing opens the servers you
+share with the bot, then one server's channels. Trunkline prepares an independent private
 thread. No target, location or landing wrapper is needed between these calls.
 
 `start_thread(address, hint)` creates a thread at the prepared address and returns

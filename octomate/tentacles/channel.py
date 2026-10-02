@@ -178,6 +178,13 @@ class Ink[MessageT](ABC):
         """Suggest thread parents for this identity, without creating or posting."""
         return []
 
+    async def list_addresses(
+        self, address: ChannelAddress, inside: str | None = None
+    ) -> list[ChannelAddress]:
+        """One level of this identity's places, fetched when it is opened: the top
+        level, or what a listed address's `inside` holds. Nothing is created."""
+        raise ValueError("This channel cannot be browsed for a destination.")
+
     async def prepare_address(
         self, address: ChannelAddress, source_address: ChannelAddress | None = None
     ) -> ChannelAddress:
@@ -448,6 +455,17 @@ class ChannelTentacle(
             )
             if address.chat_type == "thread" or self.accepts_sub_thread(address)
         ]
+
+    async def list_addresses(
+        self, profile: UserProfile, inside: str | None = None
+    ) -> list[ChannelAddress]:
+        """List one level using the requesting user's linked channel identity."""
+        user_id = self.thread_user_id(profile)
+        if user_id is None:
+            raise ValueError("The profile is not linked to this channel.")
+        return await self.ink.list_addresses(
+            ChannelAddress(self.id, "dm", "", user_id), inside
+        )
 
     async def prepare_address(
         self, address: ChannelAddress, source_address: ChannelAddress | None = None

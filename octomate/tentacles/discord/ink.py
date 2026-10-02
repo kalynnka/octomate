@@ -21,7 +21,11 @@ from octomate.tentacles.channel import (
     DownloadedImage,
     Ink,
 )
-from octomate.tentacles.discord.schema import DiscordOutboundMessage
+from octomate.tentacles.discord.schema import (
+    DiscordAddress,
+    DiscordAddressMetadata,
+    DiscordOutboundMessage,
+)
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.utils import strip_markdown
 
@@ -243,6 +247,70 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
             for channel in guild.text_channels
             if self.thread_permissions(channel, member)
         ]
+
+    async def list_addresses(
+        self, address: ChannelAddress, inside: str | None = None
+    ) -> list[ChannelAddress]:
+        """The servers the requester shares with the bot, then the channels the
+        requester sees in one, barred where a thread cannot start. Listing servers
+        looks membership up in each."""
+        user_id = int(address.user_id)
+        if inside is None:
+            guilds = self.client.guilds
+            members = await asyncio.gather(
+                *(self.member(guild, user_id) for guild in guilds)
+            )
+            return [
+                DiscordAddress(
+                    channel_tentacle_id=address.channel_tentacle_id,
+                    user_id=address.user_id,
+                    chat_type="group",
+                    chat_id="",
+                    shared=True,
+                    metadata={"name": guild.name, "inside": str(guild.id)},
+                )
+                for guild, member in zip(guilds, members, strict=True)
+                if member is not None
+            ]
+        guild = self.client.get_guild(int(inside)) if inside.isdecimal() else None
+        member = await self.member(guild, user_id) if guild is not None else None
+        if guild is None or member is None:
+            raise ValueError("You and the bot do not share that Discord server.")
+        listed: list[ChannelAddress] = []
+        for channel in guild.text_channels:
+            user = channel.permissions_for(member)
+            if not user.view_channel:
+                continue
+            metadata: DiscordAddressMetadata = {
+                "name": channel.name,
+                "server": guild.name,
+            }
+            if channel.type is not discord.ChannelType.text:
+                metadata["barred"] = "A thread starts only in a text channel."
+            elif not user.send_messages_in_threads:
+                metadata["barred"] = "You cannot post in threads here."
+            elif not channel.permissions_for(guild.me).view_channel:
+                metadata["barred"] = "The bot cannot see this channel."
+            elif not self.thread_permissions(channel, member):
+                metadata["barred"] = "The bot cannot start a thread here."
+            listed.append(
+                DiscordAddress(
+                    channel_tentacle_id=address.channel_tentacle_id,
+                    user_id=address.user_id,
+                    chat_type="group",
+                    chat_id=str(channel.id),
+                    shared=True,
+                    metadata=metadata,
+                )
+            )
+        return listed
+
+    async def member(self, guild: discord.Guild, user_id: int) -> discord.Member | None:
+        """The requester's membership, cached or looked up once; None for a stranger."""
+        member = guild.get_member(user_id)
+        with suppress(discord.NotFound):
+            member = member or await guild.fetch_member(user_id)
+        return member
 
     def thread_permissions(
         self, channel: discord.TextChannel, member: discord.Member

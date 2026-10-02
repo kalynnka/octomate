@@ -36,7 +36,7 @@ composed and has no row to switch — carried on the directive that creates it."
 import uuid
 from typing import Annotated, NotRequired, TypedDict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_ai.settings import ThinkingEffort
@@ -274,6 +274,20 @@ def build_trunkline_router(
         session: Annotated[OctomateSession, Depends(thread_gateway)],
     ) -> ThreadOperations:
         return await session.operations
+
+    @router.get(
+        "/threads/{thread_id}/channels/{channel_id}/addresses",
+        summary="List one level of a connected channel's destinations",
+    )
+    async def list_addresses(
+        channel_id: str,
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+        inside: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> list[ChannelAddress]:
+        try:
+            return await session.list_addresses(channel_id, inside)
+        except GatewayRefusal as exc:
+            raise HTTPException(409, str(exc)) from exc
 
     @router.post("/threads/{thread_id}/teleport")
     async def teleport_thread(

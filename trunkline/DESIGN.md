@@ -6,7 +6,7 @@ burnt-orange accent, hard corners, tiny mono labels, a recurring
 teal·gold·red tri-stripe). It is vendored, not paraphrased: the token files in
 `src/styles/` are the design system's own CSS, and this file records how the
 console uses them. Source comp: `Trunkline Console.dc.html` in the user's
-design project.
+design project; the gateway ops follow `Gateway Ops.dc.html` there.
 
 ## Files
 
@@ -101,6 +101,13 @@ Every rail folds by animating `width` (`.trk-rail[data-folded]`), drags via a
   live clock, usage, and the 56px hatched context meter.
 - **Menus** rise 6px on open (`lt-menu`), sit on `--surface-raised` with the
   card shadow.
+- **Gateway ops in the composer**: Teleport and Summon turn the composer frame
+  teal and put a titled strip over the prompt line; the send row becomes the
+  op's chips and a teal submit. The destination browser and the route menu
+  rise from that row, so they stay inside the composer at any width. A
+  destination that cannot be used stays in the browser, dimmed, with its
+  reason in place of its description. The effort scale is a drawing under a
+  native range input; a level the model does not take is dimmed, not hatched.
 
 ## Motion rules (delegated details, decided here)
 
