@@ -15,6 +15,7 @@ from typing import ClassVar, cast
 
 import pytest
 from arcanus import Relation
+from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent, RunContext
 from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from pydantic_ai.settings import ThinkingEffort
@@ -65,7 +66,6 @@ from octomate.schemas.segments import (
 )
 from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
-    INSPECT_TOOL_NAME,
     AgentRoute,
     Claim,
     SchemeDecision,
@@ -530,7 +530,7 @@ async def test_reception_mounts_gate_capability() -> None:
 
     gate = _recorded_gate_capability(agent.turns[0])
     assert gate.toolset is not None
-    inspect_tool = gate.toolset.tools[INSPECT_TOOL_NAME].function
+    inspect_tool = gate.toolset.tools[GatewayTool.INSPECT].function
     routes = await inspect_tool(FAKE_CONTEXT, "routes")
     places = await inspect_tool(FAKE_CONTEXT, "destinations")
     assert routes == []

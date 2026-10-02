@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ToolCallPart
@@ -25,8 +26,6 @@ from octomate.capabilities.gateway import (
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
-    WHISPER_TOOL_NAME,
     AgentRoute,
     Claim,
 )
@@ -107,7 +106,7 @@ async def test_commission_runs_the_accomplice_and_returns_its_report() -> None:
     claude = cast(FakeAgent, agents["claude"])
     claude.reception_output = "audit: three findings"
 
-    report = await _tool(gate, COMMISSION_TOOL_NAME)(
+    report = await _tool(gate, GatewayTool.COMMISSION)(
         ctx,
         name="repo-audit",
         agent_id="claude",
@@ -138,7 +137,7 @@ async def test_an_accomplice_carries_no_gate_and_is_told_it_has_no_user() -> Non
     # it it is an accomplice with no user.
     gate, agents, _, ctx = await _gate()
     claude = cast(FakeAgent, agents["claude"])
-    await _tool(gate, COMMISSION_TOOL_NAME)(
+    await _tool(gate, GatewayTool.COMMISSION)(
         ctx, name="hand", agent_id="claude", model="opus", brief="Work."
     )
 
@@ -150,7 +149,7 @@ async def test_an_accomplice_carries_no_gate_and_is_told_it_has_no_user() -> Non
 
 async def test_commissioning_a_live_name_again_is_refused() -> None:
     gate, _, conversations, ctx = await _gate()
-    commission = _tool(gate, COMMISSION_TOOL_NAME)
+    commission = _tool(gate, GatewayTool.COMMISSION)
     await commission(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Go."
     )
@@ -165,12 +164,12 @@ async def test_commissioning_a_live_name_again_is_refused() -> None:
 async def test_whisper_continues_the_same_accomplice_in_a_later_parent_turn() -> None:
     gate, agents, conversations, ctx = await _gate()
     claude = cast(FakeAgent, agents["claude"])
-    await _tool(gate, COMMISSION_TOOL_NAME)(
+    await _tool(gate, GatewayTool.COMMISSION)(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
     )
 
     parent = conversations.store[(THREAD, "inkling", "")]
-    report = await _tool(gate, WHISPER_TOOL_NAME)(
+    report = await _tool(gate, GatewayTool.WHISPER)(
         _ctx(parent.id, run_id="run-parent-2", tool_call_id="call-2"),
         name="repo-audit",
         message="Now fix finding two.",
@@ -190,17 +189,17 @@ async def test_whisper_continues_the_same_accomplice_in_a_later_parent_turn() ->
 
 async def test_whisper_with_an_unknown_name_lists_the_live_accomplices() -> None:
     gate, _, _, ctx = await _gate()
-    await _tool(gate, COMMISSION_TOOL_NAME)(
+    await _tool(gate, GatewayTool.COMMISSION)(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
     )
 
     with pytest.raises(ModelRetry, match="repo-audit"):
-        await _tool(gate, WHISPER_TOOL_NAME)(ctx, name="wrong-name", message="hello?")
+        await _tool(gate, GatewayTool.WHISPER)(ctx, name="wrong-name", message="hello?")
 
 
 async def test_commission_refuses_self_bad_routes_and_unclaimed_effort() -> None:
     gate, _, _, ctx = await _gate()
-    commission = _tool(gate, COMMISSION_TOOL_NAME)
+    commission = _tool(gate, GatewayTool.COMMISSION)
 
     with pytest.raises(ModelRetry, match="Cannot commission yourself"):
         await commission(ctx, name="me", agent_id="inkling", model="opus", brief="Hi.")
@@ -231,7 +230,7 @@ async def test_a_deferring_accomplice_fails_loudly_instead_of_parking() -> None:
     )
 
     with pytest.raises(ModelRetry, match="has no user"):
-        await _tool(gate, COMMISSION_TOOL_NAME)(
+        await _tool(gate, GatewayTool.COMMISSION)(
             ctx, name="asker", agent_id="claude", model="opus", brief="Go."
         )
 
@@ -256,7 +255,7 @@ async def test_an_overrunning_accomplice_fails_the_tool_not_the_turn() -> None:
     gate, _, _, ctx = await _gate(agents=agents, commission_timeout=0.05)
 
     with pytest.raises(ModelRetry, match="exceeded"):
-        await _tool(gate, COMMISSION_TOOL_NAME)(
+        await _tool(gate, GatewayTool.COMMISSION)(
             ctx, name="slow", agent_id="claude", model="opus", brief="Take ages."
         )
 
@@ -271,7 +270,7 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
     }
     gate, _, conversations, ctx = await _gate(agents=agents)
     parent_id = conversations.store[(THREAD, "inkling", "")].id
-    commission = _tool(gate, COMMISSION_TOOL_NAME)
+    commission = _tool(gate, GatewayTool.COMMISSION)
 
     started = time.monotonic()
     reports = await asyncio.gather(
@@ -306,9 +305,9 @@ async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
         )
     )
     assert bare.toolset is not None
-    assert COMMISSION_TOOL_NAME not in bare.toolset.tools
+    assert GatewayTool.COMMISSION not in bare.toolset.tools
     assert not bare.commissioning
-    assert COMMISSION_TOOL_NAME not in bare.get_instructions()
+    assert GatewayTool.COMMISSION not in bare.get_instructions()
 
     gate, _, _, ctx = await _gate()
-    assert COMMISSION_TOOL_NAME in gate.get_instructions()
+    assert GatewayTool.COMMISSION in gate.get_instructions()

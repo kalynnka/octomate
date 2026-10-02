@@ -29,7 +29,10 @@ from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import ChannelConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
+from octomate.mcp.gateway import (
+    CLIENT_HEADER,
+    CONVERSATION_HEADER,
+)
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
@@ -41,7 +44,6 @@ from octomate.mcp.server import (
     LIST_MCPS,
     OCTOMATE_MCP_PATH,
     UNINSTALL_MCP,
-    gateway_tool,
     history_tool,
     octomate_instructions,
 )
@@ -57,7 +59,15 @@ from tests.support.users import a_api_key, a_user, auth_config
 LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 
 # Octomate's own families, in the order the server lists them.
-OCTOMATE_TOOLS = [*map(gateway_tool, GATEWAY_SPELLS), *map(history_tool, HISTORY_TOOLS)]
+OCTOMATE_TOOLS = [
+    "gateway_inspect",
+    "gateway_summon",
+    "gateway_teleport",
+    "gateway_scheme",
+    "gateway_send",
+    "gateway_dismiss",
+    *map(history_tool, HISTORY_TOOLS),
+]
 
 
 @pytest.fixture(autouse=True)

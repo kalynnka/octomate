@@ -31,6 +31,13 @@ supported destination.
 
 > Continue this in my private conversation on the other connected channel.
 
+Teleport requires tool approval, handled by the agent's harness according to its
+configured permissions. Automatic review, bypass modes and existing grants keep
+their normal behavior. When the harness asks for a person, Octomate relays that
+request through the existing approval or question cards. Denying approval prevents
+the tool from recording a move. Trunkline's direct Teleport action keeps its
+existing submission flow.
+
 First [link your profiles](../installation/accounts.md#link-your-channel-profiles)
 so Octomate can find you there. Available destinations depend on the channel;
 ask the agent to list them if your requested move is unavailable.

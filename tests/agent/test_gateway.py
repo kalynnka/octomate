@@ -4,6 +4,7 @@ from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from octomate_protocol.gateway import GatewayTool
 from pydantic import TypeAdapter, ValidationError
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
@@ -21,12 +22,7 @@ from octomate.managers.gateway import (
 )
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
-from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.triage import (
-    INSPECT_TOOL_NAME,
-    SCHEME_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
     AgentRoute,
     Claim,
     SchemeDecision,
@@ -173,7 +169,7 @@ def test_summon_decision_defaults_to_thread_destination() -> None:
 async def test_summon_capability_accepts_exact_route() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     await summon(
         FAKE_CONTEXT,
@@ -212,7 +208,7 @@ async def test_inspect_tool_returns_other_routes() -> None:
     assert capability.toolset is not None
     assert "inspect" in capability.toolset.tools
     assert "scry" not in capability.toolset.tools
-    inspect_tool = capability.toolset.tools[INSPECT_TOOL_NAME].function
+    inspect_tool = capability.toolset.tools[GatewayTool.INSPECT].function
 
     routes = await inspect_tool(FAKE_CONTEXT, "routes")
     places = await inspect_tool(FAKE_CONTEXT, "destinations")
@@ -230,7 +226,7 @@ async def test_inspect_tool_returns_other_routes() -> None:
 async def test_inspect_computes_only_the_facet_it_was_asked_for() -> None:
     capability = _capability("shared_thread")
     assert capability.toolset is not None
-    inspect_tool = capability.toolset.tools[INSPECT_TOOL_NAME].function
+    inspect_tool = capability.toolset.tools[GatewayTool.INSPECT].function
 
     await inspect_tool(FAKE_CONTEXT, "routes")
 
@@ -289,7 +285,7 @@ async def test_native_summon_accepts_any_distinct_driven_agent(agent_id: str) ->
 async def test_summon_capability_rejects_self_summon() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     with pytest.raises(ModelRetry, match="Cannot summon yourself"):
         await summon(
@@ -316,7 +312,7 @@ async def test_summon_capability_rejects_self_summon() -> None:
 async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> None:
     capability = _capability()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     with pytest.raises(ModelRetry, match="Invalid summon route"):
         await summon(
@@ -333,7 +329,7 @@ async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> N
 async def test_summon_carries_a_claimed_effort() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     await summon(
         FAKE_CONTEXT,
@@ -354,7 +350,7 @@ async def test_summon_carries_a_claimed_effort() -> None:
 async def test_summon_refuses_an_unclaimed_effort() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     with pytest.raises(ModelRetry, match="does not accept effort 'low'"):
         await summon(
@@ -406,7 +402,7 @@ async def test_a_threads_privacy_is_read_from_its_surface_not_its_type(
 async def test_summon_here_refused_when_disallowed() -> None:
     capability = _capability("shared_main")
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     with pytest.raises(ModelRetry, match="Only the current conversation"):
         await summon(
@@ -425,7 +421,7 @@ async def test_summon_here_refused_when_disallowed() -> None:
 async def test_summon_here_allowed_on_bounded_surface() -> None:
     capability = _capability("shared_thread")
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     await summon(
         FAKE_CONTEXT,
@@ -446,7 +442,7 @@ async def test_summon_here_allowed_on_bounded_surface() -> None:
 async def test_summon_tool_records_decision() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     result = await summon(
         FAKE_CONTEXT,
@@ -467,7 +463,7 @@ async def test_summon_tool_records_decision() -> None:
 async def test_teleport_defers_the_run() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+    teleport = capability.toolset.tools[GatewayTool.TELEPORT].function
 
     with pytest.raises(CallDeferred):
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
@@ -491,7 +487,7 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
     no crossing to fall back on and the refusal has nothing to offer instead."""
     capability = _capability(shape, channel=channel)
     assert capability.toolset is not None
-    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+    teleport = capability.toolset.tools[GatewayTool.TELEPORT].function
 
     with pytest.raises(ModelRetry, match=r"cannot contain|Only the current"):
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
@@ -500,13 +496,13 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
 def test_move_spells_use_addresses_and_explicit_creation_intent() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    for name in [SUMMON_TOOL_NAME, TELEPORT_TOOL_NAME]:
+    for name in [GatewayTool.SUMMON, GatewayTool.TELEPORT]:
         schema = capability.toolset.tools[name].tool_def.parameters_json_schema
         assert "ChannelAddress" in schema["$defs"]
         assert schema["properties"]["new_thread"]["default"] is True
         assert not any(key.endswith("Target") for key in schema["$defs"])
-    assert _destination_kinds(capability, SCHEME_TOOL_NAME) == ["dm"]
-    assert _destination_kinds(capability, SEND_TOOL_NAME) == ["dm", "here"]
+    assert _destination_kinds(capability, GatewayTool.SCHEME) == ["dm"]
+    assert _destination_kinds(capability, GatewayTool.SEND) == ["dm", "here"]
 
 
 @pytest.mark.parametrize(
@@ -524,7 +520,7 @@ async def test_summon_thread_refused_where_no_sub_thread_can_be_opened(
 ) -> None:
     capability = _capability(shape, channel=channel)
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     with pytest.raises(ModelRetry, match="cannot contain"):
         await summon(
@@ -591,7 +587,7 @@ async def test_summon_crosses_to_a_sub_thread_of_their_dms_elsewhere(
     conversation it is only exists once the channel opens it."""
     capability = await _crossable()
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     await summon(
         FAKE_CONTEXT,
@@ -626,7 +622,7 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
         )
     )
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     assert all(
         one.channel_tentacle_id != "far"
@@ -661,7 +657,7 @@ async def test_summon_across_names_the_agents_the_far_channel_runs(
     )
     capability = await _crossable(far_routes=(only_far,))
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     # `codex` is on no route here, and `inspect` says where it is instead.
     assert only_far not in capability.session.other_routes
@@ -740,7 +736,7 @@ async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
     one has nowhere to put the conversation it carries."""
     capability = await _crossable("private_main", far_routes=(CLAUDE_ROUTE,))
     assert capability.toolset is not None
-    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+    teleport = capability.toolset.tools[GatewayTool.TELEPORT].function
 
     with pytest.raises(ModelRetry, match="does not run you \\(inkling\\)"):
         await teleport(
@@ -760,7 +756,7 @@ async def test_teleport_defers_a_crossing_with_the_far_account_named(
 ) -> None:
     capability = await _crossable("private_main", far_routes=(INKLING_ROUTE,))
     assert capability.toolset is not None
-    teleport = capability.toolset.tools[TELEPORT_TOOL_NAME].function
+    teleport = capability.toolset.tools[GatewayTool.TELEPORT].function
 
     with pytest.raises(CallDeferred) as deferred:
         await teleport(
@@ -935,7 +931,7 @@ async def test_summon_refused_outright_where_neither_place_exists(
     to name and says to answer it here."""
     capability = _capability("shared_main", channel=_NoSubThreadChannel())
     assert capability.toolset is not None
-    summon = capability.toolset.tools[SUMMON_TOOL_NAME].function
+    summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
     with pytest.raises(ModelRetry, match=r"cannot contain|Only the current"):
         await summon(
@@ -1004,7 +1000,7 @@ def test_tool_schemas_do_not_carry_the_live_routes() -> None:
     # `inspect`'s list. Rendering the live routes as a `Literal` instead would put
     # runtime state in the tool block — the same cache breakpoint as above — and
     # would drown the schema in KnownModelName's ~500 entries.
-    summon = _schemas(_capability())[SUMMON_TOOL_NAME]
+    summon = _schemas(_capability())[GatewayTool.SUMMON]
     assert isinstance(summon, dict)
     properties = summon["properties"]
     assert isinstance(properties, dict)
@@ -1027,7 +1023,7 @@ async def test_scheme_refuses_with_the_reason_it_cannot_land(
 ) -> None:
     capability = _blocked(reason)
     assert capability.toolset is not None
-    scheme = capability.toolset.tools[SCHEME_TOOL_NAME].function
+    scheme = capability.toolset.tools[GatewayTool.SCHEME].function
 
     with pytest.raises(ModelRetry, match=expected):
         await scheme(
@@ -1040,7 +1036,7 @@ async def test_scheme_records_a_decision_that_names_no_agent() -> None:
     # picks a place, never a person.
     capability = _capability()
     assert capability.toolset is not None
-    scheme = capability.toolset.tools[SCHEME_TOOL_NAME].function
+    scheme = capability.toolset.tools[GatewayTool.SCHEME].function
 
     result = await scheme(
         FAKE_CONTEXT,
@@ -1137,7 +1133,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
     for a caller that is not a tool."""
     capability = _capability()
     assert capability.toolset is not None
-    tool = capability.toolset.tools[SUMMON_TOOL_NAME]
+    tool = capability.toolset.tools[GatewayTool.SUMMON]
     over = "Please investigate the failing test. " * 300
 
     assert (
@@ -1171,7 +1167,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
 async def test_scheme_refuses_a_brief_over_the_cap() -> None:
     capability = _capability()
     assert capability.toolset is not None
-    tool = capability.toolset.tools[SCHEME_TOOL_NAME]
+    tool = capability.toolset.tools[GatewayTool.SCHEME]
     over = "Finish the migration write-up for this user. " * 300
 
     assert tool.function_schema.json_schema["properties"]["brief"]["maxLength"] == 8_000

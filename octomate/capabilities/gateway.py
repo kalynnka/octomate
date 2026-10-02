@@ -36,6 +36,10 @@ from collections.abc import AsyncIterable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, cast
 
+from octomate_protocol.gateway import (
+    GATEWAY_TOOLSET_ID,
+    GatewayTool,
+)
 from pydantic import Field
 from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
@@ -52,19 +56,10 @@ from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
     DIRECT_TARGET,
-    DISMISS_TOOL_NAME,
-    GATEWAY_TOOLSET_ID,
     HERE_TARGET,
-    INSPECT_TOOL_NAME,
-    SCHEME_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    WHISPER_TOOL_NAME,
     AgentRoute,
     GatewayDecision,
     InspectFacet,
@@ -229,17 +224,17 @@ use an `at` segment with their user id.
 """
 
 
-def gateway_instructions(tool_name: Callable[[str], str]) -> str:
+def gateway_instructions(tool_name: Callable[[GatewayTool], str]) -> str:
     """The gateway's routing instruction, each spell rendered by the caller's own tool
     naming — the identity for Inkling, `gateway_…` on the served server — so every
     agent reads one contract under the names its runtime lists the tools by."""
     names = {
-        "inspect": tool_name(INSPECT_TOOL_NAME),
-        "summon": tool_name(SUMMON_TOOL_NAME),
-        "teleport": tool_name(TELEPORT_TOOL_NAME),
-        "scheme": tool_name(SCHEME_TOOL_NAME),
-        "send": tool_name(SEND_TOOL_NAME),
-        "dismiss": tool_name(DISMISS_TOOL_NAME),
+        "inspect": tool_name(GatewayTool.INSPECT),
+        "summon": tool_name(GatewayTool.SUMMON),
+        "teleport": tool_name(GatewayTool.TELEPORT),
+        "scheme": tool_name(GatewayTool.SCHEME),
+        "send": tool_name(GatewayTool.SEND),
+        "dismiss": tool_name(GatewayTool.DISMISS),
     }
     return GATEWAY_INSTRUCTION_TEMPLATE.format(
         **names
@@ -290,14 +285,16 @@ class GatewayCapability(AbstractCapability[None]):
         # warm each other. Hence plain `str` routes, validated by `claimed_route`
         # against the list `inspect` returns — a tool *result*, after the breakpoint.
         toolset: FunctionToolset[None] = FunctionToolset(id=GATEWAY_TOOLSET_ID)
-        toolset.tool(name=INSPECT_TOOL_NAME)(self.inspect)
-        toolset.tool(name=SUMMON_TOOL_NAME, retries=2)(self.summon)
+        toolset.tool(name=GatewayTool.INSPECT)(self.inspect)
+        toolset.tool(name=GatewayTool.SUMMON, retries=2)(self.summon)
         # `retries` to match its siblings: teleport refuses a surface with no
         # sub-thread to open, so it needs the same room to be told and correct.
-        toolset.tool(name=TELEPORT_TOOL_NAME, retries=2)(self.teleport)
-        toolset.tool(name=SCHEME_TOOL_NAME, retries=2)(self.scheme)
-        toolset.tool(name=SEND_TOOL_NAME, retries=2)(self.send)
-        toolset.tool(name=DISMISS_TOOL_NAME, retries=2)(self.dismiss)
+        toolset.tool(name=GatewayTool.TELEPORT, retries=2, requires_approval=True)(
+            self.teleport
+        )
+        toolset.tool(name=GatewayTool.SCHEME, retries=2)(self.scheme)
+        toolset.tool(name=GatewayTool.SEND, retries=2)(self.send)
+        toolset.tool(name=GatewayTool.DISMISS, retries=2)(self.dismiss)
         if (
             self.session.agents is not None
             and self.conversations is not None
@@ -305,8 +302,8 @@ class GatewayCapability(AbstractCapability[None]):
             and self.session.conversation_address is not None
         ):
             self.commissioning = True
-            toolset.tool(name=COMMISSION_TOOL_NAME, retries=2)(self.commission)
-            toolset.tool(name=WHISPER_TOOL_NAME, retries=2)(self.whisper)
+            toolset.tool(name=GatewayTool.COMMISSION, retries=2)(self.commission)
+            toolset.tool(name=GatewayTool.WHISPER, retries=2)(self.whisper)
         self.toolset = toolset
 
     def commission_deps(
@@ -371,7 +368,7 @@ class GatewayCapability(AbstractCapability[None]):
             raise ModelRetry(
                 f"The accomplice {child.subagent_id!r} exceeded "
                 f"{self.commission_timeout:.0f}s and was stopped. What it "
-                f"recorded is kept — `{WHISPER_TOOL_NAME}` to continue "
+                f"recorded is kept — `{GatewayTool.WHISPER}` to continue "
                 "it, or break the work into smaller briefs."
             ) from None
         # The runner recorded its turn without knowing its place;
@@ -624,7 +621,7 @@ class GatewayCapability(AbstractCapability[None]):
         if agent_id == self.session.current_agent_id:
             raise ModelRetry(
                 f"Cannot commission yourself {self.session.current_agent_id!r}. "
-                f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
+                f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` to choose a valid route.'
             )
         try:
             route = self.session.claimed_route(
@@ -636,7 +633,7 @@ class GatewayCapability(AbstractCapability[None]):
         if run_model is None:
             raise ModelRetry(
                 f"Agent {agent_id!r} does not serve model {model!r}. "
-                f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` and copy a route exactly.'
+                f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` and copy a route exactly.'
             )
         # The calling run's own conversation is the parent — the react
         # graph put its id on the RunContext. No id means the gate is
@@ -652,7 +649,7 @@ class GatewayCapability(AbstractCapability[None]):
         )
         if child.parent_conversation_id != parent_id or child.runs:
             raise ModelRetry(
-                f"{name!r} is already at work — `{WHISPER_TOOL_NAME}` "
+                f"{name!r} is already at work — `{GatewayTool.WHISPER}` "
                 "to it, or pick a new name."
             )
         return await self.run_accomplice(
@@ -689,7 +686,7 @@ class GatewayCapability(AbstractCapability[None]):
                     if live
                     else "No accomplices are at work."
                 )
-                + f" `{COMMISSION_TOOL_NAME}` one to start."
+                + f" `{GatewayTool.COMMISSION}` one to start."
             )
         child = await conversations.ensure(
             thread_id,
@@ -725,7 +722,7 @@ class GatewayCapability(AbstractCapability[None]):
             if (
                 isinstance(event, FunctionToolResultEvent)
                 and isinstance(event.part, ToolReturnPart)
-                and event.part.tool_name == SEND_TOOL_NAME
+                and event.part.tool_name == GatewayTool.SEND
                 and isinstance(event.part.metadata, list)
             ):
                 for sent_event in event.part.metadata:

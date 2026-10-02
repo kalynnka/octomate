@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Literal, TypeAlias, cast
 from uuid import uuid4
 
+from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -54,11 +55,8 @@ from octomate.managers.thread import ThreadManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
-    SCHEME_TOOL_NAME,
     AgentRoute,
     Claim,
 )
@@ -356,12 +354,12 @@ async def capture_case(
                             called_tools.add(event.part.tool_name)
                         if (
                             isinstance(event, FunctionToolCallEvent)
-                            and event.part.tool_name == COMMISSION_TOOL_NAME
+                            and event.part.tool_name == GatewayTool.COMMISSION
                         ):
                             commission_calls += 1
                         elif (
                             isinstance(event, FunctionToolResultEvent)
-                            and event.part.tool_name == COMMISSION_TOOL_NAME
+                            and event.part.tool_name == GatewayTool.COMMISSION
                         ):
                             commission_results += 1
         if run.result is None:
@@ -423,7 +421,7 @@ def main() -> None:
                 output_type=str,
                 expectation="private",
                 private=True,
-                expect_tool=SEND_TOOL_NAME,
+                expect_tool=GatewayTool.SEND,
             ),
             CaptureCase(
                 name="scheme",
@@ -432,7 +430,7 @@ def main() -> None:
                 output_type=str,
                 expectation="private",
                 private=True,
-                expect_tool=SCHEME_TOOL_NAME,
+                expect_tool=GatewayTool.SCHEME,
             ),
         ]
     elif args.subagents:

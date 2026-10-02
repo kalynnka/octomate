@@ -23,6 +23,7 @@ from typing import TYPE_CHECKING, Annotated
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_access_token, get_http_headers
+from octomate_protocol.gateway import GatewayTool
 from pydantic import Field, TypeAdapter
 from pydantic_ai.settings import ThinkingEffort
 
@@ -32,16 +33,10 @@ from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
 from octomate.schemas.awakes import GatewayNativeSignal
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     DIRECT_TARGET,
-    DISMISS_TOOL_NAME,
     HERE_TARGET,
-    INSPECT_TOOL_NAME,
-    SCHEME_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
     InspectFacet,
     SchemeTarget,
     SendTarget,
@@ -52,17 +47,6 @@ if TYPE_CHECKING:
     # Runtime dependency runs the other way (the host builds and mounts this
     # module's servers); the resolver only needs the host's type here.
     from octomate.base import Octomate
-
-# The spells the gateway offers, in the order it registers them. `commission` and
-# `whisper` are deliberately absent: external runtimes bring their own subagents.
-GATEWAY_SPELLS: tuple[str, ...] = (
-    INSPECT_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    SCHEME_TOOL_NAME,
-    SEND_TOOL_NAME,
-    DISMISS_TOOL_NAME,
-)
 
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
@@ -219,7 +203,7 @@ def mount_gateway(
     """
 
     @mcp.tool(
-        name=INSPECT_TOOL_NAME,
+        name=GatewayTool.INSPECT,
         description=capability_contract(GatewayCapability.inspect),
     )
     @spoken
@@ -242,7 +226,8 @@ def mount_gateway(
         )
 
     @mcp.tool(
-        name=SUMMON_TOOL_NAME, description=capability_contract(GatewayCapability.summon)
+        name=GatewayTool.SUMMON,
+        description=capability_contract(GatewayCapability.summon),
     )
     @spoken
     async def summon(
@@ -275,7 +260,7 @@ def mount_gateway(
         return sentence
 
     @mcp.tool(
-        name=TELEPORT_TOOL_NAME,
+        name=GatewayTool.TELEPORT,
         description=capability_contract(GatewayCapability.teleport),
     )
     @spoken
@@ -297,7 +282,8 @@ def mount_gateway(
         return TELEPORT_RECORDED
 
     @mcp.tool(
-        name=SCHEME_TOOL_NAME, description=capability_contract(GatewayCapability.scheme)
+        name=GatewayTool.SCHEME,
+        description=capability_contract(GatewayCapability.scheme),
     )
     @spoken
     async def scheme(
@@ -316,7 +302,7 @@ def mount_gateway(
         return sentence
 
     @mcp.tool(
-        name=SEND_TOOL_NAME, description=capability_contract(GatewayCapability.send)
+        name=GatewayTool.SEND, description=capability_contract(GatewayCapability.send)
     )
     @spoken
     async def send(
@@ -364,7 +350,7 @@ def mount_gateway(
         return notice
 
     @mcp.tool(
-        name=DISMISS_TOOL_NAME,
+        name=GatewayTool.DISMISS,
         description=capability_contract(GatewayCapability.dismiss),
     )
     @spoken

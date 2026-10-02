@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 from arcanus import BaseTransmuter, RelationCollection, Relationships, Transmuter
 from arcanus.base import Identity
 from arcanus.dataclass import dataclass as arcanus_dataclass
+from octomate_protocol.gateway import GatewayTool
 from pydantic import (
     AwareDatetime,
     ConfigDict,
@@ -37,12 +38,6 @@ from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.schemas.thread import ThreadMessage
-
-# The message-send tool's name. Owned at the message-schema boundary, where a
-# send call is recognized in run history, so the `send` capability that registers
-# the tool and the feelers projection that renders it share one value without the
-# schema layer importing the capability layer.
-SEND_TOOL_NAME = "send"
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes
@@ -149,7 +144,8 @@ class ModelResponse(Transmuter, PydanticModelResponse):
                     if part.content:
                         fragments.append(part.content)
                 elif (
-                    isinstance(part, ToolCallPart) and part.tool_name == SEND_TOOL_NAME
+                    isinstance(part, ToolCallPart)
+                    and part.tool_name == GatewayTool.SEND
                 ):
                     fragments.append(str(part.args_as_dict()))
             self.message_text = "\n\n".join(fragments) or None

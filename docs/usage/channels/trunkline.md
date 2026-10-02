@@ -65,6 +65,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   to the first available action. Disabled choices show their reason. Teleport
   asks for a destination. Summon also offers agent rows with model chips, an
   editable brief, and an effort slider when the selected route supports it.
+  Choose **This conversation** in Summon to hand over in place when offered;
+  the other choices create a thread at the selected address. Agent and model
+  choices follow that address's connected channel.
   Leave effort at Agent default to use the agent’s setting.
   Run output streams into the message panel. After the server confirms arrival,
   the console opens the destination thread if you are still viewing the source.
@@ -77,20 +80,24 @@ Every Trunkline conversation is a private thread; there is no DM surface or
 nested sub-thread. It never needs profile linking: you are your signed-in account.
 Teleport and Summon can create a new Trunkline thread directly. Discord is not
 offered when entering from Trunkline because no Discord server context is selected.
-The destination
-list also includes eligible Discord server channels for your linked account;
+When viewing a Discord conversation, the destination list includes eligible text
+channels in its server for your linked account;
 selecting one creates a public Discord thread. Existing Discord DMs are omitted
 because they cannot hold an isolated new thread.
 
 ### Thread operation API
 
 The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
-Teleport destinations and Summon agent/model routes, plus reasons when unavailable.
+Teleport and Summon destination addresses, an optional `here` address for in-place
+Summon, and agent/model `routes` keyed by connected channel ID, plus reasons when
+unavailable.
 The header uses this response to populate its choices and refreshes it when you
 open the action controls.
 
-`POST /api/trunkline/threads/{id}/teleport` accepts a destination and an opening
-hint. `POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
+`POST /api/trunkline/threads/{id}/teleport` accepts a `ChannelAddress` as
+`destination`, a `new_thread` flag (true by default), and an opening hint.
+The console sends `new_thread=false` only for Summon's **This conversation** choice.
+`POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
 brief (up to 8,000 characters). Both require access to the source thread and
 refuse active gateway turns or pending approvals/questions. They stream native
 run events, ending with `gateway` and the destination address; execution

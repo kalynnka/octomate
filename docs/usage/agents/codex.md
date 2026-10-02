@@ -65,6 +65,10 @@ Codex offers, such as MCP consent prompts, are presented as they are. Under
 `auto_review` and `full_access` no request reaches the bridge at all. As with
 Claude, the wait is in process, so an answer is not durable across a restart.
 
+The gateway's [teleport tool](../gateway.md#teleport) is configured with Codex's
+native `prompt` approval mode. It follows the selected permission policy and
+reviewer, including `auto_review`; Octomate does not add another confirmation.
+
 ## Native sessions
 
 `octomate codex hooks install` registers `SessionStart`, `UserPromptSubmit`,

@@ -18,6 +18,8 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal, overload
 
+from octomate_protocol.gateway import GatewayTool
+
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.awakes import GatewayNativeSignal, GatewayThreadSignal
@@ -29,8 +31,6 @@ from octomate.schemas.operations import (
 from octomate.schemas.thread import ATTRIBUTABLE_KINDS
 from octomate.schemas.triage import (
     DIRECT_TARGET,
-    INSPECT_TOOL_NAME,
-    SUMMON_TOOL_NAME,
     AgentRoute,
     DirectTarget,
     GatewayDecision,
@@ -493,7 +493,7 @@ class OctomateSession:
         if agent_id == self.current_agent_id:
             raise GatewayRefusal(
                 f"Cannot summon yourself {self.current_agent_id!r}. "
-                f'Call `{INSPECT_TOOL_NAME}` with `reveal="routes"` to choose a valid route.'
+                f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` to choose a valid route.'
             )
         destination = destination or self.conversation_address
         if destination is None:
@@ -629,7 +629,7 @@ class OctomateSession:
                     if self.native
                     else f"{channel.name} does not run you ({self.current_agent_id}), "
                     f"and a teleport takes you with it. Carry on here, or "
-                    f"`{SUMMON_TOOL_NAME}` an agent it does run."
+                    f"`{GatewayTool.SUMMON}` an agent it does run."
                 )
             agent_id = route.agent_id
         if reason := self.teleport_unavailable:

@@ -17,6 +17,7 @@ from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.shared.exceptions import MCPError
+from octomate_protocol.gateway import GATEWAY_NAMESPACE, gateway_tool
 from pydantic import Field, JsonValue
 
 from octomate.capabilities.gateway import gateway_instructions
@@ -46,7 +47,6 @@ OCTOMATE_SERVER_NAME = "octomate"
 # The one endpoint: the host mounts the server's app under its name, and the
 # transport answers at `/mcp` inside it. Every install config copies this literal.
 OCTOMATE_MCP_PATH = f"/{OCTOMATE_SERVER_NAME}/mcp"
-GATEWAY_NAMESPACE = "gateway"
 HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
 LIST_MCP_TOOLS = "mcp_list_tools"
@@ -57,11 +57,6 @@ INSTALL_MCP = "mcp_install"
 UNINSTALL_MCP = "mcp_uninstall"
 ENABLE_MCP = "mcp_enable"
 DISABLE_MCP = "mcp_disable"
-
-
-def gateway_tool(name: str) -> str:
-    """A spell's served name: the family's namespace over Inkling's own."""
-    return f"{GATEWAY_NAMESPACE}_{name}"
 
 
 def history_tool(name: str) -> str:

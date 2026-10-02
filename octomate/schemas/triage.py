@@ -1,10 +1,11 @@
-"""Gateway spell names and the decisions a run leaves."""
+"""Gateway decisions a run leaves."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Annotated, Literal, NamedTuple
 
+from octomate_protocol.gateway import GatewayTool
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
@@ -20,20 +21,6 @@ ResponseTargetMode = Literal["main", "sub"]
 # (continuing after human review). Labels each run's span and any batch it defers.
 RunName = Literal["react", "summon", "teleport", "resume"]
 
-# The gateway's vocabulary: the toolset id and each spell's tool name. They live with
-# the decision schemas rather than the capability because everyone speaks them — the
-# policy layer's refusal sentences, the reflex graph, channel rendering — and none of
-# those should have to import an agent capability for a string. `send` is the one
-# exception: its name is `octomate.schemas.messages.SEND_TOOL_NAME`, beside the
-# segment types it delivers.
-GATEWAY_TOOLSET_ID = "gateway"
-INSPECT_TOOL_NAME = "inspect"
-SUMMON_TOOL_NAME = "summon"
-TELEPORT_TOOL_NAME = "teleport"
-SCHEME_TOOL_NAME = "scheme"
-DISMISS_TOOL_NAME = "dismiss"
-COMMISSION_TOOL_NAME = "commission"
-WHISPER_TOOL_NAME = "whisper"
 # What one `inspect` reveals. One facet per call, because each spell needs exactly one —
 # a route for `summon`, a place for anything that lands somewhere, a project for
 # `teleport` — and the routes alone run long enough that showing everything every time
@@ -196,7 +183,7 @@ class TeleportDecision(BaseModel):
         return DeferredToolRequests(
             calls=[
                 ToolCallPart(
-                    tool_name=TELEPORT_TOOL_NAME,
+                    tool_name=GatewayTool.TELEPORT,
                     args={"hint": self.hint, "project": self.project, "ref": self.ref},
                     tool_call_id=tool_call_id,
                 )

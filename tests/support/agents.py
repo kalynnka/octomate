@@ -24,6 +24,7 @@ from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from claude_agent_sdk.types import Message as ClaudeMessage
+from octomate_protocol.gateway import GatewayTool
 from pydantic import TypeAdapter
 from pydantic_ai import (
     AgentCapability,
@@ -63,11 +64,7 @@ from octomate.config.agents import (
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.triage import (
     DIRECT_TARGET,
-    DISMISS_TOOL_NAME,
-    SCHEME_TOOL_NAME,
-    SUMMON_TOOL_NAME,
     TELEPORT_DEFER_KIND,
-    TELEPORT_TOOL_NAME,
     Claim,
     DirectTarget,
     SchemeDecision,
@@ -98,7 +95,7 @@ def _teleport_requests(
     return DeferredToolRequests(
         calls=[
             ToolCallPart(
-                tool_name=TELEPORT_TOOL_NAME,
+                tool_name=GatewayTool.TELEPORT,
                 args={"hint": hint, "destination": destination, "project": project},
                 tool_call_id="call_teleport",
             )
@@ -319,7 +316,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         else:
             output = self.reception_output
         if self.reception_dismiss:
-            await _gate_tool(capabilities, DISMISS_TOOL_NAME)(
+            await _gate_tool(capabilities, GatewayTool.DISMISS)(
                 cast(RunContext[None], None)
             )
         scheme_decision = self.reception_scheme
@@ -327,7 +324,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             # Cast once, like a model would: the receiving run in the DM must not
             # re-cast it, where the gate would (rightly) refuse.
             self.reception_scheme = None
-            await _gate_tool(capabilities, SCHEME_TOOL_NAME)(
+            await _gate_tool(capabilities, GatewayTool.SCHEME)(
                 cast(RunContext[None], None),
                 hint=scheme_decision.hint,
                 brief=scheme_decision.brief,
@@ -351,7 +348,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 raise AssertionError("summon decision requires SummonCapability")
             if summon.toolset is None:
                 raise AssertionError("summon capability requires a toolset")
-            summon_tool = summon.toolset.tools[SUMMON_TOOL_NAME].function
+            summon_tool = summon.toolset.tools[GatewayTool.SUMMON].function
             await summon_tool(
                 cast(RunContext[None], None),
                 agent_id=summon_decision.agent_id,
@@ -408,7 +405,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             async def scheme_events() -> AsyncGenerator[
                 ReactStreamEvent[ChannelOutput], None
             ]:
-                await _gate_tool(capabilities, SCHEME_TOOL_NAME)(
+                await _gate_tool(capabilities, GatewayTool.SCHEME)(
                     cast(RunContext[None], None),
                     hint=scheme_decision.hint,
                     brief=scheme_decision.brief,
@@ -436,7 +433,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     raise AssertionError("summon decision requires SummonCapability")
                 if summon.toolset is None:
                     raise AssertionError("summon capability requires a toolset")
-                summon_tool = summon.toolset.tools[SUMMON_TOOL_NAME].function
+                summon_tool = summon.toolset.tools[GatewayTool.SUMMON].function
                 await summon_tool(
                     cast(RunContext[None], None),
                     agent_id=summon_decision.agent_id,

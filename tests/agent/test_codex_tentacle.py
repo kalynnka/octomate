@@ -1800,12 +1800,14 @@ async def a_kicker() -> UserProfile:
     ],
 )
 @pytest.mark.parametrize("external_id", [None, "previous-thread"])
+@pytest.mark.parametrize("permission_mode", ["auto_review", "full_access"])
 async def test_a_registered_octomate_session_wires_the_thread_config(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
     host: str,
     url_host: str,
     external_id: str | None,
+    permission_mode: Literal["auto_review", "full_access"],
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
@@ -1834,7 +1836,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="auto_review"),
+        config=CodexConfig(permission_mode=permission_mode),
     )
 
     async with tentacle:
@@ -1860,6 +1862,13 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == ("resume" if external_id else "start")
+    expected = (
+        ApprovalMode.auto_review
+        if permission_mode == "auto_review"
+        else ApprovalMode.deny_all
+    )
+    assert thread_call.approval_mode == expected
+    assert FakeCodex.turn_calls[0].approval_mode == expected
     assert thread_call.config == {
         "mcp_servers": {
             "octomate": {"enabled": False},
@@ -1871,6 +1880,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
                 },
+                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             },
         }
     }
@@ -2069,6 +2079,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION",
                 },
+                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
         }
     }
@@ -2159,6 +2170,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
                 },
+                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
         }
         return BindingFakeThread("thread-new"), "runtime-model"

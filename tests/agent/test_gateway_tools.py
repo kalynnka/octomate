@@ -14,17 +14,18 @@ from inspect import cleandoc
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from octomate_protocol.gateway import gateway_tool
 from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
-from octomate.capabilities.history import HISTORY_TOOLS, HistoryCapability
+from octomate.capabilities.history import HistoryCapability
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED
-from octomate.mcp.server import gateway_tool, history_tool, octomate_mcp
+from octomate.mcp.gateway import TELEPORT_RECORDED
+from octomate.mcp.server import octomate_mcp
 from octomate.schemas.awakes import GatewayNativeSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -140,11 +141,6 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
         "history_read_before",
         "history_read_after",
     ]
-    # What an adapter pre-allows is this same list, named statically.
-    assert [
-        *map(gateway_tool, GATEWAY_SPELLS),
-        *map(history_tool, HISTORY_TOOLS),
-    ] == [tool.name for tool in tools]
     assert "gateway_dispel" not in {tool.name for tool in tools}
     capability = GatewayCapability(session=session)
     assert capability.toolset is not None

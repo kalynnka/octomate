@@ -27,6 +27,7 @@ from typing import (
     cast,
 )
 
+from octomate_protocol.gateway import GatewayTool
 from pydantic import JsonValue
 from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 
@@ -70,14 +71,8 @@ from octomate.capabilities.harness.events import (
     TodoUpdatedEvent,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
 from octomate.schemas.todos import Todo
-from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    WHISPER_TOOL_NAME,
-)
 from octomate.telemetry import channel_logfire
 from octomate.types.todos import STATUS_MARKERS
 
@@ -464,11 +459,11 @@ SKIPPED_PLAN_TOOL_NAMES = frozenset(
     {
         ASK_QUESTIONS_TOOL_NAME,
         DEFAULT_OUTPUT_TOOL_NAME,
-        SEND_TOOL_NAME,
+        GatewayTool.SEND,
         # Subagent calls render as separate timelines instead of parent plan rows.
-        COMMISSION_TOOL_NAME,
-        WHISPER_TOOL_NAME,
-        TELEPORT_TOOL_NAME,  # Teleport is internal routing plumbing (relocate the conversation)
+        GatewayTool.COMMISSION,
+        GatewayTool.WHISPER,
+        GatewayTool.TELEPORT,  # Teleport is internal routing plumbing (relocate the conversation)
     }
 )
 MAX_TASK_DETAIL_CHARS = 2000
@@ -636,7 +631,7 @@ class TimelineState:
         part: ToolCallPart | ToolReturnPart | RetryPromptPart,
     ) -> None:
         if isinstance(part, ToolCallPart):
-            if part.tool_name not in {COMMISSION_TOOL_NAME, WHISPER_TOOL_NAME}:
+            if part.tool_name not in {GatewayTool.COMMISSION, GatewayTool.WHISPER}:
                 return
             args = part.args_as_dict()
             name = args.get("name")
@@ -649,7 +644,7 @@ class TimelineState:
             activity = SubagentActivity(
                 invocation_id=part.tool_call_id,
                 kind="commission"
-                if part.tool_name == COMMISSION_TOOL_NAME
+                if part.tool_name == GatewayTool.COMMISSION
                 else "whisper",
                 name=name,
             )

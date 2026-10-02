@@ -913,13 +913,21 @@ def test_mcp_install_refuses_without_the_credential_it_would_embed(
     assert list(tmp_path.iterdir()) == []
 
 
+@pytest.mark.parametrize(
+    ("approval_policy", "reviewer"),
+    [("on-request", "user"), ("on-request", "auto_review"), ("never", "user")],
+)
 def test_codex_mcp_install_preserves_comments_and_foreign_tables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    approval_policy: str,
+    reviewer: str,
 ) -> None:
     gateway_ready(monkeypatch)
     path = tmp_path / "config.toml"
     path.write_text(
         '# the operator wrote this\nmodel = "gpt-5.5"\n\n'
+        f'approval_policy = "{approval_policy}"\napprovals_reviewer = "{reviewer}"\n\n'
         '[mcp_servers.logfire]\nurl = "https://logfire.dev/mcp"\n'
     )
 
@@ -930,6 +938,8 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
     assert "# the operator wrote this" in text
     table = tomllib.loads(text)
     assert table["model"] == "gpt-5.5"
+    assert table["approval_policy"] == approval_policy
+    assert table["approvals_reviewer"] == reviewer
     assert table["mcp_servers"]["logfire"] == {"url": "https://logfire.dev/mcp"}
     assert table["mcp_servers"]["octomate"] == {
         "url": "http://127.0.0.1:9999/octomate/mcp",
@@ -937,6 +947,7 @@ def test_codex_mcp_install_preserves_comments_and_foreign_tables(
             "Authorization": "Bearer the-token",
             "X-Octomate-Client": "codex-native",
         },
+        "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
     }
 
 
@@ -964,6 +975,9 @@ def test_codex_mcp_reinstall_and_uninstall_leave_the_operators_file(
         table["mcp_servers"]["octomate"]["url"]
         == "http://minidock.local:8000/octomate/mcp"
     )
+    assert table["mcp_servers"]["octomate"]["tools"] == {
+        "gateway_teleport": {"approval_mode": "prompt"}
+    }
 
     result = runner.invoke(
         codex_typer, ["mcp", "uninstall", "--config-file", str(path)]
