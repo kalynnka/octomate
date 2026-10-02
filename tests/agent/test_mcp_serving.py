@@ -22,6 +22,7 @@ from fastapi import FastAPI
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.base import Octomate
@@ -324,9 +325,8 @@ async def test_a_served_call_runs_against_the_turn_its_header_names(
                 "gateway_inspect", {"reveal": "destinations"}
             )
 
-    assert result.data == "\n".join(
-        str(one) for one in await session.inspect("destinations")
-    )
+    addresses = TypeAdapter(list[ChannelAddress]).validate_json(result.data)
+    assert addresses == await session.inspect("destinations")
 
 
 async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
@@ -411,12 +411,15 @@ async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
 
     # The bearer named luhui, so their linked account's crossing is on offer, and
     # nothing was ever registered: the session lived exactly one call.
-    assert "their direct messages on" in result.data
+    assert TypeAdapter(list[ChannelAddress]).validate_json(result.data) == [
+        ChannelAddress("im", "dm", "", "alice")
+    ]
     assert octomate.gateway.sessions == {}
 
 
 async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
     octomate = await a_native_deployment()
+    destination = ChannelAddress("im", "dm", "", "alice")
     async with served(octomate) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
             result = await client.call_tool(
@@ -424,7 +427,9 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
                 {
                     "agent_id": "other",
                     "model": "test",
-                    "destination": {"kind": "channel", "channel": "im"},
+                    "destination": TypeAdapter(ChannelAddress).dump_python(
+                        destination, mode="json"
+                    ),
                     "hint": "Working on it",
                     "reason": "the operator asked",
                     "summon": "Please take this up.",
@@ -432,7 +437,7 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
             )
         await asyncio.gather(*octomate.background)
 
-    assert result.data == "Summoning other (test) → im."
+    assert result.data == f"Summoning other (test) → {destination}."
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
     assert isinstance(signal, GatewayNativeSignal)
@@ -442,4 +447,6 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
     assert signal.user_profile is not None
     assert signal.user_profile.name == "luhui"
     assert isinstance(signal.decision, SummonDecision)
+    assert signal.decision.destination == destination
+    assert signal.decision.new_thread is True
     assert signal.decision.summon == "Please take this up."

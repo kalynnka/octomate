@@ -18,6 +18,7 @@ from pydantic_ai import RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
@@ -33,7 +34,7 @@ from octomate.tentacles.agent import AgentTentacle
 from tests.support.agents import FakeAgent
 from tests.support.managers import FakeConversationManager
 
-THREAD = uuid.uuid4()
+THREAD = uuid7()
 ADDRESS = ChannelAddress(
     channel_tentacle_id="im",
     chat_type="dm",
@@ -153,7 +154,10 @@ async def test_commissioning_a_live_name_again_is_refused() -> None:
     await commission(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Go."
     )
-    conversations.store[(THREAD, "claude", "repo-audit")].runs.append("run-child")
+    child = await conversations.ensure(
+        THREAD, agent_tentacle_id="claude", subagent_id="repo-audit"
+    )
+    await conversations.record_agent_run(child, str(uuid7()), [])
 
     with pytest.raises(ModelRetry, match="already at work"):
         await commission(
@@ -268,7 +272,7 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
             SlowAgent(id="claude", allow_reception_run=True, delay=0.1),
         ),
     }
-    gate, _, conversations, ctx = await _gate(agents=agents)
+    gate, _, conversations, _ = await _gate(agents=agents)
     parent_id = conversations.store[(THREAD, "inkling", "")].id
     commission = _tool(gate, GatewayTool.COMMISSION)
 
@@ -309,5 +313,5 @@ async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
     assert not bare.commissioning
     assert GatewayTool.COMMISSION not in bare.get_instructions()
 
-    gate, _, _, ctx = await _gate()
+    gate, _, _, _ = await _gate()
     assert GatewayTool.COMMISSION in gate.get_instructions()
