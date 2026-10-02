@@ -71,6 +71,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.commands import CommandCatalog, CommandContext
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -89,6 +90,7 @@ from octomate.tentacles.deepseek.adapter import (
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
+from octomate.tentacles.deepseek.ink import DeepseekInk
 from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
@@ -98,6 +100,7 @@ from octomate.tentacles.deepseek.wire import (
     PermissionCatalog,
     QuestionRequestedFrame,
     RemoteCancellation,
+    RemoteNotification,
     SessionAssistantFrame,
     SessionCreateValue,
     SessionEventFrame,
@@ -158,7 +161,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     default_provider: str | None = field(init=False)
     effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
-    client: DeepseekApiClient = field(init=False, repr=False)
+    ink: DeepseekInk = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
     mux_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     closing: bool = field(default=False, init=False)
@@ -208,8 +211,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         # The endpoint is fixed by config, so the client lives as long as the
         # tentacle — launch, runs and teardown all speak through it.
         endpoint = HttpUrl(f"http://{config.host}:{config.port}")
-        self.client = DeepseekApiClient(
-            base_url=endpoint, http_client=httpx.AsyncClient(base_url=str(endpoint))
+        self.ink = DeepseekInk(
+            DeepseekApiClient(
+                base_url=endpoint,
+                http_client=httpx.AsyncClient(base_url=str(endpoint)),
+            )
         )
         self.mux_socket = None
         self.mux_task = None
@@ -397,10 +403,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         base_url = await process.start()
         try:
             if process.launch_token is not None:
-                await self.client.authenticate(process.launch_token)
-            if not await self.client.answering():
+                await self.ink.client.authenticate(process.launch_token)
+            if not await self.ink.client.answering():
                 raise RuntimeError(
-                    f"dsh reported {base_url} but does not answer at {self.client.base_url}"
+                    f"dsh reported {base_url} but does not answer at {self.ink.client.base_url}"
                 )
         except BaseException:
             await process.stop()
@@ -413,10 +419,31 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         # dsh owns both the live default and a resumed session's selection.
         return None
 
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        """Read the live session's registry without creating a session or turn."""
+        conversation = context.conversation
+        if conversation is None or not conversation.external_id:
+            return CommandCatalog(
+                context=context,
+                status="unavailable",
+                message="DSH command discovery requires an existing native session.",
+            )
+        if self.mux_task is None or self.mux_task.done():
+            return CommandCatalog(
+                context=context,
+                status="unavailable",
+                message="The DSH Remote connection is not running.",
+            )
+        return CommandCatalog(
+            context=context,
+            status="ready",
+            descriptors=set(await self.ink.list_commands(conversation.external_id)),
+        )
+
     async def discover_models(self) -> None:
         catalog = ModelCatalog.model_validate(
             self.unwrap(
-                await self.client.remote("session/modelCatalog", {}),
+                await self.ink.client.remote("session/modelCatalog", {}),
                 "session/modelCatalog",
             )
         )
@@ -465,7 +492,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     async def discover_permissions(self) -> None:
         catalog = PermissionCatalog.model_validate(
             self.unwrap(
-                await self.client.remote("permissionPresets/catalog", {}),
+                await self.ink.client.remote("permissionPresets/catalog", {}),
                 "permissionPresets/catalog",
             )
         )
@@ -474,7 +501,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     async def __aenter__(self) -> DeepseekTentacle:
         self.closing = False
-        await self.client.__aenter__()
+        await self.ink.__aenter__()
         # start_process leaves the client verified (settings/describe answered);
         # the mux socket must then be open before anything prompts, so a run's
         # first frames cannot outrun the subscribed baseline. A failed
@@ -484,15 +511,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self.process = await self.start_process()
             await self.discover_models()
             await self.discover_permissions()
-            socket = await self.client.open_mux()
+            socket = await self.ink.client.open_mux()
         except BaseException:
-            await self.client.__aexit__()
+            await self.ink.__aexit__()
             if self.process is not None:
                 await self.process.stop()
             self.process = None
             raise
         self.mux_socket = socket
-        self.mux_task = asyncio.create_task(self.pump_mux(self.client, socket))
+        self.mux_task = asyncio.create_task(self.pump_mux(self.ink.client, socket))
+        self.commands.invalidate(agent_id=self.id)
         return await super().__aenter__()
 
     async def __aexit__(
@@ -502,6 +530,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         traceback: TracebackType | None = None,
     ) -> None:
         await super().__aexit__(exc_type, exc_value, traceback)
+        self.commands.invalidate(agent_id=self.id)
         cancelled = False
         with anyio.CancelScope(shield=True):
             draining = asyncio.gather(*self.run_tasks)
@@ -530,7 +559,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     future.cancel()
             self.pending.clear()
             self.bridge_contexts.clear()
-            await self.client.__aexit__(exc_type, exc_value, traceback)
+            await self.ink.__aexit__(exc_type, exc_value, traceback)
             if self.process is not None:
                 await self.process.stop()
                 self.process = None
@@ -547,7 +576,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         a dropped socket there is not weather."""
         try:
             async for rpc_id, frame in client.mux_frames(socket):
-                if isinstance(frame, SessionEventFrame | SessionAssistantFrame):
+                if (
+                    isinstance(frame, RemoteNotification)
+                    and frame.event == "commands/change"
+                ):
+                    self.commands.invalidate(agent_id=self.id)
+                elif isinstance(frame, SessionEventFrame | SessionAssistantFrame):
                     queue = self.subscribers.get(frame.session_id)
                     if queue is not None:
                         queue.put_nowait(frame)
@@ -572,6 +606,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         except Exception:
             logger.exception("dsh Remote stream failed")
         finally:
+            self.commands.invalidate(agent_id=self.id)
             if not self.closing:
                 failure = StreamErrorFrame(
                     type="stream/error",
@@ -583,7 +618,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     async def answer_interaction(
         self, rpc_id: str, frame: ApprovalRequestedFrame | QuestionRequestedFrame
     ) -> None:
-        client = self.client
+        client = self.ink.client
         context = self.bridge_contexts.get(frame.session_id)
         if context is None:
             result: RpcResult | None = None
@@ -775,7 +810,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     ) -> None:
         try:
             value = self.unwrap(
-                await self.client.remote(
+                await self.ink.client.remote(
                     "session/projections", {"request": {"sessionId": session_id}}
                 ),
                 "session/projections",
@@ -820,7 +855,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deepseek_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
             raise ValueError("agent run requires a thread_id to own its conversation")
-        client = self.client
+        client = self.ink.client
         if self.mux_task is None:
             # The client exists from birth, but a run needs the mux pump: an
             # un-entered tentacle would prompt and then wait on frames forever.

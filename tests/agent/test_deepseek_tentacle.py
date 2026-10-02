@@ -1010,7 +1010,7 @@ async def test_a_declined_approval_answers_rejected() -> None:
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.client = cast(
+    tentacle.ink.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     conversation = FakeConversation(thread_id=_THREAD)
@@ -1049,7 +1049,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
         octomate=octomate,
     )
     octomate.connect(tentacle)
-    tentacle.client = cast(
+    tentacle.ink.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
@@ -1082,7 +1082,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     octomate = interaction_octomate(feelers, deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.client = cast(
+    tentacle.ink.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     conversation = FakeConversation(thread_id=_THREAD)
@@ -1126,7 +1126,7 @@ async def test_a_non_interactive_run_declines_without_a_card() -> None:
     octomate = interaction_octomate(feelers, RecordingDeferredActions())
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.client = cast(
+    tentacle.ink.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
@@ -1152,7 +1152,7 @@ async def test_a_non_interactive_run_declines_without_a_card() -> None:
 async def test_a_request_nobody_drives_is_delegated_to_other_clients() -> None:
     FakeDeepseekApi.reset()
     tentacle = _tentacle(FakeConversationManager())
-    tentacle.client = cast(
+    tentacle.ink.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
 
@@ -1189,7 +1189,7 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     octomate = interaction_octomate(feelers, deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
-    tentacle.client = cast(
+    tentacle.ink.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
@@ -1240,8 +1240,8 @@ async def test_starts_its_own_runtime_beside_native_dsh(
 
     async with tentacle:
         assert tentacle.process is not None
-        assert tentacle.client is not None
-        assert tentacle.client.base_url == HttpUrl("http://127.0.0.1:3081")
+        assert tentacle.ink.client is not None
+        assert tentacle.ink.client.base_url == HttpUrl("http://127.0.0.1:3081")
         result = await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
 
     assert result.output == "shared"
@@ -1543,7 +1543,7 @@ async def test_rejected_interaction_reply_fails_its_run(
     FakeDeepseekApi.reset()
     tentacle = _tentacle(FakeConversationManager())
     api = FakeDeepseekApi(HttpUrl("http://t"), None)
-    tentacle.client = cast(DeepseekApiClient, api)
+    tentacle.ink.client = cast(DeepseekApiClient, api)
     queue: asyncio.Queue[
         SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
     ] = asyncio.Queue()

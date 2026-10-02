@@ -34,6 +34,7 @@ from octomate.tentacles.deepseek.wire import (
     RemoteCancellation,
     RemoteEventsOpen,
     RemoteInvocation,
+    RemoteNotification,
     RemoteReady,
     RpcReceipt,
     SessionAssistantFrame,
@@ -261,6 +262,8 @@ class DeepseekApiClient:
                     frame = remote_event_adapter.validate_python(message.value)
                     if isinstance(frame, RemoteCancellation):
                         yield frame.event_id, frame
+                    elif isinstance(frame, RemoteNotification):
+                        yield EVENT_STREAM, frame
                     elif isinstance(frame, RemoteInvocation):
                         if frame.event == "approval/request":
                             yield (

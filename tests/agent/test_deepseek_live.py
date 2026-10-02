@@ -163,7 +163,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             "DSH_LAUNCH_TOKEN", tentacle.process.launch_token.get_secret_value()
         )
         history = await asyncio.to_thread(
-            DshHistoryClient, str(tentacle.client.base_url)
+            DshHistoryClient, str(tentacle.ink.client.base_url)
         )
         records = await asyncio.to_thread(new_entries, history, first_session, 0)
         kinds = [
@@ -245,7 +245,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             )
         )
         await asyncio.wait_for(waiting.wait(), 10)
-        reply = await tentacle.client.remote(
+        reply = await tentacle.ink.client.remote(
             "session/cancel", {"request": {"sessionId": first_session}}
         )
         assert isinstance(reply, OkResult)

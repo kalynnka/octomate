@@ -1,0 +1,27 @@
+{
+  "source": {
+    "repository": "deepseek-ai/deepseek-harness",
+    "revision": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+    "package": "@deepseek-ai/dsh-commands@0.1.7-rc.1",
+    "path": "packages/interaction/commands/src/types.ts",
+    "note": "Source-derived examples, not a captured live response."
+  },
+  "commands": [
+    {
+      "definitionId": "@deepseek-ai/dsh-command-compact",
+      "name": "compact",
+      "description": "Compact older conversation history"
+    },
+    {
+      "definitionId": "@deepseek-ai/dsh-command-goal",
+      "name": "goal",
+      "description": "Set or view the goal for a long-running task",
+      "input": {"hint": "<objective>", "attachments": true}
+    },
+    {
+      "name": "review",
+      "description": "Review this agent's workspace",
+      "input": {"hint": "[target]", "attachments": false}
+    }
+  ]
+}

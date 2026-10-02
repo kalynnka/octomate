@@ -246,6 +246,7 @@ type MuxFrame = (
     | QuestionRequestedFrame
     | StreamErrorFrame
     | RemoteCancellation
+    | RemoteNotification
 )
 
 

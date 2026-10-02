@@ -10,8 +10,10 @@ tentacle's `ink`. The wrapper follows its SDK's operations and resource lifetime
 there is no shared agent Ink base class or required method set. Codex owns one
 shared client, while Claude opens a client for each inspection or turn. Managers,
 approval decisions and persistence stay in the tentacle; operation callbacks pass
-through method arguments. Claude and Codex use this structure; dsh and Inkling
-still keep their SDK ownership inline pending migration.
+through method arguments. Claude and Codex use this structure. `DeepseekInk` owns
+the shared Remote client's context and validates native command catalogs. The
+tentacle enters and exits Ink; other existing Remote operations still use
+`ink.client`. Inkling keeps its SDK ownership inline pending migration.
 
 Pass managers explicitly when constructing Claude and Codex tentacles. Their
 shared discovery and project lookup use the injected command, project and thread
@@ -70,7 +72,8 @@ without starting a turn. Each agent exposes `discover_commands` for cached disco
 refresh and command-name completion, backed by the host's command manager and an HTTP
 endpoint. The host also provides guarded execution through its command manager and
 HTTP API. Codex implements skill discovery and execution; Claude implements
-command discovery and execution. The remaining runtime adapters and channel
+command discovery and execution. DSH implements live session-scoped discovery;
+its execution hook still reports unsupported. The remaining runtime adapters and channel
 command controls are not wired yet.
 
 Channels can dispatch explicit intent with

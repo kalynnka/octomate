@@ -91,6 +91,24 @@ records are real, because the gateway synthesises closers for a still-open turn.
 Subagent child sessions are skipped by the tail. Hooks and the tail need dsh's
 launch token: see [Hooks and MCP](../../installation/clients/deepseek.md).
 
+## Runtime commands
+
+Command discovery reads the live registry for the conversation's native DSH
+session. It returns each command's name, description, input hint and attachment
+declaration, and preserves the effective definition's plugin identity. Scoped
+overrides come from DSH; Octomate keeps no command-name inventory.
+
+Discovery requires an existing native session and a running Remote connection.
+It creates no session and submits no prompt. Catalogs refresh after registry-change
+notifications, connection startup or shutdown, and changes to the conversation's
+native session. Repeated registry notifications invalidate the cache; the next
+inspection reloads it. Explicit refresh also reloads the registry.
+
+The contract is checked against `@deepseek-ai/dsh-commands` 0.1.7-rc.1 at
+[revision 46a7f68](https://github.com/deepseek-ai/deepseek-harness/blob/46a7f68b0922371ce7144b668b90e377d8e799f4/packages/interaction/commands/src/types.ts).
+Command execution, attachment submission and client-owned actions such as log
+export are not proxied yet; execution returns unsupported.
+
 ## Not yet
 
 - **No Octomate tools in a driven run.** No MCP server is mounted and no routing
