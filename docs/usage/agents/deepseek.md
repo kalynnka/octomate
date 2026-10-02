@@ -108,8 +108,25 @@ The contract is checked against `@deepseek-ai/dsh-commands` 0.1.7-rc.1 at
 [revision 46a7f68](https://github.com/deepseek-ai/deepseek-harness/blob/46a7f68b0922371ce7144b668b90e377d8e799f4/packages/interaction/commands/src/types.ts).
 The internal permission command uses Ink's typed execution result. A missing
 command, rejected preset or malformed result stops the run before prompting.
-User-facing command execution, attachment submission and client-owned actions such
-as log export are not proxied yet; the execution hook returns unsupported.
+
+Explicit commands execute through `commands/execute`, preserving raw arguments
+and native result text. Direct controls return their result without creating a
+model turn. Commands such as `/plan <message>` stream their immediate native turn
+through the existing Reflex command entry, including approvals, recording and
+channel delivery. The command's feedback stays out of model history; only the
+native run's actual input and output enter that history. Duplicate deliveries do
+not execute the command again.
+
+Octomate subscribes before dispatch and waits for the matching `command/done`
+record, plus the end of any turn opened by that handler. It then releases the
+subscription and workspace. Native permission-change events update the stored
+conversation posture, so the next ordinary run keeps the new setting.
+
+All `/goal` operations are excluded from discovery and execution. Independently
+scheduled work after a command finishes is outside this command lifecycle.
+Command attachments are rejected before dispatch. Client-owned log export returns
+an unsupported result directing the user to DSH's web UI. Compaction runs in DSH;
+this proxy does not introduce a second compaction-history model.
 
 ## Not yet
 

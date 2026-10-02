@@ -19,6 +19,12 @@
       "input": {"hint": "<objective>", "attachments": true}
     },
     {
+      "definitionId": "@deepseek-ai/dsh-plan-mode",
+      "name": "plan",
+      "description": "Enter or leave plan mode",
+      "input": {"hint": "[off|message]", "attachments": true}
+    },
+    {
       "name": "review",
       "description": "Review this agent's workspace",
       "input": {"hint": "[target]", "attachments": false}

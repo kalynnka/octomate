@@ -67,11 +67,19 @@ from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.commands import CommandCatalog, CommandContext
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+    CommandResult,
+)
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
@@ -79,6 +87,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import agent_input_message_attributes, deepseek_logfire
@@ -87,6 +96,7 @@ from octomate.tentacles.deepseek.adapter import (
     DEEPSEEK_PROVIDER_NAME,
     DeepseekRunAccumulator,
 )
+from octomate.tentacles.deepseek.catalog import DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
@@ -95,8 +105,10 @@ from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
+    CommandExecutionValue,
     ModelCatalog,
     PermissionCatalog,
+    PermissionPresetData,
     QuestionRequestedFrame,
     RemoteCancellation,
     RemoteNotification,
@@ -106,6 +118,8 @@ from octomate.tentacles.deepseek.wire import (
     SessionProjectionsValue,
     SessionPromptValue,
     StreamErrorFrame,
+    text_of,
+    user_message_of,
 )
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
@@ -113,6 +127,8 @@ from octomate.types.json import JsonObject, JsonValue
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.workspaces import WorkspaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -161,6 +177,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     ink: DeepseekInk = field(init=False, repr=False)
+    conversations: ConversationManager = field(init=False, repr=False)
+    workspaces: WorkspaceManager = field(init=False, repr=False)
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
     mux_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     closing: bool = field(default=False, init=False)
@@ -205,6 +223,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             threads=octomate.threads,
         )
         self.config = config
+        self.conversations = octomate.conversations
+        self.workspaces = octomate.workspaces
         self.description = description or self.description
         self.process = None
         # The endpoint is fixed by config, so the client lives as long as the
@@ -437,6 +457,186 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             context=context,
             status="ready",
             descriptors=set(await self.ink.list_commands(conversation.external_id)),
+        )
+
+    async def execute_command(
+        self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+        *,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[None]] | None = None,
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
+        """Own direct feedback and any immediate native turn in one invocation."""
+        conversation = context.conversation
+        if conversation is None or not conversation.external_id:
+            yield CommandError(
+                status="unavailable",
+                message="Start a DSH session before running commands.",
+            )
+            return
+        if invocation.attachments:
+            yield CommandError(
+                status="unsupported",
+                message="DSH command attachments are not supported yet.",
+            )
+            return
+        catalog = await self.discover_commands(context)
+        descriptor = {entry.id: entry for entry in catalog.descriptors}.get(
+            invocation.command_id
+        )
+        if not isinstance(descriptor, DeepseekCommandDescriptor):
+            yield CommandError(
+                status="stale", message="This command changed; refresh commands."
+            )
+            return
+        if descriptor.definition_id == "@deepseek-ai/dsh-session-log-export":
+            yield CommandError(
+                status="unsupported", message="Download session logs in the DSH web UI."
+            )
+            return
+        socket = self.mux_socket
+        if socket is None or self.mux_task is None or self.mux_task.done():
+            yield CommandError(
+                status="unavailable",
+                message="The DSH Remote connection is not running.",
+            )
+            return
+        session_id = conversation.external_id
+        line = f"/{descriptor.name}"
+        if invocation.arguments:
+            line += f" {invocation.arguments}"
+        project = await self.run_project(conversation.thread_id)
+        async with (
+            self.conversation_locks.hold(str(conversation.id)),
+            self.workspaces.open(conversation.thread_id, project),
+            self.driving(session_id),
+            contextlib.AsyncExitStack() as resources,
+        ):
+            queue: asyncio.Queue[
+                SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
+            ] = asyncio.Queue()
+            self.subscribers[session_id] = queue
+            resources.callback(self.subscribers.pop, session_id, None)
+            self.bridge_contexts[session_id] = DeepseekBridgeContext(
+                conversation=conversation,
+                conversation_address=context.address,
+                run_name="command",
+                session_allowed=set(conversation.allowed_tools),
+                interactive=True,
+            )
+            resources.callback(self.bridge_contexts.pop, session_id, None)
+            await self.ink.client.follow(socket, session_id)
+            resources.push_async_callback(self.ink.client.unfollow, socket, session_id)
+            execution = await self.ink.execute_command(session_id, line)
+            if execution is None:
+                yield CommandError(
+                    status="stale",
+                    message="DSH no longer recognizes this command; refresh commands.",
+                )
+                return
+            async with contextlib.aclosing(
+                self.command_events(context, execution, queue)
+            ) as events:
+                async for event in events:
+                    yield event
+
+    async def command_events(
+        self,
+        context: CommandContext,
+        execution: CommandExecutionValue,
+        queue: asyncio.Queue[
+            SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
+        ],
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
+        """Fence direct results by command ID, and record only an actual native turn.
+
+        Immediate producers such as plan open their turn before command/done.
+        Waiting for that record also drains events buffered behind the HTTP reply.
+        Goal continuations need a longer lifecycle and are excluded from discovery.
+        """
+        conversation = context.conversation
+        assert conversation is not None
+        accumulator = DeepseekRunAccumulator()
+        entered = False
+        settled = False
+        run_id = str(uuid7())
+        while not settled or (accumulator.turn_started and not accumulator.turn_ended):
+            frame = await queue.get()
+            if isinstance(frame, StreamErrorFrame):
+                accumulator.turn_error = frame.error.message
+                break
+            if isinstance(frame, SessionAssistantFrame):
+                events = accumulator.consume_assistant_stream(frame)
+            else:
+                data = frame.event.data
+                if (
+                    isinstance(data, dict)
+                    and data.get("commandId") == execution.command_id
+                ):
+                    entered = entered or frame.event.type == "command/run"
+                    settled = settled or frame.event.type == "command/done"
+                if not entered:
+                    continue
+                if frame.event.type == "permission/preset":
+                    await self.conversations.set_permission_mode(
+                        conversation,
+                        PermissionPresetData.model_validate(frame.event.data).preset,
+                    )
+                if (
+                    frame.event.type == "user/message"
+                    and (message := user_message_of(frame.event)) is not None
+                ):
+                    accumulator.begin(text_of(message.content))
+                if (
+                    frame.event.type == "turn/start"
+                    and execution.result.text is not None
+                ):
+                    yield MessageSentEvent(
+                        segments=[TextSegment(data={"text": execution.result.text})]
+                    )
+                events = accumulator.consume(frame)
+            for event in events:
+                yield event
+        if accumulator.turn_started:
+            await self.conversations.record_agent_run(
+                conversation,
+                run_id=run_id,
+                messages=accumulator.messages,
+                name="command",
+                cwd=context.cwd,
+                external_id=conversation.external_id,
+                native_id=DEEPSEEK_NATIVE_ID,
+                native_turn_id=(
+                    f"{conversation.external_id}:{accumulator.turn_number}"
+                    if accumulator.turn_number is not None
+                    else None
+                ),
+            )
+            if accumulator.turn_error or execution.result.kind == "error":
+                raise AgentRunError(
+                    accumulator.turn_error
+                    or execution.result.text
+                    or "DSH command failed."
+                )
+            yield AgentRunResultEvent(
+                accumulator.build_result(
+                    run_id=run_id, conversation_id=str(conversation.id)
+                )
+            )
+            return
+        if accumulator.turn_error or execution.result.kind == "error":
+            yield CommandError(
+                status="failed",
+                message=accumulator.turn_error
+                or execution.result.text
+                or "DSH command failed.",
+            )
+            return
+        yield CommandResult(
+            segments=[TextSegment(data={"text": execution.result.text})]
+            if execution.result.text is not None
+            else []
         )
 
     async def discover_models(self) -> None:

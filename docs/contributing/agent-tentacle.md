@@ -75,8 +75,8 @@ without starting a turn. Each agent exposes `discover_commands` for cached disco
 refresh and command-name completion, backed by the host's command manager and an HTTP
 endpoint. The host also provides guarded execution through its command manager and
 HTTP API. Codex implements skill discovery and execution; Claude implements
-command discovery and execution. DSH implements live session-scoped discovery;
-its execution hook still reports unsupported. The remaining runtime adapters and channel
+command discovery and execution. DSH implements live session-scoped discovery,
+direct results and immediate command-started runs. The remaining runtime adapters and channel
 command controls are not wired yet.
 
 Channels can dispatch explicit intent with
@@ -245,6 +245,14 @@ There is no fixed execution-kind field on a descriptor. Decide behavior for each
 invocation: DSH's `/plan off` changes state, while `/plan <message>` also submits
 agent input. If a command produces both control feedback and agent activity, its
 adapter must expose both through the existing stream events.
+
+Goal commands are excluded by the command manager for every runtime until
+automatic continuation has an owned lifecycle. DSH uses the native command ID to
+match `command/run` and `command/done`, retaining its subscription until any
+immediate native turn ends. Direct feedback accompanying a run is a
+`MessageSentEvent`; its final `AgentRunResultEvent` carries the actual run result.
+Neither a persistent session watcher nor a separate graph entry is needed for
+these commands.
 
 Callers enter `commands.validate(agent, context, invocation, delivery_id=..., ...)`
 before execution. They supply context identifying the

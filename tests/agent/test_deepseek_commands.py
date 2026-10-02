@@ -80,18 +80,19 @@ async def test_catalog_preserves_native_metadata_without_prompting(
     catalog = await agent.discover_commands(context)
     assert catalog.status == "ready"
     descriptors = {entry.id: entry for entry in catalog.descriptors}
-    assert set(descriptors) == {"compact", "goal", "review"}
+    assert set(descriptors) == {"compact", "plan", "review"}
     assert descriptors["compact"].argument_hint is None
     assert not descriptors["compact"].accepts_attachments
-    assert descriptors["goal"].argument_hint == "<objective>"
-    assert descriptors["goal"].accepts_attachments
+    assert descriptors["plan"].argument_hint == "[off|message]"
+    assert descriptors["plan"].accepts_attachments
     assert descriptors["review"].argument_hint == "[target]"
     assert not descriptors["review"].accepts_attachments
-    goal = descriptors["goal"]
-    assert isinstance(goal, DeepseekCommandDescriptor)
-    assert goal.definition_id == "@deepseek-ai/dsh-command-goal"
-    assert DeepseekCommandDescriptor.model_validate_json(goal.model_dump_json()) == goal
-    assert len({goal, goal.model_copy()}) == 1
+    plan = descriptors["plan"]
+    assert isinstance(plan, DeepseekCommandDescriptor)
+    assert plan.definition_id == "@deepseek-ai/dsh-plan-mode"
+    assert DeepseekCommandDescriptor.model_validate_json(plan.model_dump_json()) == plan
+    assert len({plan, plan.model_copy()}) == 1
+    assert any("Goal commands" in limitation for limitation in catalog.limitations)
     client.remote.assert_awaited_once_with("commands/list", {"agentId": "session-1"})
     client.follow.assert_not_called()
 
@@ -175,7 +176,7 @@ async def test_cache_keeps_scoped_overrides_and_native_session_changes_separate(
     client.remote.return_value = OkResult(
         value=[
             {
-                "name": "goal",
+                "name": "plan",
                 "description": "Scoped replacement",
                 "input": {"hint": "[scope]"},
             }

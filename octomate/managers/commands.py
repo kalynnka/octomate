@@ -154,6 +154,16 @@ class CommandManager(Manager):
                 if not result.context.matches(context):
                     raise ValueError("command catalog belongs to another context")
                 result = result.snapshot()
+                descriptors = {
+                    entry
+                    for entry in result.descriptors
+                    if entry.name.casefold() != "goal"
+                }
+                if descriptors != result.descriptors:
+                    result.descriptors = descriptors
+                    result.limitations.append(
+                        "Goal commands are excluded until automatic continuation is supported."
+                    )
         except asyncio.CancelledError:
             if self.catalogs.get(key) is not catalog:
                 return CommandCatalog(context=context, status="loading")

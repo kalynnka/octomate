@@ -88,6 +88,23 @@ def context(tmp_path: Path) -> CommandContext:
     )
 
 
+@pytest.mark.parametrize("agent_id", ["claude", "codex", "deepseek"])
+async def test_goal_entries_are_excluded_for_every_runtime(
+    manager: CommandManager, context: CommandContext, agent_id: str
+) -> None:
+    agent = DiscoveringAgent(id=agent_id)
+    agent.descriptors.add(
+        CommandDescriptor(id="native-goal", name="goal", description="Goal controls")
+    )
+    context = replace(context, agent_id=agent_id, conversation=None)
+    catalog = await manager.discover(agent, context)
+    assert {entry.name for entry in catalog.descriptors} == {"review"}
+    assert len(catalog.limitations) == 1
+    assert "Goal commands" in catalog.limitations[0]
+    assert await manager.discover(agent, context) == catalog
+    assert len(agent.calls) == 1
+
+
 def test_command_manager_uses_the_hosts_registry_and_managers() -> None:
     app = Octomate()
     assert app.commands.tentacles is app.tentacles
