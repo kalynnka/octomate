@@ -18,6 +18,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig, CodexConfig, DeepseekConfig
+from octomate.config.agents.codex import CodexReasoningEffort
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
@@ -194,7 +195,7 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
     assert tentacle.default_model is None
     assert tentacle.provider == prefix
     assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-        "Native description", efforts=("high",)
+        "Native description", efforts=("high",), default_effort="high"
     )
     assert [route.claim.efforts for route in tentacle.routes] == [("high",), ("high",)]
     assert codex_catalog.request.call_args_list[2].args == (
@@ -202,6 +203,45 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         {"includeHidden": False, "cursor": "page-2"},
     )
     codex_catalog.initialize.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("ours", "codex", "default"),
+    [
+        # The model's own default, unless Codex's setting or ours says otherwise.
+        (None, None, "high"),
+        (None, "low", "low"),
+        ("medium", "low", "medium"),
+        # A level the model does not take is no default anyone can be shown.
+        ("xhigh", None, None),
+    ],
+)
+async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
+    codex_catalog: AsyncMock,
+    ours: CodexReasoningEffort | None,
+    codex: str | None,
+    default: str | None,
+) -> None:
+    model = CodexModel.model_validate(
+        {
+            **codex_model("recommended").model_dump(by_alias=True),
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": effort, "description": effort}
+                for effort in ("low", "medium", "high")
+            ],
+        }
+    )
+    codex_catalog.request.side_effect = [
+        ConfigReadResponse.model_validate(
+            {"config": {"model_reasoning_effort": codex}, "origins": {}}
+        ),
+        ModelListResponse(data=[model]),
+    ]
+    tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig(effort=ours))
+
+    await tentacle.discover_models()
+
+    assert tentacle.claims["openai:recommended"].default_effort == default
 
 
 async def test_codex_empty_catalog_fails_without_fabricating_models(

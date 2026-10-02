@@ -895,6 +895,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 response_model=ConfigReadResponse,
             )
             provider = settings.config.model_provider or "openai"
+            # What a turn without an effort runs at: ours, then Codex's own setting.
+            configured_effort = (
+                self.config.effort or settings.config.model_reasoning_effort
+            )
             cursor: str | None = None
             while True:
                 page = await client.request(
@@ -911,13 +915,18 @@ class CodexTentacle(AgentTentacle[str, None]):
                         option.reasoning_effort.value
                         for option in model.supported_reasoning_efforts
                     }
+                    efforts: tuple[ThinkingEffort, ...] = tuple(
+                        effort for effort in ThinkingEfforts if effort in supported
+                    )
+                    default = ReasoningEffort(
+                        configured_effort or model.default_reasoning_effort
+                    ).value
                     models[key] = model.model
                     claims[key] = Claim(
                         model.description
                         or (configured.ability if configured else model.display_name),
-                        tuple(
-                            effort for effort in ThinkingEfforts if effort in supported
-                        ),
+                        efforts,
+                        next((effort for effort in efforts if effort == default), None),
                     )
                 cursor = page.next_cursor
                 if cursor is None:

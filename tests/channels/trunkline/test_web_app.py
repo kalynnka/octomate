@@ -708,7 +708,11 @@ async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
         {
             "agent_id": "inkling",
             "model": RECEPTION_MODEL,
-            "claim": {"ability": "triage and reply", "efforts": ["low", "high"]},
+            "claim": {
+                "ability": "triage and reply",
+                "efforts": ["low", "high"],
+                "default_effort": None,
+            },
         }
     ]
 

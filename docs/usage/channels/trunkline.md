@@ -72,8 +72,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Summon uses your draft as the brief and hands this conversation over in
   place whenever that is offered; otherwise it asks for a destination too. Its
   chip picks the agent and model from the destination channel's routes, and
-  sets effort on a scale that marks the levels the model does not take. Leave
-  effort at Auto to use the agent's setting.
+  sets effort on a scale that dims the levels the model does not take. The scale
+  starts at the route's default effort where the agent reports one. Where it does
+  not, the scale starts at Auto, which leaves the level to the agent.
   Run output streams into the message panel. After the server confirms arrival,
   the console opens the destination thread if you are still viewing the source.
 - **Account**: change password, issue and revoke API keys, unlink channel profiles,
