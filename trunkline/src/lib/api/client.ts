@@ -24,6 +24,7 @@ import type {
   ApiThread,
   ApiThreadMessage,
   BatchResponseBody,
+  ChannelAddress,
   DirectiveBody,
   GatewayEvent,
   GatewayRequest,
@@ -247,6 +248,16 @@ export async function fetchThreadOperations(threadId: string): Promise<ThreadOpe
   const res = await apiFetch(`/api/trunkline/threads/${encodeURIComponent(threadId)}/operations`)
   if (!res.ok) return refuse(res)
   return res.json() as Promise<ThreadOperations>
+}
+
+/** One level of a connected channel's destinations; `inside` opens a listed place. */
+export async function fetchAddresses(threadId: string, channelId: string, inside?: string): Promise<ChannelAddress[]> {
+  const query = inside === undefined ? '' : `?inside=${encodeURIComponent(inside)}`
+  const res = await apiFetch(
+    `/api/trunkline/threads/${encodeURIComponent(threadId)}/channels/${encodeURIComponent(channelId)}/addresses${query}`,
+  )
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<ChannelAddress[]>
 }
 
 export async function streamGateway(

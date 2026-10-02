@@ -5,44 +5,64 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiThread, GatewayEvent, GatewayRequest, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
+import type { ApiAgentRoute, ApiThread, ChannelAddress, GatewayEvent, GatewayRequest, OperationAvailability, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
 let streamGateway: typeof import('../src/lib/api/client.ts').streamGateway
 let fetchThreadOperations: typeof import('../src/lib/api/client.ts').fetchThreadOperations
+let fetchAddresses: typeof import('../src/lib/api/client.ts').fetchAddresses
+let forms: typeof import('../src/features/chat/gateway.ts')
+let commands: typeof import('../src/features/chat/commands.ts')
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let ChatHeader: typeof import('../src/features/chat/ChatHeader.tsx').ChatHeader
-let GatewayDialog: typeof import('../src/features/chat/GatewayDialog.tsx').GatewayDialog
+let SummonRoute: typeof import('../src/features/chat/GatewayRoute.tsx').SummonRoute
+let DestinationPicker: typeof import('../src/features/chat/GatewayDestination.tsx').DestinationPicker
+let CommandPanel: typeof import('../src/features/chat/CommandPanel.tsx').CommandPanel
 const globals = ['document', 'requestAnimationFrame'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const destination: ApiThread = {
   id: 'destination-id', kind: 'thread', chat_type: 'thread', chat_id: 'account',
   channel_tentacle_id: 'lark', channel_thread_id: 'platform-id', title: 'Arrived',
   project_id: null, status: 'active', created_at: '', updated_at: '', handoffs: [],
 }
-const request: GatewayRequest = { action: 'teleport', body: { destination: { kind: 'channel', channel: 'lark' }, hint: 'Continue here' } }
+const here: ChannelAddress = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: 'source-thread', shared: false }
+const fresh: ChannelAddress = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: null, shared: false }
+const room: ChannelAddress = {
+  channel_tentacle_id: 'discord', chat_type: 'group', chat_id: '402', user_id: '100', channel_thread_id: null, shared: true,
+  metadata: { name: 'general', server: 'Community' },
+}
+const routes: ApiAgentRoute[] = [
+  { agent_id: 'claude', model: 'sonnet', claim: { ability: 'Code review', efforts: ['low', 'high'], default_effort: null } },
+  { agent_id: 'claude', model: 'haiku', claim: { ability: 'Quick answers', efforts: [], default_effort: null } },
+]
+const request: GatewayRequest = { action: 'teleport', body: { destination: room, hint: 'Continue here' } }
 const gateway: GatewayEvent = { event_kind: 'gateway', action: 'teleport', destination: {
   channel_tentacle_id: 'lark', chat_type: 'thread', chat_id: 'account', channel_thread_id: 'platform-id', user_id: 'owner', shared: false,
 } }
 const result: WireEvent = { event_kind: 'run_result', output: 'Arrived', usage: { requests: 1, tool_calls: 0, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } }
-const options: ThreadOperations = {
-  teleport: { destinations: [], reason: 'This native session cannot teleport.' },
-  summon: { destinations: [{ target: { kind: 'here' }, label: 'This thread', routes: [{ agent_id: 'claude', model: 'sonnet', claim: { ability: 'Code review', efforts: ['low', 'high'] } }] }], reason: null },
-}
+const refused: OperationAvailability = { destinations: [], here: null, routes: {}, reason: 'This native session cannot teleport.' }
+// No suggested address at all: the in-place handover alone keeps Summon open.
+const inPlace: OperationAvailability = { destinations: [], here, routes: { trunkline: routes }, reason: null }
+const elsewhere: OperationAvailability = { destinations: [fresh], here: null, routes: { trunkline: routes, discord: routes }, reason: null }
+const options: ThreadOperations = { teleport: refused, summon: inPlace }
 const sse = (...events: WireEvent[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
 
 before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' })
-  ;({ streamGateway, fetchThreadOperations } = await server.ssrLoadModule('/src/lib/api/client.ts'))
+  ;({ streamGateway, fetchThreadOperations, fetchAddresses } = await server.ssrLoadModule('/src/lib/api/client.ts'))
+  forms = await server.ssrLoadModule('/src/features/chat/gateway.ts') as typeof forms
+  commands = await server.ssrLoadModule('/src/features/chat/commands.ts') as typeof commands
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ ChatHeader } = await server.ssrLoadModule('/src/features/chat/ChatHeader.tsx'))
-  ;({ GatewayDialog } = await server.ssrLoadModule('/src/features/chat/GatewayDialog.tsx'))
+  ;({ SummonRoute } = await server.ssrLoadModule('/src/features/chat/GatewayRoute.tsx'))
+  ;({ DestinationPicker } = await server.ssrLoadModule('/src/features/chat/GatewayDestination.tsx'))
+  ;({ CommandPanel } = await server.ssrLoadModule('/src/features/chat/CommandPanel.tsx'))
 })
 beforeEach(() => {
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
-  useConsole.setState({ selThreadId: 'source', ntOn: false, running: false, gatewayPending: null, live: [], notices: [] })
+  useConsole.setState({ selThreadId: 'source', ntOn: false, running: false, gatewayPending: null, gatewayMode: null, live: [], notices: [] })
 })
 afterEach(() => {
   mock.restoreAll()
@@ -59,7 +79,7 @@ after(async () => { await server?.close() })
 for (const action of ['teleport', 'summon'] as const) {
   test(`${action} posts the typed payload once and waits for its confirmed destination`, async () => {
     const payload: GatewayRequest = action === 'teleport' ? request : { action, body: {
-      destination: { kind: 'here' }, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Handing over', effort: 'high',
+      destination: here, new_thread: false, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Handing over', effort: 'high',
     } }
     const fetch = mock.method(globalThis, 'fetch', async () => sse(result, { ...gateway, action }))
     const events: WireEvent[] = []
@@ -81,6 +101,62 @@ test('eligibility preserves the backend reasons and routes', async () => {
   assert.equal(fetch.mock.calls[0].arguments[0], '/api/trunkline/threads/source%2Fid/operations')
 })
 
+test('a destination level is listed on its own, and a refusal keeps its reason', async () => {
+  const server = { ...room, chat_id: '', metadata: { name: 'Community', inside: '201' } }
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json([server]))
+  assert.deepEqual(await fetchAddresses('source/id', 'discord'), [server])
+  assert.equal(fetch.mock.calls[0].arguments[0], '/api/trunkline/threads/source%2Fid/channels/discord/addresses')
+  fetch.mock.mockImplementation(async () => Response.json([room]))
+  assert.deepEqual(await fetchAddresses('source/id', 'discord', '201'), [room])
+  assert.equal(fetch.mock.calls[1].arguments[0], '/api/trunkline/threads/source%2Fid/channels/discord/addresses?inside=201')
+  fetch.mock.mockImplementation(async () => Response.json({ detail: 'This channel cannot be browsed for a destination.' }, { status: 409 }))
+  await assert.rejects(fetchAddresses('source', 'lark'), (error: Error & { status?: number }) =>
+    error.status === 409 && /cannot be browsed/.test(error.message))
+})
+
+test('summon hands over in place when offered, and otherwise needs an address', () => {
+  const draft = { text: ' Review the patch ', destination: null, route: routes[0], effort: 'high' as const }
+  assert.deepEqual(forms.gatewayRequest('summon', inPlace, draft), { action: 'summon', body: {
+    destination: here, new_thread: false, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch',
+    hint: 'Continuing with another agent.', effort: 'high',
+  } })
+  assert.equal(forms.gatewayRequest('summon', elsewhere, draft), null)
+  assert.deepEqual(
+    forms.gatewayRequest('summon', elsewhere, { ...draft, effort: 'auto', destination: { address: room, path: ['Discord', 'Community', '#general'] } }),
+    { action: 'summon', body: { destination: room, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.' } },
+  )
+  assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, text: '  ' }), null)
+  assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, route: undefined }), null)
+})
+
+test('teleport needs a destination, and its note is the line that opens it', () => {
+  const draft = { text: '', destination: null, route: undefined, effort: 'auto' as const }
+  assert.equal(forms.gatewayRequest('teleport', elsewhere, draft), null)
+  const destination = { address: fresh, path: ['Trunkline'] }
+  assert.deepEqual(forms.gatewayRequest('teleport', elsewhere, { ...draft, destination }),
+    { action: 'teleport', body: { destination: fresh, hint: 'Continuing this conversation here.' } })
+  assert.deepEqual(forms.gatewayRequest('teleport', elsewhere, { ...draft, destination, text: 'Pick this up on the phone' }),
+    { action: 'teleport', body: { destination: fresh, hint: 'Pick this up on the phone' } })
+})
+
+test('the effort scale only ever lands on a level the route takes', () => {
+  const supported = ['auto', 'medium', 'high'] as const
+  assert.equal(forms.stepEffort('auto', 'minimal', supported), 'medium')
+  assert.equal(forms.stepEffort('high', 'xhigh', supported), 'high')
+  assert.equal(forms.stepEffort('medium', 'low', supported), 'auto')
+  assert.equal(forms.nearestEffort('xhigh', supported), 'high')
+  assert.equal(forms.nearestEffort('medium', supported), 'medium')
+  assert.equal(forms.nearestEffort('low', ['auto']), 'auto')
+  assert.equal(forms.pickRoute(routes, 'claude', 'haiku'), routes[1])
+  assert.equal(forms.pickRoute(routes, null, null), routes[0])
+  assert.deepEqual(forms.routeEffort(routes[0], 'auto'), { efforts: ['auto', 'low', 'high'], effort: 'auto' })
+  const known = { ...routes[0], claim: { ...routes[0].claim, default_effort: 'high' as const } }
+  assert.deepEqual(forms.routeEffort(known, 'auto'), { efforts: ['low', 'high'], effort: 'high' })
+  // A level picked on another route is kept where this one takes it, else its nearest.
+  assert.deepEqual(forms.routeEffort(known, 'low'), { efforts: ['low', 'high'], effort: 'low' })
+  assert.deepEqual(forms.routeEffort(known, 'xhigh'), { efforts: ['low', 'high'], effort: 'high' })
+})
+
 test('HTTP refusals preserve their reason and are not retried', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'The agent is busy.' }, { status: 409 }))
   await assert.rejects(streamGateway('source', request, () => {}), /The agent is busy/)
@@ -98,9 +174,11 @@ test('successful arrival selects the thread matching the complete channel addres
   const wrong = { ...destination, id: 'wrong', chat_id: 'other-account' }
   mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(result, gateway) : Response.json([wrong, destination]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+  useConsole.getState().actions.setGatewayMode({ threadId: 'source', action: 'teleport' })
   await useConsole.getState().actions.gateway('source', request)
   assert.deepEqual(select.mock.calls[0].arguments, ['lark', 'destination-id'])
   assert.equal(useConsole.getState().gatewayPending, null)
+  assert.equal(useConsole.getState().gatewayMode, null)
 })
 
 test('arrival does not navigate away from a different thread selected during the run', async () => {
@@ -130,21 +208,158 @@ test('an error after a run result still appears in the message panel', async () 
   assert.ok(useConsole.getState().notices.some((one) => one.kind === 'notice' && one.text.includes('could not create a thread')))
 })
 
-test('the header uses backend eligibility and the summon form offers only supplied routes', () => {
+test('a fork opens the new thread, and a refused one is reported on its source', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ ...destination, id: 'forked', channel_tentacle_id: 'trunkline' }, { status: 201 }))
+  const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+  const forking = useConsole.getState().actions.fork('source')
+  assert.equal(useConsole.getState().forkPending, 'source')
+  await forking
+  assert.deepEqual(select.mock.calls[0].arguments, ['trunkline', 'forked'])
+  assert.equal(useConsole.getState().forkPending, null)
+  fetch.mock.mockImplementation(async () => Response.json({ detail: 'No completed Codex turn has been fully uploaded' }, { status: 409 }))
+  await useConsole.getState().actions.fork('source')
+  assert.equal(select.mock.callCount(), 1)
+  assert.ok(useConsole.getState().notices.some((one) => one.kind === 'notice' && /fork failed — No completed Codex turn/.test(one.text)))
+})
+
+test('the header follows the relay: an in-place summon is open with no suggested address', () => {
   useConsole.getInitialState().selThreadId = 'source'
   useConsole.getInitialState().detail = { key: 'source', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
   queryClient.setQueryData(['threads'], {})
   queryClient.setQueryData(['thread-operations', 'source'], options)
   const header = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
   assert.ok(header.includes('>Summon</span></button>'))
-  const form = renderToStaticMarkup(createElement(GatewayDialog, { action: 'summon', availability: options.summon, onSubmit() {}, onClose() {} }))
-  assert.ok(form.includes('aria-label="claude models"'))
-  assert.ok(form.includes('>sonnet</button>'))
-  assert.ok(!form.includes('Opening message'))
-  assert.ok(form.includes('maxLength="8000"'))
-  assert.ok(form.includes('type="range"'))
-  assert.ok(form.includes('aria-valuetext="Agent default"'))
-  assert.match(form, /type="submit" disabled=""/)
+  assert.ok(header.includes('aria-pressed="false"'))
+  assert.ok(header.includes('title="Current surface"'))
+})
+
+test('the summon route offers only the supplied routes and a real effort slider', () => {
+  const closed = renderToStaticMarkup(createElement(SummonRoute, { routes, route: routes[0], efforts: ['auto', 'low', 'high'], effort: 'auto', open: false, onOpen() {}, onRoute() {}, onEffort() {} }))
+  assert.ok(closed.includes('aria-expanded="false"'))
+  assert.ok(!closed.includes('type="range"'))
+  const open = renderToStaticMarkup(createElement(SummonRoute, { routes, route: routes[0], efforts: ['auto', 'low', 'high'], effort: 'auto', open: true, onOpen() {}, onRoute() {}, onEffort() {} }))
+  assert.ok(open.includes('aria-label="claude models"'))
+  assert.match(open, /aria-pressed="true"[^>]*>sonnet<\/button>/)
+  assert.match(open, /aria-pressed="false"[^>]*>haiku<\/button>/)
+  assert.ok(open.includes('Code review'))
+  assert.ok(open.includes('type="range"'))
+  assert.ok(open.includes('aria-valuetext="Auto · agent default"'))
+  assert.ok(open.includes('model runs low–high'))
+  assert.ok(open.includes('>Auto<'))
+  // A route that says what it runs at by default starts there, and Auto is gone.
+  const known = { ...routes[0], claim: { ...routes[0].claim, default_effort: 'high' as const } }
+  const preset = renderToStaticMarkup(createElement(SummonRoute, { routes: [known], route: known, ...forms.routeEffort(known, 'auto'), open: true, onOpen() {}, onRoute() {}, onEffort() {} }))
+  assert.ok(preset.includes('aria-valuetext="High · agent default"'))
+  assert.ok(preset.includes('max="4"'))
+  assert.ok(!preset.includes('>Auto<'))
+  const none = renderToStaticMarkup(createElement(SummonRoute, { routes: [], route: undefined, efforts: ['auto'], effort: 'auto', open: true, onOpen() {}, onRoute() {}, onEffort() {} }))
+  assert.match(none, /<button[^>]*disabled=""/)
+  assert.ok(!none.includes('type="range"'))
+})
+
+test('the destination picker opens on the connected surfaces and marks what lands directly', () => {
+  queryClient.setQueryData(['channels'], [
+    { id: 'trunkline', label: 'Trunkline', sub: 'mention-free', brand: 'orange' },
+    { id: 'discord', label: 'Discord', sub: 'gateway', brand: 'blue' },
+    { id: 'lark', label: 'Lark', sub: 'webhook', brand: 'grey' },
+  ])
+  const picker = (open: boolean, selection: { address: ChannelAddress; path: string[] } | null) =>
+    renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
+      threadId: 'source', sourceChannel: 'trunkline', suggestions: [fresh], selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
+    })))
+  assert.ok(picker(false, null).includes('choose destination'))
+  assert.ok(!picker(false, null).includes('Surfaces'))
+  const root = picker(true, null)
+  assert.ok(root.includes('3 surfaces'))
+  assert.ok(root.includes('a new private thread'))
+  assert.ok(root.includes('● here'))
+  assert.ok(root.includes('gateway · servers'))
+  assert.ok(root.includes('webhook · destinations'))
+  assert.ok(root.includes('title="Open Discord"'))
+  // Only the surface that lands directly can be the selection at this level.
+  assert.equal(root.match(/aria-pressed=/g)?.length, 1)
+  const chosen = picker(true, { address: fresh, path: ['Trunkline'] })
+  assert.ok(chosen.includes('aria-pressed="true"'))
+  assert.ok(chosen.includes('→ Trunkline'))
+  queryClient.setQueryData(['channels'], [{ id: 'discord', label: 'Discord', sub: 'gateway', brand: 'blue' }])
+  assert.ok(picker(true, null).includes('1 surface<'))
+})
+
+test('a line is a command only while it can still name a gateway op', () => {
+  const names = (text: string) => {
+    const line = commands.readCommand(text)
+    return line?.phase === 'name' ? line.matches.map((one) => one.command.name) : line
+  }
+  assert.deepEqual(names('/'), ['summon', 'teleport', 'fork'])
+  assert.deepEqual(names('/o'), ['summon', 'teleport', 'fork'])
+  assert.deepEqual(names('/tp'), ['teleport'])
+  // Anything else starting with a slash is still a directive.
+  for (const text of ['/etc/hosts is wrong', '/compact', '/summon\nnow', '/fork now', 'run /fork', '']) {
+    assert.equal(commands.readCommand(text), null, text)
+  }
+  const line = commands.readCommand('/summon cl')
+  assert.deepEqual(line && line.phase === 'argument' && [line.command.name, line.typed], ['summon', 'cl'])
+  assert.deepEqual(commands.fuzzy('tp', 'teleport'), [0, 4])
+  assert.equal(commands.fuzzy('pl', 'teleport'), null)
+  assert.deepEqual(commands.highlight('/teleport', [1, 5]), [
+    { text: '/', hit: false }, { text: 't', hit: true }, { text: 'ele', hit: false }, { text: 'p', hit: true }, { text: 'ort', hit: false },
+  ])
+})
+
+test('an argument narrows to what was typed and completes from the one under the cursor', () => {
+  const offered = [{ value: 'claude', about: 'Code review' }, { value: 'codex', about: 'Refactors' }, { value: 'inkling', about: 'Triage' }]
+  const naming = commands.readCommand('/su')!
+  assert.equal(commands.completion(naming, [], 0), 'mmon <agent>')
+  // A name matched out of order has nothing to complete in place.
+  assert.equal(commands.completion(commands.readCommand('/tp')!, [], 0), '')
+  const line = commands.readCommand('/summon c')!
+  const matches = commands.matching('c', offered)
+  assert.deepEqual(matches.map((one) => one.argument.value), ['claude', 'codex'])
+  assert.equal(commands.completion(line, matches, 1), 'odex')
+  assert.equal(commands.completion(commands.readCommand('/summon ')!, commands.matching('', offered), 0), 'claude')
+  assert.equal(commands.completion(commands.readCommand('/teleport ')!, [], 0), '[destination]')
+  assert.equal(commands.completion(commands.readCommand('/summon zz')!, [], 0), '')
+})
+
+test('the command finder lists the ops, then the agents with the route one would get', () => {
+  const panel = (text: string, props: Partial<Parameters<typeof CommandPanel>[0]> = {}) => renderToStaticMarkup(createElement(CommandPanel, {
+    line: commands.readCommand(text)!, matches: [], offered: 0, cursor: 0, closed: {}, route: null,
+    onCursor() {}, onRun() {}, onDismiss() {}, onSettled() {}, ...props,
+  }))
+  const naming = panel('/', { cursor: 2, closed: { fork: 'Fork is available for native Codex threads only.' } })
+  assert.ok(naming.includes('3 of 3 · trunkline gateway'))
+  assert.equal(naming.match(/role="option"/g)?.length, 3)
+  assert.match(naming, /aria-selected="true" aria-disabled="true" title="Fork is available for native Codex threads only\."/)
+  assert.ok(naming.includes('>unavailable<'))
+  assert.ok(panel('/su').includes('needs &lt;agent&gt; · ⇥ to add it · runs in trunkline gateway'))
+  assert.ok(panel('/tele').includes('↵ runs /teleport in trunkline gateway · ⇥ adds [destination]'))
+  const offered = [{ value: 'claude', about: 'Code review' }, { value: 'codex', about: 'Refactors' }]
+  const known = { ...routes[0], claim: { ...routes[0].claim, default_effort: 'high' as const } }
+  const summon = panel('/summon cl', {
+    matches: commands.matching('cl', offered), offered: 2,
+    route: { routes: [known, routes[1]], route: known, ...forms.routeEffort(known, 'auto'), onModel() {}, onEffort() {} },
+  })
+  assert.ok(summon.includes('1 of 2 agents · trunkline gateway'))
+  assert.ok(summon.includes('for claude'))
+  assert.match(summon, /aria-pressed="true"[^>]*>sonnet<\/span>/)
+  assert.ok(summon.includes('aria-valuetext="High · agent default"'))
+  assert.ok(summon.includes('↵ runs /summon claude · ⇥ fills it in'))
+  assert.ok(summon.includes('Code review'))
+  assert.ok(panel('/summon zz', { offered: 2 }).includes('no agent matches &quot;zz&quot;'))
+  assert.ok(panel('/summon ', { closed: { summon: 'No other agent is connected on any channel.' } }).includes('No other agent is connected on any channel.'))
+})
+
+test('a listed address reads as a place to open, one to land in, or one that is barred', () => {
+  const crumbs = [{ label: 'Discord', channel: 'discord' }]
+  const server = forms.addressRow({ ...room, chat_id: '', metadata: { name: 'Octomate Dev', inside: '201' } }, crumbs)
+  assert.deepEqual(server.open, { label: 'Octomate Dev', channel: 'discord', inside: '201' })
+  assert.equal(server.glyph, 'OD')
+  assert.equal(server.sub, 'server · open to list its channels')
+  const inside = [...crumbs, server.open!]
+  const usable = forms.addressRow(room, inside)
+  assert.deepEqual([usable.label, usable.sub, usable.barred], ['#general', 'Community · a new thread starts here', undefined])
+  const barred = forms.addressRow({ ...room, metadata: { ...room.metadata, barred: 'The bot cannot see this channel.' } }, inside)
+  assert.deepEqual([barred.label, barred.sub, barred.barred], ['#general', 'The bot cannot see this channel.', 'The bot cannot see this channel.'])
 })
 
 for (const [teleport, summon, fork, expected] of [
@@ -158,8 +373,8 @@ for (const [teleport, summon, fork, expected] of [
     useConsole.getInitialState().detail = { key: 'source', canFork: fork, msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
     queryClient.setQueryData(['threads'], {})
     queryClient.setQueryData(['thread-operations', 'source'], {
-      teleport: teleport ? options.summon : options.teleport,
-      summon: summon ? options.summon : options.teleport,
+      teleport: teleport ? inPlace : refused,
+      summon: summon ? inPlace : refused,
     })
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
     assert.ok(html.includes(`>${expected}</span></button>`))

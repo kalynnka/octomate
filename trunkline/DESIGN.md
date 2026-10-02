@@ -108,6 +108,14 @@ Every rail folds by animating `width` (`.trk-rail[data-folded]`), drags via a
   destination that cannot be used stays in the browser, dimmed, with its
   reason in place of its description. The effort scale is a drawing under a
   native range input; a level the model does not take is dimmed, not hatched.
+- **Command finder**: a line starting with `/` that can still name a gateway
+  op turns the frame teal and raises a strip over the composer (the comp's
+  `Command Panel.dc.html`): the matching commands as rows, then the argument's
+  choices as chips, with the typed letters in accent. The rest of the name or
+  argument under the cursor trails the caret in `--fg-3`, and the hint row
+  shows the command's signature. The composer keeps the focus throughout.
+  Only Summon, Teleport and Fork are commands; the comp's session and
+  harness commands are not built.
 
 ## Motion rules (delegated details, decided here)
 

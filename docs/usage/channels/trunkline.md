@@ -65,6 +65,15 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   to the first available action. Disabled choices show their reason. Teleport
   and Summon expand the composer instead of opening a dialog: the button, ×
   or Esc returns to chat with your draft kept, and ⌘↵ submits.
+  Typing `/` in an existing thread's composer opens a command finder for the
+  same three actions: `/summon <agent>`, `/teleport [destination]` and `/fork`.
+  ↑↓ moves, ⇥ completes, ↵ runs and Esc dismisses it. `/summon` lists the
+  agents Summon offers, with the model and effort to hand over, and opens the
+  Summon composer on the one you pick. `/teleport` lists the connected
+  channels and opens Teleport on the one you pick, or on the destination
+  browser when you pick none. `/fork` forks at once. A command that is
+  unavailable is dimmed and shows its reason. A line that names no command is
+  sent as an ordinary message.
   Teleport needs a destination and takes an optional note, which opens the
   thread there. Browse destinations one level at a time: the connected
   channels, then what each holds, loaded as you open it. The filter narrows the

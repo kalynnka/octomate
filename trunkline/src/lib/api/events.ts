@@ -325,6 +325,16 @@ export interface RunErrorEvent {
   message: string
 }
 
+/** What a channel adds to an address to show it. `inside` marks a place to
+ *  open — pass it back to list what it holds — rather than one to land in;
+ *  `barred` says why a thread cannot land in one. */
+export interface AddressMetadata {
+  name?: string
+  inside?: string
+  barred?: string
+  server?: string
+}
+
 export interface ChannelAddress {
   channel_tentacle_id: string
   chat_type: 'dm' | 'group' | 'thread'
@@ -332,6 +342,7 @@ export interface ChannelAddress {
   user_id: string
   channel_thread_id: string | null
   shared: boolean
+  metadata?: AddressMetadata
 }
 
 export interface GatewayEvent {
@@ -379,13 +390,15 @@ export interface ApiRoute {
 
 /** One model an agent can be routed to, with what that route claims to be for.
  *  `efforts` empty means the route takes no effort levels — not that it takes
- *  every one of them. */
+ *  every one of them. `default_effort` is what a run with no effort set runs
+ *  at, null when the runtime decides and does not say. */
 export interface ApiAgentRoute {
   agent_id: string
   model: string
   claim: {
     ability: string
     efforts: EffortStep[]
+    default_effort: EffortStep | null
   }
 }
 
@@ -658,16 +671,13 @@ export interface BatchResponseBody {
   allow_session?: boolean
 }
 
-export type GatewayTarget = { kind: 'here' } | { kind: 'thread' } | { kind: 'channel'; channel: string }
-
-export interface OperationDestination {
-  target: GatewayTarget
-  label: string
-  routes: ApiAgentRoute[]
-}
-
 export interface OperationAvailability {
-  destinations: OperationDestination[]
+  /** suggested addresses; a browsed one is submitted the same way */
+  destinations: ChannelAddress[]
+  /** this conversation, when Summon may hand it over in place */
+  here: ChannelAddress | null
+  /** agent/model choices keyed by connected channel id */
+  routes: Record<string, ApiAgentRoute[]>
   reason: string | null
 }
 
@@ -677,7 +687,9 @@ export interface ThreadOperations {
 }
 
 export interface TeleportBody {
-  destination: GatewayTarget
+  destination: ChannelAddress
+  /** false only for Summon's in-place handover */
+  new_thread?: boolean
   hint: string
 }
 

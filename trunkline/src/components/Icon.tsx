@@ -47,13 +47,21 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M18 9a9 9 0 0 1-9 9" />
     </>
   ),
-  orbit: (
+  gitFork: (
     <>
-      <path d="M20.341 6.484A10 10 0 0 1 10.266 21.85" />
-      <path d="M3.659 17.516A10 10 0 0 1 13.74 2.152" />
-      <circle cx="12" cy="12" r="3" />
-      <circle cx="19" cy="5" r="2" />
-      <circle cx="5" cy="19" r="2" />
+      <circle cx="12" cy="18" r="3" />
+      <circle cx="6" cy="6" r="3" />
+      <circle cx="18" cy="6" r="3" />
+      <path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1-.4-1-1V9" />
+      <path d="M12 12v3" />
+    </>
+  ),
+  arrowRightLeft: (
+    <>
+      <path d="m16 3 4 4-4 4" />
+      <path d="M20 7H4" />
+      <path d="m8 21-4-4 4-4" />
+      <path d="M4 17h16" />
     </>
   ),
   wandSparkles: (
