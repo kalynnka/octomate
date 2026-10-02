@@ -21,6 +21,7 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
+    CommandDescriptor,
     CommandError,
     CommandInvocation,
     CommandOutcome,
@@ -169,148 +170,129 @@ class CommandManager(Manager):
         self.catalogs[key] = result
         return result
 
-    async def validate(
-        self, agent: AgentTentacle, context: CommandContext
-    ) -> tuple[Thread, UserProfile] | CommandError:
-        """Return the authorized surface and profile, or refuse a changed selection.
-
-        Unlike catalog inspection, execution needs the authenticated user's linked
-        profile, access to the chat surface, and the current route. Read persisted
-        conversation state rather than trusting the caller's snapshot.
-        """
-        channel = self.tentacles.get(context.address.channel_tentacle_id)
-        if (
-            not isinstance(channel, ChannelTentacle)
-            or self.tentacles.get(context.agent_id) is not agent
-            or agent.id not in channel.agent_ids
-        ):
-            return CommandError(
-                status="unavailable",
-                message="The command agent is unavailable on this channel.",
-            )
-        profile = await self.users.profile(channel.id, context.address.user_id)
-        if profile is None or profile.user_id != context.user_id:
-            return CommandError(
-                status="unavailable", message="The command surface is unavailable."
-            )
-        if context.conversation is None:
-            return CommandError(
-                status="unavailable",
-                message="Start a conversation before running a command.",
-            )
-        try:
-            conversation = await self.conversations.get(
-                context.conversation.id, with_history=False
-            )
-        except ValueError:
-            return CommandError(
-                status="unavailable", message="The command conversation is unavailable."
-            )
-        thread = await self.threads.get(conversation.thread_id, with_messages=False)
-        if thread is None:
-            return CommandError(
-                status="unavailable", message="The command conversation is unavailable."
-            )
-        surface = await self.threads.get(
-            thread.parent_thread_id or thread.id,
-            with_messages=False,
-            user_id=context.user_id,
-        )
-        if surface is None or surface.key != ThreadKey.from_address(context.address):
-            return CommandError(
-                status="unavailable", message="The command conversation is unavailable."
-            )
-        if (
-            conversation.agent_tentacle_id != agent.id
-            or conversation.subagent_id
-            or surface.active_agent_tentacle_id != agent.id
-        ):
-            return CommandError(
-                status="stale",
-                message="The selected agent no longer owns this conversation's route.",
-            )
-        try:
-            model = agent.resolve_model(surface.active_model)
-            permission_mode = (
-                conversation.permission_mode or agent.default_permission_mode
-            )
-            if permission_mode is not None:
-                agent.check_permission_mode(permission_mode)
-        except ValueError:
-            return CommandError(
-                status="stale",
-                message="The selected model or permissions are no longer available.",
-            )
-        if (
-            conversation.external_id != context.conversation.external_id
-            or self.workspaces.open(thread.id, await thread.project).path != context.cwd
-            or model != context.model
-            or permission_mode != context.permission_mode
-        ):
-            return CommandError(
-                status="stale",
-                message="The command context changed; discover commands again.",
-            )
-        return surface, profile
-
     @asynccontextmanager
-    async def execute[OutputT, DepsT](
+    async def validate(
         self,
-        agent: AgentTentacle[OutputT, DepsT],
+        agent: AgentTentacle,
         context: CommandContext,
         invocation: CommandInvocation,
         *,
         delivery_id: str,
         session: OctomateSession | None = None,
-        deferred_suspender: DeferredSuspender | None = None,
-        capabilities: list[AgentCapability[DepsT]] | None = None,
-    ) -> AsyncGenerator[
-        CommandOutcome | AsyncGenerator[ReactStreamEvent[OutputT], None]
-    ]:
-        """Validate and execute under the conversation's active-turn guard.
+    ) -> AsyncGenerator[tuple[Thread, UserProfile, CommandDescriptor] | CommandOutcome]:
+        """Hold the turn guard while validating a delivery and its execution.
 
-        The caller supplies context identifying the authenticated user and a
-        stable delivery ID. Access and current context are checked once after
-        discovery, before dispatch or replay. Execution requires an
-        existing conversation; it never silently creates one. A fresh runtime
-        catalog determines command membership and attachment support. Arguments
-        pass through unchanged. Accepted deliveries are recorded before dispatch;
-        matching retries return their saved outcome without executing again.
-
-        Consume streamed events inside this context: it owns their cleanup and
-        holds the guard until they close. Stream failures propagate to the caller's
-        transport; direct adapter failures become failed outcomes. Every attempted
-        invocation invalidates the conversation's catalogs when this context exits.
+        Refresh the catalog, then check access and current context once. Refusals
+        and matching retries yield their outcome. Otherwise yield the authorized
+        surface, profile and descriptor. Prepare user capabilities and call
+        `execute` inside this scope; validation itself never records or dispatches
+        a command. The guard remains held through the caller's runtime cleanup.
         """
         if not delivery_id:
             raise ValueError("command deliveries require a delivery_id")
-        conversation = context.conversation
-        if conversation is None:
+        selected_conversation = context.conversation
+        if selected_conversation is None:
             yield CommandError(
                 status="unavailable",
                 message="Start a conversation before running a command.",
             )
             return
         if session is not None and (
-            session.conversation_id != conversation.id
+            session.conversation_id != selected_conversation.id
             or session.current_agent_id != agent.id
         ):
             raise ValueError("gateway session belongs to another command context")
-        if conversation.id in self.gateway.sessions:
+        if selected_conversation.id in self.gateway.sessions:
             yield CommandError(
                 status="busy", message="This conversation already has an active turn."
             )
             return
-        async with AsyncExitStack() as stack:
-            await stack.enter_async_context(
-                self.gateway.driving(session, conversation_id=conversation.id)
-            )
+        async with self.gateway.driving(
+            session, conversation_id=selected_conversation.id
+        ):
             catalog = await self.discover(agent, context, refresh=True)
-            validated = await self.validate(agent, context)
-            if isinstance(validated, CommandError):
-                yield validated
+            channel = self.tentacles.get(context.address.channel_tentacle_id)
+            if (
+                not isinstance(channel, ChannelTentacle)
+                or self.tentacles.get(context.agent_id) is not agent
+                or agent.id not in channel.agent_ids
+            ):
+                yield CommandError(
+                    status="unavailable",
+                    message="The command agent is unavailable on this channel.",
+                )
                 return
-            surface, profile = validated
+            profile = await self.users.profile(channel.id, context.address.user_id)
+            if profile is None or profile.user_id != context.user_id:
+                yield CommandError(
+                    status="unavailable", message="The command surface is unavailable."
+                )
+                return
+            try:
+                conversation = await self.conversations.get(
+                    selected_conversation.id, with_history=False
+                )
+            except ValueError:
+                yield CommandError(
+                    status="unavailable",
+                    message="The command conversation is unavailable.",
+                )
+                return
+            thread = await self.threads.get(conversation.thread_id, with_messages=False)
+            if thread is None:
+                yield CommandError(
+                    status="unavailable",
+                    message="The command conversation is unavailable.",
+                )
+                return
+            surface = await self.threads.get(
+                thread.parent_thread_id or thread.id,
+                with_messages=False,
+                user_id=context.user_id,
+            )
+            if surface is None or surface.key != ThreadKey.from_address(
+                context.address
+            ):
+                yield CommandError(
+                    status="unavailable",
+                    message="The command conversation is unavailable.",
+                )
+                return
+            if (
+                conversation.agent_tentacle_id != agent.id
+                or conversation.subagent_id
+                or surface.active_agent_tentacle_id != agent.id
+            ):
+                yield CommandError(
+                    status="stale",
+                    message="The selected agent no longer owns this conversation's route.",
+                )
+                return
+            try:
+                model = agent.resolve_model(surface.active_model)
+                permission_mode = (
+                    conversation.permission_mode or agent.default_permission_mode
+                )
+                if permission_mode is not None:
+                    agent.check_permission_mode(permission_mode)
+            except ValueError:
+                yield CommandError(
+                    status="stale",
+                    message="The selected model or permissions are no longer available.",
+                )
+                return
+            if (
+                conversation.external_id != selected_conversation.external_id
+                or self.workspaces.open(thread.id, await thread.project).path
+                != context.cwd
+                or model != context.model
+                or permission_mode != context.permission_mode
+            ):
+                yield CommandError(
+                    status="stale",
+                    message="The command context changed; discover commands again.",
+                )
+                return
             recorded = await self.threads.find_message(
                 surface.id, delivery_id, "inbound"
             )
@@ -355,6 +337,36 @@ class CommandManager(Manager):
                     message="This command does not declare attachment support.",
                 )
                 return
+            yield surface, profile, descriptor
+
+    @asynccontextmanager
+    async def execute[OutputT, DepsT](
+        self,
+        agent: AgentTentacle[OutputT, DepsT],
+        context: CommandContext,
+        invocation: CommandInvocation,
+        validated: tuple[Thread, UserProfile, CommandDescriptor],
+        *,
+        delivery_id: str,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: list[AgentCapability[DepsT]] | None = None,
+    ) -> AsyncGenerator[
+        CommandOutcome | AsyncGenerator[ReactStreamEvent[OutputT], None]
+    ]:
+        """Record and execute a delivery inside its successful `validate` scope.
+
+        Validation and user preparation belong to the caller. Persist the receipt
+        before native dispatch, preserve arguments, and invalidate the catalog on
+        exit. Consume streamed events inside this context so runtime cleanup and
+        outcome recording finish before the validation scope releases its guard.
+        Direct adapter failures become failed outcomes; stream errors and
+        cancellation propagate to the caller.
+        """
+        conversation = context.conversation
+        if conversation is None:
+            raise ValueError("validated command execution requires a conversation")
+        surface, profile, descriptor = validated
+        async with AsyncExitStack() as stack:
             text = f"/{descriptor.name}"
             if invocation.arguments:
                 text += f" {invocation.arguments}"

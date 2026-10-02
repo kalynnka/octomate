@@ -19,12 +19,18 @@ flowchart TD
   Awake -->|native summon| Handoff
   Awake -->|native scheme| Scheme
   Awake -->|user message| Route
+  Awake -->|explicit command| Command
   Route --> React
   React -->|summon| Handoff
   React -->|scheme| Scheme
   React -->|teleport| Teleport
   React -->|waiting on a batch| Deferred([End: suspended])
   React -->|done| Done([End: result])
+  Command -->|direct outcome or completed run| Done
+  Command -->|summon| Handoff
+  Command -->|scheme| Scheme
+  Command -->|teleport| Teleport
+  Command -->|waiting on a batch| Deferred
   Handoff --> React
   Scheme --> React
   Teleport --> React
@@ -33,9 +39,10 @@ flowchart TD
 
 ## The nodes
 
-**Awake** resolves the signal once and writes the source context into state. Three
+**Awake** resolves the signal once and writes the source context into state. Four
 signals enter here: a user message from a channel, a resolved action batch coming
-back from a card, and a hand-off a native session requested over MCP. A message
+back from a card, a hand-off a native session requested over MCP, and an explicit
+command with its resolved context and delivery ID. A message
 enters the thread its address names, or a fresh sub-thread when the address is a
 chat room. See [Threads and chat rooms](../usage/threads.md).
 
@@ -45,7 +52,7 @@ thread; otherwise the channel's default agent, in the same conversation, with no
 handoff recorded, because a group's main surface is never pinned. There is no
 separate triage pass: the entry agent self-routes with the gateway if it wants to.
 
-**React** is the only node that runs an agent. It resolves the agent against the
+**React** starts ordinary agent runs. It resolves the agent against the
 channel the run will happen on, records the handoff if one is pending, mounts the
 gateway and the user's capabilities, registers the session at the gateway so a
 second concurrent turn is refused, then runs the agent, streaming through the
@@ -53,6 +60,30 @@ channel's feelers or presenting the result once. After the run it reads what the
 gateway recorded: a summon becomes `Handoff`, a scheme becomes `Scheme`, a teleport
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
+
+**Command** executes the selected runtime command directly, bypassing `Route` and
+chat prompt construction. The node enters the manager's `validate` scope, prepares
+the user directly, then calls `execute`. The validation scope holds the turn guard
+through setup and execution. Refused and replayed deliveries skip user preparation;
+execution records the receipt before invoking the agent. A setup failure releases
+the guard without recording a command. Direct output is presented as command
+feedback and ends
+with a `CommandResult` or `CommandError`, without a model run. A command that
+starts agent work keeps that same invocation open while Reflex consumes its
+events; it never calls `agent.run` a second time. Direct commands leave the summon
+decision unset. An agent stream or deferral creates its continuation decision
+when needed, preserving the selected agent and model for resume or teleport.
+
+`React` and `Command` use the stateless `ctx.deps.runtime` service for gateway
+capabilities, deferred approvals, channel presentation, reply bindings and post-run
+transitions. State records the selected agent/model and conversation. Each entry
+creates its own session, suspender and capability list; the runtime retains none
+of them across handoffs. Both
+streaming and non-streaming channels receive replies. A command's actual agent
+run can hand off, scheme or teleport, and deferred batches resume through the
+existing `ResumeDeferred` path. Accepted command attempts save their workspace on
+exit; rejected and replayed deliveries do not prepare user tools or save it.
+The inner React graph and its stream contract remain dedicated to agent runs.
 
 Explicit command receipts stay in the visible ledger but are omitted from pending
 chat input and automatic room recaps. Their arguments are not another chat turn.

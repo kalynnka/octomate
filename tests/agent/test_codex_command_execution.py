@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import AsyncExitStack
 from unittest.mock import AsyncMock
 
 import pytest
@@ -127,9 +128,18 @@ async def test_skill_turn_preserves_input_context_and_records_outcome(
     catalog = await agent.discover_commands(context)
     descriptor = next(iter(catalog.descriptors))
     invocation = CommandInvocation(command_id=descriptor.id, arguments=arguments)
-    async with agent.octomate.commands.execute(
-        agent, context, invocation, delivery_id="command-1"
-    ) as stream:
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.octomate.commands.validate(
+                agent, context, invocation, delivery_id="command-1"
+            )
+        )
+        assert isinstance(validated, tuple)
+        stream = await stack.enter_async_context(
+            agent.octomate.commands.execute(
+                agent, context, invocation, validated, delivery_id="command-1"
+            )
+        )
         assert isinstance(stream, AsyncGenerator)
         events = [event async for event in stream]
     assert isinstance(events[-1], AgentRunResultEvent)
@@ -179,7 +189,7 @@ async def test_skill_execution_rejects_stale_or_undiscovered_paths(
         entry.skills[0].path.root = "/different/workspace/review/SKILL.md"
     else:
         command_id = "skill:/client/supplied/SKILL.md"
-    async with agent.octomate.commands.execute(
+    async with agent.octomate.commands.validate(
         agent, context, CommandInvocation(command_id=command_id), delivery_id="stale"
     ) as outcome:
         assert isinstance(outcome, CommandError)
@@ -208,12 +218,19 @@ async def test_detached_skill_stream_drains_before_releasing_the_command_guard(
             yield event
 
     async def consume() -> None:
-        async with agent.octomate.commands.execute(
-            agent,
-            context,
-            CommandInvocation(command_id=descriptor.id),
-            delivery_id="detached",
-        ) as stream:
+        invocation = CommandInvocation(command_id=descriptor.id)
+        async with AsyncExitStack() as stack:
+            validated = await stack.enter_async_context(
+                agent.octomate.commands.validate(
+                    agent, context, invocation, delivery_id="detached"
+                )
+            )
+            assert isinstance(validated, tuple)
+            stream = await stack.enter_async_context(
+                agent.octomate.commands.execute(
+                    agent, context, invocation, validated, delivery_id="detached"
+                )
+            )
             assert isinstance(stream, AsyncGenerator)
             async for _ in stream:
                 observed.set()

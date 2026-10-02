@@ -15,6 +15,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
     CrossingLanding,
+    HereLanding,
     ResponseTargetMode,
     RunName,
     SummonDecision,
@@ -67,6 +68,7 @@ class ReflexSuspender:
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: SummonDecision | None
+    model: str | None = None  # Selected model when a command has no routing decision.
     thread_id: uuid.UUID | None = None
     emit_on_stream: bool = False
     suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
@@ -74,7 +76,22 @@ class ReflexSuspender:
     # graph reads this to route to its Teleport node instead of persisting a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)
 
+    def continuation_decision(self) -> SummonDecision:
+        """Preserve an actual agent run's selection for resume and teleport."""
+        if self.decision is None:
+            self.decision = SummonDecision(
+                agent_id=self.agent_tentacle_id,
+                model=self.model,
+                destination=HereLanding(),
+                reason="Continue the selected agent run.",
+                hint="",
+                summon="",
+            )
+        return self.decision
+
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        # A command may defer before yielding its first agent event.
+        decision = self.continuation_decision()
         # `teleport` declares kind="teleport" in its CallDeferred metadata — the graph
         # resolves it (fork + resume), not a human. Classify by the declared kind (not
         # a tool name), stash it typed, and let run1 end so it bubbles to the dispatch.
@@ -127,7 +144,7 @@ class ReflexSuspender:
                     source_address=self.source_address,
                     target_address=self.target_address,
                     target_mode=self.target_mode,
-                    decision=self.decision,
+                    decision=decision,
                     requests=requests,
                 )
                 self.suspended_batch_id = batch.id
@@ -146,7 +163,7 @@ class ReflexSuspender:
                 source_address=self.source_address,
                 target_address=self.target_address,
                 target_mode=self.target_mode,
-                decision=self.decision,
+                decision=decision,
                 requests=requests,
             )
             self.suspended_batch_id = batch.id

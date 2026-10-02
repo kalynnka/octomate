@@ -3,10 +3,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TypeAlias
 
 from pydantic import BaseModel, Field
 
+from octomate.schemas.commands import CommandContext, CommandInvocation
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.triage import SchemeDecision, SummonDecision
@@ -63,6 +63,18 @@ class GatewayHandoffSignal:
     source: ChannelAddress | None = None
 
 
-AwakeSignal: TypeAlias = (
-    UserMessageSignal | DeferredActionBatchResponse | GatewayHandoffSignal
+@dataclass(frozen=True)
+class CommandSignal:
+    """Explicit command intent on an authenticated, resolved conversation surface."""
+
+    context: CommandContext
+    invocation: CommandInvocation
+    delivery_id: str  # Stable across retries of the same explicit request.
+
+
+type AwakeSignal = (
+    UserMessageSignal
+    | DeferredActionBatchResponse
+    | GatewayHandoffSignal
+    | CommandSignal
 )

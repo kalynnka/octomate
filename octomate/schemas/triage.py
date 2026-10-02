@@ -19,7 +19,7 @@ ResponseTargetMode = Literal["main", "sub"]
 # `react` (an initial reaction to an inbound message), `summon` (a handoff to another
 # agent), `teleport` (the same agent resuming in a forked sub-thread), or `resume`
 # (continuing after human review). Labels each run's span and any batch it defers.
-RunName = Literal["react", "summon", "teleport", "resume"]
+RunName = Literal["react", "summon", "teleport", "resume", "command"]
 
 # The gateway's vocabulary: the toolset id and each spell's tool name. They live with
 # the decision schemas rather than the capability because everyone speaks them — the

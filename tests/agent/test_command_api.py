@@ -776,7 +776,16 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert not app.gateway.sessions
 
 
-@pytest.mark.parametrize("stop", ["disconnect", "send_error", "cancel"])
+@pytest.mark.parametrize(
+    ("stop", "before_first"),
+    [
+        ("disconnect", False),
+        ("send_error", False),
+        ("cancel", False),
+        ("disconnect", True),
+        ("cancel", True),
+    ],
+)
 async def test_http_stream_interruption_closes_runtime_and_records_failure(
     app: Octomate,
     agent: ExecutingAgent,
@@ -784,6 +793,7 @@ async def test_http_stream_interruption_closes_runtime_and_records_failure(
     command_body: dict[str, JsonValue],
     monkeypatch: pytest.MonkeyPatch,
     stop: str,
+    before_first: bool,
 ) -> None:
     emitted = asyncio.Event()
     closed = asyncio.Event()
@@ -792,6 +802,9 @@ async def test_http_stream_interruption_closes_runtime_and_records_failure(
     async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
         owner = asyncio.current_task()
         try:
+            if before_first:
+                emitted.set()
+                await asyncio.Event().wait()
             yield MessageSentEvent(segments=[TextSegment(data={"text": "Running"})])
             await asyncio.Event().wait()
         finally:
@@ -848,6 +861,8 @@ async def test_http_stream_interruption_closes_runtime_and_records_failure(
             await task
     assert closed.is_set()
     assert not app.gateway.sessions
+    if before_first:
+        assert not sent
     assert not any(b"command_outcome" in item.get("body", b"") for item in sent)
     receipt = await app.threads.find_message(
         conversation.thread_id, "command-1", "inbound"

@@ -73,6 +73,15 @@ HTTP API. Codex implements skill discovery and execution; Claude implements
 command discovery and execution. The remaining runtime adapters and channel
 command controls are not wired yet.
 
+Channels can dispatch explicit intent with
+`await octomate.kick(CommandSignal(context, invocation, delivery_id))`. Reflex's
+command entry delivers direct feedback or consumes the same native agent stream
+with gateway capabilities, approvals and normal channel delivery. The context
+must already identify the authenticated user and originating surface. The command
+manager revalidates it before dispatch; retries use the same delivery ID. The
+browser execution endpoint still calls the manager directly; routing its SSE
+response through this graph entry is a separate integration step.
+
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval
 posture. A new composer has `conversation=None` and `cwd=None`. An existing
@@ -222,8 +231,8 @@ invocation: DSH's `/plan off` changes state, while `/plan <message>` also submit
 agent input. If a command produces both control feedback and agent activity, its
 adapter must expose both through the existing stream events.
 
-The host's `octomate.commands.execute(agent, context, invocation, delivery_id=..., ...)` is an async
-context manager for execution. The caller supplies context identifying the
+Callers enter `commands.validate(agent, context, invocation, delivery_id=..., ...)`
+before execution. They supply context identifying the
 authenticated user and a stable, nonempty delivery ID. Execution requires
 that user's linked profile and access to the addressed chat surface. The selected
 agent must still be enabled on the channel and own the conversation's route;
@@ -236,6 +245,13 @@ command membership and declared attachment support, and holds the conversation's
 cleanup. Normal chat turns use the same guard even when gateway spells are disabled.
 Busy conversations are refused immediately; execution never queues or retries.
 
+Validation yields either a refusal/replay outcome or
+`(surface, profile, descriptor)`. For the tuple, prepare user capabilities if needed, then
+enter `commands.execute(agent, context, invocation, validated, delivery_id=..., ...)`
+before leaving validation. The same turn guard spans both calls, and execution
+does not repeat validation. User setup errors propagate and release the guard;
+no receipt exists until execution starts, so that delivery can be retried.
+
 Before runtime dispatch, the manager commits a command receipt on the addressed
 chat surface. Its delivery ID must be unique among inbound messages on that surface;
 use the same ID when retrying the same request. After checking current access and
@@ -244,9 +260,10 @@ no longer in the catalog. An ID belonging to another sender, conversation, agent
 or invocation is refused. A receipt without an outcome is also refused: its runtime
 effects may already have occurred. Pre-dispatch refusals do not create receipts.
 
-The context manager yields a direct outcome or an async event generator. Consume
-events inside the context so closing it also closes the stream. Pass the run's
-gateway session, suspender and capabilities when available. Direct adapter errors
+The execution context manager yields a direct outcome or an async event generator.
+Consume events inside the context so closing it also closes the stream. Pass the
+run's gateway session to validation, and its suspender and capabilities to execution
+when available. Direct adapter errors
 become failed outcomes; cancellation and stream errors propagate to the caller.
 Direct outcomes are saved before being yielded. Streams record completion only
 after full consumption and cleanup; interruption or failure records a failed outcome.

@@ -19,6 +19,7 @@ from octomate.reflex.state import (
 )
 from octomate.schemas.awakes import (
     AwakeSignal,
+    CommandSignal,
     DeferredActionBatchResponse,
     GatewayHandoffSignal,
 )
@@ -28,8 +29,8 @@ from octomate.telemetry import reflex_logfire
 
 @dataclass
 class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
-    """The entry node: a batch reply resumes, a native handoff lands, and a user
-    message resolves its thread and goes to `Route`."""
+    """The entry node: explicit commands dispatch, batch replies resume, native
+    handoffs land, and user messages resolve their thread and go to `Route`."""
 
     signal: AwakeSignal
 
@@ -37,7 +38,10 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Route | ResumeDeferred | Handoff | Scheme | End[ReflexGraphResult]:
+    ) -> Command | Route | ResumeDeferred | Handoff | Scheme | End[ReflexGraphResult]:
+        if isinstance(self.signal, CommandSignal):
+            return Command(signal=self.signal)
+
         if isinstance(self.signal, DeferredActionBatchResponse):
             return ResumeDeferred(awake=self.signal)
 
@@ -111,9 +115,10 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         return Route()
 
 
-# `Handoff` and `Scheme` share an import cycle with `react`, which closes it at its
-# own bottom — so they only exist once `react` has run. The `route` import above
+# `Command`, `Handoff` and `Scheme` depend on the import cycle with `react`, which
+# closes it at its own bottom. The `route` import above
 # already pulls `react` in, and importing them here, after it, is what `react`
 # itself does for the same reason.
+from octomate.reflex.nodes.command import Command  # noqa: E402
 from octomate.reflex.nodes.handoff import Handoff  # noqa: E402
 from octomate.reflex.nodes.scheme import Scheme  # noqa: E402

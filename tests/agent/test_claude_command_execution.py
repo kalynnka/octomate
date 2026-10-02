@@ -10,6 +10,7 @@ No real provider or application database was used.
 
 import asyncio
 from collections.abc import AsyncGenerator
+from contextlib import AsyncExitStack
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -174,9 +175,16 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     await agent.conversations.set_external_id(conversation, "previous-session")
     client.receive_response.side_effect = lambda: native_messages(streams[script])
     invocation = CommandInvocation(command_id=command)
-    async with agent.commands.execute(
-        agent, context, invocation, delivery_id="direct"
-    ) as outcome:
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.commands.validate(agent, context, invocation, delivery_id="direct")
+        )
+        assert isinstance(validated, tuple)
+        outcome = await stack.enter_async_context(
+            agent.commands.execute(
+                agent, context, invocation, validated, delivery_id="direct"
+            )
+        )
         assert isinstance(outcome, CommandResult)
     expected = streams[script][-1]["result"]
     assert [
@@ -217,9 +225,16 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
         await agent.conversations.set_external_id(conversation, "prior-session")
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
     invocation = CommandInvocation(command_id="fixture-review", arguments=arguments)
-    async with agent.commands.execute(
-        agent, context, invocation, delivery_id="model"
-    ) as stream:
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.commands.validate(agent, context, invocation, delivery_id="model")
+        )
+        assert isinstance(validated, tuple)
+        stream = await stack.enter_async_context(
+            agent.commands.execute(
+                agent, context, invocation, validated, delivery_id="model"
+            )
+        )
         assert isinstance(stream, AsyncGenerator)
         events = [event async for event in stream]
     assert isinstance(events[-1], AgentRunResultEvent)
@@ -283,9 +298,19 @@ async def test_unknown_or_changed_commands_never_reach_query(
                 {"name": "context", "description": "Changed meaning"}
             ]
         client.get_server_info.side_effect = [initial, changed]
-    async with agent.commands.execute(
-        agent, context, CommandInvocation(command_id=command_id), delivery_id="stale"
-    ) as outcome:
+    invocation = CommandInvocation(command_id=command_id)
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.commands.validate(agent, context, invocation, delivery_id="stale")
+        )
+        if isinstance(validated, tuple):
+            outcome = await stack.enter_async_context(
+                agent.commands.execute(
+                    agent, context, invocation, validated, delivery_id="stale"
+                )
+            )
+        else:
+            outcome = validated
         assert isinstance(outcome, CommandError)
         assert outcome.status == (
             "unknown"
@@ -307,12 +332,17 @@ async def test_abandoned_stream_closes_the_already_started_sdk_client(
 ) -> None:
     agent, context, client, _ = execution
     client.receive_response.side_effect = lambda: native_messages(streams["skill"])
-    async with agent.commands.execute(
-        agent,
-        context,
-        CommandInvocation(command_id="fixture-review"),
-        delivery_id="abandoned",
-    ) as stream:
+    invocation = CommandInvocation(command_id="fixture-review")
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.commands.validate(agent, context, invocation, delivery_id="abandoned")
+        )
+        assert isinstance(validated, tuple)
+        stream = await stack.enter_async_context(
+            agent.commands.execute(
+                agent, context, invocation, validated, delivery_id="abandoned"
+            )
+        )
         assert isinstance(stream, AsyncGenerator)
         if consume:
             await anext(stream)
@@ -344,12 +374,19 @@ async def test_cancelling_before_first_model_event_closes_client(
     client.receive_response.side_effect = pending
 
     async def execute() -> None:
-        async with agent.commands.execute(
-            agent,
-            context,
-            CommandInvocation(command_id="context"),
-            delivery_id="cancelled",
-        ):
+        invocation = CommandInvocation(command_id="context")
+        async with AsyncExitStack() as stack:
+            validated = await stack.enter_async_context(
+                agent.commands.validate(
+                    agent, context, invocation, delivery_id="cancelled"
+                )
+            )
+            assert isinstance(validated, tuple)
+            await stack.enter_async_context(
+                agent.commands.execute(
+                    agent, context, invocation, validated, delivery_id="cancelled"
+                )
+            )
             pytest.fail("The command should remain pending")
 
     task = asyncio.create_task(execute())
@@ -379,12 +416,19 @@ async def test_native_error_results_fail_receipts_and_keep_actual_model_history(
         errors=["Turn limit reached"],
     )
     client.receive_response.side_effect = lambda: native_messages(messages)
-    async with agent.commands.execute(
-        agent,
-        context,
-        CommandInvocation(command_id="fixture-review" if model_run else "context"),
-        delivery_id="failed",
-    ) as outcome:
+    invocation = CommandInvocation(
+        command_id="fixture-review" if model_run else "context"
+    )
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.commands.validate(agent, context, invocation, delivery_id="failed")
+        )
+        assert isinstance(validated, tuple)
+        outcome = await stack.enter_async_context(
+            agent.commands.execute(
+                agent, context, invocation, validated, delivery_id="failed"
+            )
+        )
         if model_run:
             assert isinstance(outcome, AsyncGenerator)
             with pytest.raises(RuntimeError, match="Turn limit reached"):
@@ -412,12 +456,19 @@ async def test_missing_terminal_result_never_reports_success(
     client.receive_response.side_effect = lambda: native_messages(
         streams["context"][:-1]
     )
-    async with agent.commands.execute(
-        agent,
-        context,
-        CommandInvocation(command_id="context"),
-        delivery_id="incomplete",
-    ) as outcome:
+    invocation = CommandInvocation(command_id="context")
+    async with AsyncExitStack() as stack:
+        validated = await stack.enter_async_context(
+            agent.commands.validate(
+                agent, context, invocation, delivery_id="incomplete"
+            )
+        )
+        assert isinstance(validated, tuple)
+        outcome = await stack.enter_async_context(
+            agent.commands.execute(
+                agent, context, invocation, validated, delivery_id="incomplete"
+            )
+        )
         assert isinstance(outcome, CommandError)
         assert outcome.status == "failed"
     assert client.__aenter__.await_count == client.__aexit__.await_count

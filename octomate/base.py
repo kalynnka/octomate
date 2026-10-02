@@ -292,7 +292,7 @@ class Octomate(FastAPI):
         self,
         signal: AwakeSignal,
     ) -> None:
-        """Trigger the agent graph from a user message turn or deferred response."""
+        """Trigger Reflex from a message, explicit command, handoff or deferred response."""
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:

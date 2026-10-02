@@ -12,6 +12,7 @@ from pydantic_graph import Graph, GraphBuilder, TypeExpression
 
 from octomate.reflex.nodes import (
     Awake,
+    Command,
     Handoff,
     React,
     ResumeDeferred,
@@ -32,6 +33,7 @@ from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 
 __all__ = [
     "Awake",
+    "Command",
     "DeferredResult",
     "Handoff",
     "React",
@@ -69,12 +71,13 @@ def build_reflex_graph(
         deps_type=ReflexDeps,
         input_type=entry,
         # `TypeExpression` is pydantic-graph's stand-in for a union in a
-        # `type[...]` position — the result is one of two variants.
+        # `type[...]` position — the result may also be a direct command outcome.
         output_type=TypeExpression[ReflexGraphResult],
     )
     builder.add(
         builder.edge_from(builder.start_node).to(entry),
         builder.node(Awake),
+        builder.node(Command),
         builder.node(Route),
         builder.node(Handoff),
         builder.node(React),

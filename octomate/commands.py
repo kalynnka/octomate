@@ -3,7 +3,7 @@
 import asyncio
 import uuid
 from collections.abc import AsyncGenerator
-from contextlib import AbstractAsyncContextManager
+from contextlib import AsyncExitStack, aclosing
 from typing import Annotated
 
 from fastapi import APIRouter, Body, Depends, HTTPException
@@ -33,7 +33,6 @@ from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandInvocation,
-    CommandOutcome,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -49,28 +48,26 @@ command_router = APIRouter(
 
 
 class CommandResponse(Response):
-    """Stream command events while one task owns execution through runtime cleanup.
+    """Serialize command events to SSE and close their producer in the same task.
 
-    A disconnect cancels that task once and waits for it to close the runtime,
-    record the interrupted outcome and release the conversation's turn guard.
+    A disconnect cancels that task once and waits for the event generator's
+    cleanup. The producer owns validation, execution and outcome recording.
     Each SSE data field contains a ``CommandStreamEvent`` JSON payload. Immediate
     and replayed outcomes produce one event. Agent activity ends with an outcome
     only after runtime cleanup and persistence succeed.
     """
 
-    execution: AbstractAsyncContextManager[
-        CommandOutcome | AsyncGenerator[ReactStreamEvent[ChannelOutput], None]
-    ]
+    events: AsyncGenerator[ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None]
 
     def __init__(
         self,
-        execution: AbstractAsyncContextManager[
-            CommandOutcome | AsyncGenerator[ReactStreamEvent[ChannelOutput], None]
+        events: AsyncGenerator[
+            ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None
         ],
     ) -> None:
         super().__init__(media_type="text/event-stream", headers=SSE_HEADERS)
         del self.headers["content-length"]
-        self.execution = execution
+        self.events = events
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         async with asyncio.TaskGroup() as tasks:
@@ -88,7 +85,8 @@ class CommandResponse(Response):
             pass
 
     async def respond(self, send: Send) -> None:
-        async with self.execution as result:
+        async with aclosing(self.events) as events:
+            first = await anext(events)
             await send(
                 {
                     "type": "http.response.start",
@@ -96,37 +94,30 @@ class CommandResponse(Response):
                     "headers": self.raw_headers,
                 }
             )
-            if isinstance(result, CommandResult | CommandError):
-                outcome = result
-            else:
-                await self.stream_events(result, send)
-                outcome = CommandResult()
+            await self.send_event(first, send)
+            async for event in events:
+                await self.send_event(event, send)
+        await send({"type": "http.response.body", "body": b"", "more_body": False})
+
+    async def send_event(
+        self,
+        event: ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent,
+        send: Send,
+    ) -> None:
+        if isinstance(event, CommandOutcomeEvent):
+            payload = event.model_dump_json().encode()
+        else:
+            wire = to_wire(event)
+            if wire is None:
+                return
+            payload = wire_event_adapter.dump_json(wire, warnings=False)
         await send(
             {
                 "type": "http.response.body",
-                "body": b"data: "
-                + CommandOutcomeEvent(outcome=outcome).model_dump_json().encode()
-                + b"\n\n",
-                "more_body": False,
+                "body": b"data: " + payload + b"\n\n",
+                "more_body": True,
             }
         )
-
-    async def stream_events(
-        self,
-        events: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
-        send: Send,
-    ) -> None:
-        async for event in events:
-            wire = to_wire(event)
-            if wire is not None:
-                payload = wire_event_adapter.dump_json(wire, warnings=False)
-                await send(
-                    {
-                        "type": "http.response.body",
-                        "body": b"data: " + payload + b"\n\n",
-                        "more_body": True,
-                    }
-                )
 
 
 async def command_context(
@@ -285,11 +276,31 @@ async def execute_command(
     Authentication and request-validation errors remain non-2xx JSON responses.
     """
     agent = app.agents[context.agent_id]
-    return CommandResponse(
-        app.commands.execute(
-            agent,
-            context,
-            CommandInvocation(command_id=command_id, arguments=arguments),
-            delivery_id=delivery_id,
-        )
-    )
+    invocation = CommandInvocation(command_id=command_id, arguments=arguments)
+
+    async def events() -> AsyncGenerator[
+        ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None
+    ]:
+        async with AsyncExitStack() as stack:
+            validated = await stack.enter_async_context(
+                agent.commands.validate(
+                    agent, context, invocation, delivery_id=delivery_id
+                )
+            )
+            if isinstance(validated, CommandResult | CommandError):
+                result = validated
+            else:
+                result = await stack.enter_async_context(
+                    agent.commands.execute(
+                        agent, context, invocation, validated, delivery_id=delivery_id
+                    )
+                )
+            if isinstance(result, CommandResult | CommandError):
+                outcome = result
+            else:
+                async for event in result:
+                    yield event
+                outcome = CommandResult()
+        yield CommandOutcomeEvent(outcome=outcome)
+
+    return CommandResponse(events())

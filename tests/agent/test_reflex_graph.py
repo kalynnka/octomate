@@ -36,6 +36,7 @@ from octomate.managers.workspaces.mirrors import run_git
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
+    ReflexResult,
     ReflexState,
     ResponseTarget,
     SummonDecision,
@@ -486,7 +487,7 @@ async def test_route_runs_entry_agent_directly() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "hello"
     assert [stream.run_name for stream in agent.streams] == ["react"]
@@ -903,7 +904,7 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
         ),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert isinstance(result.decision, SummonDecision)
     assert result.decision.agent_id == "second"
     assert [turn.prompt for turn in second.turns] == ["Please debug this in reception."]
@@ -936,7 +937,7 @@ async def test_summon_here_takes_over_current_conversation() -> None:
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert im.sub_threads == []
     assert second.turns[0].address == address
 
@@ -1109,7 +1110,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert im.opened_dms == ["alice"]
     # The DM's own owner picked it up, with the brief as its prompt.
     assert second.turns[0].prompt == "Finish the migration write-up."
@@ -1157,7 +1158,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     # No owner to defer to, so the channel's first configured agent takes it.
     assert entry.turns[-1].prompt == "Do it."
     assert entry.turns[-1].address.chat_type == "dm"
@@ -1211,7 +1212,7 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert far.opened_dms == ["ou_alice"]
     assert [turn.prompt for turn in second.turns] == ["Finish the migration write-up."]
     assert second.turns[0].address.channel_tentacle_id == "far"
@@ -1253,7 +1254,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
 
     # The platform refused at the moment of asking: nothing moved, nobody was handed
     # anything, and the origin agent's own reply already landed.
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert im.opened_dms == ["alice"]
     assert result.target.address == address
     assert second.turns == []
@@ -1287,7 +1288,7 @@ async def test_summon_thread_falls_back_to_main_on_sub_thread_failure() -> None:
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.mode == "main"
     assert second.turns[0].address == address
 
@@ -1331,7 +1332,7 @@ async def test_summon_thread_leaves_a_group_main_unclaimed_when_the_open_fails()
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.address == address
     assert second.turns == []
     assert thread.active_agent_tentacle_id is None
@@ -1394,7 +1395,7 @@ async def test_summon_crosses_into_a_sub_thread_of_their_dms_elsewhere(
 
     result = await _run(React(), state=state, deps=deps)
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     # Their direct messages there had to be opened before there was anywhere to
     # open a sub-thread of, and the sub-thread is what the turn actually lands in.
     assert far.opened_dms == ["ou_alice"]
@@ -1461,7 +1462,7 @@ async def test_a_crossing_that_opens_no_sub_thread_leaves_the_dms_unclaimed(
 
     result = await _run(React(), state=state, deps=deps)
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.address == _group_key()
     assert second.turns == []
 
@@ -1484,7 +1485,7 @@ async def test_a_crossing_stays_put_when_the_far_dm_never_opens(
 
     # The platform refused as it was asked, so nothing moved and the origin agent's
     # own reply is all that landed.
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.address == _group_key()
     assert second.turns == []
 
@@ -1545,7 +1546,7 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
 
     result = await _run(Awake(signal=signal), state=ReflexState(), deps=deps)
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert far.opened_dms == ["ou_alice"]
     landed = second.turns[0].address
     assert landed.channel_tentacle_id == "far"
@@ -1591,7 +1592,7 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         deps=_summon_deps(im, entry, second, far),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     # Their direct messages there, then a sub-thread inside them — and the agent
     # resumed against the fork in it.
     assert far.opened_dms == ["ou_alice"]
@@ -1633,7 +1634,7 @@ async def test_a_teleport_crossing_that_never_opens_resolves_in_place() -> None:
 
     # The deferral still has to be resolved or the run hangs on it: stay put and
     # answer here, with nothing forked anywhere.
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert entry.turns[-1].address == address
     assert far.sub_threads == []
 
@@ -1665,7 +1666,7 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert len(entry.turns) == 2
     resumed = entry.turns[-1]
     assert resumed.prompt is None
@@ -1811,7 +1812,7 @@ async def test_route_runs_in_place_inside_flat_thread() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.mode == "sub"
     assert agent.streams[0].address == address
     assert agent.streams[0].run_name == "react"
@@ -1830,7 +1831,7 @@ async def test_awake_short_circuits_on_empty_signal() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision is None
     assert agent.turns == []
     assert im.sent == []
@@ -1859,7 +1860,7 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision is None
     assert agent.turns == []
     assert im.sent == []
@@ -2008,7 +2009,7 @@ async def test_a_chat_rooms_owner_survives_the_next_kick() -> None:
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision is not None
     assert result.decision.agent_id == "second"
     assert owner.turns[0].thread_id == threads.sub_threads[0].id
@@ -2108,7 +2109,7 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
         ),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "resumed answer"
     assert agent.streams[0].prompt is None
@@ -2171,7 +2172,7 @@ async def test_resume_rebinds_the_suspended_run_user() -> None:
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert agent.bound_profiles == [profile]
 
 
@@ -2211,7 +2212,7 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
         ),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision == decision
     assert agent.streams == []
     assert action_manager.marked == []
@@ -2408,7 +2409,7 @@ async def test_a_dispel_releases_the_workspace_once_the_turn_is_saved(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert workspaces.existing(thread.id) is None
     mirror = workspaces.mirrors.path(project)
     assert await run_git("show", f"{thread_ref(thread.id)}:work.md", cwd=mirror) == (
@@ -2464,7 +2465,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     first, resumed = agent.turns
     assert first.deferred_results is None
     assert resumed.deferred_results is not None
