@@ -21,7 +21,6 @@ from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import cached_property, partial
-from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -34,7 +33,7 @@ from typing import (
 )
 
 import anyio
-from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
 from octomate_protocol.stream import (
@@ -94,7 +93,6 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
-from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
@@ -136,7 +134,7 @@ from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.telemetry import TracedCodexClient
-from octomate.tentacles.codex.transcript import rollout_line_adapter
+from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -712,6 +710,55 @@ class CodexTentacle(AgentTentacle[str, None]):
             source, thread, sender=sender, title=source_thread.title
         )
 
+    async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
+        """Check native history without opening a thread or importing a runtime session."""
+        if sender.user_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        await self.read_fork_transcript(source, owner_id=sender.user_id)
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: uuid.UUID
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """Read an owner's importable history through its latest uploaded terminal turn."""
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only root native Codex sessions can be forked here")
+        if source.transcript_file_id is None or source.external_id is None:
+            raise ValueError("Native Codex history has not been uploaded")
+        data = await self.octomate.files.read(
+            source.transcript_file_id, owner_id=owner_id
+        )
+        end = 0
+        completed_run: ExternalAgentRun | None = None
+        for run in source.runs:
+            if (
+                not isinstance(run, ExternalAgentRun)
+                or run.external_session_id != source.external_id
+                or run.end_offset is None
+                or not end < run.end_offset <= len(data)
+            ):
+                continue
+            offset = run.end_offset
+            if data[offset - 1 : offset] != b"\n":
+                raise ValueError("Turn offset must end at a transcript line boundary")
+            start = data.rfind(b"\n", 0, offset - 1) + 1
+            closing = rollout_line_adapter.validate_json(data[start:offset])
+            if (
+                closing.type == "event_msg"
+                and closing.payload.get("type") in {"task_complete", "turn_aborted"}
+                and closing.payload.get("turn_id") == run.id
+            ):
+                end = offset
+                completed_run = run
+        if completed_run is None:
+            raise ValueError("No completed Codex turn has been fully uploaded")
+        if completed_run.permission_mode is None:
+            raise ValueError(
+                "The completed Codex turn has no supported permission preset"
+            )
+        data = data[:end]
+        self.import_metadata(data, external_id=source.external_id)
+        return data, completed_run
+
     async def fork_transcript(
         self,
         source: Conversation,
@@ -733,78 +780,42 @@ class CodexTentacle(AgentTentacle[str, None]):
                 raise ValueError("Transcript imports require an empty target")
             if source.transcript_file_id is None or source.external_id is None:
                 raise ValueError("Native Codex history has not been uploaded")
-            data = await self.octomate.files.read(
-                source.transcript_file_id, owner_id=owner_id
+            data, completed_run = await self.read_fork_transcript(
+                source, owner_id=owner_id
             )
-            end = 0
-            completed_run: ExternalAgentRun | None = None
-            for run in source.runs:
-                if (
-                    not isinstance(run, ExternalAgentRun)
-                    or run.external_session_id != source.external_id
-                    or run.end_offset is None
-                    or not end < run.end_offset <= len(data)
-                ):
-                    continue
-                offset = run.end_offset
-                if data[offset - 1 : offset] != b"\n":
-                    raise ValueError(
-                        "Turn offset must end at a transcript line boundary"
-                    )
-                start = data.rfind(b"\n", 0, offset - 1) + 1
-                closing = rollout_line_adapter.validate_json(data[start:offset])
-                if (
-                    closing.type == "event_msg"
-                    and closing.payload.get("type") in {"task_complete", "turn_aborted"}
-                    and closing.payload.get("turn_id") == run.id
-                ):
-                    end = offset
-                    completed_run = run
-            if completed_run is None:
-                raise ValueError("No completed Codex turn has been fully uploaded")
-            if completed_run.permission_mode is None:
-                raise ValueError(
-                    "The completed Codex turn has no supported permission preset"
+            async with (
+                self.octomate.files.partial_copy(
+                    source.transcript_file_id,
+                    end=len(data),
+                    owner_id=owner_id,
+                    media_type="application/jsonl",
+                ) as snapshot,
+                self.import_transcript(
+                    data, external_id=source.external_id, owner_id=owner_id
+                ) as imported_id,
+            ):
+                imported_source = Conversation(
+                    thread_id=source.thread_id,
+                    agent_tentacle_id=self.id,
+                    external_id=imported_id,
                 )
-            data = data[:end]
-            upload = UploadFile(
-                BytesIO(data),
-                filename=f"rollout-{source.external_id}.jsonl",
-                headers=Headers({"content-type": "application/jsonl"}),
-            )
-            try:
-                async with (
-                    self.octomate.files.upload(upload, owner_id=owner_id) as snapshot,
-                    self.import_transcript(
-                        data, external_id=source.external_id, owner_id=owner_id
-                    ) as imported_id,
-                ):
-                    imported_source = Conversation(
-                        thread_id=source.thread_id,
-                        agent_tentacle_id=self.id,
-                        external_id=imported_id,
-                    )
-                    external_id = await self.fork_session(imported_source, cwd=cwd)
-                    await conversations.fork(
-                        source,
-                        target,
-                        external_id=external_id,
-                        transcript=Jsonl.model_validate(snapshot),
-                        model_name=completed_run.model_name,
-                        permission_mode=completed_run.permission_mode,
-                    )
-            finally:
-                await upload.close()
+                external_id = await self.fork_session(imported_source, cwd=cwd)
+                await conversations.fork(
+                    source,
+                    target,
+                    external_id=external_id,
+                    transcript=Jsonl.model_validate(snapshot),
+                    model_name=completed_run.model_name,
+                    permission_mode=completed_run.permission_mode,
+                )
             return await conversations.get(target.id)
 
-    @contextlib.asynccontextmanager
-    async def import_transcript(
-        self, data: bytes, *, external_id: str, owner_id: uuid.UUID
-    ) -> AsyncGenerator[str]:
-        """Keep a private Codex import on success; remove it if the fork fails."""
+    @staticmethod
+    def import_metadata(data: bytes, *, external_id: str) -> RolloutLine:
+        """Require a complete snapshot with its own matching session metadata."""
         if not data.endswith(b"\n"):
             raise ValueError("Completed turn must end at a transcript line boundary")
-        opening, remainder = data.split(b"\n", 1)
+        opening = data.split(b"\n", 1)[0]
         metadata = rollout_line_adapter.validate_json(opening)
         if metadata.type != "session_meta" or metadata.payload.get("id") != external_id:
             raise ValueError("Transcript metadata does not match the source session")
@@ -812,6 +823,15 @@ class CodexTentacle(AgentTentacle[str, None]):
             raise ValueError(
                 "This transcript requires ancestor files before it can be imported"
             )
+        return metadata
+
+    @contextlib.asynccontextmanager
+    async def import_transcript(
+        self, data: bytes, *, external_id: str, owner_id: uuid.UUID
+    ) -> AsyncGenerator[str]:
+        """Keep a private Codex import on success; remove it if the fork fails."""
+        metadata = self.import_metadata(data, external_id=external_id)
+        _, remainder = data.split(b"\n", 1)
         # Distinct imports of A must not compete for A's ID in Codex's rollout index.
         imported_id = str(uuid7())
         metadata.payload["id"] = imported_id

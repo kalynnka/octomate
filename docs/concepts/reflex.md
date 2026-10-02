@@ -74,6 +74,8 @@ thread at the prepared address, forks the conversation's messages into the lande
 project and forks its workspace if one was named, relocates the agent's session,
 and re-enters `React` with the teleport call answered by a sentence saying where it
 now is. A failed open refuses the move; it does not resume at the source.
+For native history, `Awake` asks the receiving agent to validate the source before
+entering `Teleport`, so an unusable transcript cannot create or announce a destination.
 
 **ResumeDeferred** takes a resolved batch, rebuilds the target from what the batch
 persisted, finds the thread through the conversation rather than the address (a

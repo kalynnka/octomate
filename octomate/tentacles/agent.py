@@ -307,6 +307,12 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             f"Agent {self.id!r} does not support conversation forking"
         )
 
+    async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
+        """Refuse unusable native history before a destination is created."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
+
     @property
     def supports_session_fork(self) -> bool:
         """Whether this harness implements independent runtime session creation."""

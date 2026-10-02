@@ -88,6 +88,12 @@ async def test_owned_file_is_inaccessible_outside_owner_scope(
     with pytest.raises(FileNotFoundError):
         await scoped.read(stored.id, owner_id=owner_id)
     with pytest.raises(FileNotFoundError):
+        async with scoped.copy(stored.id, owner_id=owner_id):
+            pytest.fail("A different owner must not copy this file")
+    with pytest.raises(FileNotFoundError):
+        async with scoped.partial_copy(stored.id, end=3, owner_id=owner_id):
+            pytest.fail("A different owner must not partially copy this file")
+    with pytest.raises(FileNotFoundError):
         await scoped.delete(stored.id, owner_id=owner_id)
 
     backend.read.assert_not_awaited()
@@ -108,6 +114,12 @@ async def test_service_files_are_not_visible_in_user_scope(
         await files.get(stored.id, owner_id=alice.id)
     with pytest.raises(FileNotFoundError):
         await files.read(stored.id, owner_id=alice.id)
+    with pytest.raises(FileNotFoundError):
+        async with files.copy(stored.id, owner_id=alice.id):
+            pytest.fail("A user must not copy an unowned service file")
+    with pytest.raises(FileNotFoundError):
+        async with files.partial_copy(stored.id, end=3, owner_id=alice.id):
+            pytest.fail("A user must not partially copy an unowned service file")
     with pytest.raises(FileNotFoundError):
         await files.delete(stored.id, owner_id=alice.id)
     assert await files.read(stored.id) == b"service"

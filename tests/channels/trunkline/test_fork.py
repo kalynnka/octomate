@@ -1,16 +1,20 @@
 """Forking native Codex history through the authenticated console API."""
 
 from collections.abc import AsyncGenerator
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
 from uuid import UUID
 
 import httpx
 import pytest
+from fastapi import UploadFile
 
 from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
+from octomate.schemas.conversation import Conversation
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
 from octomate.schemas.user import User, UserProfile
@@ -289,14 +293,15 @@ async def test_native_teleport_imports_completed_history_before_resuming(
     path = f"/api/trunkline/threads/{case.source.thread_id}"
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["reason"] is None
-    assert any(
-        one["target"] == {"kind": "channel", "channel": destination}
+    [address] = [
+        one
         for one in options["teleport"]["destinations"]
-    )
+        if one["channel_tentacle_id"] == destination
+    ]
     response = await client.post(
         f"{path}/teleport",
         json={
-            "destination": {"kind": "channel", "channel": destination},
+            "destination": address,
             "hint": "Continue here",
         },
     )
@@ -322,3 +327,88 @@ async def test_native_teleport_imports_completed_history_before_resuming(
     assert (
         await app.conversations.get(case.source.id)
     ).external_id == case.source.external_id
+
+
+@pytest.mark.parametrize(
+    ("invalid", "message"),
+    [
+        ("upload", "has not been uploaded"),
+        ("incomplete", "No completed Codex turn"),
+        ("permissions", "no supported permission preset"),
+        ("boundary", "line boundary"),
+        ("identity", "source session"),
+        ("ancestor", "ancestor files"),
+    ],
+)
+async def test_native_teleport_validates_history_before_opening_destination(
+    case: ForkCase,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    invalid: str,
+    message: str,
+) -> None:
+    app = case.tentacle.octomate
+    case.tentacle.models = {"gpt-6-luna": "test"}
+    far = app.connect(
+        FakeChannelTentacle(
+            "far", app, config=ChannelConfig(type="fake", agents=[case.tentacle.id])
+        )
+    )
+    await far.probe()
+    await app.users.ensure_profile(
+        "far", UserProfile(channel_user_id="alice", user_id=case.owner_id)
+    )
+    start = AsyncMock(wraps=far.start_thread)
+    monkeypatch.setattr(far, "start_thread", start)
+    data = case.prefix
+    if invalid == "identity":
+        data = data.replace(str(case.source.external_id).encode(), b"wrong-session")
+    elif invalid == "ancestor":
+        data = data.replace(b'"payload": {', b'"payload": {"history_base": {},', 1)
+    async with async_session() as session:
+        if invalid in {"upload", "identity", "ancestor"}:
+            source = await session.get(Conversation, case.source.id)
+            assert source is not None
+            source.transcript_file_id = None
+        run = await session.one(
+            ExternalAgentRun,
+            expressions=[ExternalAgentRun["end_offset"] == len(case.prefix)],
+        )
+        if invalid == "incomplete":
+            run.end_offset = None
+        elif invalid == "permissions":
+            run.permission_mode = None
+        elif invalid == "boundary":
+            run.end_offset = len(case.prefix) - 1
+        elif invalid in {"identity", "ancestor"}:
+            run.end_offset = len(data)
+        await session.commit()
+        thread_count = await session.count(Thread)
+    if invalid in {"identity", "ancestor"}:
+        await app.conversations.store_transcript(
+            UploadFile(BytesIO(data), filename="rollout.jsonl"),
+            0,
+            conversation=case.source,
+            files=app.files,
+            owner_id=case.owner_id,
+        )
+    response = await client.post(
+        f"/api/trunkline/threads/{case.source.thread_id}/teleport",
+        json={
+            "destination": {
+                "channel_tentacle_id": "far",
+                "chat_type": "dm",
+                "chat_id": "",
+                "user_id": "alice",
+            },
+            "hint": "Continue here",
+        },
+    )
+    assert '"event_kind":"run_error"' in response.text
+    assert message in response.text
+    start.assert_not_awaited()
+    case.fork.assert_not_awaited()
+    assert not far.sent
+    assert not case.home.exists()
+    async with async_session() as session:
+        assert await session.count(Thread) == thread_count

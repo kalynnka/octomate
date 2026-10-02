@@ -69,6 +69,10 @@ source usable. The selected destination must expose a Codex agent; its first
 compatible configured route handles the import. Other connected Codex agents
 do not prevent the move.
 
+Native teleport checks transcript ownership, the completed turn, its permissions
+and import metadata before opening or announcing a destination. Missing or
+unusable history is refused without creating a thread.
+
 A conversation can cross to a new destination only when its current conversation
 is private. For a task that began in a group,
 [continue privately with a brief](#scheme) instead. An anonymous native MCP call

@@ -70,6 +70,8 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     if c.agent_tentacle_id == signal.agent_id and not c.subagent_id
                 )
                 stored = await ctx.deps.conversation_manager.get(conversation.id)
+                if thread.kind == "native_thread":
+                    await agent.validate_fork(stored, sender=signal.user_profile)
                 model = (
                     stored.runs[-1].model_name if stored.runs else thread.active_model
                 )

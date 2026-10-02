@@ -103,6 +103,11 @@ Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
 
+To support native-history teleport, implement `validate_fork(source, sender=...)`
+alongside `fork`. Validation must check ownership and importability without
+creating a destination or runtime session. `Awake` calls it before teleport opens
+the destination; the import must still validate the history it actually consumes.
+
 ## Register it
 
 Add the config model to `TentacleConfigVariant` in `octomate/config/tentacles.py`,

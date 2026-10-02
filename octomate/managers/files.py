@@ -126,6 +126,120 @@ class FileManager(Manager, Locks[uuid.UUID]):
             raise FileNotFoundError(str(file_id))
         return FileVariantAdapter.validate_python(stored)
 
+    @asynccontextmanager
+    async def copy(
+        self,
+        file_id: uuid.UUID,
+        *,
+        owner_id: uuid.UUID | None = None,
+        media_type: str | None = None,
+    ) -> AsyncGenerator[FileVariant]:
+        """Copy a whole file directly through the storage provider.
+
+        Preserve the filename and owner, with a fresh ID and storage key. A caller
+        that has validated the content may supply its MIME type. The caller must
+        commit the yielded metadata, as with `upload`; a failed block deletes the
+        copy. The source is locked while copying, then remains independently usable.
+        """
+        async with self.lock(file_id):
+            source = await self.get(file_id, owner_id=owner_id)
+            copied_id = uuid7()
+            copied = FileVariantAdapter.validate_python(
+                {
+                    **source.model_dump(exclude={"id", "created_at"}),
+                    "id": copied_id,
+                    "media_type": source.media_type
+                    if media_type is None
+                    else media_type,
+                    "key": (
+                        f"users/{owner_id.hex}/{copied_id.hex}"
+                        if owner_id is not None
+                        else copied_id.hex
+                    ),
+                }
+            )
+            try:
+                metadata = await self.storage.stat(source.key)
+            except opendal.exceptions.NotFound as exc:
+                raise FileNotFoundError(source.key) from exc
+            if metadata.content_length != source.size:
+                raise ValueError("Stored content size differs from file metadata")
+            if await self.storage.exists(copied.key):
+                raise FileExistsError(copied.key)
+            try:
+                await self.storage.copy(source.key, copied.key)
+                metadata = await self.storage.stat(copied.key)
+                if metadata.content_length != source.size:
+                    raise ValueError(
+                        "Copied content size differs from the requested size"
+                    )
+            except BaseException:
+                await self.storage.delete(copied.key)
+                raise
+        try:
+            yield copied
+        except BaseException:
+            await self.storage.delete(copied.key)
+            raise
+
+    @asynccontextmanager
+    async def partial_copy(
+        self,
+        file_id: uuid.UUID,
+        *,
+        end: int,
+        owner_id: uuid.UUID | None = None,
+        media_type: str | None = None,
+    ) -> AsyncGenerator[FileVariant]:
+        """Read and write a prefix ending at an exclusive byte offset.
+
+        Preserve the filename and owner with a fresh ID and storage key; callers
+        may supply a validated MIME type. As with `copy`, the caller commits the
+        yielded metadata, a failed block deletes the copy, and the source lock is
+        released before yielding.
+        """
+        async with self.lock(file_id):
+            source = await self.get(file_id, owner_id=owner_id)
+            if not 0 <= end <= source.size:
+                raise ValueError("Copy end must be within the stored file size")
+            try:
+                metadata = await self.storage.stat(source.key)
+                if metadata.content_length != source.size:
+                    raise ValueError("Stored content size differs from file metadata")
+                data = await self.storage.read(source.key, size=end) if end else b""
+            except opendal.exceptions.NotFound as exc:
+                raise FileNotFoundError(source.key) from exc
+            if len(data) != end:
+                raise ValueError("Copied content size differs from the requested size")
+            copied_id = uuid7()
+            copied = FileVariantAdapter.validate_python(
+                {
+                    **source.model_dump(exclude={"id", "created_at"}),
+                    "id": copied_id,
+                    "size": end,
+                    "media_type": source.media_type
+                    if media_type is None
+                    else media_type,
+                    "key": (
+                        f"users/{owner_id.hex}/{copied_id.hex}"
+                        if owner_id is not None
+                        else copied_id.hex
+                    ),
+                }
+            )
+            try:
+                await self.storage.write(copied.key, data, if_not_exists=True)
+            except (
+                opendal.exceptions.AlreadyExists,
+                opendal.exceptions.ConditionNotMatch,
+            ) as exc:
+                raise FileExistsError(copied.key) from exc
+        try:
+            yield copied
+        except BaseException:
+            await self.storage.delete(copied.key)
+            raise
+
     async def append(
         self,
         file_id: uuid.UUID,
