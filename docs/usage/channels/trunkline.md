@@ -71,6 +71,14 @@ linking: you are your signed-in account.
 
 One screen: a threads sidebar with a channel rail, the chat ledger in the middle, a
 timeline of the run's events on the right, a control rail for agents, MCP, profile,
-keys and settings, and a review panel for a workspace's changes. Live data streams
-over server-sent events; a browser that disconnects mid-run only stops watching,
-the run finishes and records regardless.
+keys and settings, and a review panel for a workspace's changes. Ordinary chat runs
+stream over server-sent events; a browser that disconnects mid-run only stops
+watching, and the run finishes and records regardless.
+
+Explicit commands submitted through `POST /api/commands/execute` use Reflex for
+user tools, approvals and reply history. Direct feedback and agent activity use
+the normal channel stream, followed by a command outcome for completion tracking.
+Clients display the channel events without displaying the outcome again. A command
+request's disconnect cancels that execution; cleanup and outcome recording may be
+interrupted. Retry with the same delivery ID to read the recorded outcome. If the
+receipt has no outcome, the retry is refused to avoid running the command twice.

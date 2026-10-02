@@ -3,9 +3,10 @@
 import asyncio
 import uuid
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, aclosing
+from contextlib import AsyncExitStack, aclosing, suppress
 from typing import Annotated
 
+import anyio
 from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import JsonValue
@@ -28,6 +29,8 @@ from octomate.dependencies import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.reflex.state import ReflexGraphResult
+from octomate.schemas.awakes import CommandSignal
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -38,7 +41,13 @@ from octomate.schemas.commands import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import User
 from octomate.tentacles.channel import ChannelOutput
-from octomate.tentacles.trunkline.base import SSE_HEADERS, to_wire
+from octomate.tentacles.trunkline.base import (
+    SSE_HEADERS,
+    TrunklineStreamItem,
+    TrunklineTentacle,
+    current_sink,
+    to_wire,
+)
 
 command_router = APIRouter(
     prefix="/api/commands",
@@ -52,18 +61,17 @@ class CommandResponse(Response):
 
     A disconnect cancels that task once and waits for the event generator's
     cleanup. The producer owns validation, execution and outcome recording.
-    Each SSE data field contains a ``CommandStreamEvent`` JSON payload. Immediate
-    and replayed outcomes produce one event. Agent activity ends with an outcome
-    only after runtime cleanup and persistence succeed.
+    Each SSE data field contains a ``CommandStreamEvent`` JSON payload. Trunkline
+    presents command feedback through channel events. The terminal outcome reports
+    completion after runtime cleanup and persistence succeed; it is not another
+    display message.
     """
 
-    events: AsyncGenerator[ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None]
+    events: AsyncGenerator[TrunklineStreamItem | CommandOutcomeEvent, None]
 
     def __init__(
         self,
-        events: AsyncGenerator[
-            ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None
-        ],
+        events: AsyncGenerator[TrunklineStreamItem | CommandOutcomeEvent, None],
     ) -> None:
         super().__init__(media_type="text/event-stream", headers=SSE_HEADERS)
         del self.headers["content-length"]
@@ -101,7 +109,7 @@ class CommandResponse(Response):
 
     async def send_event(
         self,
-        event: ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent,
+        event: TrunklineStreamItem | CommandOutcomeEvent,
         send: Send,
     ) -> None:
         if isinstance(event, CommandOutcomeEvent):
@@ -270,13 +278,50 @@ async def execute_command(
     """Execute explicit command intent against an existing conversation.
 
     Every execution response is SSE. Each data field contains CommandStreamEvent
-    JSON, identified by event_kind. Direct results, refusals and matching retries
-    emit one command_outcome event. Agent activity precedes that outcome, which is
-    sent after cleanup and persistence. A failed stream closes without an outcome.
+    JSON, identified by event_kind. Trunkline presents direct results and refusals
+    through channel events. The terminal command_outcome reports completion after
+    cleanup and persistence; clients must not render it as another channel message.
+    A failed stream closes without an outcome.
     Authentication and request-validation errors remain non-2xx JSON responses.
     """
     agent = app.agents[context.agent_id]
     invocation = CommandInvocation(command_id=command_id, arguments=arguments)
+
+    async def reflex_events() -> AsyncGenerator[
+        TrunklineStreamItem | CommandOutcomeEvent, None
+    ]:
+        send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](128)
+
+        async def run() -> ReflexGraphResult | None:
+            token = current_sink.set(send)
+            try:
+                async with send:
+                    return await app.kick(
+                        CommandSignal(context, invocation, delivery_id)
+                    )
+            finally:
+                current_sink.reset(token)
+
+        task = asyncio.create_task(run())
+        try:
+            async with receive:
+                async for event in receive:
+                    yield event
+            result = await task
+        finally:
+            if not task.done():
+                task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        outcome = (
+            result
+            if isinstance(result, CommandResult | CommandError)
+            else CommandResult()
+        )
+        yield CommandOutcomeEvent(outcome=outcome)
+
+    if isinstance(app.channels[context.address.channel_tentacle_id], TrunklineTentacle):
+        return CommandResponse(reflex_events())
 
     async def events() -> AsyncGenerator[
         ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None

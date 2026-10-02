@@ -416,7 +416,9 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
         channel.config.agents = []
     capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", capabilities)
-    await app.kick(signal)
+    outcome = await app.kick(signal)
+    assert isinstance(outcome, CommandError)
+    assert outcome.status == reason
     assert not agent.invocations
     capabilities.assert_not_awaited()
     assert isinstance(app.workspaces, RecordingWorkspaceManager)

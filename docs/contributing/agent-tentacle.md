@@ -78,9 +78,12 @@ Channels can dispatch explicit intent with
 command entry delivers direct feedback or consumes the same native agent stream
 with gateway capabilities, approvals and normal channel delivery. The context
 must already identify the authenticated user and originating surface. The command
-manager revalidates it before dispatch; retries use the same delivery ID. The
-browser execution endpoint still calls the manager directly; routing its SSE
-response through this graph entry is a separate integration step.
+manager revalidates it before dispatch; retries use the same delivery ID.
+For Trunkline addresses, the browser execution endpoint uses this graph entry and
+the existing request-local output sink. Reflex presents command feedback through
+channel events; the endpoint emits the returned outcome after graph cleanup.
+HTTP execution for IM addresses still calls the manager directly; that integration
+remains separate.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval
@@ -127,17 +130,23 @@ resolves the descriptor from a fresh catalog. Browser attachments are not suppor
 yet; a nonempty `attachments` field is rejected before dispatch.
 
 Execution responses use `text/event-stream`. Each SSE `data` field is a JSON
-`CommandStreamEvent`, identified by `event_kind`. Immediate results, refusals and
-replayed deliveries emit one `CommandOutcomeEvent` with `event_kind="command_outcome"`
-and the `CommandOutcome` in its `outcome` field. Agent activity uses Trunkline's
-existing wire events, followed by that terminal event after runtime cleanup and
-receipt persistence succeed. Stream failures close without a terminal outcome.
-A disconnect cancels execution and waits for cleanup, outcome persistence and guard
-release. Retrying the same delivery returns its saved outcome as one SSE event;
-streamed activity is not replayed. Authentication and request-validation failures
-remain non-2xx JSON responses. The OpenAPI document uses version 3.2 and describes
+`CommandStreamEvent`, identified by `event_kind`. Each completed delivery ends with
+one `CommandOutcomeEvent` with `event_kind="command_outcome"` and the `CommandOutcome`
+in its `outcome` field, after runtime cleanup and receipt persistence succeed.
+For Trunkline, direct and replayed feedback, refusals and agent activity use the
+channel's existing wire events before that terminal event. Clients render those
+channel events and use the terminal outcome for completion tracking, without
+displaying its content again. IM HTTP execution returns direct and replayed
+outcomes in the terminal event only. Stream failures close without a terminal outcome.
+A disconnect cancels execution. Trunkline's graph does not shield cleanup from
+external cancellation, so SDK shutdown and receipt persistence may be interrupted.
+Retrying the same delivery returns its saved outcome when present; Trunkline also
+presents any saved feedback through the channel. Agent activity is not replayed.
+Authentication and request-validation failures remain non-2xx JSON responses.
+The OpenAPI document uses version 3.2 and describes
 each SSE frame through `itemSchema`, with its JSON data contract in `contentSchema`.
-This endpoint does not yet supply gateway capabilities or a deferred-action presenter.
+Trunkline execution supplies gateway capabilities and a deferred-action presenter
+through Reflex; IM HTTP execution does not yet supply them.
 
 `prefix` filters command names case-insensitively without changing the cached
 catalog. A nonmatching prefix returns an empty ready catalog when discovery
@@ -266,7 +275,8 @@ run's gateway session to validation, and its suspender and capabilities to execu
 when available. Direct adapter errors
 become failed outcomes; cancellation and stream errors propagate to the caller.
 Direct outcomes are saved before being yielded. Streams record completion only
-after full consumption and cleanup; interruption or failure records a failed outcome.
+after full consumption and cleanup; interruption or failure records a failed outcome
+if cleanup completes.
 Repeated streamed deliveries return that status, without replaying events. Stream
 consumers still own event presentation and native run history. A failed receipt write
 prevents dispatch; a failed outcome write leaves the receipt to prevent re-execution.

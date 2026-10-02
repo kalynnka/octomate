@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import httpx
 import pytest
@@ -14,20 +15,27 @@ from jsonschema import Draft202012Validator, ValidationError
 from pydantic import JsonValue, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
+    ModelRequest,
+    ModelResponse,
     PartDeltaEvent,
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ToolCallPart,
     UnknownCustomEvent,
+    UserPromptPart,
 )
 from pydantic_ai.result import FinalResult
+from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.types import Message, Scope
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.auth import current_user
+from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
+    ActionBatchEvent,
     CommandOutcomeEvent,
     CommandStreamEvent,
     MessageSentEvent,
@@ -41,6 +49,7 @@ from octomate.database import async_session
 from octomate.dependencies import workspace_manager
 from octomate.managers.auth import AuthManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandDescriptor,
@@ -50,7 +59,7 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import TextSegment
+from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
@@ -117,7 +126,11 @@ async def user(in_memory_engine: AsyncEngine) -> User:
 
 
 @pytest.fixture
-def address() -> ChannelAddress:
+def address(request: pytest.FixtureRequest, user: User) -> ChannelAddress:
+    if getattr(request, "param", "im") == "trunkline":
+        return ChannelAddress(
+            "trunkline", "thread", str(user.id), str(user.id), "topic"
+        )
     return ChannelAddress("im", "thread", "group", "alice", "topic", shared=True)
 
 
@@ -127,11 +140,18 @@ def agent() -> ExecutingAgent:
 
 
 @pytest.fixture
-async def app(user: User, agent: DiscoveringAgent) -> Octomate:
+async def app(user: User, agent: DiscoveringAgent, address: ChannelAddress) -> Octomate:
     app = Octomate()
     agent.commands = app.commands
     app.connect(agent)
     app.connect(FakeChannelTentacle(octomate=app))
+    if address.channel_tentacle_id == "trunkline":
+        trunkline = app.connect(
+            TrunklineTentacle(
+                "trunkline", app, config=TrunklineChannelConfig(agents=[agent.id])
+            )
+        )
+        trunkline.self_profile = await trunkline.ink.inspect()
     app.dependency_overrides[current_user] = lambda: user
     return app
 
@@ -636,10 +656,12 @@ def command_body(
     }
 
 
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
 async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     app: Octomate,
     agent: ExecutingAgent,
     command_body: dict[str, JsonValue],
+    address: ChannelAddress,
 ) -> None:
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -655,11 +677,12 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
             json=command_body,
         )
     assert response.headers["cache-control"] == "no-store"
-    assert command_events(response) == [
-        CommandOutcomeEvent(
-            outcome=CommandResult(segments=[TextSegment(data={"text": "Done"})])
-        )
-    ]
+    segments: list[MessageSegment] = [TextSegment(data={"text": "Done"})]
+    outcome = CommandOutcomeEvent(outcome=CommandResult(segments=segments))
+    expected: list[CommandStreamEvent] = [outcome]
+    if address.channel_tentacle_id == "trunkline":
+        expected.insert(0, MessageSentEvent(segments=segments))
+    assert command_events(response) == expected
     assert command_events(replay) == command_events(response)
     assert agent.invocations == [
         CommandInvocation(command_id="skill", arguments='  "raw argument"\n--flag=✓  ')
@@ -699,12 +722,14 @@ async def test_http_execution_rejects_invalid_intent_before_dispatch(
 
 
 @pytest.mark.parametrize("refusal", ["unknown", "busy", "composer", "other_user"])
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
 async def test_http_execution_uses_manager_refusals(
     app: Octomate,
     agent: ExecutingAgent,
     conversation: Conversation,
     command_body: dict[str, JsonValue],
     refusal: str,
+    address: ChannelAddress,
 ) -> None:
     if refusal == "unknown":
         command_body["command_id"] = "removed"
@@ -723,32 +748,57 @@ async def test_http_execution_uses_manager_refusals(
             json=command_body,
         )
     events = command_events(response)
-    assert len(events) == 1
-    assert isinstance(events[0], CommandOutcomeEvent)
-    assert events[0].outcome.status == {
+    outcome = events[-1]
+    assert isinstance(outcome, CommandOutcomeEvent)
+    assert isinstance(outcome.outcome, CommandError)
+    assert outcome.outcome.status == {
         "composer": "unavailable",
         "other_user": "unavailable",
     }.get(refusal, refusal)
+    expected: list[CommandStreamEvent] = [outcome]
+    if address.channel_tentacle_id == "trunkline":
+        expected.insert(
+            0,
+            MessageSentEvent(
+                segments=[TextSegment(data={"text": outcome.outcome.message})]
+            ),
+        )
+    assert events == expected
     assert not agent.invocations
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
 
 
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
 async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     app: Octomate,
     agent: ExecutingAgent,
     conversation: Conversation,
     command_body: dict[str, JsonValue],
     monkeypatch: pytest.MonkeyPatch,
+    address: ChannelAddress,
+    user: User,
 ) -> None:
+    result = AgentRunResult[ChannelOutput]("Done")
+
     async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
+        await app.conversations.record_agent_run(
+            conversation,
+            result.run_id,
+            [
+                ModelRequest(parts=[UserPromptPart(content="/review")]),
+                ModelResponse(parts=[TextPart(content="Done")]),
+            ],
+        )
         yield MessageSentEvent(segments=[TextSegment(data={"text": "Running"})])
         yield FinalResult("Done", None, None)
-        yield AgentRunResultEvent(AgentRunResult("Done"))
+        yield AgentRunResultEvent(result)
         assert conversation.id in app.gateway.sessions
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
+    user_capabilities = AsyncMock(return_value=[])
+    monkeypatch.setattr(agent, "user_capabilities", user_capabilities)
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -774,6 +824,71 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert command_events(replay) == [received[-1]]
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions
+    if address.channel_tentacle_id == "trunkline":
+        user_capabilities.assert_awaited_once()
+        assert isinstance(agent.suspender, ReflexSuspender)
+        gateway = next(
+            cap
+            for cap in agent.capabilities or []
+            if isinstance(cap, GatewayCapability)
+        )
+        assert gateway.session.user_profile is not None
+        assert gateway.session.user_profile.user_id == user.id
+        thread = await app.threads.get(conversation.thread_id)
+        assert thread is not None
+        replies = [
+            message for message in thread.messages if message.direction == "outbound"
+        ]
+        assert len(replies) == 1
+        assert replies[0].message_text == "Done"
+        bound = await app.threads.related_model_messages(replies[0].id)
+        assert len(bound) == 1
+        assert bound[0].run_id == result.run_id
+
+
+@pytest.mark.parametrize("address", ["trunkline"], indirect=True)
+async def test_trunkline_command_streams_a_persisted_reflex_approval(
+    app: Octomate,
+    agent: ExecutingAgent,
+    conversation: Conversation,
+    command_body: dict[str, JsonValue],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests = DeferredToolRequests(
+        approvals=[ToolCallPart("write_file", {"path": "draft.txt"}, "write")]
+    )
+
+    async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
+        assert isinstance(agent.suspender, ReflexSuspender)
+        approval = await agent.suspender.suspend(requests)
+        assert approval is not None
+        yield approval
+        yield AgentRunResultEvent(AgentRunResult[ChannelOutput](requests))
+
+    agent.behavior = "stream_complete"
+    monkeypatch.setattr(agent, "events", events)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/commands/execute",
+            headers={"X-Octomate-Request": "1"},
+            json=command_body,
+        )
+    received = command_events(response)
+    assert isinstance(received[0], ActionBatchEvent)
+    assert len(received[0].approvals) == 1
+    batch = await app.deferred_actions.get_batch(uuid.UUID(received[0].batch_id))
+    assert batch.conversation_id == conversation.id
+    assert batch.run_name == "command"
+    assert batch.decision is not None
+    assert batch.decision.agent_id == agent.id
+    assert batch.decision.model == "test"
+    assert received[-1] == CommandOutcomeEvent(outcome=CommandResult())
+    assert len(agent.invocations) == 1
+    assert not agent.turns
+    assert not agent.streams
+    assert not app.gateway.sessions
 
 
 @pytest.mark.parametrize(
@@ -785,6 +900,19 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
         ("disconnect", True),
         ("cancel", True),
     ],
+)
+@pytest.mark.parametrize(
+    "address",
+    [
+        "im",
+        pytest.param(
+            "trunkline",
+            marks=pytest.mark.skip(
+                reason="External Reflex cancellation cleanup is deferred."
+            ),
+        ),
+    ],
+    indirect=True,
 )
 async def test_http_stream_interruption_closes_runtime_and_records_failure(
     app: Octomate,
@@ -872,6 +1000,7 @@ async def test_http_stream_interruption_closes_runtime_and_records_failure(
     assert receipt.outcome.status == "failed"
 
 
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
 async def test_http_stream_failure_does_not_report_completion(
     app: Octomate,
     agent: ExecutingAgent,
@@ -898,6 +1027,7 @@ async def test_http_stream_failure_does_not_report_completion(
     assert receipt.outcome.status == "failed"
 
 
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
 async def test_http_execution_openapi_describes_intent_and_response_types(
     app: Octomate,
     agent: ExecutingAgent,
