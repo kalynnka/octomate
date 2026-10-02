@@ -7,3 +7,9 @@
 ::: octomate.tentacles.claude.catalog.ClaudeCommandDescriptor
 
 ::: octomate.tentacles.deepseek.catalog.DeepseekCommandDescriptor
+
+::: octomate.tentacles.deepseek.wire.CommandSuccess
+
+::: octomate.tentacles.deepseek.wire.CommandError
+
+::: octomate.tentacles.deepseek.wire.CommandExecutionValue

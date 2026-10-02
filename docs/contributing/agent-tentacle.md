@@ -11,9 +11,12 @@ there is no shared agent Ink base class or required method set. Codex owns one
 shared client, while Claude opens a client for each inspection or turn. Managers,
 approval decisions and persistence stay in the tentacle; operation callbacks pass
 through method arguments. Claude and Codex use this structure. `DeepseekInk` owns
-the shared Remote client's context and validates native command catalogs. The
-tentacle enters and exits Ink; other existing Remote operations still use
-`ink.client`. Inkling keeps its SDK ownership inline pending migration.
+the shared Remote client's context, validates native command catalogs, and executes
+command lines without attachments. Its execution result preserves native success
+and error variants, lifecycle IDs and source-event references; unmatched lines
+return `None` and Remote failures raise. The tentacle enters and exits Ink; other
+existing Remote operations still use `ink.client`. Inkling keeps its SDK ownership
+inline pending migration.
 
 Pass managers explicitly when constructing Claude and Codex tentacles. Their
 shared discovery and project lookup use the injected command, project and thread

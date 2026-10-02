@@ -23,7 +23,7 @@ from octomate_protocol.deepseek import (
     RpcResult,
 )
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
-from pydantic import HttpUrl, SecretStr
+from pydantic import HttpUrl, SecretStr, ValidationError
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
@@ -791,6 +791,23 @@ async def test_an_unknown_preset_is_refused_not_run_under(
     async with tentacle:
         with pytest.raises(AgentRunError, match="unknown preset"):
             await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+    assert not calls_of("session/prompt")
+
+
+@pytest.mark.parametrize("unmatched", [True, False])
+async def test_permission_command_must_match_and_return_a_complete_outcome(
+    monkeypatch: pytest.MonkeyPatch, unmatched: bool
+) -> None:
+    patch_gateway(monkeypatch)
+    FakeDeepseekApi.reset(turn_events())
+    FakeDeepseekApi.results["commands/execute"] = OkResult(
+        value=None if unmatched else {"commandId": "cmd-1"}
+    )
+    tentacle = _tentacle(FakeConversationManager())
+    async with tentacle:
+        with pytest.raises(AgentRunError if unmatched else ValidationError):
+            await tentacle.run("go", conversation_address=KEY, thread_id=_THREAD)
+    assert not calls_of("session/prompt")
 
 
 async def test_a_mid_turn_stream_error_persists_cancels_and_raises(

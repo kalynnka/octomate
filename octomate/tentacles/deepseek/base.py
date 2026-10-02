@@ -95,7 +95,6 @@ from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
     ApprovalRequestedFrame,
-    CommandExecutionValue,
     ModelCatalog,
     PermissionCatalog,
     QuestionRequestedFrame,
@@ -971,30 +970,18 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         )
                     # No permission RPC exists: the preset switches through the
                     # remotes-plane command, which opens no turn.
-                    executed = self.unwrap(
-                        await client.remote(
-                            "commands/execute",
-                            {
-                                "agentId": session_id,
-                                "line": f"/permission {permission_mode}",
-                                "submittedAttachments": [],
-                            },
-                        ),
-                        "commands/execute",
+                    execution = await self.ink.execute_command(
+                        session_id, f"/permission {permission_mode}"
                     )
-                    if executed is None:
+                    if execution is None:
                         raise AgentRunError(
                             "dsh has no /permission command, so the run's posture "
                             f"({permission_mode}) cannot be set"
                         )
-                    execution = CommandExecutionValue.model_validate(executed)
-                    if (
-                        execution.result is not None
-                        and execution.result.kind == "error"
-                    ):
+                    if execution.result.kind == "error":
                         raise AgentRunError(
                             f"dsh refused /permission {permission_mode}: "
-                            f"{execution.result.text or 'unknown preset'}"
+                            f"{execution.result.text}"
                         )
 
                     # Subscribe before prompting, so the turn's first frames cannot

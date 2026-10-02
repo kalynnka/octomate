@@ -106,8 +106,10 @@ inspection reloads it. Explicit refresh also reloads the registry.
 
 The contract is checked against `@deepseek-ai/dsh-commands` 0.1.7-rc.1 at
 [revision 46a7f68](https://github.com/deepseek-ai/deepseek-harness/blob/46a7f68b0922371ce7144b668b90e377d8e799f4/packages/interaction/commands/src/types.ts).
-Command execution, attachment submission and client-owned actions such as log
-export are not proxied yet; execution returns unsupported.
+The internal permission command uses Ink's typed execution result. A missing
+command, rejected preset or malformed result stops the run before prompting.
+User-facing command execution, attachment submission and client-owned actions such
+as log export are not proxied yet; the execution hook returns unsupported.
 
 ## Not yet
 

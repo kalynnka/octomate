@@ -12,6 +12,7 @@ from octomate.tentacles.deepseek.catalog import (
     command_descriptors_adapter,
 )
 from octomate.tentacles.deepseek.client import DeepseekApiClient
+from octomate.tentacles.deepseek.wire import CommandExecutionValue
 
 
 @dataclass
@@ -40,3 +41,23 @@ class DeepseekInk:
                 f"dsh commands/list failed: {result.error.message} ({result.error.code})"
             )
         return command_descriptors_adapter.validate_python(result.value)
+
+    async def execute_command(
+        self, session_id: str, line: str
+    ) -> CommandExecutionValue | None:
+        """Submit an exact command line without attachments.
+
+        None means no command matched. Matched success and command errors retain
+        their native outcome and lifecycle identity; Remote failures raise.
+        """
+        result = await self.client.remote(
+            "commands/execute",
+            {"agentId": session_id, "line": line, "submittedAttachments": []},
+        )
+        if isinstance(result, ErrResult):
+            raise AgentRunError(
+                f"dsh commands/execute failed: {result.error.message} ({result.error.code})"
+            )
+        if result.value is None:
+            return None
+        return CommandExecutionValue.model_validate(result.value)
