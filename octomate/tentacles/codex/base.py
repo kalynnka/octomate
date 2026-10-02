@@ -1447,7 +1447,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         # The public SDK cannot reset an auto reviewer back to the user.
         inputs = [UserInput(root=TextUserInput(type="text", text=prompt))]
-        turn = await client._client.turn_start(
+        turn, subscription = await client._client._start_turn(
             thread.id,
             prompt,
             params=TurnStartParams(
@@ -1463,8 +1463,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 personality=personality,
                 summary=summary,
             ),
+            for_handle=True,
         )
-        return AsyncTurnHandle(client, thread.id, turn.turn.id)
+        return AsyncTurnHandle(
+            client, thread.id, turn.turn.id, _subscription=subscription
+        )
 
     @contextlib.contextmanager
     def track_turn(

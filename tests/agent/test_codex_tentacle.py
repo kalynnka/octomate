@@ -976,7 +976,12 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         assert sandbox is Sandbox.workspace_write
         assert config == {"mcp_servers": {}}
         assert isinstance(client, FakeCodex)
-        client._client.turn_start = AsyncMock()
+        client._client._start_turn = AsyncMock(
+            return_value=(
+                SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
+                None,
+            )
+        )
         return FakeThread("thread-new"), "runtime-model"
 
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
@@ -2312,6 +2317,10 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
     tentacle = _tentacle(FakeConversationManager())
     client = AsyncCodex()
     client._client = AsyncMock()
+    client._client._start_turn.return_value = (
+        SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
+        Mock(),
+    )
     client._initialized = True
     thread = AsyncThread(client, "warm-thread")
     for approval, sandbox, reviewer, policy in (
@@ -2348,7 +2357,7 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
             personality=None,
             summary=None,
         )
-        params = client._client.turn_start.call_args.kwargs["params"]
+        params = client._client._start_turn.call_args.kwargs["params"]
         assert isinstance(params, TurnStartParams)
         assert params.thread_id == "warm-thread"
         assert params.approval_policy is not None
