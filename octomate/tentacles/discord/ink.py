@@ -30,6 +30,8 @@ from octomate.tentacles.feelers.output import IMMessageID
 from octomate.utils import strip_markdown
 
 type DiscordMessageable = discord.DMChannel | discord.TextChannel | discord.Thread
+# Where a new thread can start: a text channel's thread, or a forum's post.
+type DiscordParent = discord.TextChannel | discord.ForumChannel
 
 logger = logging.getLogger(__name__)
 
@@ -99,11 +101,18 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
             url=resource,
         )
 
-    async def resolve_messageable(self, channel_id: str) -> DiscordMessageable:
+    async def resolve_channel(
+        self, channel_id: str
+    ) -> discord.abc.GuildChannel | discord.abc.PrivateChannel | discord.Thread:
+        """The channel by id, from the client's cache or else the API."""
         snowflake = int(channel_id)
         channel = self.client.get_channel(snowflake)
         if channel is None:
             channel = await self.client.fetch_channel(snowflake)
+        return channel
+
+    async def resolve_messageable(self, channel_id: str) -> DiscordMessageable:
+        channel = await self.resolve_channel(channel_id)
         if not isinstance(
             channel,
             (discord.DMChannel, discord.TextChannel, discord.Thread),
@@ -219,7 +228,8 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
     async def suggest_addresses(
         self, address: ChannelAddress, source_address: ChannelAddress | None = None
     ) -> list[ChannelAddress]:
-        """Eligible text channels in the current conversation's server only."""
+        """Eligible text and forum channels in the current conversation's server
+        only. The source is a server channel, so whatever starts there is public."""
         if (
             source_address is None
             or source_address.channel_thread_id
@@ -244,16 +254,21 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
                 chat_id=str(channel.id),
                 shared=True,
             )
-            for channel in guild.text_channels
-            if self.thread_permissions(channel, member)
+            for channel in [*guild.text_channels, *guild.forums]
+            if self.barred(channel, member, private=False) is None
         ]
 
     async def list_addresses(
-        self, address: ChannelAddress, inside: str | None = None
+        self,
+        address: ChannelAddress,
+        inside: str | None = None,
+        *,
+        private: bool = False,
     ) -> list[ChannelAddress]:
-        """The servers the requester shares with the bot, then the channels the
-        requester sees in one, barred where a thread cannot start. Listing servers
-        looks membership up in each."""
+        """The servers the requester shares with the bot, then the text and forum
+        channels the requester sees in one, barred where a thread cannot start.
+        Listing servers looks membership up in each. A `private` landing in a text
+        channel is a private thread; a forum's post is always public."""
         user_id = int(address.user_id)
         if inside is None:
             guilds = self.client.guilds
@@ -277,29 +292,22 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
         if guild is None or member is None:
             raise ValueError("You and the bot do not share that Discord server.")
         listed: list[ChannelAddress] = []
-        for channel in guild.text_channels:
-            user = channel.permissions_for(member)
-            if not user.view_channel:
+        for channel in [*guild.text_channels, *guild.forums]:
+            if not channel.permissions_for(member).view_channel:
                 continue
             metadata: DiscordAddressMetadata = {
                 "name": channel.name,
                 "server": guild.name,
             }
-            if channel.type is not discord.ChannelType.text:
-                metadata["barred"] = "A thread starts only in a text channel."
-            elif not user.send_messages_in_threads:
-                metadata["barred"] = "You cannot post in threads here."
-            elif not channel.permissions_for(guild.me).view_channel:
-                metadata["barred"] = "The bot cannot see this channel."
-            elif not self.thread_permissions(channel, member):
-                metadata["barred"] = "The bot cannot start a thread here."
+            if (reason := self.barred(channel, member, private=private)) is not None:
+                metadata["barred"] = reason
             listed.append(
                 DiscordAddress(
                     channel_tentacle_id=address.channel_tentacle_id,
                     user_id=address.user_id,
                     chat_type="group",
                     chat_id=str(channel.id),
-                    shared=True,
+                    shared=not private or isinstance(channel, discord.ForumChannel),
                     metadata=metadata,
                 )
             )
@@ -312,76 +320,107 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
             member = member or await guild.fetch_member(user_id)
         return member
 
-    def thread_permissions(
-        self, channel: discord.TextChannel, member: discord.Member
-    ) -> bool:
-        """Both the requester and bot must be able to participate in the new thread."""
+    def barred(
+        self, channel: DiscordParent, member: discord.Member, *, private: bool
+    ) -> str | None:
+        """Why the requester and the bot cannot share a new thread in `channel`, or
+        None. A `private` thread in a text channel needs the bot to open private
+        threads; a forum's post is a message, and public whatever was asked."""
+        if channel.type not in {discord.ChannelType.text, discord.ChannelType.forum}:
+            return "A thread starts only in a text or forum channel."
         user = channel.permissions_for(member)
         bot = channel.permissions_for(channel.guild.me)
-        return (
-            channel.type is discord.ChannelType.text
-            and user.view_channel
-            and user.send_messages_in_threads
-            and bot.view_channel
-            and bot.send_messages
-            and bot.create_public_threads
-            and bot.send_messages_in_threads
-        )
+        if not user.view_channel or not user.send_messages_in_threads:
+            return "You cannot post in threads here."
+        if not bot.view_channel:
+            return "The bot cannot see this channel."
+        if isinstance(channel, discord.ForumChannel):
+            opens = bot.send_messages
+        elif private:
+            opens = bot.send_messages and bot.create_private_threads
+        else:
+            opens = bot.send_messages and bot.create_public_threads
+        if not opens or not bot.send_messages_in_threads:
+            if private and isinstance(channel, discord.TextChannel):
+                return "The bot cannot start a private thread here."
+            return "The bot cannot start a thread here."
+        return None
+
+    async def resolve_parent(self, channel_id: str) -> DiscordParent:
+        channel = await self.resolve_channel(channel_id)
+        if not isinstance(channel, (discord.TextChannel, discord.ForumChannel)):
+            raise TypeError(f"DiscordInk: channel {channel_id} cannot hold a thread")
+        return channel
 
     async def prepare_address(
-        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
     ) -> ChannelAddress:
         if (
             address.chat_type != "group"
             or not address.chat_id
             or address.channel_thread_id
         ):
-            raise ValueError("Discord requires a server text channel as parent.")
+            raise ValueError(
+                "Discord requires a server text or forum channel as parent."
+            )
         try:
-            destination = await self.resolve_messageable(address.chat_id)
-            if not isinstance(destination, discord.TextChannel):
-                raise ValueError("Discord requires a server text channel as parent.")
+            destination = await self.resolve_parent(address.chat_id)
             member = await destination.guild.fetch_member(int(address.user_id))
         except (discord.HTTPException, TypeError) as error:
             raise ValueError(
                 "The Discord parent or membership is inaccessible."
             ) from error
-        if not self.thread_permissions(destination, member):
-            raise ValueError("The requester or bot cannot use this Discord parent.")
-        return replace(address, shared=True)
+        if (reason := self.barred(destination, member, private=private)) is not None:
+            raise ValueError(reason)
+        return replace(
+            address,
+            shared=not private or isinstance(destination, discord.ForumChannel),
+        )
 
-    async def start_public_thread(
-        self, chat_id: str, hint_text: str, *, user_id: str | None = None
+    async def open_thread(
+        self,
+        chat_id: str,
+        hint_text: str,
+        *,
+        user_id: str | None = None,
+        private: bool = False,
     ) -> str:
-        """Create a public thread; recheck a supplied requester's membership and access."""
-        destination = await self.resolve_messageable(chat_id)
+        """Start a thread with the hint as its first message, and answer its id: a
+        public one off a message in a text channel, a `private` one only the
+        requester and the bot are in, or a post in a forum. A supplied requester's
+        membership and access are checked again."""
+        destination = await self.resolve_parent(chat_id)
         if user_id is not None:
-            if not isinstance(destination, discord.TextChannel):
-                raise ValueError(
-                    "The Discord destination is not a server text channel."
-                )
             member = await destination.guild.fetch_member(int(user_id))
-            if not self.thread_permissions(destination, member):
-                raise ValueError(
-                    "The requester or bot can no longer use this Discord channel."
-                )
-        if (
-            not isinstance(destination, discord.TextChannel)
-            or destination.type is not discord.ChannelType.text
-        ):
-            raise TypeError(
-                f"DiscordInk: channel {chat_id} cannot start a public thread"
-            )
-        opener = await destination.send(
-            content=hint_text,
-            allowed_mentions=discord.AllowedMentions(
-                everyone=False,
-                users=[],
-                roles=False,
-                replied_user=False,
-            ),
-            mention_author=False,
+            if (
+                reason := self.barred(destination, member, private=private)
+            ) is not None:
+                raise ValueError(reason)
+        elif private:
+            raise ValueError("A private thread needs the requester to add to it.")
+        mentions = discord.AllowedMentions(
+            everyone=False, users=[], roles=False, replied_user=False
         )
         thread_name = " ".join(strip_markdown(hint_text).split())[:100]
-        thread = await opener.create_thread(name=thread_name or "Octomate thread")
+        name = thread_name or "Octomate thread"
+        if isinstance(destination, discord.ForumChannel):
+            post = await destination.create_thread(
+                name=name, content=hint_text, allowed_mentions=mentions
+            )
+            return str(post.thread.id)
+        if private and user_id is not None:
+            thread = await destination.create_thread(
+                name=name, type=discord.ChannelType.private_thread, invitable=False
+            )
+            await thread.add_user(discord.Object(id=int(user_id)))
+            await thread.send(content=hint_text, allowed_mentions=mentions)
+            return str(thread.id)
+        opener = await destination.send(
+            content=hint_text, allowed_mentions=mentions, mention_author=False
+        )
+        thread = await opener.create_thread(name=name)
         return str(thread.id)

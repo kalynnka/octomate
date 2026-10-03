@@ -4,7 +4,8 @@ import asyncio
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from unittest.mock import Mock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import httpx
@@ -17,6 +18,7 @@ from octomate.tentacles.discord.schema import DiscordOutboundMessage
 from tests.channels.discord.fakes import (
     a_client_user,
     a_dm_channel,
+    a_forum_channel,
     a_guild,
     a_message,
     a_text_channel,
@@ -447,7 +449,7 @@ async def test_typing_request_does_not_block_agent_start_and_is_cancelled_on_exi
         await ink.__aexit__()
 
 
-async def test_start_public_thread_posts_safe_hint_and_bounds_the_name(
+async def test_open_thread_posts_safe_hint_and_bounds_the_name(
     client: discord.Client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -480,7 +482,7 @@ async def test_start_public_thread_posts_safe_hint_and_bounds_the_name(
     monkeypatch.setattr(discord.Message, "create_thread", create_thread)
     hint = f"# **Plan** {'word ' * 30}<@42>"
 
-    thread_id = await DiscordInk(client).start_public_thread(str(channel.id), hint)
+    thread_id = await DiscordInk(client).open_thread(str(channel.id), hint)
 
     assert thread_id == "500"
     assert sent_hints[0][0] == hint
@@ -492,15 +494,107 @@ async def test_start_public_thread_posts_safe_hint_and_bounds_the_name(
     assert "**" not in thread_names[0]
 
 
-async def test_start_public_thread_rejects_a_dm(
+async def test_open_thread_rejects_a_dm(
     client: discord.Client,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     channel = a_dm_channel()
     monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
 
-    with pytest.raises(TypeError, match="cannot start a public thread"):
-        await DiscordInk(client).start_public_thread(str(channel.id), "hint")
+    with pytest.raises(TypeError, match="cannot hold a thread"):
+        await DiscordInk(client).open_thread(str(channel.id), "hint")
+
+
+@pytest.mark.parametrize("bot_opens_private", [True, False])
+async def test_a_private_thread_holds_only_the_requester_and_the_bot(
+    client: discord.Client, monkeypatch: pytest.MonkeyPatch, bot_opens_private: bool
+) -> None:
+    channel = a_text_channel()
+    thread = a_thread(501, parent_id=channel.id, guild=channel.guild, private=True)
+    created: list[tuple[str, discord.ChannelType, bool]] = []
+    added: list[int] = []
+    sent: list[str | None] = []
+
+    async def create_thread(
+        destination: discord.TextChannel,
+        *,
+        name: str,
+        type: discord.ChannelType,
+        invitable: bool,
+    ) -> discord.Thread:
+        created.append((name, type, invitable))
+        return thread
+
+    async def add_user(self: discord.Thread, user: discord.abc.Snowflake) -> None:
+        added.append(user.id)
+
+    async def send(
+        self: discord.Thread,
+        content: str | None = None,
+        *,
+        allowed_mentions: discord.AllowedMentions,
+    ) -> discord.Message:
+        sent.append(content)
+        return a_message(thread)
+
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: channel)
+    monkeypatch.setattr(discord.Guild, "me", property(lambda self: Mock()))
+    monkeypatch.setattr(
+        discord.Guild, "fetch_member", AsyncMock(return_value=Mock(spec=discord.Member))
+    )
+    monkeypatch.setattr(
+        discord.TextChannel,
+        "permissions_for",
+        lambda self, who: discord.Permissions(
+            view_channel=True,
+            send_messages=True,
+            create_private_threads=bot_opens_private,
+            send_messages_in_threads=True,
+        ),
+    )
+    monkeypatch.setattr(discord.TextChannel, "create_thread", create_thread)
+    monkeypatch.setattr(discord.Thread, "add_user", add_user)
+    monkeypatch.setattr(discord.Thread, "send", send)
+    ink = DiscordInk(client)
+
+    if not bot_opens_private:
+        with pytest.raises(ValueError, match="cannot start a private thread"):
+            await ink.open_thread("400", "Continue here", user_id="100", private=True)
+        assert created == []
+        return
+    thread_id = await ink.open_thread(
+        "400", "Continue here", user_id="100", private=True
+    )
+
+    assert thread_id == "501"
+    assert created == [("Continue here", discord.ChannelType.private_thread, False)]
+    assert added == [100]
+    assert sent == ["Continue here"]
+
+
+async def test_a_forum_takes_a_post_that_opens_with_the_hint(
+    client: discord.Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    forum = a_forum_channel()
+    posts: list[tuple[str, str | None]] = []
+
+    async def create_thread(
+        destination: discord.ForumChannel,
+        *,
+        name: str,
+        content: str | None = None,
+        allowed_mentions: discord.AllowedMentions,
+    ) -> SimpleNamespace:
+        posts.append((name, content))
+        return SimpleNamespace(thread=a_thread(502, parent_id=forum.id))
+
+    monkeypatch.setattr(client, "get_channel", lambda channel_id: forum)
+    monkeypatch.setattr(discord.ForumChannel, "create_thread", create_thread)
+
+    thread_id = await DiscordInk(client).open_thread(str(forum.id), "Continue here")
+
+    assert thread_id == "502"
+    assert posts == [("Continue here", "Continue here")]
 
 
 REQUESTER = ChannelAddress("discord", "dm", "", "100")
@@ -585,7 +679,7 @@ async def test_the_top_level_lists_the_servers_the_requester_shares(
     ]
     assert sorted(servers.fetched) == [200, 201, 202]
     # A server is a place to open, never one a thread can land in.
-    with pytest.raises(ValueError, match="text channel"):
+    with pytest.raises(ValueError, match="text or forum channel"):
         await ink.prepare_address(listed[0])
 
 
@@ -637,6 +731,47 @@ async def test_a_barred_channel_says_which_side_cannot_use_it(
     listed = await DiscordInk(client).list_addresses(REQUESTER, "201")
 
     assert barred in listed[0].metadata.get("barred", "")
+
+
+async def test_a_private_listing_offers_private_threads_and_public_forum_posts(
+    client: discord.Client, servers: Servers, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A private conversation lands in a private thread wherever the bot can open
+    one; a forum's post is public whatever was asked, and says so."""
+    guild = client.get_guild(201)
+    assert guild is not None
+    forum = a_forum_channel(406, guild=guild)
+    forum.name = "ideas"
+    forum.position = 3
+    guild._channels[406] = forum
+    monkeypatch.setattr(
+        discord.ForumChannel, "permissions_for", discord.TextChannel.permissions_for
+    )
+    monkeypatch.setattr(
+        client, "get_channel", lambda channel_id: guild._channels.get(channel_id)
+    )
+    servers.bot[402] = discord.Permissions(
+        view_channel=True,
+        send_messages=True,
+        create_private_threads=True,
+        send_messages_in_threads=True,
+    )
+    ink = DiscordInk(client)
+
+    listed = await ink.list_addresses(REQUESTER, "201", private=True)
+
+    assert [
+        (one.chat_id, one.shared, one.metadata.get("barred")) for one in listed
+    ] == [
+        ("402", False, None),
+        ("403", False, "The bot cannot start a private thread here."),
+        ("405", False, "The bot cannot start a private thread here."),
+        ("406", True, None),
+    ]
+    assert not (await ink.prepare_address(listed[0], private=True)).shared
+    assert (await ink.prepare_address(listed[3], private=True)).shared
+    with pytest.raises(ValueError, match="cannot start a private thread"):
+        await ink.prepare_address(listed[1], private=True)
 
 
 @pytest.mark.parametrize("inside", ["202", "999", "general"])

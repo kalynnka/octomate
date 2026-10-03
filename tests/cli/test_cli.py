@@ -87,7 +87,9 @@ def test_install_preserves_existing_hooks_and_is_idempotent(tmp_path: Path) -> N
         "SessionEnd",
         "SubagentStart",
         "SubagentStop",
+        "PreToolUse",
     }
+    assert len(hooks["PreToolUse"]) == 1
 
 
 def test_the_installed_handler_carries_neither_credential_nor_host(
@@ -186,6 +188,10 @@ def test_install_adds_the_stream_launcher_on_prompt_submit_only(
     # The command names this install's own interpreter and launch script by absolute
     # path, and — the install pinned --url — the stream endpoint the hook URL implies.
     assert "ws://127.0.0.1:9999/hooks/claude/stream" in launcher["command"]
+    # The one PreToolUse is the teleport's, so no other tool call pays for a hook.
+    [teleport] = hooks["PreToolUse"]
+    assert teleport["matcher"] == "mcp__.*__gateway_teleport"
+    assert [str(EMIT_SCRIPT) in hook["command"] for hook in teleport["hooks"]] == [True]
 
 
 def test_install_replaces_a_launcher_left_by_an_older_install(tmp_path: Path) -> None:

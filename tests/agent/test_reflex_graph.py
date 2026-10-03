@@ -54,7 +54,7 @@ from octomate.reflex.nodes.resume_deferred import TELEPORT_DECLINED
 from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.awakes import (
     DeferredActionBatchResponse,
-    GatewayNativeSignal,
+    NativeGatewaySignal,
     UserMessageSignal,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -1548,7 +1548,7 @@ async def test_a_native_summon_signal_crosses_and_hands_off(
         action_manager=cast(DeferredActionManager, FakeActionManager()),
         gateway=GatewayManager(),
     )
-    signal = GatewayNativeSignal(
+    signal = NativeGatewaySignal(
         decision=SummonDecision(
             action="summon",
             agent_id="second",
@@ -2571,6 +2571,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     root = tmp_path / "inky"
     root.mkdir()
     (root / "readme.md").write_text("hello")
+    (root / ".gitignore").write_text(".env\nbuild/\n")
     workspaces = WorkspaceManager(
         projects=await a_registry(a_project(root)),
         mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
@@ -2589,6 +2590,9 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     thread = await threads.ensure(address, project=project)
     async with workspaces.open(thread.id, project) as workspace:
         (workspace.path / "work.md").write_text("unfinished")
+        (workspace.path / ".env").write_text("TOKEN=local")
+        (workspace.path / "build").mkdir()
+        (workspace.path / "build" / "out.js").write_text("built")
     agent = FakeAgent(
         id="other",
         reception_teleport="carrying on over there",
@@ -2632,6 +2636,12 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     assert carried is not None
     assert (carried / "work.md").read_text() == "unfinished"
     assert "work.md" in await run_git("status", "--porcelain", cwd=carried)
+    # An ignored file travels; an ignored directory is the next build's to make.
+    assert (carried / ".env").read_text() == "TOKEN=local"
+    assert not (carried / "build").exists()
+    # The source keeps its branch, and the landed thread works on one of its own.
+    branch = await run_git("rev-parse", "--abbrev-ref", "HEAD", cwd=carried)
+    assert branch.strip() == f"octomate/thread-{landed.id}"
     # The source is left as it was, in a tree of its own.
     assert workspaces.existing(thread.id) not in (None, carried)
     assert [cwd for _, cwd in agent.relocated] == [carried]

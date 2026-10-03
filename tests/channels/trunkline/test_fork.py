@@ -13,10 +13,12 @@ from fastapi import UploadFile
 from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
-from octomate.schemas.conversation import Conversation
+from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
+from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
@@ -267,13 +269,17 @@ async def test_fork_uses_the_threads_active_conversation(
     case.fork.assert_not_awaited()
 
 
+@pytest.mark.parametrize("asked_by", ["console", "session"])
 @pytest.mark.parametrize("destination", ["trunkline", "far"])
 async def test_native_teleport_imports_completed_history_before_resuming(
     case: ForkCase,
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
     destination: str,
+    asked_by: str,
 ) -> None:
+    """The console's teleport of a native thread and the native session's own
+    enter at the same thread and carry the same history."""
     app = case.tentacle.octomate
     app.connect(CodexTentacle("other-codex", app, config=case.tentacle.config))
     if destination == "far":
@@ -298,15 +304,36 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         for one in options["teleport"]["destinations"]
         if one["channel_tentacle_id"] == destination
     ]
-    response = await client.post(
-        f"{path}/teleport",
-        json={
-            "destination": address,
-            "hint": "Continue here",
-        },
-    )
-    assert "run_error" not in response.text, response.text
-    assert '"event_kind":"gateway"' in response.text
+    if asked_by == "console":
+        response = await client.post(
+            f"{path}/teleport",
+            json={
+                "destination": address,
+                "hint": "Continue here",
+            },
+        )
+        assert "run_error" not in response.text, response.text
+        assert '"event_kind":"gateway"' in response.text
+    else:
+        async with async_session() as session:
+            user = await session.get(User, case.owner_id)
+        assert user is not None
+        owner = await app.users.native_profile(CODEX_NATIVE_ID, user.username)
+        source = await app.thread_manager.get(case.source.thread_id)
+        assert owner is not None
+        assert source is not None
+        await app.kick(
+            NativeGatewaySignal(
+                decision=TeleportDecision(
+                    agent_id=case.tentacle.id,
+                    hint="Continue here",
+                    destination=ChannelAddress(**address),
+                ),
+                agent_id=CODEX_NATIVE_ID,
+                user_profile=owner,
+                source=source.key.address(owner.channel_user_id),
+            )
+        )
     listed = await app.thread_manager.list_threads(user_id=case.owner_id)
     [landed] = [
         thread for thread in listed if thread.channel_tentacle_id == destination

@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
+from octomate.schemas.triage import GatewayDecision, SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
 
 
@@ -44,26 +44,27 @@ class DeferredActionBatchResponse(BaseModel):
 
 
 @dataclass(frozen=True)
-class GatewayNativeSignal:
-    """A native session's summon or scheme, kicked as its own turn.
+class NativeGatewaySignal:
+    """A native session's own spell, kicked as its own turn.
 
-    A driven turn's decision is read off its Octomate session when the run ends; an
-    anonymous native session has no run in the graph, so the served spell hands its
+    A driven turn's decision is read off its Octomate session when the run ends; a
+    native session has no run in the graph, so the served spell hands its
     validated decision straight to the graph instead.
     """
 
-    decision: SummonDecision | SchemeDecision
+    decision: GatewayDecision
     # The native pseudo-channel the handoff is attributed to — its ledger `from` side.
     agent_id: str
     # The registry profile the native id is linked to; None when nobody claims it.
     user_profile: UserProfile | None
-    # Where the handoff came from: a pseudo-address on the native id, for the
-    # crossing announce to speak to and any failure to land back against.
+    # Where the spell came from: the session's own thread for a teleport, else a
+    # pseudo-address on the native id, for the crossing announce to speak to and
+    # any failure to land back against.
     source: ChannelAddress | None = None
 
 
 @dataclass(frozen=True)
-class GatewayThreadSignal:
+class DrivenGatewaySignal:
     """An authenticated, validated operation on an existing thread."""
 
     thread_id: uuid.UUID
@@ -76,6 +77,6 @@ class GatewayThreadSignal:
 type AwakeSignal = (
     UserMessageSignal
     | DeferredActionBatchResponse
-    | GatewayNativeSignal
-    | GatewayThreadSignal
+    | NativeGatewaySignal
+    | DrivenGatewaySignal
 )

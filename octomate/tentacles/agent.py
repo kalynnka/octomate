@@ -45,6 +45,7 @@ from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
@@ -302,13 +303,61 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         *,
         sender: UserProfile,
     ) -> Thread:
-        """Create an independent conversation on a new destination surface."""
-        raise NotImplementedError(
-            f"Agent {self.id!r} does not support conversation forking"
+        """Fork an owner's uploaded native history onto a new surface, as a
+        conversation this tentacle drives. The import is the runtime's own
+        `fork_transcript`; the checks and the thread around it are every runtime's."""
+        owner_id = sender.user_id
+        if owner_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only a root native session of this runtime can be forked")
+        threads = self.octomate.thread_manager
+        source_thread = await threads.get(
+            source.thread_id, with_messages=False, user_id=owner_id
+        )
+        if source_thread is None:
+            raise FileNotFoundError("No conversation")
+        if source.transcript_file_id is None:
+            raise ValueError("The session transcript has not been uploaded yet")
+        await self.octomate.files.get(source.transcript_file_id, owner_id=owner_id)
+        project = await self.octomate.projects.of(source_thread)
+        if project is not None and not await anyio.Path(project.root).is_dir():
+            project = None
+        thread = await threads.ensure(destination, project=project)
+        target = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=self.id
+        )
+        cwd = self.octomate.workspaces.open(thread.id, project).path
+        await self.fork_transcript(source, target, owner_id=owner_id, cwd=cwd)
+        return await threads.record_fork(
+            source, thread, sender=sender, title=source_thread.title
         )
 
     async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
         """Refuse unusable native history before a destination is created."""
+        if sender.user_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        await self.read_fork_transcript(source, owner_id=sender.user_id)
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: uuid.UUID
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """An owner's uploaded native history up to its latest whole turn, and that
+        turn — what a fork of it carries."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: uuid.UUID,
+        cwd: Path,
+    ) -> Conversation:
+        """Import an owner's native history into the empty `target`, as a session
+        this runtime resumes in `cwd`."""
         raise NotImplementedError(
             f"Agent {self.id!r} does not support conversation forking"
         )

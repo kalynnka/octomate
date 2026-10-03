@@ -19,10 +19,15 @@ class OperationAvailability(BaseModel):
 
 
 class ThreadOperations(BaseModel):
-    shared: bool = Field(
-        description="Whether anyone besides its user can read this conversation's "
-        "surface: what a client warns by before private history lands in a shared "
-        "place."
+    source: ChannelAddress | None = Field(
+        description="The surface this conversation is on. Its `shared`, against a "
+        "destination's, is what a client warns by before private history lands in "
+        "a shared place."
     )
     teleport: OperationAvailability
     summon: OperationAvailability
+    barred: dict[str, str] = Field(
+        default_factory=dict,
+        description="Connected channels where no conversation can land, keyed by "
+        "channel id, with why: shown to either operation, never picked.",
+    )

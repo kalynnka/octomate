@@ -4,6 +4,7 @@ import asyncio
 import gc
 import json
 from collections.abc import AsyncIterator, Callable
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
@@ -767,9 +768,7 @@ class BindingClaudeClient(FakeClaudeClient):
                     name="mcp__octomate__gateway_teleport",
                     input={
                         "hint": "into inky",
-                        "destination": TypeAdapter(ChannelAddress).dump_python(
-                            KEY, mode="json"
-                        ),
+                        "destination": asdict(KEY),
                         "new_thread": False,
                         "project": "inky",
                     },
@@ -830,9 +829,7 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     assert call.tool_name == "teleport"
     assert output.metadata[call.tool_call_id]["kind"] == "teleport"
     assert output.metadata[call.tool_call_id]["project"] == "inky"
-    assert output.metadata[call.tool_call_id]["destination"] == (
-        TypeAdapter(ChannelAddress).dump_json(KEY).decode()
-    )
+    assert output.metadata[call.tool_call_id]["destination"] == asdict(KEY)
     assert output.metadata[call.tool_call_id]["new_thread"] is False
     # Suspended through the one entry the graph resumes from, and recorded as far
     # as it got.

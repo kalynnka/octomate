@@ -9,13 +9,14 @@ They speak to it in memory, which is how a driven Claude run reaches it too.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from inspect import cleandoc
+from unittest.mock import AsyncMock
 
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from octomate_protocol.gateway import gateway_tool
-from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
@@ -24,9 +25,9 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.mcp.gateway import TELEPORT_RECORDED
+from octomate.mcp.gateway import NATIVE_TELEPORT_STARTED, TELEPORT_RECORDED
 from octomate.mcp.server import octomate_mcp
-from octomate.schemas.awakes import GatewayNativeSignal
+from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
@@ -91,13 +92,13 @@ async def a_native_call(
     OctomateSession,
     FakeChannelTentacle,
     FakeThreadManager,
-    list[GatewayNativeSignal],
+    list[NativeGatewaySignal],
 ]:
     """The gateway as the served endpoint builds it for one native call: no
     thread, no address, the session speaking for the registered user the
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
-    kicks: list[GatewayNativeSignal] = []
+    kicks: list[NativeGatewaySignal] = []
     await a_user("luhui", profiles={"im": "alice"} if linked else {})
     users = UserManager()
     channel = FakeChannelTentacle()
@@ -351,9 +352,7 @@ async def test_a_native_session_inspects_only_crossings(
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
     assert routes.data == "- (none)"
-    assert json.loads(places.data) == [
-        TypeAdapter(ChannelAddress).dump_python(ChannelAddress("im", "dm", "", "alice"))
-    ]
+    assert json.loads(places.data) == [asdict(ChannelAddress("im", "dm", "", "alice"))]
     assert (await session.operations).summon.destinations == [
         ChannelAddress("im", "dm", "", "alice")
     ]
@@ -391,6 +390,46 @@ async def test_a_native_teleport_is_refused_honestly(
         "Native teleport requires an uploaded thread; use Trunkline to select it."
     )
     assert kicks == []
+
+
+@pytest.mark.parametrize("named_by", ["argument", "meta"])
+async def test_a_native_teleport_moves_the_session_it_names(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, named_by: str
+) -> None:
+    """A native call names its own session — Claude Code through the argument
+    Octomate's hook stamps in, Codex in every call's `_meta` — and the move goes
+    ahead from that session's thread."""
+    server, session, _channel, _threads, kicks = await a_native_call()
+    thread = ChannelAddress(CLAUDE_NATIVE_ID, "thread", "sess-1", "native")
+    decision = TeleportDecision(agent_id="claude", hint="moving over")
+    attach = AsyncMock(
+        side_effect=lambda _: setattr(session, "conversation_address", thread)
+    )
+    monkeypatch.setattr(session, "attach_native_thread", attach)
+    monkeypatch.setattr(
+        session,
+        "teleport",
+        AsyncMock(side_effect=lambda **_: setattr(session, "decision", decision)),
+    )
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "gateway_teleport",
+            {"hint": "moving over"}
+            | ({"session_id": "sess-1"} if named_by == "argument" else {}),
+            meta={"threadId": "sess-1"} if named_by == "meta" else None,
+        )
+
+    attach.assert_awaited_once_with("sess-1")
+    assert kicks == [
+        NativeGatewaySignal(
+            decision=decision,
+            agent_id=CLAUDE_NATIVE_ID,
+            user_profile=session.user_profile,
+            source=thread,
+        )
+    ]
+    assert result.data == NATIVE_TELEPORT_STARTED
 
 
 async def test_a_native_send_here_is_refused(

@@ -14,6 +14,7 @@ import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
+from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -39,7 +40,7 @@ from claude_agent_sdk import (
     fork_session,
 )
 from claude_agent_sdk.types import SystemPromptPreset
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
@@ -76,6 +77,7 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
+from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
@@ -94,6 +96,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -109,7 +112,7 @@ from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.claude.transcript import relocate_session
+from octomate.tentacles.claude.transcript import relocate_session, transcripts_dir
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -242,6 +245,24 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
             await self.session_ingest.handle(event, sender)
+            teleport = gateway_tool(GatewayTool.TELEPORT)
+            if (
+                event.hook_event_name == "PreToolUse"
+                and event.tool_input is not None
+                and (event.tool_name or "").endswith(f"__{teleport}")
+            ):
+                # The served teleport finds the session's history by this id.
+                return JSONResponse(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "updatedInput": {
+                                **event.tool_input,
+                                "session_id": event.session_id,
+                            },
+                        }
+                    }
+                )
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
@@ -312,6 +333,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id, Path(hello.transcript_path), sender
         )
+        conversation = state.conversation
+        if conversation is None:
+            raise RuntimeError(f"session {hello.session_id} attached without a home")
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
@@ -331,6 +355,18 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 )
 
         relay = asyncio.create_task(relay_finalize())
+        # How much of the session file is kept, so the session can be forked onto
+        # another surface; only its owner's bytes, and only a registered owner's.
+        kept = (
+            (
+                await self.octomate.files.get(
+                    conversation.transcript_file_id, owner_id=sender.user_id
+                )
+            ).size
+            if conversation.transcript_file_id is not None
+            and sender.user_id is not None
+            else 0
+        )
         # Per-file contiguity: each line must start where the last one ended, so a
         # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
         # instead of a silently mis-assembled turn. The welcome's map, already sent,
@@ -366,6 +402,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 await self.session_tailer.feed_remote(
                     state, message.agent_id, message.line, message.start, message.end
                 )
+                if message.agent_id is None and sender.user_id is not None:
+                    kept = await self.keep_transcript(
+                        conversation, message, kept, owner_id=sender.user_id
+                    )
         except WebSocketDisconnect:
             pass
         except ValidationError:
@@ -386,6 +426,101 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     await websocket.close()
             else:
                 self.session_tailer.detach_remote(state)
+
+    async def keep_transcript(
+        self,
+        conversation: Conversation,
+        line: StreamLine,
+        kept: int,
+        *,
+        owner_id: uuid.UUID,
+    ) -> int:
+        """Append one session-file line to the native conversation's stored
+        transcript, and answer how far the stored bytes now reach.
+
+        A line already kept is skipped, as a reconnect resends the turn it was in.
+        One that does not start where the stored bytes end is not kept at all: the
+        file has to be the session's own bytes, or a fork of it would replay
+        something Claude never wrote.
+        """
+        data = line.line.encode() + b"\n"
+        if line.start != kept or len(data) != line.end - line.start:
+            return kept
+        await self.octomate.conversations.store_transcript(
+            UploadFile(
+                BytesIO(data),
+                filename=f"{conversation.external_id or conversation.id}.jsonl",
+                headers=Headers({"content-type": "application/jsonl"}),
+            ),
+            line.start,
+            conversation=conversation,
+            files=self.octomate.files,
+            owner_id=owner_id,
+        )
+        return line.end
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: uuid.UUID
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """The stored history up to the latest turn kept whole, and that turn."""
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only root native Claude Code sessions can be forked here")
+        if source.transcript_file_id is None or source.external_id is None:
+            raise ValueError("Native Claude Code history has not been uploaded")
+        data = await self.octomate.files.read(
+            source.transcript_file_id, owner_id=owner_id
+        )
+        completed = max(
+            (
+                run
+                for run in source.runs
+                if isinstance(run, ExternalAgentRun)
+                and run.external_session_id == source.external_id
+                and run.end_offset is not None
+                and run.end_offset <= len(data)
+            ),
+            key=lambda run: run.end_offset or 0,
+            default=None,
+        )
+        if completed is None or completed.end_offset is None:
+            raise ValueError("Native Claude Code history has no completed turn yet")
+        return data[: completed.end_offset], completed
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: uuid.UUID,
+        cwd: Path,
+    ) -> Conversation:
+        """Lay the kept history where `cwd` files Claude's sessions and fork it there
+        with fresh message ids, for this tentacle to resume; the staged copy goes."""
+        conversations = self.octomate.conversations
+        async with conversations.lock(target.key):
+            target = await conversations.get(target.id)
+            if target.messages or target.external_id:
+                raise ValueError("Transcript imports require an empty target")
+            if source.external_id is None:
+                raise ValueError("Native Claude Code history has not been uploaded")
+            data, completed = await self.read_fork_transcript(source, owner_id=owner_id)
+            staged = transcripts_dir(cwd) / f"{source.external_id}.jsonl"
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            staged.write_bytes(data)
+            try:
+                forked = await asyncio.to_thread(
+                    fork_session, source.external_id, str(cwd)
+                )
+            finally:
+                staged.unlink()
+            await conversations.fork(
+                source,
+                target,
+                external_id=forked.session_id,
+                model_name=completed.model_name,
+                permission_mode=completed.permission_mode,
+            )
+            return await conversations.get(target.id)
 
     async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
         """Fork Claude's transcript without changing the source session."""

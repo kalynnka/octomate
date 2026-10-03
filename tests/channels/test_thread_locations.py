@@ -1,9 +1,11 @@
 """Discovery suggests addresses; channel preparation validates them independently."""
 
+import json
+from dataclasses import asdict
 from unittest.mock import AsyncMock
 
 import pytest
-from pydantic import SecretStr, TypeAdapter
+from pydantic import SecretStr
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -66,8 +68,9 @@ async def test_linked_dm_is_discovered_without_opening(platform: str) -> None:
     address = ChannelAddress(platform, "dm", "", "alice")
     assert await ink.suggest_addresses(address) == [address]
     assert await ink.prepare_address(address) == address
+    # Only the default DM: another one is somebody else's, or not this bot's.
     with pytest.raises(ValueError, match="current chat"):
-        await ink.prepare_address(ChannelAddress(platform, "group", "unknown", "alice"))
+        await ink.prepare_address(ChannelAddress(platform, "dm", "another", "alice"))
 
 
 async def test_trunkline_address_uses_registered_identity_from_any_channel() -> None:
@@ -149,7 +152,9 @@ async def test_listing_uses_the_linked_identity(
         )
     listing.assert_not_awaited()
     await channel.list_addresses(profile, "200")
-    listing.assert_awaited_once_with(ChannelAddress("chat", "dm", "", "alice"), "200")
+    listing.assert_awaited_once_with(
+        ChannelAddress("chat", "dm", "", "alice"), "200", private=False
+    )
 
 
 def test_metadata_and_a_channel_subclass_leave_the_address_the_same() -> None:
@@ -166,11 +171,11 @@ def test_metadata_and_a_channel_subclass_leave_the_address_the_same() -> None:
     assert plain == named
     assert {plain, named} == {plain}
     assert named != ChannelAddress("discord", "group", "401", "100", shared=True)
-    stored = TypeAdapter(ChannelAddress).dump_json(named)
-    assert TypeAdapter(ChannelAddress).validate_json(stored).metadata == named.metadata
+    stored = json.dumps(asdict(named))
+    assert ChannelAddress(**json.loads(stored)).metadata == named.metadata
     # An address written before the field existed still reads.
     legacy = '{"channel_tentacle_id":"discord","chat_type":"dm","chat_id":"","user_id":"100"}'
-    assert TypeAdapter(ChannelAddress).validate_json(legacy).metadata == {}
+    assert ChannelAddress(**json.loads(legacy)).metadata == {}
 
 
 def test_a_channel_tells_who_can_read_a_thread_from_its_address() -> None:

@@ -233,10 +233,10 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
     async def start_thread(self, address: ChannelAddress, hint: str) -> ChannelAddress:
         if not self.accepts_sub_thread(address):
             raise ValueError(
-                "Discord requires a server text channel to create a thread."
+                "Discord requires a server text or forum channel to create a thread."
             )
-        thread_id = await self.ink.start_public_thread(
-            address.chat_id, hint, user_id=address.user_id
+        thread_id = await self.ink.open_thread(
+            address.chat_id, hint, user_id=address.user_id, private=not address.shared
         )
         return replace(address, chat_type="thread", channel_thread_id=thread_id)
 
@@ -250,9 +250,22 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
     ) -> ChannelAddress:
         if address.chat_type != "group":
             return await super().start_sub_thread(address, hint_text)
-        thread_id = await self.ink.start_public_thread(
+        thread_id = await self.ink.open_thread(
             address.chat_id or address.user_id,
             hint_text,
             user_id=address.user_id,
+            private=not address.shared,
         )
         return replace(address, chat_type="thread", channel_thread_id=thread_id)
+
+    def is_shared(self, address: ChannelAddress) -> bool:
+        """A private thread is read only by those in it; known from the client's
+        cache, so one the bot no longer holds is taken for shared."""
+        if address.channel_thread_id:
+            thread = self.ink.client.get_channel(int(address.channel_thread_id))
+            if (
+                isinstance(thread, discord.Thread)
+                and thread.type is discord.ChannelType.private_thread
+            ):
+                return False
+        return super().is_shared(address)

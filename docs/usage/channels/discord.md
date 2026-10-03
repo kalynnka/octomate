@@ -13,8 +13,8 @@ In the [Developer Portal](https://discord.com/developers/applications):
 2. Under **Privileged Gateway Intents**, enable **Message Content**. Presence and
    Server Members stay off.
 3. Under **OAuth2 → URL Generator**, select the `bot` scope with View Channels,
-   Send Messages, Create Public Threads, Send Messages in Threads, Attach Files and
-   Read Message History. Open the generated URL to add the bot to your server.
+   Send Messages, Create Public Threads, Create Private Threads, Send Messages in
+   Threads, Attach Files and Read Message History. Open the generated URL to add the bot to your server.
 4. **Bot → Token** is `bot_token`.
 
 ## Configure
@@ -44,18 +44,27 @@ the bot in a server text channel and verify that it replies in a new thread.
 |---|---|---|
 | A text channel message | A group chat room | A new public thread under a message the bot posts |
 | A message in a thread | That thread | In the thread |
+| A message in a private thread | That thread, private to its members | In the thread |
 | A DM | A direct message | In the DM |
 
 Discord is the one platform where replying to a bot message counts as addressing
 it, so `mention_only` accepts a mention **or** a reply. Once an agent owns a thread,
-messages there need neither. Sub-threads are created from a text channel only,
-public, named from the hint.
+messages there need neither. A chat room's sub-threads are public, opened from a
+message the bot posts and named from the hint.
 
-From a server text channel, Summon lists eligible text channels in that same
-server. Teleport keeps shared history under the current text-channel address. Your account must be able to view and send
-messages in threads, and the bot must be able to view, send and create public
-threads. Membership and permissions are checked again when a named destination
-opens. Suggestions never scan other servers. Without a server context, including
+A conversation moved or handed to Discord lands in a text or forum channel. From a
+conversation only you can read, a text channel opens a private thread holding you
+and the bot, so the history stays private; server moderators who can manage
+threads can still see it. From a shared conversation the thread is public. A forum
+channel always takes a public post, opened with the hint. A message from a private
+thread reads as private, so it can teleport like a DM.
+
+From a server text channel, Summon lists eligible text and forum channels in that
+same server. Teleport keeps shared history under the current text-channel address.
+Your account must be able to view the channel and send messages in threads. The bot
+must be able to view and send there, send in threads, and create public or private
+threads for the thread it opens. Membership and permissions are checked again when
+a named destination opens. Suggestions never scan other servers. Without a server context, including
 entry from Trunkline, Discord suggests no parent addresses. DMs and existing threads
 also offer no new sub-thread locations.
 
@@ -67,11 +76,11 @@ each server the bot is in, and happens only when the Discord level is opened. It
 is served by the
 [thread operation API](trunkline.md#thread-operation-api).
 
-Teleport and Summon can target a known text channel directly with a connected channel ID
+Teleport and Summon can target a known text or forum channel directly with a connected channel ID
 and the text-channel ID in the address's `chat_id`, including from a private conversation on another platform.
 The channel validates that parent without enumerating servers and rechecks access before
 posting. The requesting user needs a linked Discord profile. This accepts text
-channels only, not a guild ID, DM, existing thread or forum channel. See
+and forum channels only, not a guild ID, DM or existing thread. See
 [Teleport](../gateway.md#teleport) for the address contract. An empty `chat_id` is
 refused: Discord has no default isolated thread destination.
 
@@ -112,7 +121,7 @@ linking works without any of this.
 
 ## Limits
 
-- Private threads, voice, reactions, slash commands and embeds are out of scope.
-- Only default messages and replies from server text channels, public threads and
-  DMs are read; system messages, webhooks and other bots are ignored.
+- Voice, reactions, slash commands and embeds are out of scope.
+- Only default messages and replies from server text channels, threads and DMs
+  are read; system messages, webhooks and other bots are ignored.
 - Inbound image attachments are downloaded; other attachment types are not.

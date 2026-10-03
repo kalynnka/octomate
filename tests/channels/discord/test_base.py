@@ -305,6 +305,28 @@ async def test_message_listener_logs_an_escaped_ingest_failure(
     assert "failed on 700" in caplog.text
 
 
+@pytest.mark.parametrize(
+    ("cached", "shared"), [("private", False), ("public", True), (None, True)]
+)
+def test_a_private_thread_is_read_by_its_members_only(
+    config: DiscordChannelConfig,
+    monkeypatch: pytest.MonkeyPatch,
+    cached: str | None,
+    shared: bool,
+) -> None:
+    channel = DiscordTentacle("discord-main", Octomate(), config=config)
+    thread = a_thread(501, private=cached == "private") if cached is not None else None
+    monkeypatch.setattr(channel.ink.client, "get_channel", lambda channel_id: thread)
+
+    assert (
+        channel.is_shared(
+            ChannelAddress(channel.id, "thread", "400", "100", channel_thread_id="501")
+        )
+        is shared
+    )
+    assert not channel.is_shared(ChannelAddress(channel.id, "dm", "300", "100"))
+
+
 async def test_start_sub_thread_creates_a_public_thread_for_a_group(
     config: DiscordChannelConfig,
     monkeypatch: pytest.MonkeyPatch,
@@ -312,13 +334,18 @@ async def test_start_sub_thread_creates_a_public_thread_for_a_group(
     channel = DiscordTentacle("discord-main", Octomate(), config=config)
     calls: list[tuple[str, str, str | None]] = []
 
-    async def start_public_thread(
-        chat_id: str, hint_text: str, *, user_id: str | None = None
+    async def open_thread(
+        chat_id: str,
+        hint_text: str,
+        *,
+        user_id: str | None = None,
+        private: bool = False,
     ) -> str:
         calls.append((chat_id, hint_text, user_id))
+        assert private is False
         return "500"
 
-    monkeypatch.setattr(channel.ink, "start_public_thread", start_public_thread)
+    monkeypatch.setattr(channel.ink, "open_thread", open_thread)
     address = ChannelAddress(
         channel_tentacle_id=channel.id,
         chat_type="group",
@@ -354,7 +381,7 @@ async def test_start_sub_thread_uses_base_fallback_for_dm_and_thread(
         raise AssertionError((chat_id, hint_text))
 
     monkeypatch.setattr(channel.feelers.markdown, "present", present)
-    monkeypatch.setattr(channel.ink, "start_public_thread", reject_public_thread)
+    monkeypatch.setattr(channel.ink, "open_thread", reject_public_thread)
     addresses = [
         ChannelAddress(
             channel_tentacle_id=channel.id,
@@ -444,6 +471,7 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
     )
     resolve = AsyncMock(return_value=channel)
     monkeypatch.setattr(tentacle.ink, "resolve_messageable", resolve)
+    monkeypatch.setattr(tentacle.ink, "resolve_parent", AsyncMock(return_value=channel))
     assert await tentacle.suggest_addresses(profile) == []
     assert (
         await tentacle.suggest_addresses(
@@ -462,7 +490,7 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
     destinations = await tentacle.suggest_addresses(profile, source_address)
     if denied:
         assert destinations == []
-        with pytest.raises(ValueError, match=r"inaccessible|cannot use"):
+        with pytest.raises(ValueError, match=r"inaccessible|cannot"):
             await tentacle.prepare_address(source_address)
         return
     destination, alternative = destinations
@@ -491,27 +519,25 @@ async def test_gateway_destinations_check_discord_membership_and_permissions(
     fetch_member.assert_awaited_once_with(100)
     # Access is rechecked at execution, after the menu was opened.
     allowed.create_public_threads = False
-    with pytest.raises(ValueError, match="no longer use"):
+    with pytest.raises(ValueError, match="cannot start a thread"):
         await tentacle.start_thread(parent, "Continue here")
-    with pytest.raises(ValueError, match="no longer use"):
+    with pytest.raises(ValueError, match="cannot start a thread"):
         await tentacle.start_sub_thread(parent, "Continue here")
     sent.assert_awaited_once()
     opened.assert_awaited_once()
 
 
-@pytest.mark.parametrize("surface", ["dm", "thread", "forum"])
-async def test_explicit_discord_parent_refuses_non_text_channels(
+@pytest.mark.parametrize("surface", ["dm", "thread"])
+async def test_explicit_discord_parent_refuses_what_cannot_hold_a_thread(
     monkeypatch: pytest.MonkeyPatch, surface: str
 ) -> None:
     ink = DiscordInk(discord.Client(intents=discord.Intents.none()))
-    resolve = AsyncMock(return_value=a_dm_channel() if surface == "dm" else a_thread())
-    if surface == "forum":
-        resolve.side_effect = TypeError("Forum channels cannot carry messages")
-    monkeypatch.setattr(ink, "resolve_messageable", resolve)
+    channel = a_dm_channel() if surface == "dm" else a_thread()
+    monkeypatch.setattr(ink.client, "get_channel", lambda channel_id: channel)
     fetch = AsyncMock()
     monkeypatch.setattr(discord.Guild, "fetch_member", fetch)
 
-    with pytest.raises(ValueError, match=r"text channel|inaccessible"):
+    with pytest.raises(ValueError, match="inaccessible"):
         await ink.prepare_address(ChannelAddress("discord", "group", "400", "100"))
 
     fetch.assert_not_awaited()

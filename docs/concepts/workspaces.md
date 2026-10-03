@@ -149,8 +149,13 @@ the move, because a thread that bound and then could not check out would be stuc
 A teleport that names no project out of a thread that has one carries it. The
 source's tree is snapshotted and its snapshot filed under the landed thread's ref
 as well, so the landed thread's first fork resumes into it the way a pruned
-workspace does: on the same branch, with uncommitted work still uncommitted. The
-two threads then save to their own refs and share nothing.
+workspace does, with uncommitted work still uncommitted. A source on its own
+thread branch hands the landed thread a branch of its own at the same commit, so
+the two never push one branch; a branch the agent chose is kept. Ignored files,
+such as an `.env`, are copied across, since a snapshot never holds them; ignored
+directories are not, being dependencies and build output that the fork's install
+and the next build make again. The two threads then save to their own refs and
+share nothing.
 
 ## The chat workspace
 

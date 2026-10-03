@@ -119,13 +119,21 @@ def main(url: str, token: str | None) -> int:
         },
     )
     try:
-        urllib.request.urlopen(request, timeout=HOOK_TIMEOUT).close()
+        with urllib.request.urlopen(request, timeout=HOOK_TIMEOUT) as response:
+            answer = response.read().decode()
     except (urllib.error.URLError, OSError) as error:
         # Report and get out of the way. A session is a person's own work, and Octomate
         # only observes it; an ingest that cannot deliver must not take the turn down
         # with it.
         print(f"octomate: hook delivery to {url} failed: {error}", file=sys.stderr)
         return 1
+    if (
+        payload.hook_event_name == "PreToolUse"
+        and urlsplit(url).path != CODEX_HOOK_PATH
+    ):
+        # Claude reads a PreToolUse hook's stdout as its decision: the router's answer
+        # is the call's input with its session stamped in.
+        print(answer)
     return 0
 
 

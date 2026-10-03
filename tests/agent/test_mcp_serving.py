@@ -13,6 +13,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import asdict
 from typing import Literal, Self
 
 import httpx
@@ -48,7 +49,7 @@ from octomate.mcp.server import (
     history_tool,
     octomate_instructions,
 )
-from octomate.schemas.awakes import GatewayNativeSignal
+from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.mcp import OAuthMcpTentacle
@@ -433,9 +434,7 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
                 {
                     "agent_id": "other",
                     "model": "test",
-                    "destination": TypeAdapter(ChannelAddress).dump_python(
-                        destination, mode="json"
-                    ),
+                    "destination": asdict(destination),
                     "hint": "Working on it",
                     "reason": "the operator asked",
                     "summon": "Please take this up.",
@@ -446,7 +445,7 @@ async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
     assert result.data == f"Summoning other (test) → {destination}."
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
-    assert isinstance(signal, GatewayNativeSignal)
+    assert isinstance(signal, NativeGatewaySignal)
     assert signal.agent_id == CLAUDE_NATIVE_ID
     # The handoff carries who the bearer named, so the summoned run knows whose
     # behalf it was asked on.

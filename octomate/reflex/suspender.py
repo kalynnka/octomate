@@ -6,7 +6,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 
-from pydantic import TypeAdapter
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
@@ -53,19 +52,18 @@ class TeleportRequest:
     def of(cls, requests: DeferredToolRequests) -> TeleportRequest | None:
         """The teleport these requests carry, deferred or awaiting approval."""
         for call in [*requests.calls, *requests.approvals]:
-            meta: JsonObject = requests.metadata.get(call.tool_call_id, {})
+            meta = requests.metadata.get(call.tool_call_id, {})
             if meta.get("kind") != TELEPORT_DEFER_KIND:
                 continue
-            destination = str(meta.get("destination") or "")
+            destination = meta.get("destination")
             return cls(
                 tool_call_id=call.tool_call_id,
                 hint=str(meta.get("hint") or ""),
                 new_thread=bool(meta.get("new_thread", True)),
                 project=str(meta.get("project") or "") or None,
                 ref=str(meta.get("ref") or "") or None,
-                destination=TypeAdapter(ChannelAddress).validate_json(destination)
-                if destination
-                else None,
+                # The address validates itself, being a pydantic dataclass.
+                destination=ChannelAddress(**destination) if destination else None,
             )
         return None
 

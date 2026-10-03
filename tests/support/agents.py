@@ -18,14 +18,13 @@ from collections.abc import (
     Callable,
     Sequence,
 )
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import ClassVar, cast
 
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from claude_agent_sdk.types import Message as ClaudeMessage
 from octomate_protocol.gateway import GatewayTool
-from pydantic import TypeAdapter
 from pydantic_ai import (
     AgentCapability,
     AgentRunResult,
@@ -104,8 +103,7 @@ def _teleport_requests(
             "call_teleport": {
                 "kind": TELEPORT_DEFER_KIND,
                 "hint": hint,
-                "destination": TypeAdapter(ChannelAddress)
-                .dump_json(
+                "destination": asdict(
                     ChannelAddress(
                         channel_tentacle_id=destination,
                         chat_type="dm",
@@ -113,9 +111,8 @@ def _teleport_requests(
                         user_id="ou_alice",
                     )
                 )
-                .decode()
                 if crossing
-                else "",
+                else None,
                 "new_thread": destination != "here",
                 "project": project or "",
                 "ref": "",

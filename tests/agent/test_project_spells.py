@@ -14,14 +14,13 @@ turn is out of the tree.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import cast
 
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
-from pydantic import TypeAdapter
 from pydantic_ai import CallDeferred, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -320,9 +319,7 @@ async def test_inkling_defers_the_move_for_the_graph_to_perform(tmp_path: Path) 
     assert deferred.value.metadata == {
         "kind": "teleport",
         "hint": "into inky",
-        "destination": TypeAdapter(ChannelAddress)
-        .dump_json(harness.session.conversation_address)
-        .decode(),
+        "destination": asdict(harness.session.conversation_address),
         "new_thread": False,
         "project": "inky",
         "ref": "",

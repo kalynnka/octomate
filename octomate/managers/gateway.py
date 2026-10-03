@@ -15,20 +15,20 @@ from __future__ import annotations
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
 from octomate_protocol.gateway import GatewayTool
 
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
-from octomate.schemas.awakes import GatewayNativeSignal, GatewayThreadSignal
+from octomate.schemas.awakes import DrivenGatewaySignal, NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.operations import (
     OperationAvailability,
     ThreadOperations,
 )
-from octomate.schemas.thread import ATTRIBUTABLE_KINDS
+from octomate.schemas.thread import ATTRIBUTABLE_KINDS, ThreadKey
 from octomate.schemas.triage import (
     DIRECT_TARGET,
     AgentRoute,
@@ -176,6 +176,13 @@ class OctomateSession:
             return "no_user"
         return None
 
+    @property
+    def lands_privately(self) -> bool:
+        """Whether a landing should open so only its user can read it: this
+        conversation is theirs alone, and moving it should not change that."""
+        source = self.conversation_address
+        return source is not None and not source.shared
+
     async def destinations(self) -> list[ChannelAddress]:
         """Cache optional address suggestions; execution validates its address independently."""
         if self.destination_cache is not None:
@@ -220,7 +227,17 @@ class OctomateSession:
                 addresses.append(ChannelAddress(channel.id, "dm", "", user_id))
             if self.channel_routes.get(channel.id):
                 addresses.extend(await channel.suggest_addresses(profile, source))
-        self.destination_cache = list(dict.fromkeys(addresses))
+        suggested: list[ChannelAddress] = []
+        for address in dict.fromkeys(addresses):
+            channel = self.channels.get(address.channel_tentacle_id)
+            if channel is None:
+                suggested.append(address)
+            elif reason := channel.landing_unavailable:
+                # Kept, so an agent asked to go there can say why it cannot.
+                suggested.append(replace(address, metadata={"barred": reason}))
+            elif address.chat_type != "dm" or channel.accepts_sub_thread(address):
+                suggested.append(address)
+        self.destination_cache = suggested
         return self.destination_cache
 
     async def list_addresses(
@@ -233,11 +250,15 @@ class OctomateSession:
         channel = self.channels.get(channel_id)
         if channel is None:
             raise GatewayRefusal(f"No connected channel {channel_id!r}.")
+        if reason := channel.landing_unavailable:
+            raise GatewayRefusal(reason)
         if not self.channel_routes.get(channel.id):
             raise GatewayRefusal("No connected agent serves the destination channel.")
         profile = await self.channel_profile(channel)
         try:
-            return await channel.list_addresses(profile, inside)
+            return await channel.list_addresses(
+                profile, inside, private=self.lands_privately
+            )
         except ValueError as error:
             raise GatewayRefusal(str(error)) from error
 
@@ -295,7 +316,7 @@ class OctomateSession:
                     else "No connected channel runs this conversation's agent."
                 )
         return ThreadOperations(
-            shared=source is not None and source.shared,
+            source=source,
             teleport=OperationAvailability(
                 destinations=teleport, routes=carriers, reason=reason
             ),
@@ -307,6 +328,11 @@ class OctomateSession:
                 if any(routes.values())
                 else "No other agent is connected on any channel.",
             ),
+            barred={
+                channel.id: reason
+                for channel in self.channels.values()
+                if (reason := channel.landing_unavailable)
+            },
         )
 
     def is_compatible_agent(self, agent_id: str) -> bool:
@@ -317,7 +343,7 @@ class OctomateSession:
         return (
             agent is not None
             and agent.native_id == self.current_agent_id
-            and type(agent).fork is not AgentTentacle.fork
+            and type(agent).fork_transcript is not AgentTentacle.fork_transcript
         )
 
     @property
@@ -363,11 +389,15 @@ class OctomateSession:
             raise GatewayRefusal(
                 f"No connected channel {destination.channel_tentacle_id!r}."
             )
+        if reason := channel.landing_unavailable:
+            raise GatewayRefusal(reason)
         profile = await self.channel_profile(channel)
         if destination.user_id != channel.thread_user_id(profile):
             raise GatewayRefusal("The address does not belong to the requesting user.")
         try:
-            return await channel.prepare_address(destination, self.conversation_address)
+            return await channel.prepare_address(
+                destination, self.conversation_address, private=self.lands_privately
+            )
         except ValueError as error:
             raise GatewayRefusal(str(error)) from error
 
@@ -615,6 +645,10 @@ class OctomateSession:
             raise GatewayRefusal("Teleport requires a destination address.")
         if self.native and not new_thread:
             raise GatewayRefusal("Native teleport requires a new destination.")
+        if self.native and project is not None:
+            raise GatewayRefusal(
+                "A native teleport keeps the project its session is about."
+            )
         if project is not None and (
             self.users is None
             or self.user_profile is None
@@ -783,7 +817,28 @@ class OctomateSession:
             return None
         return await self.direct_destination(destination)
 
-    def thread_operation(self) -> GatewayThreadSignal:
+    async def attach_native_thread(self, session_id: str) -> None:
+        """Bind a native call to the thread its own session is filed under, as
+        Trunkline's thread operations bind theirs, so a spell it casts acts on that
+        history. Only a thread the caller has written to is found: naming another
+        session, theirs or anyone's, finds nothing."""
+        profile = self.user_profile
+        if not self.native or self.threads is None or profile is None:
+            raise RuntimeError("only a native session with a ledger binds a thread")
+        thread = await self.threads.get(
+            ThreadKey(self.current_agent_id, "thread", session_id),
+            with_messages=False,
+            user_id=profile.user_id,
+        )
+        if thread is None:
+            raise GatewayRefusal(
+                "Octomate holds no uploaded history for this session yet. Finish a "
+                "turn with Octomate's hooks installed, then teleport again."
+            )
+        self.thread_id = thread.id
+        self.conversation_address = thread.key.address(profile.channel_user_id)
+
+    def thread_operation(self) -> DrivenGatewaySignal:
         """Package a validated user action for the graph's existing-thread entry."""
         if (
             self.thread_id is None
@@ -794,7 +849,7 @@ class OctomateSession:
             raise ValueError(
                 "A thread operation requires a thread, user and validated decision."
             )
-        return GatewayThreadSignal(
+        return DrivenGatewaySignal(
             thread_id=self.thread_id,
             source=self.conversation_address,
             agent_id=self.current_agent_id,
@@ -802,18 +857,21 @@ class OctomateSession:
             decision=self.decision,
         )
 
-    def native_handoff(self) -> GatewayNativeSignal:
+    def native_handoff(self) -> NativeGatewaySignal:
         """This native session's recorded decision, packaged to be kicked as its
-        own turn. Only a native summon or scheme leaves one, so anything else
-        asking is a wiring bug, not a refusal a model could correct from."""
+        own turn. Only a native spell leaves one, so anything else asking is a
+        wiring bug, not a refusal a model could correct from."""
         decision = self.decision
-        if not self.native or not isinstance(decision, SummonDecision | SchemeDecision):
-            raise RuntimeError("only a native summon or scheme kicks a handoff")
-        return GatewayNativeSignal(
+        if not self.native or decision is None:
+            raise RuntimeError("only a native spell kicks a handoff")
+        return NativeGatewaySignal(
             decision=decision,
             agent_id=self.current_agent_id,
             user_profile=self.user_profile,
-            source=ChannelAddress(
+            # A teleport carries the thread it attached; the rest come from nowhere.
+            source=self.conversation_address
+            if isinstance(decision, TeleportDecision)
+            else ChannelAddress(
                 channel_tentacle_id=self.current_agent_id,
                 chat_type="dm",
                 chat_id="",

@@ -85,7 +85,8 @@ got. Codex has no session-end event, so a session ends by the tail's own idle
 drain.
 
 Forking or teleporting a native session uses its latest fully uploaded completed
-or aborted turn. Later turns stay in the source session, including any turn still
+or aborted turn. A session can also teleport itself: Codex names its thread on
+every MCP call, which is how the served teleport finds the session's history. Later turns stay in the source session, including any turn still
 in progress. The new conversation keeps the selected turn's model, permissions
 and an independent transcript snapshot.
 

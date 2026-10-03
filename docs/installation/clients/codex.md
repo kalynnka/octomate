@@ -25,5 +25,5 @@ Codex lists the tools under `mcp__octomate`.
 The installer sets `gateway_teleport` to Codex's `prompt` approval mode, leaving
 your approval policy and reviewer unchanged. Re-run `octomate codex mcp install`
 and restart Codex to apply this to an existing installation. This configures the
-permission check; direct native teleport still requires an attached thread, which
-the native MCP connection does not currently provide.
+permission check. A native session's own teleport finds its history by the
+thread Codex names on every call.

@@ -49,7 +49,7 @@ from octomate.reflex import (
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,
-    GatewayNativeSignal,
+    NativeGatewaySignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
@@ -294,7 +294,7 @@ class Octomate(FastAPI):
                 address = signal.address
                 span.set_attribute("channel_id", address.channel_tentacle_id)
                 span.set_attribute("conversation_address", str(address))
-            elif isinstance(signal, GatewayNativeSignal):
+            elif isinstance(signal, NativeGatewaySignal):
                 span.set_attribute("agent_id", signal.agent_id)
                 span.set_attribute("action", signal.decision.action)
             elif isinstance(signal, DeferredActionBatchResponse):

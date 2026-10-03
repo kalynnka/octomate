@@ -40,9 +40,10 @@ flowchart TD
 
 **Awake** resolves the signal once and writes the source context into state. Four
 signals enter here: a user message from a channel, a resolved action batch coming
-back from a card, a hand-off a native session requested over MCP, and an authenticated
-thread operation validated by the gateway. A thread operation enters `Summon` or
-`Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
+back from a card, a spell a native session cast over MCP, and an authenticated
+thread operation the console asked for, validated by the gateway. A thread
+operation, and a native session's teleport of its own thread, enter at the thread
+they act on and go to `Summon` or `Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
 nodes do not retain the signal. A UI teleport opens a fresh turn with an address notice; it
 does not fabricate a deferred tool result. A message
 enters the thread its address names, or a fresh sub-thread when the address is a

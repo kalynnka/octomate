@@ -22,7 +22,11 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.dependencies import get_access_token, get_http_headers
+from fastmcp.server.dependencies import (
+    get_access_token,
+    get_context,
+    get_http_headers,
+)
 from octomate_protocol.gateway import GatewayTool
 from pydantic import Field, TypeAdapter
 from pydantic_ai.settings import ThinkingEffort
@@ -31,7 +35,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
-from octomate.schemas.awakes import GatewayNativeSignal
+from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
@@ -53,6 +57,12 @@ if TYPE_CHECKING:
 TELEPORT_RECORDED = (
     "Teleporting — this turn ends here and the user is asked to approve the move; "
     "you continue over there with your context intact, or here if they decline."
+)
+# What a native session is told: it approved the call itself, so the move goes
+# ahead, carrying its history to a driven session there; this one stays as it is.
+NATIVE_TELEPORT_STARTED = (
+    "Teleporting — this conversation continues at the destination, its history "
+    "with it, in a session Octomate runs there. This session stays as it is."
 )
 
 # The header a served call names its turn's conversation with. It comes from a
@@ -186,11 +196,20 @@ async def native_session(
     )
 
 
+def caller_thread() -> str | None:
+    """The native session a call came from, where its runtime says so itself:
+    Codex names its thread in every call's `_meta`."""
+    request = get_context().request_context
+    meta = request.meta if request is not None else None
+    thread_id = (meta or {}).get("threadId")
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
 def mount_gateway(
     mcp: FastMCP,
     octomate_session: OctomateSession,
     thread_manager: ThreadManager,
-    kick: Callable[[GatewayNativeSignal], None] | None = None,
+    kick: Callable[[NativeGatewaySignal], None] | None = None,
 ) -> None:
     """Register the gateway's spells on `mcp`.
 
@@ -273,8 +292,18 @@ def mount_gateway(
         project: str | None = None,
         ref: str | None = None,
         new_thread: bool = True,
+        session_id: Annotated[
+            str | None,
+            Field(
+                description="Filled in by Octomate's own hook for a session you "
+                "were not started by Octomate in; leave it out."
+            ),
+        ] = None,
         session: OctomateSession = octomate_session,
     ) -> str:
+        native_session_id = (session_id or caller_thread()) if session.native else None
+        if native_session_id is not None:
+            await session.attach_native_thread(native_session_id)
         await session.teleport(
             hint=hint,
             destination=destination,
@@ -282,7 +311,14 @@ def mount_gateway(
             project=project,
             ref=ref,
         )
-        return TELEPORT_RECORDED
+        if not session.native:
+            return TELEPORT_RECORDED
+        if kick is None:
+            raise RuntimeError(
+                "a native session reached a gateway mounted without a kick"
+            )
+        kick(session.native_handoff())
+        return NATIVE_TELEPORT_STARTED
 
     @mcp.tool(
         name=GatewayTool.SCHEME,

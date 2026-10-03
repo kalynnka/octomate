@@ -179,14 +179,24 @@ class Ink[MessageT](ABC):
         return []
 
     async def list_addresses(
-        self, address: ChannelAddress, inside: str | None = None
+        self,
+        address: ChannelAddress,
+        inside: str | None = None,
+        *,
+        private: bool = False,
     ) -> list[ChannelAddress]:
         """One level of this identity's places, fetched when it is opened: the top
-        level, or what a listed address's `inside` holds. Nothing is created."""
+        level, or what a listed address's `inside` holds. Nothing is created. A
+        `private` landing is listed as the platform would open it for a
+        conversation only its user can read."""
         raise ValueError("This channel cannot be browsed for a destination.")
 
     async def prepare_address(
-        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
     ) -> ChannelAddress:
         """Validate one parent and resolve platform details without creating a thread."""
         raise ValueError("This channel cannot prepare a thread at this address.")
@@ -442,7 +452,9 @@ class ChannelTentacle(
     def is_shared(self, address: ChannelAddress) -> bool:
         """Whether anyone besides its user can read this surface, told from the
         address alone, for a caller that holds a thread's row and no message from
-        it. A thread is taken for shared unless its channel can say otherwise."""
+        it. A thread is taken for shared unless its channel can say otherwise.
+        It answers what the chromo says of a message on the same surface; each
+        channel's chromo tests hold the two to that."""
         return address.chat_type != "dm"
 
     async def suggest_addresses(
@@ -463,27 +475,36 @@ class ChannelTentacle(
         ]
 
     async def list_addresses(
-        self, profile: UserProfile, inside: str | None = None
+        self, profile: UserProfile, inside: str | None = None, *, private: bool = False
     ) -> list[ChannelAddress]:
-        """List one level using the requesting user's linked channel identity."""
+        """List one level using the requesting user's linked channel identity, as a
+        landing would open for a conversation that is `private`."""
         user_id = self.thread_user_id(profile)
         if user_id is None:
             raise ValueError("The profile is not linked to this channel.")
         return await self.ink.list_addresses(
-            ChannelAddress(self.id, "dm", "", user_id), inside
+            ChannelAddress(self.id, "dm", "", user_id), inside, private=private
         )
 
     async def prepare_address(
-        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
     ) -> ChannelAddress:
-        """Validate the requested parent before any thread or history is created."""
+        """Validate the requested parent before any thread or history is created.
+        A `private` conversation's landing opens so only its user can read it,
+        where the platform allows, and the prepared `shared` says which it got."""
         if address.channel_tentacle_id != self.id:
             raise ValueError("The address belongs to another channel.")
         if address.channel_thread_id:
             raise ValueError("A thread cannot contain another thread.")
         if source_address is not None and source_address.channel_tentacle_id != self.id:
             source_address = None
-        prepared = await self.ink.prepare_address(address, source_address)
+        prepared = await self.ink.prepare_address(
+            address, source_address, private=private
+        )
         if prepared.chat_type != "thread" and not self.accepts_sub_thread(prepared):
             raise ValueError("This address cannot contain a thread.")
         return prepared
@@ -505,6 +526,14 @@ class ChannelTentacle(
         if opened == parent or not opened.channel_thread_id:
             raise ValueError("The destination could not create a thread.")
         return opened
+
+    @property
+    def landing_unavailable(self) -> str | None:
+        """Why no conversation can be moved or handed onto this channel, or None
+        where a thread can be opened for one."""
+        if self.surfaces.sub_thread:
+            return None
+        return "This channel has no threads, so no conversation can land here."
 
     def accepts_sub_thread(self, address: ChannelAddress) -> bool:
         """Whether the address belongs to this channel and can contain a new thread."""

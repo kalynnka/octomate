@@ -54,7 +54,7 @@ from octomate.capabilities.harness.events import (
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
 from octomate.schemas.awakes import (
     AwakeSignal,
-    GatewayThreadSignal,
+    DrivenGatewaySignal,
     UserMessageSignal,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -163,7 +163,11 @@ class TrunklineInk(Ink[WireEvent]):
         ]
 
     async def prepare_address(
-        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
     ) -> ChannelAddress:
         if (
             address.chat_type != "thread"
@@ -554,6 +558,11 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         """Never: every console thread is its one user's."""
         return False
 
+    @property
+    def landing_unavailable(self) -> None:
+        """Never: a landing here is a new thread of its own, under no parent."""
+        return None
+
     async def start_thread(self, address: ChannelAddress, hint: str) -> ChannelAddress:
         if (
             address.channel_tentacle_id != self.id
@@ -612,7 +621,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             token = current_sink.set(send)
             try:
                 result = await self.octomate.kick(signal)
-                if isinstance(signal, GatewayThreadSignal):
+                if isinstance(signal, DrivenGatewaySignal):
                     if result is None or result.target.address is None:
                         raise ValueError("The operation did not reach a destination.")
                     if (

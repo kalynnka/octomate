@@ -2,13 +2,13 @@
 
 import json
 from collections.abc import AsyncGenerator
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from pydantic import SecretStr, TypeAdapter, ValidationError
+from pydantic import SecretStr, ValidationError
 from pydantic_ai.messages import ModelRequest, ModelResponse, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -106,7 +106,7 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     response = await client.post(
         f"{path}/summon",
         json={
-            "destination": TypeAdapter(ChannelAddress).dump_python(
+            "destination": asdict(
                 ChannelAddress(
                     case.thread.channel_tentacle_id,
                     case.thread.chat_type,
@@ -140,9 +140,7 @@ async def test_teleport_creates_independent_owned_destination(
     monkeypatch: pytest.MonkeyPatch,
     explicit_parent: bool,
 ) -> None:
-    destination = TypeAdapter(ChannelAddress).dump_python(
-        ChannelAddress("far", "dm", "", "alice")
-    )
+    destination = asdict(ChannelAddress("far", "dm", "", "alice"))
     if explicit_parent:
         destination.update(chat_type="group", chat_id="another-room", shared=True)
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
@@ -192,6 +190,26 @@ async def test_teleport_creates_independent_owned_destination(
     assert (await case.app.conversations.get(source.id)).thread_id == case.thread.id
 
 
+async def test_teleport_names_the_project_the_landed_thread_is_about(
+    case: Case, client: httpx.AsyncClient
+) -> None:
+    """The console can file the landed thread under a project, validated like an
+    agent's: one not registered here is refused before anything moves."""
+    response = await client.post(
+        f"/api/trunkline/threads/{case.thread.id}/teleport",
+        json={
+            "destination": asdict(ChannelAddress("far", "dm", "", "alice")),
+            "hint": "Work here",
+            "project": "nowhere",
+            "ref": "main",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "No project called 'nowhere'" in response.json()["detail"]
+    assert case.far.opened_dms == []
+
+
 @pytest.mark.parametrize("operation", ["teleport", "summon"])
 async def test_actions_require_thread_ownership(
     case: Case, client: httpx.AsyncClient, operation: str
@@ -222,7 +240,7 @@ async def test_validation_precedes_side_effects(
     invalid = await client.post(
         f"{path}/summon",
         json={
-            "destination": TypeAdapter(ChannelAddress).dump_python(
+            "destination": asdict(
                 ChannelAddress(
                     case.thread.channel_tentacle_id,
                     case.thread.chat_type,
@@ -322,7 +340,7 @@ async def test_summon_requires_the_requested_thread_to_open(
     response = await client.post(
         f"/api/trunkline/threads/{thread.id}/summon",
         json={
-            "destination": TypeAdapter(ChannelAddress).dump_python(address),
+            "destination": asdict(address),
             "agent_id": "second",
             "model": "test",
             "brief": "Investigate in a new thread",
@@ -404,7 +422,7 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     )
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
-    assert options["shared"] is True
+    assert options["source"]["shared"] is True
     assert options["teleport"]["destinations"] == []
     assert "Shared history" in options["teleport"]["reason"]
     assert any(
@@ -444,7 +462,7 @@ async def test_external_thread_its_channel_calls_private_exports_history(
     )
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
-    assert options["shared"] is False
+    assert options["source"]["shared"] is False
     assert options["teleport"]["reason"] is None
     assert any(
         one["channel_tentacle_id"] == "trunkline"
@@ -705,8 +723,8 @@ async def test_address_listing_opens_one_level_and_authorizes_nothing(
     )
 
     assert top.status_code == 200, top.text
-    assert top.json() == [TypeAdapter(ChannelAddress).dump_python(server)]
-    assert opened.json() == [TypeAdapter(ChannelAddress).dump_python(room)]
+    assert top.json() == [asdict(server)]
+    assert opened.json() == [asdict(room)]
     assert opened.json()[0]["metadata"] == {
         "name": "planning",
         "server": "Development",

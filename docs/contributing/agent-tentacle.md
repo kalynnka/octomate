@@ -103,10 +103,13 @@ Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
 
-To support native-history teleport, implement `validate_fork(source, sender=...)`
-alongside `fork`. Validation must check ownership and importability without
-creating a destination or runtime session. `Awake` calls it before teleport opens
-the destination; the import must still validate the history it actually consumes.
+To support native-history teleport, implement `read_fork_transcript`, which
+answers the owner's uploaded history up to its latest whole turn, and
+`fork_transcript`, which imports it into the landed thread's empty conversation as
+a session the runtime resumes. The base class's `fork` and `validate_fork` do the
+rest: ownership, the source thread, its project and the landed thread. Validation
+creates no destination or runtime session; `Awake` calls it before teleport opens
+the destination, and the import must still validate the history it consumes.
 
 ## Register it
 

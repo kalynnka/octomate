@@ -147,7 +147,6 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # that tree: the thread it lands in is about the same one, as it stands.
             state.thread = await ctx.deps.thread_manager.bind(landed.id, carried)
             await ctx.deps.workspaces.carry(source, state.thread)
-            await ctx.deps.workspaces.open(state.thread.id, carried).prepare()
             sentence = (
                 "Continuing the conversation here, in a workspace of "
                 f"{carried.name!r} that holds your work as you left it."

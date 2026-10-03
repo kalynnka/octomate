@@ -47,10 +47,12 @@ ask the agent to list them if your requested move is unavailable.
 
 Each channel creates a thread at the selected address. Trunkline opens a new
 private thread, including when the source is already in Trunkline. Slack and Lark
-open a sub-thread under the current DM or group, or under your linked DM when
-arriving from another platform. Existing threads cannot contain new sub-threads.
-Discord suggests eligible text channels in the source server, without enumerating
-all servers. Discord DMs and NapCat cannot host an isolated thread.
+open a sub-thread under the current DM or group, or, arriving from another
+platform, under your linked DM or a channel or group you and the bot are both in. Existing threads cannot contain new sub-threads.
+Discord suggests eligible text and forum channels in the source server, without enumerating
+all servers. Discord DMs cannot host an isolated thread, so they are not
+suggested. NapCat has no threads at all: `inspect` lists its DM with
+`metadata.barred` saying so, and Teleport and Summon refuse it for that reason.
 
 Teleport and Summon accept a `destination` address and a `new_thread` flag, which
 defaults to true. A null destination uses the current conversation's address.
@@ -66,16 +68,19 @@ To choose an agent for an address,
 use `inspect` with `reveal="routes"` and its `channel_tentacle_id` as `channel`. The channel validates each submitted
 address before creating anything, and the user must match your linked identity.
 
-A known Discord text channel can be selected directly, including from a private
-conversation on another platform. Its address has `chat_type="group"` and the
-text-channel ID in `chat_id`. Discord checks membership and thread permissions;
-a guild ID, DM, existing thread or forum is refused. Slack and Lark currently
-support their default DM and the current parent, rather than arbitrary chat IDs.
+A known Discord text or forum channel can be selected directly, including from a
+private conversation on another platform. Its address has `chat_type="group"` and
+the channel ID in `chat_id`. Discord checks membership and thread permissions; a
+guild ID, DM or existing thread is refused. A conversation only you can read lands
+in a private thread there, and a forum's post is always public; the address a
+listing or the move returns says which with `shared`. Slack and Lark accept your
+default DM, the current parent, and any channel or group you and the bot are both
+in; a thread there is read by its members.
 
 A teleport out of a thread that is about a project lands in a thread about the
 same project, unless you name another: the new thread gets a workspace of its
-own holding the work as it stood, uncommitted changes included, and the source
-keeps its own.
+own holding the work as it stood, uncommitted changes and ignored files such as
+an `.env` included, on a branch of its own, and the source keeps its own.
 
 With `new_thread=false`, Summon takes over the current conversation in place.
 Teleport uses that setting only to bind the current thread to a project.
@@ -83,12 +88,13 @@ Neither operation reuses an unrelated existing conversation. A failed thread
 creation does not silently turn into an in-place operation.
 
 Teleport requires independent history copying: driven Codex, Claude and Inkling
-support it; DeepSeek does not yet. In Trunkline, an owned native Codex session can
-also teleport using its latest fully uploaded completed turn. The import keeps
-that turn's model and permissions, copies its transcript, and leaves the native
-source usable. The selected destination must expose a Codex agent; its first
-compatible configured route handles the import. Other connected Codex agents
-do not prevent the move.
+support it; DeepSeek does not yet. An owned native Codex or Claude Code session
+can also teleport using its latest fully uploaded completed turn, either picked in
+Trunkline or by asking the session itself. The import keeps that turn's model and
+permissions, copies its transcript, and leaves the native source usable. The
+selected destination must expose an agent of the same runtime; its first
+compatible configured route handles the import, and the history continues there
+in a session Octomate drives.
 
 Native teleport checks transcript ownership, the completed turn, its permissions
 and import metadata before opening or announcing a destination. Missing or
@@ -96,9 +102,13 @@ unusable history is refused without creating a thread.
 
 A conversation can cross to a new destination only when its current conversation
 is private. For a task that began in a group,
-[continue privately with a brief](#scheme) instead. An anonymous native MCP call
-cannot teleport its history; select the uploaded session in Trunkline, or use a
-handoff from your local agent.
+[continue privately with a brief](#scheme) instead.
+
+A native session's own `gateway_teleport` call says which session it is: Codex
+names its thread on every call, and Claude Code has it stamped in by the
+`PreToolUse` hook `octomate claude hooks install` registers for that tool. The
+session's own permission prompt is the approval, so no card follows, and the move
+starts at once. A session whose history Octomate has not received yet is refused.
 
 You can also ask the agent to use a project before starting file work:
 

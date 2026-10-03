@@ -132,6 +132,10 @@ class TeleportBody(TypedDict):
     destination: ChannelAddress
     new_thread: NotRequired[bool]
     hint: Annotated[str, Field(min_length=1, max_length=1_000)]
+    # The project the landed thread is about, and the ref its workspace starts
+    # from; left out, a project thread's own project is carried.
+    project: NotRequired[str | None]
+    ref: NotRequired[str | None]
 
 
 class SummonBody(TypedDict):
@@ -224,13 +228,7 @@ async def thread_gateway(
         profile = source_profile
     else:
         profile.channel_tentacle_id = thread.channel_tentacle_id
-    address = ChannelAddress(
-        channel_tentacle_id=thread.channel_tentacle_id,
-        chat_type=thread.chat_type,
-        chat_id=thread.chat_id,
-        channel_thread_id=thread.channel_thread_id,
-        user_id=profile.channel_user_id,
-    )
+    address = thread.key.address(profile.channel_user_id)
     return OctomateSession(
         channel_routes=gateway.available_routes(app.channels, app.agents),
         current_agent_id=agent_id,

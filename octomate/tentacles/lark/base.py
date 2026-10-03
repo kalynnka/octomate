@@ -67,7 +67,7 @@ LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
 LarkQuestionFormValueAdapter = TypeAdapter(LarkQuestionFormValue)
 
 
-def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
+def log_card_action_result[T](channel_id: str, task: asyncio.Task[T]) -> None:
     if task.cancelled():
         return
     error = task.exception()

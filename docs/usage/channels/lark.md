@@ -12,7 +12,8 @@ create a self-built app and:
 2. **Permissions**, from what the bot calls: sending and receiving messages
    (`im:message`, and the group and one-to-one receive permissions), reading user
    profiles (`contact:user.base:readonly`), uploading and downloading images
-   (`im:resource`), and CardKit for streaming cards. The permission checker names
+   (`im:resource`), listing the bot's groups and their members
+   (`im:chat:readonly`), and CardKit for streaming cards. The permission checker names
    the exact scope when a call is refused.
 3. **Event subscriptions**: choose the long-connection mode and subscribe to
    `im.message.receive_v1` and `card.action.trigger`.
@@ -52,7 +53,10 @@ a thread reply by its root message id, which is what the continuation is keyed o
 
 Teleport and Summon use the current group or DM as the parent for a new sub-thread.
 They do not offer nested sub-threads inside an existing thread. Entry from another
-platform uses the linked account's DM.
+platform uses the linked account's one-to-one chat, or a group you and the bot are
+both in: browsing Lark lists those groups, and a thread opened in one is read by
+its members. Listing reads the members of every group the bot is in, so one group
+Lark refuses to read fails the whole listing.
 
 ## Rendering
 

@@ -154,7 +154,11 @@ class RecordingInk(Ink[NativeMessage]):
         return [address]
 
     async def prepare_address(
-        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
     ) -> ChannelAddress:
         if address.chat_type == "thread":
             raise ValueError("A thread cannot contain another thread.")

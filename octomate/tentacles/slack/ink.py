@@ -5,11 +5,13 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from typing import Self
 
 import aiohttp
 import httpx
 from pydantic import SecretStr
+from slack_sdk.errors import SlackApiError
 from slack_sdk.models.messages.chunk import Chunk
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
@@ -41,6 +43,10 @@ LONG_MARKDOWN_NOTE = (
 
 SLACK_MARKDOWN_TEXT_LIMIT = 12_000
 SLACK_MARKDOWN_CHUNKER = MarkdownChunker(limit=SLACK_MARKDOWN_TEXT_LIMIT)
+
+# What a thread can be started in besides a DM. Listing them takes the bot's
+# `channels:read` and `groups:read`.
+THREAD_PARENT_TYPES = "public_channel,private_channel"
 
 
 class SlackInk(Ink[SlackOutboundMessage]):
@@ -89,16 +95,84 @@ class SlackInk(Ink[SlackOutboundMessage]):
             return [source_address]
         return [address]
 
+    async def list_addresses(
+        self,
+        address: ChannelAddress,
+        inside: str | None = None,
+        *,
+        private: bool = False,
+    ) -> list[ChannelAddress]:
+        """The channels the requester and the bot are both in, whose members read
+        whatever lands there. A workspace has the one level, so nothing listed can
+        be opened."""
+        if inside is not None:
+            raise ValueError("A Slack channel holds nothing to open.")
+        return [
+            ChannelAddress(
+                channel_tentacle_id=address.channel_tentacle_id,
+                chat_type="group",
+                chat_id=channel_id,
+                user_id=address.user_id,
+                shared=True,
+                metadata={"name": name},
+            )
+            for channel_id, name in (await self.channels_with(address.user_id)).items()
+        ]
+
+    async def channels_with(self, user_id: str) -> dict[str, str]:
+        """The public and private channels the bot and `user_id` are both in, as
+        id to name.
+
+        Slack never says whether the bot is in a channel it lists for someone else,
+        so each side is listed and the two are intersected."""
+        mine: dict[str, str] = {}
+        theirs: set[str] = set()
+        try:
+            async for page in await self.client.users_conversations(
+                types=THREAD_PARENT_TYPES, exclude_archived=True, limit=200
+            ):
+                mine.update(
+                    (channel["id"], channel["name"])
+                    for channel in page.get("channels", [])
+                )
+            async for page in await self.client.users_conversations(
+                user=user_id,
+                types=THREAD_PARENT_TYPES,
+                exclude_archived=True,
+                limit=200,
+            ):
+                theirs.update(channel["id"] for channel in page.get("channels", []))
+        except SlackApiError as error:
+            detail = error.response.get("error")
+            if needed := error.response.get("needed"):
+                detail = f"{detail}, needs {needed}"
+            raise ValueError(f"Slack refused to list channels: {detail}.") from error
+        return {
+            channel_id: name
+            for channel_id, name in mine.items()
+            if channel_id in theirs
+        }
+
     async def prepare_address(
-        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
     ) -> ChannelAddress:
         if address == source_address and address.chat_type in {"dm", "group"}:
             return address
-        if address.chat_type != "dm" or address.chat_id or address.shared:
+        if address.chat_type == "dm" and not address.chat_id and not address.shared:
+            return address
+        if address.chat_type != "group" or not address.chat_id:
             raise ValueError(
-                "This channel supports the current chat or the user's default DM."
+                "Slack starts a thread in the current chat, in your DM, or in a "
+                "channel you and the bot are both in."
             )
-        return address
+        if address.chat_id not in await self.channels_with(address.user_id):
+            raise ValueError("You and the bot are not both in that Slack channel.")
+        # A thread in a channel is read by its members, private channel or not.
+        return replace(address, shared=True)
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """The `D…` channel id of the bot's 1:1 with `user_id`.

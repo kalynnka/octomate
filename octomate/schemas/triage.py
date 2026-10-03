@@ -6,13 +6,14 @@ from dataclasses import asdict, dataclass
 from typing import Annotated, Literal, NamedTuple
 
 from octomate_protocol.gateway import GatewayTool
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config.agents import AgentRouteModelName, Claim
 from octomate.schemas.conversation import ChannelAddress
+from octomate.types.json import JsonObject
 
 ResponseTargetMode = Literal["main", "sub"]
 # How the react loop was entered, and thus what to call the agent run it drives:
@@ -161,17 +162,15 @@ class TeleportDecision(BaseModel):
         "for the project's default branch.",
     )
 
-    def metadata(self) -> dict[str, str | bool]:
+    def metadata(self) -> JsonObject:
         """What the deferral carries, as plain values: enough for the graph to
         rebuild this decision at its boundary."""
         return {
             "kind": TELEPORT_DEFER_KIND,
             "hint": self.hint,
-            "destination": TypeAdapter(ChannelAddress)
-            .dump_json(self.destination)
-            .decode()
+            "destination": asdict(self.destination)
             if self.destination is not None
-            else "",
+            else None,
             "new_thread": self.new_thread,
             "project": self.project or "",
             "ref": self.ref or "",

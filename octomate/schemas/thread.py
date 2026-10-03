@@ -86,6 +86,16 @@ class ThreadKey:
             channel_thread_id=address.channel_thread_id,
         )
 
+    def address(self, user_id: str) -> ChannelAddress:
+        """The surface this key names, spoken to `user_id` — `from_address` back."""
+        return ChannelAddress(
+            channel_tentacle_id=self.channel_tentacle_id,
+            chat_type=self.chat_type,
+            chat_id=self.chat_id,
+            channel_thread_id=self.channel_thread_id,
+            user_id=user_id,
+        )
+
     @property
     def kind(self) -> ThreadKind:
         """What this key names — the chat type, unless a native client owns it."""

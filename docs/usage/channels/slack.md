@@ -13,7 +13,9 @@ In [api.slack.com/apps](https://api.slack.com/apps), create an app and:
    private assistant pane and the status line it sets while working.
 3. **OAuth & Permissions**, bot token scopes, from what the bot calls:
    `chat:write`, `users:read`, `im:write`, `im:history`, `channels:history`,
-   `groups:history`, `mpim:history`, `files:write`, `files:read`, `assistant:write`.
+   `groups:history`, `mpim:history`, `files:write`, `files:read`, `assistant:write`,
+   and `channels:read` and `groups:read` for listing the channels a conversation
+   can move into.
    Install the app to the workspace; the bot token is `bot_token`, an `xoxb-` value.
 4. **Event Subscriptions**: subscribe the bot to `message.channels`,
    `message.groups`, `message.im`, `message.mpim`, `assistant_thread_started` and
@@ -61,7 +63,10 @@ DM root and continue in that thread.
 
 Teleport and Summon use the current group or DM as the parent for a new sub-thread.
 They do not offer nested sub-threads inside an existing thread. Entry from another
-platform uses the linked account's DM.
+platform uses the linked account's DM, or a channel you and the bot are both in:
+browsing Slack lists those channels, public and private, and a thread opened in
+one is read by its members. Without `channels:read` and `groups:read` the listing
+is refused with the scope Slack names, and the DM still works.
 
 Text over Slack's limit is uploaded as a Markdown file with a one-line note.
 

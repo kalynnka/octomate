@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock
 
@@ -20,8 +21,11 @@ from octomate.managers.gateway import (
     OctomateSession,
     PrivateBlocker,
 )
+from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.schemas.conversation import ChannelAddress, ChatType
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
@@ -31,7 +35,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelSurfaces
-from octomate.types.threads import CODEX_NATIVE_ID
+from octomate.types.threads import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.users import a_user
@@ -489,7 +493,9 @@ async def test_teleport_refused_where_no_sub_thread_can_be_opened(
     assert capability.toolset is not None
     teleport = capability.toolset.tools[GatewayTool.TELEPORT].function
 
-    with pytest.raises(ModelRetry, match=r"cannot contain|Only the current"):
+    with pytest.raises(
+        ModelRetry, match=r"cannot contain|Only the current|no conversation can land"
+    ):
         await teleport(FAKE_CONTEXT, hint="let's move to a thread")
 
 
@@ -522,7 +528,7 @@ async def test_summon_thread_refused_where_no_sub_thread_can_be_opened(
     assert capability.toolset is not None
     summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
-    with pytest.raises(ModelRetry, match="cannot contain"):
+    with pytest.raises(ModelRetry, match=r"cannot contain|no conversation can land"):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
@@ -609,12 +615,12 @@ async def test_summon_crosses_to_a_sub_thread_of_their_dms_elsewhere(
     assert landing.chat_id == ""
 
 
-async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
+async def test_a_channel_that_opens_no_sub_thread_is_shown_closed(
     in_memory_engine: None,
 ) -> None:
     """`scheme` reaches a channel like this — it lands in the direct messages
     themselves. A summon lands in a sub-thread of them, so there is nowhere for it
-    to go and the channel is not offered at all."""
+    to go: the channel is shown with why, and every way in says the same."""
     capability = await _crossable(
         far_channel=_NoSubThreadChannel(
             id="far",
@@ -623,12 +629,23 @@ async def test_summon_will_not_cross_to_a_channel_that_opens_no_sub_thread(
     )
     assert capability.toolset is not None
     summon = capability.toolset.tools[GatewayTool.SUMMON].function
+    session = capability.session
+    closed = "This channel has no threads, so no conversation can land here."
 
+    operations = await session.operations
+    assert operations.barred == {"far": closed}
     assert all(
-        one.channel_tentacle_id != "far"
-        for one in (await capability.session.operations).summon.destinations
+        one.channel_tentacle_id != "far" for one in operations.summon.destinations
     )
-    with pytest.raises(ModelRetry, match="cannot contain a thread"):
+    [far_dm] = [
+        one
+        for one in await session.inspect("destinations")
+        if one.channel_tentacle_id == "far"
+    ]
+    assert far_dm.metadata == {"barred": closed}
+    with pytest.raises(GatewayRefusal, match=closed):
+        await session.inspect("destinations", "far")
+    with pytest.raises(ModelRetry, match=closed):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
@@ -775,9 +792,7 @@ async def test_teleport_defers_a_crossing_with_the_far_account_named(
     assert deferred.value.metadata == {
         "kind": "teleport",
         "hint": "carrying on",
-        "destination": TypeAdapter(ChannelAddress)
-        .dump_json(capability.decision.destination)
-        .decode(),
+        "destination": asdict(capability.decision.destination),
         "new_thread": True,
         "project": "",
         "ref": "",
@@ -836,7 +851,7 @@ async def test_channel_target_does_not_require_discovery(
         user_id="ou_alice",
         shared=location.shared,
     )
-    lookup.assert_awaited_once_with(target, None)
+    lookup.assert_awaited_once_with(target, None, private=True)
     discover.assert_not_awaited()
     assert session.destination_cache is None
 
@@ -933,7 +948,9 @@ async def test_summon_refused_outright_where_neither_place_exists(
     assert capability.toolset is not None
     summon = capability.toolset.tools[GatewayTool.SUMMON].function
 
-    with pytest.raises(ModelRetry, match=r"cannot contain|Only the current"):
+    with pytest.raises(
+        ModelRetry, match=r"cannot contain|Only the current|no conversation can land"
+    ):
         await summon(
             FAKE_CONTEXT,
             agent_id="claude",
@@ -1252,7 +1269,9 @@ async def test_local_thread_validation_does_not_discover_destinations(
         await invoke()
         assert session.decision is not None
     else:
-        with pytest.raises(GatewayRefusal, match="cannot contain"):
+        with pytest.raises(
+            GatewayRefusal, match=r"cannot contain|no conversation can land"
+        ):
             await invoke()
         assert session.decision is None
     discover.assert_not_awaited()
@@ -1285,6 +1304,39 @@ async def test_move_refuses_an_address_for_another_user(
         await request
     prepare.assert_not_awaited()
     assert session.decision is None
+
+
+@pytest.mark.parametrize(
+    ("shape", "private"), [("private_main", True), ("shared_main", False)]
+)
+async def test_a_private_conversation_asks_for_a_private_landing(
+    in_memory_engine: None, monkeypatch: pytest.MonkeyPatch, shape: Shape, private: bool
+) -> None:
+    """Moving a conversation should not widen who reads it: the channel is asked to
+    list and open its landing as private where it can, and says what it got."""
+    session = (await _crossable(shape)).session
+    far = session.channels["far"]
+    destination = ChannelAddress("far", "dm", "", "ou_alice")
+    prepare = AsyncMock(return_value=destination)
+    listing = AsyncMock(return_value=[])
+    monkeypatch.setattr(far, "prepare_address", prepare)
+    monkeypatch.setattr(far, "list_addresses", listing)
+
+    await session.summon(
+        agent_id="claude",
+        model="opus",
+        hint="Continue",
+        reason="Review",
+        summon="Review the work",
+        destination=destination,
+    )
+    await session.inspect("destinations", "far")
+
+    assert session.lands_privately is private
+    assert prepare.await_args is not None
+    assert prepare.await_args.kwargs == {"private": private}
+    assert listing.await_args is not None
+    assert listing.await_args.kwargs == {"private": private}
 
 
 async def test_inspect_routes_for_an_address_does_not_discover_destinations(
@@ -1342,3 +1394,46 @@ async def test_inspect_browses_a_channel_one_level_at_a_time(
         await capability.inspect(FAKE_CONTEXT, "projects", channel="far")
     with pytest.raises(ModelRetry, match="cannot be browsed"):
         await capability.inspect(FAKE_CONTEXT, "destinations", channel="im")
+
+
+async def test_a_native_call_binds_only_a_session_its_caller_wrote(
+    in_memory_engine: None,
+) -> None:
+    """A native call says which session it came from; the session binds to that
+    session's thread only when the caller has written to it, so naming someone
+    else's session, or one never uploaded, finds nothing to move."""
+    owner = await a_user("luhui")
+    users = UserManager()
+    threads = ThreadManager(users=users)
+    profile = await users.native_profile(CLAUDE_NATIVE_ID, "luhui")
+    assert profile is not None
+    written = await threads.ensure(ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-1"))
+    await threads.ensure(ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-2"))
+    await threads.record_outbound(
+        written,
+        agent_tentacle_id=CLAUDE_NATIVE_ID,
+        segments=[TextSegment(data={"text": "native history"})],
+        sender=UserProfile(
+            channel_user_id=owner.username, user_id=owner.id, name=owner.name
+        ),
+    )
+    session = OctomateSession(
+        channel_routes={},
+        current_agent_id=CLAUDE_NATIVE_ID,
+        users=users,
+        user_profile=profile,
+        native=True,
+        threads=threads,
+    )
+
+    for elsewhere in ("sess-2", "sess-unknown"):
+        with pytest.raises(GatewayRefusal, match="no uploaded history"):
+            await session.attach_native_thread(elsewhere)
+    assert session.thread_id is None
+    await session.attach_native_thread("sess-1")
+
+    assert session.thread_id == written.id
+    assert session.conversation_address == ChannelAddress(
+        CLAUDE_NATIVE_ID, "thread", "sess-1", profile.channel_user_id
+    )
+    assert session.teleport_unavailable is None

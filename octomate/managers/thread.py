@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import noload, selectinload
 from sqlalchemy import and_, or_, select
 
@@ -61,6 +62,18 @@ class BindRefusal(ValueError):
     """A bind refused by policy — a thread that is not work, or one already bound —
     carrying the sentence a model may be told and correct from. A `ValueError`
     still, so nothing that never told the two apart changes."""
+
+
+def keyed(key: ThreadKey) -> list[Expression[bool]]:
+    """The row a key names. A sub-thread shares its chat room's address, so a key
+    names the thread nobody opened — the line the unique index draws."""
+    return [
+        Thread["channel_tentacle_id"] == key.channel_tentacle_id,
+        Thread["chat_type"] == key.chat_type,
+        Thread["chat_id"] == key.chat_id,
+        Thread["channel_thread_id"] == key.channel_thread_id,
+        Thread["parent_thread_id"].is_(None),
+    ]
 
 
 # What a listing can show of an opening line before it stops reading as a name.
@@ -123,15 +136,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             thread = await session.one_or_none(
                 Thread,
                 options=[selectinload(Thread["conversations"]).noload("*")],
-                expressions=[
-                    Thread["channel_tentacle_id"] == key.channel_tentacle_id,
-                    Thread["chat_type"] == key.chat_type,
-                    Thread["chat_id"] == key.chat_id,
-                    Thread["channel_thread_id"] == key.channel_thread_id,
-                    # A sub-thread shares its chat room's address, so a key names
-                    # the thread nobody opened — the line the unique index draws.
-                    Thread["parent_thread_id"].is_(None),
-                ],
+                expressions=keyed(key),
             )
             if thread is None:
                 thread = Thread(
@@ -299,13 +304,14 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def get(
         self,
-        thread_id: uuid.UUID,
+        thread_id: uuid.UUID | ThreadKey,
         *,
         with_messages: bool = True,
         user_id: uuid.UUID | None = None,
     ) -> Thread | None:
-        """The thread by primary key, or None — its handoffs with the row, its
-        ledger only when asked for.
+        """The thread by primary key, or by the key it is filed under, or None —
+        its handoffs with the row, its ledger only when asked for. A key never
+        creates one, unlike `ensure`.
 
         `with_messages=True` is the whole ledger, deliberately: it is what a reader
         rebuilding a thread wants, and it is unbounded in a room, so a caller after
@@ -323,7 +329,11 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         )
         options.append(selectinload(Thread["conversations"]).noload("*"))
         async with async_session() as session:
-            expressions = [Thread["id"] == thread_id]
+            expressions = (
+                keyed(thread_id)
+                if isinstance(thread_id, ThreadKey)
+                else [Thread["id"] == thread_id]
+            )
             if user_id is not None:
                 expressions.append(
                     Thread["messages"].any(
@@ -608,13 +618,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
             if thread is None:
                 raise ValueError(f"unknown thread {target.id}")
-            address = ChannelAddress(
-                channel_tentacle_id=thread.channel_tentacle_id,
-                chat_type=thread.chat_type,
-                chat_id=thread.chat_id,
-                channel_thread_id=thread.channel_thread_id,
-                user_id=profile.channel_user_id,
-            )
+            address = thread.key.address(profile.channel_user_id)
             text = f"Forked from conversation {source.id}.\n\n"
             if thread.project_id is None:
                 text += (
