@@ -550,6 +550,10 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
     def thread_user_id(self, profile: UserProfile) -> str | None:
         return str(profile.user_id) if profile.user_id is not None else None
 
+    def is_shared(self, address: ChannelAddress) -> bool:
+        """Never: every console thread is its one user's."""
+        return False
+
     async def start_thread(self, address: ChannelAddress, hint: str) -> ChannelAddress:
         if (
             address.channel_tentacle_id != self.id

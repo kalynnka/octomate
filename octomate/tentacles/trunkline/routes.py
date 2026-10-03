@@ -34,6 +34,7 @@ remembers it. It is switched through PATCH, or — while the thread is still bei
 composed and has no row to switch — carried on the directive that creates it."""
 
 import uuid
+from dataclasses import replace
 from typing import Annotated, NotRequired, TypedDict
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -223,6 +224,13 @@ async def thread_gateway(
         profile = source_profile
     else:
         profile.channel_tentacle_id = thread.channel_tentacle_id
+    address = ChannelAddress(
+        channel_tentacle_id=thread.channel_tentacle_id,
+        chat_type=thread.chat_type,
+        chat_id=thread.chat_id,
+        channel_thread_id=thread.channel_thread_id,
+        user_id=profile.channel_user_id,
+    )
     return OctomateSession(
         channel_routes=gateway.available_routes(app.channels, app.agents),
         current_agent_id=agent_id,
@@ -232,17 +240,10 @@ async def thread_gateway(
         user_profile=profile,
         thread_id=thread.id,
         native=native,
-        conversation_address=ChannelAddress(
-            channel_tentacle_id=thread.channel_tentacle_id,
-            chat_type=thread.chat_type,
-            chat_id=thread.chat_id,
-            channel_thread_id=thread.channel_thread_id,
-            user_id=profile.channel_user_id,
-            # External thread rows do not retain their parent surface's privacy.
-            # Only known-private sources may export the full history.
-            shared=not native
-            and not isinstance(channel, TrunklineTentacle)
-            and thread.chat_type != "dm",
+        # A thread's row does not say who can read it, so its channel reads that
+        # off the address. A native session has no channel and nobody else in it.
+        conversation_address=replace(
+            address, shared=channel is not None and channel.is_shared(address)
         ),
         threads=threads,
         workspaces=workspaces,

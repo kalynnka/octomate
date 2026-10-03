@@ -404,6 +404,7 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     )
     path = f"/api/trunkline/threads/{thread.id}"
     options = (await client.get(f"{path}/operations")).json()
+    assert options["shared"] is True
     assert options["teleport"]["destinations"] == []
     assert "Shared history" in options["teleport"]["reason"]
     assert any(
@@ -423,6 +424,51 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
         },
     )
     assert response.status_code == 409
+
+
+async def test_external_thread_its_channel_calls_private_exports_history(
+    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(case.far, "is_shared", lambda address: False)
+    thread = await case.app.thread_manager.ensure(
+        ThreadKey("far", "thread", "alice", uuid7().hex)
+    )
+    await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
+    profile = await case.app.users.profile("far", "alice")
+    assert profile is not None
+    await case.app.thread_manager.record_outbound(
+        thread,
+        agent_tentacle_id="first",
+        sender=profile,
+        segments=[TextSegment(data={"text": "private"})],
+    )
+    path = f"/api/trunkline/threads/{thread.id}"
+    options = (await client.get(f"{path}/operations")).json()
+    assert options["shared"] is False
+    assert options["teleport"]["reason"] is None
+    assert any(
+        one["channel_tentacle_id"] == "trunkline"
+        for one in options["teleport"]["destinations"]
+    )
+    # Teleport lists, per channel, the routes that keep this conversation's agent.
+    assert {
+        channel: {route["agent_id"] for route in routes}
+        for channel, routes in options["teleport"]["routes"].items()
+    } == {"trunkline": {"first"}, "far": {"first"}}
+    response = await client.post(
+        f"{path}/teleport",
+        json={
+            "destination": {
+                "channel_tentacle_id": "trunkline",
+                "chat_type": "thread",
+                "chat_id": str(case.owner.id),
+                "user_id": str(case.owner.id),
+            },
+            "hint": "Work in the browser",
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert "run_error" not in response.text, response.text
 
 
 async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:

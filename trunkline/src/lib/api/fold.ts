@@ -50,7 +50,8 @@ export function batchFeelers(
     items.push({
       kind: 'approval',
       title: a.args.title || 'Permission required',
-      desc: a.args.description || JSON.stringify(a.args.args ?? {}),
+      // A description says what the request risks; it never stands in for the request.
+      desc: [a.args.description, JSON.stringify(a.args.args ?? {})].filter(Boolean).join(' '),
       tool: a.args.tool_name,
       meta: `${a.args.tool_name} · approval resumes the run`,
       state: 'waiting',

@@ -51,8 +51,8 @@ if TYPE_CHECKING:
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
 TELEPORT_RECORDED = (
-    "Teleporting — this turn ends here; you continue over there, with your context "
-    "intact."
+    "Teleporting — this turn ends here and the user is asked to approve the move; "
+    "you continue over there with your context intact, or here if they decline."
 )
 
 # The header a served call names its turn's conversation with. It comes from a
@@ -210,10 +210,11 @@ def mount_gateway(
     async def inspect(
         reveal: InspectFacet,
         channel: str | None = None,
+        inside: str | None = None,
         session: OctomateSession = octomate_session,
     ) -> str:
         if reveal == "destinations":
-            addresses = await session.inspect("destinations", channel)
+            addresses = await session.inspect("destinations", channel, inside)
             return (
                 TypeAdapter(list[ChannelAddress]).dump_json(addresses).decode()
                 if addresses
@@ -221,7 +222,9 @@ def mount_gateway(
             )
         # Lines, never the list: FastMCP renders an empty list as no content at all.
         return (
-            "\n".join(str(one) for one in await session.inspect(reveal, channel))
+            "\n".join(
+                str(one) for one in await session.inspect(reveal, channel, inside)
+            )
             or "- (none)"
         )
 

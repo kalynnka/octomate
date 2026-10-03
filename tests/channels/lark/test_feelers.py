@@ -158,6 +158,20 @@ async def test_lark_feelers_send_approval_and_question_cards() -> None:
     assert form_value["action"] == (LarkCardAction.ASK_QUESTION_SUBMIT.value)
 
 
+def test_a_lark_approval_card_says_what_the_request_describes() -> None:
+    approval = _approval()
+    approval.args.description = "Everyone there can read it."
+
+    elements = _json_objects(approval_card_data(approval)["elements"])
+
+    body = elements[0]["content"]
+    assert isinstance(body, str)
+    assert body.startswith("**Tool:** `shell`\nEveryone there can read it.\n")
+    assert "Everyone there" not in str(
+        _json_objects(approval_card_data(_approval())["elements"])[0]["content"]
+    )
+
+
 def test_lark_card_data_and_answer_collection() -> None:
     approval = _approval()
     action = _question(question="Window?", choices=["morning", "night"], hint="UTC")

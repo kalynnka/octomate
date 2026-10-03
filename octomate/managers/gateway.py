@@ -266,18 +266,20 @@ class OctomateSession:
         )
         summon = [one for one in suggestions if routes.get(one.channel_tentacle_id)]
         reason = self.teleport_unavailable
+        # What each channel offers that can carry this conversation on; a channel
+        # with none takes no teleport from another one.
+        carriers = {
+            channel: [
+                route for route in offered if self.is_compatible_agent(route.agent_id)
+            ]
+            for channel, offered in self.channel_routes.items()
+        }
         teleport = [
             one
             for one in suggestions
             if not reason
             and (source is None or not source.shared or one == source)
-            and (
-                one == source
-                or any(
-                    self.is_compatible_agent(route.agent_id)
-                    for route in self.channel_routes.get(one.channel_tentacle_id, [])
-                )
-            )
+            and (one == source or carriers.get(one.channel_tentacle_id))
         ]
         # An empty offer closes nothing by itself: browsing can still find a place.
         if not reason and not teleport:
@@ -286,18 +288,17 @@ class OctomateSession:
                     "Shared history may only move into a sub-thread of the current "
                     "chat, and none can start here."
                 )
-            elif not any(
-                self.is_compatible_agent(route.agent_id)
-                for offered in self.channel_routes.values()
-                for route in offered
-            ):
+            elif not any(carriers.values()):
                 reason = (
                     "No connected agent can import this native history."
                     if self.native
                     else "No connected channel runs this conversation's agent."
                 )
         return ThreadOperations(
-            teleport=OperationAvailability(destinations=teleport, reason=reason),
+            shared=source is not None and source.shared,
+            teleport=OperationAvailability(
+                destinations=teleport, routes=carriers, reason=reason
+            ),
             summon=OperationAvailability(
                 destinations=summon,
                 here=here,
@@ -441,31 +442,52 @@ class OctomateSession:
 
     @overload
     async def inspect(
-        self, reveal: Literal["routes"], channel: str | None = None
+        self,
+        reveal: Literal["routes"],
+        channel: str | None = None,
+        inside: str | None = None,
     ) -> list[AgentRoute]: ...
 
     @overload
     async def inspect(
-        self, reveal: Literal["destinations"], channel: str | None = None
+        self,
+        reveal: Literal["destinations"],
+        channel: str | None = None,
+        inside: str | None = None,
     ) -> list[ChannelAddress]: ...
 
     @overload
     async def inspect(
-        self, reveal: Literal["projects"], channel: str | None = None
+        self,
+        reveal: Literal["projects"],
+        channel: str | None = None,
+        inside: str | None = None,
     ) -> list[ProjectSummary]: ...
 
     async def inspect(
-        self, reveal: InspectFacet, channel: str | None = None
+        self,
+        reveal: InspectFacet,
+        channel: str | None = None,
+        inside: str | None = None,
     ) -> list[AgentRoute] | list[ChannelAddress] | list[ProjectSummary]:
-        """Reveal current or selected-channel routes, suggested addresses, or projects.
+        """Reveal current or selected-channel routes, addresses, or projects.
 
-        Only the requested facet is computed; address discovery consults linked
-        identities and does not limit which addresses execution can validate.
+        Only the requested facet is computed. Destinations with no channel are the
+        suggested addresses; with one they are a level of that channel, the top
+        or what `inside` holds, as `list_addresses` lists it. Neither limits which
+        addresses execution can validate.
         """
+        if reveal == "destinations" and channel is not None:
+            return await self.list_addresses(channel, inside)
+        if inside is not None:
+            raise GatewayRefusal(
+                "`inside` opens a place listed by `destinations` for a channel."
+            )
         if channel is not None:
             if reveal != "routes":
                 raise GatewayRefusal(
-                    "Only routes can be inspected for a specific channel."
+                    "Only routes and destinations can be inspected for a "
+                    "specific channel."
                 )
             target = self.channels.get(channel)
             if target is None:
@@ -654,8 +676,8 @@ class OctomateSession:
                 raise GatewayRefusal(
                     f"{channel.name} has no agent that can import this native history."
                     if self.native
-                    else f"{channel.name} does not run you ({self.current_agent_id}), "
-                    f"and a teleport takes you with it. Carry on here, or "
+                    else f"{channel.name} does not run {self.current_agent_id}, and "
+                    f"a teleport keeps its agent. Stay here, or "
                     f"`{GatewayTool.SUMMON}` an agent it does run."
                 )
             agent_id = route.agent_id

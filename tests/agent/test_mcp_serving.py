@@ -324,6 +324,12 @@ async def test_a_served_call_runs_against_the_turn_its_header_names(
             result = await client.call_tool(
                 "gateway_inspect", {"reveal": "destinations"}
             )
+            # Naming a channel browses it instead, and this one runs nobody.
+            with pytest.raises(ToolError, match="No connected agent serves"):
+                await client.call_tool(
+                    "gateway_inspect",
+                    {"reveal": "destinations", "channel": "im", "inside": "200"},
+                )
 
     addresses = TypeAdapter(list[ChannelAddress]).validate_json(result.data)
     assert addresses == await session.inspect("destinations")

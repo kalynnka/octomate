@@ -57,13 +57,13 @@ Two bridges, both landing on the same cards:
   hook can only allow or deny, the user's answer travels back as the reason for a
   deny, which Claude reads as the answer. Choices are capped at three.
 
-The gateway's [teleport tool](../gateway.md#teleport) follows Claude's normal MCP
-permissions, including bypass mode and existing grants. Octomate relays approval
-requests through the same bridge without adding another confirmation.
-
 The bridge parks the live SDK client while it waits, so an answer is not durable
 across an Octomate restart: restart mid-question and the run is gone, though the
 conversation resumes on the next message.
+
+The gateway's [teleport tool](../gateway.md#teleport) is pre-allowed, so it takes
+neither bridge. The turn ends on the move, and Octomate asks for it once the
+gateway has validated it, on a card that does survive a restart.
 
 ## Native sessions
 

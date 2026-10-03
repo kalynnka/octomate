@@ -462,8 +462,9 @@ export function Composer() {
   const [form, patchForm, seedForm] = useGatewayForm(selThreadId, mode)
   const modeInput = useRef<HTMLTextAreaElement>(null)
   const draftInput = useRef<HTMLTextAreaElement>(null)
-  const inPlace = mode === 'summon' ? availability?.here : null
-  const routeChannel = (inPlace ?? form.destination?.address)?.channel_tentacle_id
+  // Summon stays in this conversation until a destination is picked for it.
+  const inPlace = mode === 'summon' && !form.destination ? availability?.here : null
+  const routeChannel = (form.destination?.address ?? inPlace)?.channel_tentacle_id
   const routes = (routeChannel && availability?.routes[routeChannel]) || []
   const route = pickRoute(routes, form.agent, form.model)
   const { efforts, effort } = routeEffort(route, form.effort)
@@ -476,6 +477,12 @@ export function Composer() {
       : !availability ? 'Checking available destinations…'
         : availability.reason ?? (mode === 'summon' && routeChannel && !routes.length ? 'No other agent runs at that destination.' : undefined)
   const ready = Boolean(request) && !blocked
+  // What a channel with no route for the op says in the destination browser.
+  const carrierless = `does not run ${sesAgent || 'this agent'}`
+  const unrouted = mode === 'teleport' ? carrierless : 'runs no other agent'
+  const exposed = mode === 'teleport' && operations && !operations.shared && form.destination?.address.shared
+    ? `this chat is private — everyone at ${form.destination.path.at(-1)} can read the thread it continues in`
+    : undefined
   const submitGateway = () => {
     if (!mode || blocked) return
     if (!request) {
@@ -510,7 +517,10 @@ export function Composer() {
     ? operations.summon.routes[operations.summon.here.channel_tentacle_id] ?? []
     : Object.values(operations?.summon.routes ?? {}).flat().filter((one, index, all) =>
         all.findIndex((other) => other.agent_id === one.agent_id && other.model === one.model) === index)
-  const surfaces = channelRows(channels ?? [], operations?.teleport.destinations ?? [], selChannel)
+  const surfaces = channelRows(
+    channels ?? [], operations?.teleport.destinations ?? [], selChannel,
+    operations?.teleport.routes ?? {}, carrierless,
+  ).filter((row) => !row.barred)
   const surfaceValue = (row: DestinationRow) => (row.open ? `${row.key}/` : row.key)
   const offered: Argument[] = line?.phase !== 'argument' || closed[line.command.name] ? []
     : line.command.name === 'summon'
@@ -793,9 +803,12 @@ export function Composer() {
               <span style={{ flex: 1 }} />
             </>
           )}
-          <span style={{ ...mono(8), color: 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}>
+          <span
+            role={copy && !blocked && exposed ? 'alert' : undefined}
+            style={{ ...mono(8), color: copy && !blocked && exposed ? 'var(--color-gold)' : 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}
+          >
             {line ? 'runs in trunkline gateway'
-              : copy ? (blocked ?? copy.hint)
+              : copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
                 : `↵ send · ⇧↵ newline · ${ntOn ? '' : '/ commands · '}⇧⇥ posture · **b** _i_ \`code\` \`\`\` fence`}
           </span>
         </div>
@@ -849,13 +862,16 @@ export function Composer() {
                   onEffort={(level) => patchForm({ effort: level })}
                 />
               )}
-              {availability && !inPlace && (
+              {availability && (
                 <>
                   <span aria-hidden="true" className={mode === 'teleport' ? 'trk-gateway-carry' : undefined} style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'var(--color-teal)', padding: '0 3px' }}>→</span>
                   <DestinationPicker
                     threadId={selThreadId}
                     sourceChannel={selChannel}
                     suggestions={availability.destinations}
+                    routes={availability.routes}
+                    unrouted={unrouted}
+                    here={mode === 'summon' && Boolean(availability.here)}
                     selection={form.destination}
                     crumbs={form.crumbs}
                     open={form.menu === 'destination'}

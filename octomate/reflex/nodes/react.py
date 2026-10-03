@@ -42,14 +42,15 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
     resume_batch_id: uuid.UUID | None = None
     # Set by Teleport to resume the same agent where it landed, with its pending
-    # call resolved — against the forked history, or in place.
+    # call resolved — against the forked history, or in place — and by
+    # ResumeDeferred to resume it where it was, when the move was declined.
     resume_results: DeferredToolResults | None = None
 
     @reflex_logfire.instrument("reflex.react", extract_args=False)
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Summon | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Scheme | End[ReflexGraphResult]:
         """React, and leave the turn's workspace in the mirror however it ends.
 
         In a `finally` because a turn that raised still did whatever it did on
@@ -72,7 +73,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def react(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Summon | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Scheme | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -421,13 +422,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         result,
                     )
                 if isinstance(output, DeferredToolRequests):
-                    # `teleport` is resolved by the graph (fork + resume), not a human. The
-                    # suspender classified it by its declared metadata kind and stashed it,
-                    # so route on the typed request instead of re-scanning tool names.
-                    if suspender.teleport is not None:
-                        return Teleport(
-                            request=suspender.teleport, origin=target, agent_id=agent.id
-                        )
                     return End(
                         DeferredResult(
                             requests=output,
@@ -502,7 +496,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 )
 
 
-# React and the three nodes it hands off to name each other in their `run` return
+# React and the two nodes it hands off to name each other in their `run` return
 # hints, and pydantic-graph resolves those hints against this module's globals when
 # the graph is built — so `if TYPE_CHECKING` is not enough, the names must really be
 # here. Importing them at the top would deadlock the cycle (react would be half-built
@@ -510,4 +504,3 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 # exists. `nodes/__init__` imports this module first to keep that order.
 from octomate.reflex.nodes.scheme import Scheme  # noqa: E402
 from octomate.reflex.nodes.summon import Summon  # noqa: E402
-from octomate.reflex.nodes.teleport import Teleport  # noqa: E402

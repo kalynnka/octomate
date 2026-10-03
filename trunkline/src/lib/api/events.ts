@@ -676,19 +676,22 @@ export interface OperationAvailability {
   destinations: ChannelAddress[]
   /** this conversation, when Summon may hand it over in place */
   here: ChannelAddress | null
-  /** agent/model choices keyed by connected channel id */
+  /** what the op can run on each connected channel, keyed by its id: the other
+   *  agents for Summon, this conversation's own for Teleport */
   routes: Record<string, ApiAgentRoute[]>
   reason: string | null
 }
 
 export interface ThreadOperations {
+  /** whether anyone besides its user can read this conversation's surface */
+  shared: boolean
   teleport: OperationAvailability
   summon: OperationAvailability
 }
 
 export interface TeleportBody {
   destination: ChannelAddress
-  /** false only for Summon's in-place handover */
+  /** false only for Summon's in-place handover, which names this conversation */
   new_thread?: boolean
   hint: string
 }

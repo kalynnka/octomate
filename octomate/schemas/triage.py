@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import Annotated, Literal, NamedTuple
 
 from octomate_protocol.gateway import GatewayTool
@@ -184,7 +184,15 @@ class TeleportDecision(BaseModel):
             calls=[
                 ToolCallPart(
                     tool_name=GatewayTool.TELEPORT,
-                    args={"hint": self.hint, "project": self.project, "ref": self.ref},
+                    args={
+                        "hint": self.hint,
+                        "destination": asdict(self.destination)
+                        if self.destination is not None
+                        else None,
+                        "new_thread": self.new_thread,
+                        "project": self.project,
+                        "ref": self.ref,
+                    },
                     tool_call_id=tool_call_id,
                 )
             ],

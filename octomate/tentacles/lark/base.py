@@ -177,6 +177,11 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         await self.ws_client._disconnect()  # type: ignore[attr-defined]
         await super().__aexit__(*exc)
 
+    def is_shared(self, address: ChannelAddress) -> bool:
+        """A one-to-one chat is keyed on the person's open id, `ou_…`, and a topic
+        in one keeps it; a group's chat id is `oc_…`."""
+        return not address.chat_id.startswith("ou_")
+
     async def start_sub_thread(
         self,
         address: ChannelAddress,

@@ -493,6 +493,11 @@ class SlackTentacle(
             return address
         return await self.start_sub_thread(address, opener)
 
+    def is_shared(self, address: ChannelAddress) -> bool:
+        """Slack names a direct message `D…`, and a thread in one, the assistant
+        pane included, keeps that channel id."""
+        return not address.chat_id.startswith("D")
+
     async def start_sub_thread(
         self,
         address: ChannelAddress,

@@ -44,7 +44,7 @@ const refused: OperationAvailability = { destinations: [], here: null, routes: {
 // No suggested address at all: the in-place handover alone keeps Summon open.
 const inPlace: OperationAvailability = { destinations: [], here, routes: { trunkline: routes }, reason: null }
 const elsewhere: OperationAvailability = { destinations: [fresh], here: null, routes: { trunkline: routes, discord: routes }, reason: null }
-const options: ThreadOperations = { teleport: refused, summon: inPlace }
+const options: ThreadOperations = { shared: false, teleport: refused, summon: inPlace }
 const sse = (...events: WireEvent[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
 
 before(async () => {
@@ -114,7 +114,7 @@ test('a destination level is listed on its own, and a refusal keeps its reason',
     error.status === 409 && /cannot be browsed/.test(error.message))
 })
 
-test('summon hands over in place when offered, and otherwise needs an address', () => {
+test('summon opens a thread where one is picked, and otherwise hands over in place when offered', () => {
   const draft = { text: ' Review the patch ', destination: null, route: routes[0], effort: 'high' as const }
   assert.deepEqual(forms.gatewayRequest('summon', inPlace, draft), { action: 'summon', body: {
     destination: here, new_thread: false, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch',
@@ -124,6 +124,11 @@ test('summon hands over in place when offered, and otherwise needs an address', 
   assert.deepEqual(
     forms.gatewayRequest('summon', elsewhere, { ...draft, effort: 'auto', destination: { address: room, path: ['Discord', 'Community', '#general'] } }),
     { action: 'summon', body: { destination: room, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.' } },
+  )
+  // Offered in place, a picked destination still wins: the thread opens there.
+  assert.deepEqual(
+    forms.gatewayRequest('summon', inPlace, { ...draft, destination: { address: room, path: ['Discord', 'Community', '#general'] } }),
+    { action: 'summon', body: { destination: room, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.', effort: 'high' } },
   )
   assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, text: '  ' }), null)
   assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, route: undefined }), null)
@@ -265,7 +270,8 @@ test('the destination picker opens on the connected surfaces and marks what land
   ])
   const picker = (open: boolean, selection: { address: ChannelAddress; path: string[] } | null) =>
     renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
-      threadId: 'source', sourceChannel: 'trunkline', suggestions: [fresh], selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
+      threadId: 'source', sourceChannel: 'trunkline', suggestions: [fresh], routes: { trunkline: routes, discord: routes }, unrouted: 'does not run claude',
+      here: false, selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
     })))
   assert.ok(picker(false, null).includes('choose destination'))
   assert.ok(!picker(false, null).includes('Surfaces'))
@@ -274,7 +280,9 @@ test('the destination picker opens on the connected surfaces and marks what land
   assert.ok(root.includes('a new private thread'))
   assert.ok(root.includes('● here'))
   assert.ok(root.includes('gateway · servers'))
-  assert.ok(root.includes('webhook · destinations'))
+  // Lark has no route for the op, so it is listed and cannot be opened.
+  assert.ok(!root.includes('webhook · destinations'))
+  assert.match(root, /<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*Lark(?:(?!<\/button>).)*does not run claude/)
   assert.ok(root.includes('title="Open Discord"'))
   // Only the surface that lands directly can be the selection at this level.
   assert.equal(root.match(/aria-pressed=/g)?.length, 1)
@@ -283,6 +291,16 @@ test('the destination picker opens on the connected surfaces and marks what land
   assert.ok(chosen.includes('→ Trunkline'))
   queryClient.setQueryData(['channels'], [{ id: 'discord', label: 'Discord', sub: 'gateway', brand: 'blue' }])
   assert.ok(picker(true, null).includes('1 surface<'))
+  // Where staying is offered it is the choice until a destination is picked.
+  const staying = (selection: { address: ChannelAddress; path: string[] } | null) =>
+    renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
+      threadId: 'source', sourceChannel: 'trunkline', suggestions: [], routes: { discord: routes }, unrouted: 'runs no other agent',
+      here: true, selection, crumbs: [], open: true, onOpen() {}, onCrumbs() {}, onSelect() {},
+    })))
+  assert.ok(staying(null).includes('this conversation'))
+  assert.match(staying(null), /aria-pressed="true"[^>]*title="Hand over in place"/)
+  assert.match(staying({ address: room, path: ['Discord', '#general'] }), /aria-pressed="false"[^>]*title="Hand over in place"/)
+  assert.ok(staying(null).includes('1 surface<'))
 })
 
 test('a line is a command only while it can still name a gateway op', () => {

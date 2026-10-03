@@ -14,6 +14,8 @@ from octomate.tentacles.discord.schema import DiscordAddress
 from octomate.tentacles.lark.ink import LarkInk
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.trunkline.base import TrunklineTentacle
+from tests.channels.lark.fakes import FakeLarkInk, lark_channel
+from tests.channels.slack.fakes import FakeSlackInk, slack_channel
 from tests.support.channels import FakeChannelTentacle
 
 
@@ -169,3 +171,26 @@ def test_metadata_and_a_channel_subclass_leave_the_address_the_same() -> None:
     # An address written before the field existed still reads.
     legacy = '{"channel_tentacle_id":"discord","chat_type":"dm","chat_id":"","user_id":"100"}'
     assert TypeAdapter(ChannelAddress).validate_json(legacy).metadata == {}
+
+
+def test_a_channel_tells_who_can_read_a_thread_from_its_address() -> None:
+    slack = slack_channel(FakeSlackInk())
+    lark = lark_channel(FakeLarkInk())
+    web = TrunklineTentacle(
+        "web", Octomate(), config=TrunklineChannelConfig(agents=["first"])
+    )
+    plain = FakeChannelTentacle("chat")
+
+    # A thread keeps the id of the chat it sits in, and a direct chat's id says so.
+    assert not slack.is_shared(ChannelAddress("slack", "thread", "D1", "U1", "17.1"))
+    assert slack.is_shared(ChannelAddress("slack", "thread", "C1", "U1", "17.1"))
+    assert not lark.is_shared(
+        ChannelAddress("lark", "thread", "ou_alice", "ou_alice", "om_1")
+    )
+    assert lark.is_shared(
+        ChannelAddress("lark", "thread", "oc_room", "ou_alice", "om_1")
+    )
+    assert not web.is_shared(ChannelAddress("web", "thread", "owner", "owner", "t1"))
+    # A channel with nothing to read it from takes a thread for shared.
+    assert plain.is_shared(ChannelAddress("chat", "thread", "room", "alice", "t1"))
+    assert not plain.is_shared(ChannelAddress("chat", "dm", "alice", "alice"))

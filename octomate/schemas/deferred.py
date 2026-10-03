@@ -83,6 +83,7 @@ class ApprovalRequest(BaseModel):
 class ApprovalRequestPayload(TypedDict):
     tool_name: str
     args: JsonObject
+    description: str
 
 
 class DeferredQuestionPayload(TypedDict):
@@ -203,21 +204,22 @@ def from_deferred_requests(
             )
             for position, question in enumerate(questions)
         )
-    action_payloads.extend(
-        DeferredApprovalPayload(
-            kind="approval",
-            tool_name=call.tool_name,
-            tool_call_id=call.tool_call_id,
-            args=ApprovalRequestPayload(
+    for call in request.approvals:
+        metadata = cast(JsonObject, request.metadata.get(call.tool_call_id, {}) or {})
+        action_payloads.append(
+            DeferredApprovalPayload(
+                kind="approval",
                 tool_name=call.tool_name,
-                args=cast(JsonObject, call.args_as_dict()),
-            ),
-            metadata=cast(
-                JsonObject, request.metadata.get(call.tool_call_id, {}) or {}
-            ),
+                tool_call_id=call.tool_call_id,
+                args=ApprovalRequestPayload(
+                    tool_name=call.tool_name,
+                    args=cast(JsonObject, call.args_as_dict()),
+                    # What whoever deferred the call wants the card to say about it.
+                    description=str(metadata.get("description") or ""),
+                ),
+                metadata=metadata,
+            )
         )
-        for call in request.approvals
-    )
     return action_payloads
 
 

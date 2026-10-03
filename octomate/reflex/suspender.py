@@ -1,5 +1,5 @@
-"""The reflex graph's deferred suspender: where a run's deferrals go — a teleport
-back to the graph, everything else to a human as a persisted batch."""
+"""The reflex graph's deferred suspender: where a run's deferrals go — to a human
+as a persisted batch, a teleport as the approval of a move the graph performs."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 
 from pydantic import TypeAdapter
+from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -21,6 +22,12 @@ from octomate.schemas.triage import (
 )
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.types.json import JsonObject
+
+TELEPORT_EXPOSURE = (
+    "This conversation is private and the destination is shared: everyone there "
+    "can read the thread it continues in."
+)
 
 
 @dataclass(frozen=True)
@@ -28,8 +35,8 @@ class TeleportRequest:
     """A teleport for the graph to perform: carry the history and resume the agent
     in the new place. One shape for every runtime — an Inkling run defers the
     `teleport` call itself; a runtime a tool result cannot suspend is interrupted
-    on the recorded decision and ends its turn as the same deferral — classified
-    out of the run's `DeferredToolRequests` by metadata kind."""
+    on the recorded decision and ends its turn as the same deferral — read off
+    the deferred call by its metadata kind."""
 
     hint: str
     # The deferred call to resolve into the resumed run.
@@ -42,16 +49,35 @@ class TeleportRequest:
     project: str | None = None
     ref: str | None = None
 
+    @classmethod
+    def of(cls, requests: DeferredToolRequests) -> TeleportRequest | None:
+        """The teleport these requests carry, deferred or awaiting approval."""
+        for call in [*requests.calls, *requests.approvals]:
+            meta: JsonObject = requests.metadata.get(call.tool_call_id, {})
+            if meta.get("kind") != TELEPORT_DEFER_KIND:
+                continue
+            destination = str(meta.get("destination") or "")
+            return cls(
+                tool_call_id=call.tool_call_id,
+                hint=str(meta.get("hint") or ""),
+                new_thread=bool(meta.get("new_thread", True)),
+                project=str(meta.get("project") or "") or None,
+                ref=str(meta.get("ref") or "") or None,
+                destination=TypeAdapter(ChannelAddress).validate_json(destination)
+                if destination
+                else None,
+            )
+        return None
+
 
 @dataclass
 class ReflexSuspender:
     """The reflex graph's `DeferredSuspender`: every deferral a run ends on comes
-    through here once, and each kind goes where it is resolved — a `teleport` to
-    the graph, which performs it and resumes the agent; anything else
-    to a human, persisted as a batch and presented on the channel. React builds
-    it with the run's context; Inkling reaches it through `ResolveDeferred`, a
-    runtime a tool result cannot suspend through the `deferred_suspender` its run
-    was handed.
+    through here once and goes to a human, persisted as a batch and presented on
+    the channel. A `teleport` goes as the approval of the move the gate validated,
+    which the graph performs once granted. React builds it with the run's context;
+    Inkling reaches it through `ResolveDeferred`, a runtime a tool result cannot
+    suspend through the `deferred_suspender` its run was handed.
     """
 
     channel: ChannelTentacle
@@ -66,29 +92,29 @@ class ReflexSuspender:
     thread_id: uuid.UUID | None = None
     emit_on_stream: bool = False
     suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
-    # Set when a run deferred a `teleport` (classified by metadata kind); the dispatch
-    # graph reads this to route to its Teleport node instead of persisting a batch.
-    teleport: TeleportRequest | None = field(default=None, init=False)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
-        # `teleport` declares kind="teleport" in its CallDeferred metadata — the graph
-        # resolves it (fork + resume), not a human. Classify by the declared kind (not
-        # a tool name), stash it typed, and let run1 end so it bubbles to the dispatch.
-        for call in requests.calls:
-            meta = requests.metadata.get(call.tool_call_id, {})
-            if meta.get("kind") == TELEPORT_DEFER_KIND:
-                destination = str(meta.get("destination") or "")
-                self.teleport = TeleportRequest(
-                    tool_call_id=call.tool_call_id,
-                    hint=str(meta.get("hint") or ""),
-                    new_thread=bool(meta.get("new_thread", True)),
-                    project=str(meta.get("project") or "") or None,
-                    ref=str(meta.get("ref") or "") or None,
-                    destination=TypeAdapter(ChannelAddress).validate_json(destination)
-                    if destination
-                    else None,
-                )
-                return None
+        teleport = TeleportRequest.of(requests)
+        if teleport is not None and teleport.tool_call_id is not None:
+            # The gate validated the move before the call deferred, so the card asks
+            # about the place it really goes, and warns where that is more public.
+            call_id = teleport.tool_call_id
+            meta: JsonObject = requests.metadata[call_id]
+            if (
+                teleport.destination is not None
+                and teleport.destination.shared
+                and not self.target_address.shared
+            ):
+                meta = {**meta, "description": TELEPORT_EXPOSURE}
+            calls: list[ToolCallPart] = []
+            approvals = list(requests.approvals)
+            for call in requests.calls:
+                (approvals if call.tool_call_id == call_id else calls).append(call)
+            requests = DeferredToolRequests(
+                calls=calls,
+                approvals=approvals,
+                metadata={**requests.metadata, call_id: meta},
+            )
         with reflex_logfire.span(
             "suspend_for_review",
             run_name=self.run_name,

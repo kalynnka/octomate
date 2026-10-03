@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import dataclass, field, fields
+from dataclasses import field, fields
 from functools import cached_property
 from typing import Annotated, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
 from pydantic import ConfigDict, Field, with_config
+from pydantic.dataclasses import dataclass
 from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
 

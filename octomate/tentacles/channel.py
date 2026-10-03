@@ -439,6 +439,12 @@ class ChannelTentacle(
             return None
         return profile.channel_user_id or None
 
+    def is_shared(self, address: ChannelAddress) -> bool:
+        """Whether anyone besides its user can read this surface, told from the
+        address alone, for a caller that holds a thread's row and no message from
+        it. A thread is taken for shared unless its channel can say otherwise."""
+        return address.chat_type != "dm"
+
     async def suggest_addresses(
         self, profile: UserProfile, source_address: ChannelAddress | None = None
     ) -> list[ChannelAddress]:

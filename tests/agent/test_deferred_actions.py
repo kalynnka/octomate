@@ -202,3 +202,33 @@ async def test_mark_action_presented_noops_for_unknown_action(
     in_memory_engine: AsyncEngine,
 ) -> None:
     await DeferredActionManager().mark_action_presented(uuid4(), "msg-1")
+
+
+async def test_an_approvals_card_description_comes_from_its_metadata(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    conversation = await ConversationManager().ensure(
+        await a_thread(), agent_tentacle_id="inkling"
+    )
+
+    batch = await DeferredActionManager().create_batch(
+        conversation=conversation,
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+        requests=DeferredToolRequests(
+            approvals=[
+                ToolCallPart(tool_name="teleport", args={}, tool_call_id="moved"),
+                ToolCallPart(tool_name="shell", args={}, tool_call_id="ran"),
+            ],
+            metadata={"moved": {"description": "Everyone there can read it."}},
+        ),
+    )
+
+    descriptions = {
+        approval.tool_call_id: approval.args.description for approval in batch.approvals
+    }
+    assert descriptions == {"moved": "Everyone there can read it.", "ran": ""}

@@ -98,6 +98,10 @@ visibility; `user_id` must match the requesting user's linked identity on that
 channel. When no current conversation is attached, supply an explicit address.
 
 `{inspect}` with `reveal="destinations"` suggests addresses without creating anything.
+To look further, add `channel` to browse one connected channel a level at a time:
+an address with `metadata.inside` is a place to open by passing that value as
+`inside`, and one without it can host a new thread unless `metadata.barred` says
+why not. A channel that cannot be browsed says so.
 You can also supply a known address directly; discovery is optional, and each
 operation validates the address independently. Suggestions are not an exhaustive
 list or a guarantee that every spell can use each address.
@@ -289,9 +293,9 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=GatewayTool.SUMMON, retries=2)(self.summon)
         # `retries` to match its siblings: teleport refuses a surface with no
         # sub-thread to open, so it needs the same room to be told and correct.
-        toolset.tool(name=GatewayTool.TELEPORT, retries=2, requires_approval=True)(
-            self.teleport
-        )
+        # No `requires_approval`: the graph asks for the move once the gate has
+        # validated it, the same way for every runtime.
+        toolset.tool(name=GatewayTool.TELEPORT, retries=2)(self.teleport)
         toolset.tool(name=GatewayTool.SCHEME, retries=2)(self.scheme)
         toolset.tool(name=GatewayTool.SEND, retries=2)(self.send)
         toolset.tool(name=GatewayTool.DISMISS, retries=2)(self.dismiss)
@@ -393,7 +397,11 @@ class GatewayCapability(AbstractCapability[None]):
         return str(output)
 
     async def inspect(
-        self, ctx: RunContext[None], reveal: InspectFacet, channel: str | None = None
+        self,
+        ctx: RunContext[None],
+        reveal: InspectFacet,
+        channel: str | None = None,
+        inside: str | None = None,
     ) -> list[AgentRoute] | list[ChannelAddress] | list[ProjectSummary]:
         """Reveal one facet of what this conversation can reach.
 
@@ -402,13 +410,20 @@ class GatewayCapability(AbstractCapability[None]):
                 Summon uses the destination's routes; commission uses the current
                 channel's routes.
                 `destinations` — optional address suggestions, validated independently
-                when used; known addresses need not appear in this list.
+                when used; known addresses need not appear in this list. With
+                `channel`, one level of that channel's addresses instead.
                 `projects` — the projects this deployment can work on, for `teleport`.
-            channel: For `routes`, a connected channel ID from an address. Omit
-                to inspect the current conversation's routes.
+            channel: A connected channel ID from an address. For `routes`, omit it
+                to inspect the current conversation's routes. For `destinations`,
+                name it to browse that channel as the requesting user: an address
+                whose `metadata.inside` is set is a place to open, one without it
+                can host a new thread unless `metadata.barred` says why not.
+            inside: For `destinations` with `channel`, the `metadata.inside` of a
+                listed address, to list what that place holds. Omit it for the
+                channel's top level.
         """
         try:
-            return await self.session.inspect(reveal, channel)
+            return await self.session.inspect(reveal, channel, inside)
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal
 
@@ -479,8 +494,9 @@ class GatewayCapability(AbstractCapability[None]):
         new_thread: bool = True,
     ) -> str:
         """Continue this conversation yourself somewhere else; everything said so
-        far comes with you. This turn ends on it, and you are re-awoken there with
-        your context intact.
+        far comes with you. This turn ends on it and the user is asked to approve
+        the move: you are re-awoken there with your context intact, or here if
+        they decline.
 
         Args:
             hint: The short, user-facing thread-starter message.

@@ -3,7 +3,7 @@ somewhere else and resumes it there."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, GraphRunContext
@@ -33,6 +33,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     request: TeleportRequest
     origin: ResponseTarget
     agent_id: str
+    # The rest of the batch the move was approved in, resumed alongside its call.
+    results: DeferredToolResults = field(default_factory=DeferredToolResults)
 
     @reflex_logfire.instrument("reflex.teleport", extract_args=False)
     async def run(
@@ -45,6 +47,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         if origin.address is None or state.thread is None:
             raise ValueError("Teleport requires a resolved origin and thread")
         origin_address = origin.address
+        source = state.thread
         hint = self.request.hint or "Octomate is continuing this request here."
 
         new_target = origin
@@ -129,10 +132,25 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         sentence = "Continuing the conversation here."
         project = self.request.project
+        carried = (
+            await ctx.deps.workspaces.projects.of(source)
+            if project is None and landed.id != source.id
+            else None
+        )
         if project is not None:
             state.thread = await self.bind(ctx, landed, project)
             sentence = (
                 f"Continuing the conversation here, in the workspace of {project!r}."
+            )
+        elif carried is not None:
+            # The conversation was about a project, and its history is of work in
+            # that tree: the thread it lands in is about the same one, as it stands.
+            state.thread = await ctx.deps.thread_manager.bind(landed.id, carried)
+            await ctx.deps.workspaces.carry(source, state.thread)
+            await ctx.deps.workspaces.open(state.thread.id, carried).prepare()
+            sentence = (
+                "Continuing the conversation here, in a workspace of "
+                f"{carried.name!r} that holds your work as you left it."
             )
         # The agent resumes in another directory either way — a new thread's own
         # workspace, or the project's — and a runtime session may be filed under
@@ -167,8 +185,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             state.user_prompt = f"{sentence}\nCurrent channel address: {new_address}"
             return React()
         return React(
-            resume_results=DeferredToolResults(
-                calls={self.request.tool_call_id: sentence}
+            resume_results=replace(
+                self.results,
+                calls={**self.results.calls, self.request.tool_call_id: sentence},
             )
         )
 

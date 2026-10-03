@@ -146,6 +146,12 @@ in. So the run ends on the teleport, the graph forks the workspace, and the same
 conversation resumes inside it. The `ref` is validated against the mirror before
 the move, because a thread that bound and then could not check out would be stuck.
 
+A teleport that names no project out of a thread that has one carries it. The
+source's tree is snapshotted and its snapshot filed under the landed thread's ref
+as well, so the landed thread's first fork resumes into it the way a pruned
+workspace does: on the same branch, with uncommitted work still uncommitted. The
+two threads then save to their own refs and share nothing.
+
 ## The chat workspace
 
 A process always has a working directory, so a thread with no project still needs

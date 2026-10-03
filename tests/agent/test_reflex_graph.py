@@ -27,6 +27,7 @@ from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
@@ -49,6 +50,8 @@ from octomate.reflex.graph import (
     Route,
     build_reflex_graph,
 )
+from octomate.reflex.nodes.resume_deferred import TELEPORT_DECLINED
+from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.awakes import (
     DeferredActionBatchResponse,
     GatewayNativeSignal,
@@ -105,6 +108,42 @@ async def _run(
     on its own."""
     return await build_reflex_graph(type(entry)).run(
         inputs=entry, state=state, deps=deps
+    )
+
+
+async def _answer_the_move(
+    deps: ReflexDeps,
+    parked: ReflexGraphResult,
+    *,
+    approved: bool = True,
+    beside: DeferredToolResults | None = None,
+) -> ReflexGraphResult:
+    """Answer the card a teleport parks as the person it asks would — with
+    `beside`, the rest of its batch — and run the graph on from that answer."""
+    assert isinstance(parked, DeferredResult)
+    actions = cast(FakeActionManager, deps.action_manager)
+    created = actions.create_calls[-1]
+    teleport = TeleportRequest.of(created.requests)
+    assert teleport is not None
+    assert teleport.tool_call_id is not None
+    actions.batch = FakeDeferredBatch(
+        id=created.batch_id,
+        source_address=created.source_address,
+        target_address=created.target_address,
+        requests=created.requests,
+        deferred_results=DeferredToolResults(
+            calls=beside.calls if beside is not None else {},
+            approvals={teleport.tool_call_id: approved},
+        ),
+        conversation_id=created.conversation.id,
+        agent_tentacle_id=created.agent_tentacle_id,
+        target_mode=created.target_mode,
+        decision=created.decision,
+    )
+    return await _run(
+        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=created.batch_id)),
+        state=ReflexState(),
+        deps=deps,
     )
 
 
@@ -1582,17 +1621,21 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
             NotImplementedError, match="does not support session forking"
         )
     )
+    deps = _summon_deps(im, entry, second, far)
+    parked = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=await deps.thread_manager.ensure(address),
+        ),
+        deps=deps,
+    )
+    # Nothing moves before the person answers.
+    assert far.opened_dms == []
     with expected:
-        result = await _run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=_summon_deps(im, entry, second, far),
-        )
+        result = await _answer_the_move(deps, parked)
 
     if not fork_supported:
         assert len(entry.turns) == 1
@@ -1627,18 +1670,20 @@ async def test_a_teleport_crossing_that_never_opens_refuses_the_move() -> None:
         config=ChannelConfig(type="fake", agents=["other"]),
     )
     target = _source_target(address)
+    deps = _summon_deps(im, entry, second, far)
+    parked = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(),
+            thread=await deps.thread_manager.ensure(address),
+        ),
+        deps=deps,
+    )
 
     with pytest.raises(ValueError, match="nothing was teleported"):
-        await _run(
-            React(),
-            state=ReflexState(
-                source_target=target,
-                target=target,
-                decision=_summon(),
-                thread=_thread(address),
-            ),
-            deps=_summon_deps(im, entry, second, far),
-        )
+        await _answer_the_move(deps, parked)
 
     assert len(entry.turns) == 1
     assert far.sub_threads == []
@@ -1659,16 +1704,22 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
     second = FakeAgent(id="second", reception_output="unused")
     im = _channel(stream=False)
     target = _source_target(address)
+    deps = _summon_deps(im, entry, second)
 
-    result = await _run(
+    parked = await _run(
         React(),
         state=ReflexState(
             source_target=target,
             target=target,
             decision=_summon(),
-            thread=_thread(address),
+            thread=await deps.thread_manager.ensure(address),
         ),
-        deps=_summon_deps(im, entry, second),
+        deps=deps,
+    )
+    # A question cast beside the move is answered on the same batch, and its
+    # answer resumes with the move's sentence.
+    result = await _answer_the_move(
+        deps, parked, beside=DeferredToolResults(calls={"call_question": ["blue"]})
     )
 
     assert not isinstance(result, DeferredResult)
@@ -1677,9 +1728,45 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
     assert resumed.prompt is None
     assert resumed.deferred_results is not None
     assert resumed.deferred_results.calls == {
-        "call_teleport": "Continuing the conversation here."
+        "call_question": ["blue"],
+        "call_teleport": "Continuing the conversation here.",
     }
+    assert resumed.deferred_results.approvals == {}
     assert resumed.address.channel_thread_id == "hint-thread"
+
+
+async def test_a_declined_teleport_resumes_the_agent_where_it_was() -> None:
+    address = _key()
+    entry = FakeAgent(
+        id="other",
+        reception_recorded_teleport="carrying on in a thread",
+        reception_output="staying",
+        allow_reception_run=True,
+    )
+    second = FakeAgent(id="second", reception_output="unused")
+    im = _channel(stream=False)
+    target = _source_target(address)
+    deps = _summon_deps(im, entry, second)
+    thread = await deps.thread_manager.ensure(address)
+
+    parked = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=deps,
+    )
+    result = await _answer_the_move(deps, parked, approved=False)
+
+    assert not isinstance(result, DeferredResult)
+    resumed = entry.turns[-1]
+    assert resumed.deferred_results is not None
+    assert resumed.deferred_results.calls == {"call_teleport": TELEPORT_DECLINED}
+    assert resumed.deferred_results.approvals == {}
+    assert resumed.thread_id == thread.id
+    assert im.sub_threads == []
+    actions = cast(FakeActionManager, deps.action_manager)
+    assert actions.marked[-1][1:] == ("completed", True)
 
 
 async def test_reception_returns_deferred_result_on_human_question() -> None:
@@ -2443,13 +2530,14 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     deps.thread_manager = threads
     target = _source_target(address)
 
-    result = await _run(
+    parked = await _run(
         React(),
         state=ReflexState(
             source_target=target, target=target, decision=_summon(), thread=thread
         ),
         deps=deps,
     )
+    result = await _answer_the_move(deps, parked)
 
     assert not isinstance(result, DeferredResult)
     first, resumed = agent.turns
@@ -2469,6 +2557,84 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     assert (workspace / "readme.md").read_text() == "hello"
     # And the agent's session was relocated to where the resumed run happens.
     assert [cwd for _, cwd in agent.relocated] == [workspace]
+
+
+async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree(
+    in_memory_engine: AsyncEngine, tmp_path: Path
+) -> None:
+    # No project is named: the conversation was about one, so the thread it lands
+    # in is about the same one, with the work as it stood — uncommitted included.
+    im = _channel(stream=False)
+    far = FakeChannelTentacle(
+        id="far", config=ChannelConfig(type="fake", agents=["other"])
+    )
+    root = tmp_path / "inky"
+    root.mkdir()
+    (root / "readme.md").write_text("hello")
+    workspaces = WorkspaceManager(
+        projects=await a_registry(a_project(root)),
+        mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
+        workspaces_dir=tmp_path / "workspaces",
+    )
+    project = workspaces.projects.get("inky")
+    assert project is not None
+    threads = ThreadManager(users=UserManager())
+    address = ChannelAddress(
+        channel_tentacle_id="im",
+        chat_type="thread",
+        chat_id="c",
+        channel_thread_id="t1",
+        user_id="alice",
+    )
+    thread = await threads.ensure(address, project=project)
+    async with workspaces.open(thread.id, project) as workspace:
+        (workspace.path / "work.md").write_text("unfinished")
+    agent = FakeAgent(
+        id="other",
+        reception_teleport="carrying on over there",
+        reception_teleport_destination="far",
+        reception_output="carried on",
+        allow_reception_run=True,
+    )
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": im, "far": far},
+        agent=agent,
+        workspaces=workspaces,
+    )
+    deps.thread_manager = threads
+    # The landing is recorded as a handoff, which names real conversation rows.
+    deps.conversation_manager = ConversationManager()
+    target = _source_target(address)
+
+    parked = await _run(
+        React(),
+        state=ReflexState(
+            source_target=target, target=target, decision=_summon(), thread=thread
+        ),
+        deps=deps,
+    )
+    result = await _answer_the_move(deps, parked)
+
+    assert not isinstance(result, DeferredResult)
+    _first, resumed = agent.turns
+    assert resumed.deferred_results is not None
+    assert resumed.deferred_results.calls == {
+        "call_teleport": "Continuing the conversation here, in a workspace of "
+        "'inky' that holds your work as you left it."
+    }
+    landed = await threads.ensure(resumed.address)
+    assert landed.id != thread.id
+    attributed = await landed.project
+    assert attributed is not None
+    assert attributed.name == "inky"
+    carried = workspaces.existing(landed.id)
+    assert carried is not None
+    assert (carried / "work.md").read_text() == "unfinished"
+    assert "work.md" in await run_git("status", "--porcelain", cwd=carried)
+    # The source is left as it was, in a tree of its own.
+    assert workspaces.existing(thread.id) not in (None, carried)
+    assert [cwd for _, cwd in agent.relocated] == [carried]
 
 
 async def test_fork_follows_its_conversation_without_handoff() -> None:

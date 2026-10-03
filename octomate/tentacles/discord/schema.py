@@ -7,6 +7,7 @@ from pathlib import Path
 
 import discord
 from pydantic import BaseModel
+from pydantic.dataclasses import dataclass as pydantic_dataclass
 from typing_extensions import TypedDict
 
 from octomate.schemas.conversation import AddressMetadata, ChannelAddress
@@ -17,7 +18,7 @@ class DiscordAddressMetadata(AddressMetadata, total=False):
     server: str
 
 
-@dataclass(frozen=True, eq=False)
+@pydantic_dataclass(frozen=True, eq=False)
 class DiscordAddress(ChannelAddress):
     metadata: DiscordAddressMetadata = field(
         default_factory=DiscordAddressMetadata, compare=False

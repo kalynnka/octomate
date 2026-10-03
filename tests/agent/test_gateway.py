@@ -738,7 +738,7 @@ async def test_teleport_will_not_cross_to_a_channel_that_does_not_run_you(
     assert capability.toolset is not None
     teleport = capability.toolset.tools[GatewayTool.TELEPORT].function
 
-    with pytest.raises(ModelRetry, match="does not run you \\(inkling\\)"):
+    with pytest.raises(ModelRetry, match="does not run inkling"):
         await teleport(
             FAKE_CONTEXT,
             hint="carrying on",
@@ -874,7 +874,7 @@ async def test_explicit_teleport_parent_keeps_policy_checks(
             "unlinked": "Link your profile",
             "unknown": "No connected channel",
             "parent": "Parent is inaccessible",
-            "agent": "does not run you",
+            "agent": "does not run",
         }[blocked],
     ):
         await session.teleport(
@@ -1302,3 +1302,43 @@ async def test_inspect_routes_for_an_address_does_not_discover_destinations(
     with pytest.raises(ModelRetry, match="Link your profile"):
         await capability.inspect(FAKE_CONTEXT, "routes", channel="far")
     discover.assert_not_awaited()
+
+
+async def test_inspect_browses_a_channel_one_level_at_a_time(
+    in_memory_engine: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    capability = await _crossable(
+        "private_main", far_routes=(CLAUDE_ROUTE, INKLING_ROUTE)
+    )
+    server = ChannelAddress(
+        "far",
+        "group",
+        "",
+        "ou_alice",
+        shared=True,
+        metadata={"name": "Community", "inside": "200"},
+    )
+    room = ChannelAddress("far", "group", "400", "ou_alice", shared=True)
+    listing = AsyncMock(side_effect=[[server], [room]])
+    monkeypatch.setattr(
+        capability.session.channels["far"].ink, "list_addresses", listing
+    )
+    requester = ChannelAddress("far", "dm", "", "ou_alice")
+
+    assert await capability.inspect(FAKE_CONTEXT, "destinations", channel="far") == [
+        server
+    ]
+    assert await capability.inspect(
+        FAKE_CONTEXT, "destinations", channel="far", inside="200"
+    ) == [room]
+    assert [call.args for call in listing.await_args_list] == [
+        (requester, None),
+        (requester, "200"),
+    ]
+    # `inside` names a place a channel listed, so it needs the channel.
+    with pytest.raises(ModelRetry, match="`inside` opens a place"):
+        await capability.inspect(FAKE_CONTEXT, "destinations", inside="200")
+    with pytest.raises(ModelRetry, match="Only routes and destinations"):
+        await capability.inspect(FAKE_CONTEXT, "projects", channel="far")
+    with pytest.raises(ModelRetry, match="cannot be browsed"):
+        await capability.inspect(FAKE_CONTEXT, "destinations", channel="im")

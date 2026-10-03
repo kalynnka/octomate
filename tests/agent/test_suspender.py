@@ -8,6 +8,7 @@ so the caller can report the suspended run.
 
 from __future__ import annotations
 
+from dataclasses import asdict, replace
 from typing import cast
 
 import pytest
@@ -17,10 +18,15 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.deferred import DeferredActionManager
-from octomate.reflex.suspender import ReflexSuspender
+from octomate.reflex.suspender import (
+    TELEPORT_EXPOSURE,
+    ReflexSuspender,
+    TeleportRequest,
+)
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionCollection,
     DeferredApproval,
     DeferredQuestion,
 )
@@ -142,11 +148,23 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
     assert event.approvals == [approval]
 
 
-@pytest.mark.parametrize("surface", ["dm", "group", "thread"])
-async def test_teleport_deferral_preserves_the_validated_destination(
-    surface: str,
+@pytest.mark.parametrize(
+    ("surface", "source_shared", "warned"),
+    [
+        ("dm", False, False),
+        ("thread", False, False),
+        # Private history into a place others read: the card says so.
+        ("group", False, True),
+        # Already in front of others, so nothing new is exposed.
+        ("group", True, False),
+    ],
+)
+async def test_a_teleport_parks_as_the_approval_of_the_validated_move(
+    surface: str, source_shared: bool, warned: bool
 ) -> None:
-    address = ChannelAddress(
+    """The gate validated the move before the call deferred, so the card asks
+    about where it really goes; a question cast beside it rides the same batch."""
+    destination = ChannelAddress(
         channel_tentacle_id="far",
         chat_type="dm"
         if surface == "dm"
@@ -158,23 +176,38 @@ async def test_teleport_deferral_preserves_the_validated_destination(
         shared=surface == "group",
     )
     decision = TeleportDecision(
-        agent_id="inkling", hint="Continue", destination=address
+        agent_id="inkling", hint="Continue", destination=destination
     )
+    deferral = decision.deferral("move")
+    requests = DeferredToolRequests(
+        calls=[*_requests().calls, *deferral.calls], metadata=deferral.metadata
+    )
+    action_manager = FakeActionManager()
+    source = replace(_key(), shared=source_shared)
     suspender = ReflexSuspender(
         channel=FakeChannelTentacle(),
-        action_manager=DeferredActionManager(),
+        action_manager=cast(DeferredActionManager, action_manager),
         conversation_manager=FakeConversationManager(),
         agent_tentacle_id="inkling",
         run_name="react",
-        source_address=_key(),
-        target_address=_key(),
+        source_address=source,
+        target_address=source,
         target_mode="main",
         decision=None,
+        thread_id=uuid7(),
     )
 
-    assert await suspender.suspend(decision.deferral("move")) is None
+    await suspender.suspend(requests)
 
-    assert suspender.teleport is not None
-    assert suspender.teleport.destination == decision.destination
-    assert suspender.teleport.tool_call_id == "move"
-    assert suspender.suspended_batch_id is None
+    [call] = action_manager.create_calls
+    assert suspender.suspended_batch_id == call.batch_id
+    assert [part.tool_call_id for part in call.requests.calls] == ["call_question"]
+    assert [part.tool_call_id for part in call.requests.approvals] == ["move"]
+    teleport = TeleportRequest.of(call.requests)
+    assert teleport is not None
+    assert teleport.destination == destination
+    [question, approval] = DeferredActionCollection.validate_python(call.requests)
+    assert isinstance(question, DeferredQuestion)
+    assert isinstance(approval, DeferredApproval)
+    assert approval.args.args["destination"] == asdict(destination)
+    assert approval.args.description == (TELEPORT_EXPOSURE if warned else "")

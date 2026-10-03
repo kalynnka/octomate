@@ -79,10 +79,12 @@ def approval_card_data(action: DeferredApproval) -> JsonObject:
     ).decode()
     if len(request_json) > ACTION_CARD_JSON_LIMIT:
         request_json = request_json[:ACTION_CARD_JSON_LIMIT] + "\n... (truncated)"
+    description = f"{action.args.description}\n" if action.args.description else ""
     return cards.simple_card(
         [
             cards.markdown(
                 f"**Tool:** `{action.tool_name}`\n"
+                f"{description}"
                 f"**Request:**\n```json\n{request_json}\n```"
             ),
             cards.divider(),

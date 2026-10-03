@@ -820,6 +820,24 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
             except Exception:
                 logger.exception("the workspace sweep failed")
 
+    async def carry(self, source: Thread, thread: Thread) -> None:
+        """File the tree `source` stands at under `thread` as well, so that
+        `thread`'s first fork resumes into it the way a pruned workspace does —
+        what a conversation moving to another thread takes of its work.
+
+        Saved first: the source's last turn may not have been, and what it left
+        uncommitted has to travel as uncommitted. A source that never forked a
+        workspace has no snapshot, and `thread` then forks the project fresh.
+        """
+        project = await self.projects.of(source)
+        if project is None:
+            return
+        await self.save(source)
+        mirror = self.mirrors.path(project)
+        saved = thread_ref(source.id)
+        if await run_git("ls-remote", str(mirror), saved):
+            await run_git("update-ref", thread_ref(thread.id), saved, cwd=mirror)
+
     async def dismiss(self, thread: Thread) -> bool:
         """Release this thread's workspace on its agent's word that the work in it
         is done — the one release that is asked for rather than swept up — and

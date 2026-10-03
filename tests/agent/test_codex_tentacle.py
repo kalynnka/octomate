@@ -1885,7 +1885,6 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
                 },
-                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             },
         }
     }
@@ -2084,7 +2083,6 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION",
                 },
-                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
         }
     }
@@ -2175,7 +2173,6 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
                 },
-                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
         }
         return BindingFakeThread("thread-new"), "runtime-model"

@@ -15,22 +15,25 @@ validates that every node is reachable from the entry.
 ```mermaid
 flowchart TD
   START([kick]) --> Awake
+  Awake -->|user message| Route
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native summon| Summon
   Awake -->|native scheme| Scheme
   Awake -->|thread summon API| Summon
-  Awake -->|thread teleport API| Teleport
-  Awake -->|user message| Route
+  Awake -->|"thread teleport API (no card)"| Teleport
   Route --> React
   React -->|summon| Summon
   React -->|scheme| Scheme
-  React -->|teleport| Teleport
-  React -->|waiting on a batch| Deferred([End: suspended])
+  React -->|"any deferral, a teleport's included"| Deferred([End: suspended])
   React -->|done| Done([End: result])
   Summon --> React
   Scheme --> React
-  Teleport --> React
-  ResumeDeferred --> React
+  Teleport -->|resumed where it landed| React
+  ResumeDeferred -->|batch still incomplete| Deferred
+  ResumeDeferred -->|already resumed| Done
+  ResumeDeferred -->|teleport approved| Teleport
+  ResumeDeferred -->|"teleport declined: resumed in place"| React
+  ResumeDeferred -->|answers as tool results| React
 ```
 
 ## The nodes
@@ -56,9 +59,9 @@ channel the run will happen on, records the handoff if one is pending, mounts th
 gateway and the user's capabilities, registers the session at the gateway so a
 second concurrent turn is refused, then runs the agent, streaming through the
 channel's feelers or presenting the result once. After the run it reads what the
-gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a teleport
-deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
-plain result ends it. Whatever happened, the turn's workspace is saved.
+gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, any
+deferral ends the graph suspended, a teleport's included, and a plain result ends
+it. Whatever happened, the turn's workspace is saved.
 
 **Summon** performs a summon using its address and `new_thread` flag. It takes
 over the current conversation or asks the destination channel to create a thread,
@@ -71,7 +74,8 @@ as an ordinary hand-off with the brief.
 
 **Teleport** carries the same agent somewhere else: asks the channel to create a
 thread at the prepared address, forks the conversation's messages into the landed thread, binds the
-project and forks its workspace if one was named, relocates the agent's session,
+project and forks its workspace if one was named, or carries the source thread's
+project and the tree it stands at when none was, relocates the agent's session,
 and re-enters `React` with the teleport call answered by a sentence saying where it
 now is. A failed open refuses the move; it does not resume at the source.
 For native history, `Awake` asks the receiving agent to validate the source before
@@ -81,17 +85,20 @@ entering `Teleport`, so an unusable transcript cannot create or announce a desti
 persisted, finds the thread through the conversation rather than the address (a
 chat-room kick ran in a sub-thread), restores the user's profile so the resumed run
 keeps the same capabilities and prompt prefix, and re-enters `React` with the
-batch's answers as tool results and no new prompt.
+batch's answers as tool results and no new prompt. A batch holding a teleport the
+user approved enters `Teleport` instead, carrying the batch's other answers; a
+declined one resumes in place with the call answered as declined.
 
 ## Suspending and resuming
 
 A run ends suspended when its output is a set of deferred tool requests the run
-could not resolve itself. The suspender classifies them by the metadata each
-deferral declares, never by tool name: a `teleport` kind goes back to the graph, and
-everything else becomes a persisted **batch** with every address, mode and decision
-the graph needs to come back. On a streaming channel the batch is handed to the
-timeline as one event to render; otherwise the channel's feelers present the cards
-directly.
+could not resolve itself. They become a persisted **batch** with every address,
+mode and decision the graph needs to come back. A deferral of `teleport` kind,
+known by the metadata it declares rather than its tool name, becomes the approval
+of the move the gateway validated, and its card warns when the run's private
+conversation would land somewhere shared. On a streaming channel the batch is
+handed to the timeline as one event to render; otherwise the channel's feelers
+present the cards directly.
 
 The batch is a row. When the cards are answered, possibly after a restart, the
 channel kicks the graph with the batch id, `ResumeDeferred` rebuilds the state from

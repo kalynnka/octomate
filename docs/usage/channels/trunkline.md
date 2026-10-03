@@ -77,9 +77,15 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Teleport needs a destination and takes an optional note, which opens the
   thread there. Browse destinations one level at a time: the connected
   channels, then what each holds, loaded as you open it. The filter narrows the
-  rows already loaded.
-  Summon uses your draft as the brief and hands this conversation over in
-  place whenever that is offered; otherwise it asks for a destination too. Its
+  rows already loaded. A channel that does not run the conversation's agent is
+  dimmed and says so. When a private conversation is about to land somewhere
+  shared, the composer says who will be able to read the thread it continues in.
+  A conversation about a project lands in a thread about the same project, in a
+  workspace of its own that holds the work as it stood.
+  Summon uses your draft as the brief. Where an in-place handover is offered it
+  is the destination until you pick another: the destination browser then lists
+  "This conversation" first, and any other pick opens a thread there for the
+  next agent. A channel that runs no other agent is dimmed. Its
   chip picks the agent and model from the destination channel's routes, and
   sets effort on a scale that dims the levels the model does not take. The scale
   starts at the route's default effort where the agent reports one. Where it does
@@ -107,15 +113,20 @@ suggested destinations and say that they cannot be browsed.
 The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
 Teleport and Summon destination addresses, an optional `here` address for in-place
 Summon, and agent/model `routes` keyed by connected channel ID, plus reasons when
-unavailable.
+unavailable. Summon's `routes` are the other agents each channel runs; Teleport's
+are the routes that keep the conversation's own agent, so a channel with none
+cannot take it. `shared` says whether anyone besides you can read the
+conversation's surface.
 The header uses this response to enable its choices and refreshes it when you
 open the action controls; an operation is unavailable only when its `reason` is
 set. An empty list of suggestions sets none by itself, since the destination
 browser can still find a place. Teleport's reason is set when the source agent is
 not connected or cannot fork its session, when the conversation is shared and its
 chat can start no sub-thread, or when no connected channel runs an agent that can
-continue the history. Trunkline treats every conversation from another channel as
-shared unless it is a direct message, so a Discord thread cannot teleport.
+continue the history. Whether a thread from another channel is shared is read
+from its address by that channel: a Slack assistant pane, a thread in a Slack DM
+and a Lark one-to-one topic are private and can teleport, while a Discord thread
+and a thread in a Slack channel or Lark group are shared and cannot.
 Summon's reason is set only when no other agent is connected.
 
 `GET /api/trunkline/threads/{id}/channels/{channel}/addresses` lists one level of
@@ -131,7 +142,8 @@ destination browser calls it once per level opened.
 
 `POST /api/trunkline/threads/{id}/teleport` accepts a `ChannelAddress` as
 `destination`, a `new_thread` flag (true by default), and an opening hint.
-The console sends `new_thread=false` only for Summon's in-place handover.
+The console sends `new_thread=false` only for Summon's in-place handover, and a
+picked destination with no flag to open a thread there.
 `POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
 brief (up to 8,000 characters). Both require access to the source thread and
 refuse active gateway turns or pending approvals/questions. They stream native
@@ -141,10 +153,9 @@ failures appear as `run_error` events.
 Native Codex teleport imports the latest fully uploaded completed turn through
 the existing transcript fork, preserving its model and permissions. It uses
 the first compatible Codex agent in the selected destination's route order. Other native harnesses and driven harnesses without
-independent session forking remain unavailable. External thread rows do not
-preserve their parent surface's privacy,
-so the API refuses to export their full history across channels. Summon transfers
-only the supplied brief.
+independent session forking remain unavailable. The API refuses to export a
+shared thread's full history across channels. Summon transfers only the supplied
+brief.
 
 The destination's existing opening message is recorded with the requesting
 user's identity so the new thread appears in their list. Native Codex's fork

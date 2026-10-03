@@ -31,12 +31,15 @@ supported destination.
 
 > Continue this in my private conversation on the other connected channel.
 
-Teleport requires tool approval, handled by the agent's harness according to its
-configured permissions. Automatic review, bypass modes and existing grants keep
-their normal behavior. When the harness asks for a person, Octomate relays that
-request through the existing approval or question cards. Denying approval prevents
-the tool from recording a move. Trunkline's direct Teleport action keeps its
-existing submission flow.
+An agent's teleport ends its turn on an approval card, the same for every agent.
+Octomate asks after the gateway has validated the move, so the card names where
+it really goes, and never asks about a move the gateway refuses. When a
+private conversation would land somewhere shared, such as a Discord channel, the
+card says that everyone there can read the thread it continues in. Approving
+performs the move and resumes the agent there; declining resumes it where it was,
+told that you declined. The card is asked whatever the agent's permission mode,
+bypass modes and earlier grants included. Trunkline's own Teleport is already
+your request, so it asks nothing, and shows the same warning before you submit.
 
 First [link your profiles](../installation/accounts.md#link-your-channel-profiles)
 so Octomate can find you there. Available destinations depend on the channel;
@@ -53,7 +56,13 @@ Teleport and Summon accept a `destination` address and a `new_thread` flag, whic
 defaults to true. A null destination uses the current conversation's address.
 The address uses the same fields as the conversation address:
 connected channel, chat type, chat ID, user ID and optional thread ID. Discovery
-suggests addresses; it is not an allowlist. To choose an agent for an address,
+suggests addresses; it is not an allowlist. To look further, `inspect` with
+`reveal="destinations"` and a `channel` lists one level of that channel as you:
+an address whose `metadata.inside` is set is a place to open by passing that
+value as `inside`, and one without it can host a new thread unless
+`metadata.barred` says why not. Discord lists the servers you share with the bot,
+then the channels you can see in one; a channel that cannot be browsed says so.
+To choose an agent for an address,
 use `inspect` with `reveal="routes"` and its `channel_tentacle_id` as `channel`. The channel validates each submitted
 address before creating anything, and the user must match your linked identity.
 
@@ -62,6 +71,11 @@ conversation on another platform. Its address has `chat_type="group"` and the
 text-channel ID in `chat_id`. Discord checks membership and thread permissions;
 a guild ID, DM, existing thread or forum is refused. Slack and Lark currently
 support their default DM and the current parent, rather than arbitrary chat IDs.
+
+A teleport out of a thread that is about a project lands in a thread about the
+same project, unless you name another: the new thread gets a workspace of its
+own holding the work as it stood, uncommitted changes included, and the source
+keeps its own.
 
 With `new_thread=false`, Summon takes over the current conversation in place.
 Teleport uses that setting only to bind the current thread to a project.

@@ -105,6 +105,8 @@ export interface DestinationRow {
   open?: Crumb
   /** set on an address to land in */
   address?: ChannelAddress
+  /** set on the choice to land nowhere and stay in this conversation */
+  stay?: boolean
   /** why the address cannot be picked */
   barred?: string
 }
@@ -116,12 +118,19 @@ const LEVELS: Record<string, { many: string; one: string }[]> = {
 }
 export const level = (channel: string, depth: number) => LEVELS[channel]?.[depth] ?? { many: 'destinations', one: 'destination' }
 
-/** The browser's first level: each connected channel, to open or to land in. */
-export function channelRows(channels: ChannelMeta[], suggestions: ChannelAddress[], sourceChannel: string): DestinationRow[] {
+/**
+ * The browser's first level: each connected channel, to open or to land in.
+ * A channel the op has no route on is barred, with `unrouted` saying why.
+ */
+export function channelRows(
+  channels: ChannelMeta[], suggestions: ChannelAddress[], sourceChannel: string,
+  routes: Record<string, ApiAgentRoute[]>, unrouted: string,
+): DestinationRow[] {
   return channels.map((channel) => {
     // A channel that lands straight in a thread of its own has nothing to open.
     const direct = suggestions.find((one) => one.channel_tentacle_id === channel.id && one.chat_type === 'thread')
     const row = { key: channel.id, label: channel.label, glyph: channel.label[0], brand: channel.brand, here: channel.id === sourceChannel }
+    if (!routes[channel.id]?.length) return { ...row, sub: unrouted, barred: unrouted }
     if (direct) return { ...row, sub: 'a new private thread', address: direct }
     return { ...row, sub: `${channel.sub} · ${level(channel.id, 0).many}`, open: { label: channel.label, channel: channel.id } }
   })
@@ -168,8 +177,8 @@ export function sameAddress(a: ChannelAddress, b: ChannelAddress): boolean {
 
 /**
  * The request the form stands for, or null while it is missing a part.
- * Summon hands this conversation over in place whenever that is offered, and
- * needs a destination only when it is not.
+ * Summon opens a thread at the destination picked; with none picked it hands
+ * this conversation over in place, where that is offered.
  */
 export function gatewayRequest(
   action: GatewayAction,
@@ -181,13 +190,13 @@ export function gatewayRequest(
     if (!form.destination) return null
     return { action, body: { destination: form.destination.address, hint: text || HINTS.teleport } }
   }
-  const destination = availability.here ?? form.destination?.address
+  const destination = form.destination?.address ?? availability.here
   if (!destination || !form.route || !text) return null
   return {
     action,
     body: {
       destination,
-      ...(availability.here ? { new_thread: false } : {}),
+      ...(form.destination ? {} : { new_thread: false }),
       agent_id: form.route.agent_id,
       model: form.route.model,
       brief: text,

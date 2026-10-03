@@ -41,6 +41,7 @@ from claude_agent_sdk import (
 from claude_agent_sdk.types import SystemPromptPreset
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -733,14 +734,18 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         )
         # The turn's server, mounted in process with the session closed over —
         # identity by closure, nothing on the wire names it. Its tools take the
-        # normal tool-approval route like any other MCP tool; deliberately
-        # nothing goes into `allowed_tools`.
+        # normal tool-approval route like any other MCP tool, except `teleport`:
+        # the graph asks for that move itself, once the gate has validated it.
         mcp_servers: dict[str, McpServerConfig] = {}
+        allowed_tools: list[str] = []
         if octomate_session is not None:
             mcp_servers[OCTOMATE_SERVER_NAME] = await octomate_mcp_server(
                 octomate_session,
                 self.octomate.thread_manager,
                 manager=self.octomate.mcp,
+            )
+            allowed_tools.append(
+                f"mcp__{OCTOMATE_SERVER_NAME}__{gateway_tool(GatewayTool.TELEPORT)}"
             )
         appended = "\n\n".join(
             part
@@ -779,6 +784,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             resume=conversation.external_id,
             session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
+            allowed_tools=allowed_tools,
             hooks={
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])

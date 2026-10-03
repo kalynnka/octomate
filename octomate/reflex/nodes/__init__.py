@@ -1,8 +1,8 @@
 """One module per reflex node.
 
 `react` is imported first and deliberately: it closes the import cycle it shares
-with `summon`, `scheme`, and `teleport` at the bottom of its own module, so it has
-to be the module that starts the chain.
+with `summon` and `scheme` at the bottom of its own module, so it has to be the
+module that starts the chain.
 """
 
 from octomate.reflex.nodes.awake import Awake
