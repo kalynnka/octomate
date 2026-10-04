@@ -60,6 +60,8 @@ async def case(
         octomate,
         config=CodexConfig(runtime=RuntimeConfig(env={"CODEX_HOME": str(home)})),
     )
+    # The model the native session ran, which its fork resumes on.
+    tentacle.models = {"openai:gpt-6-luna": "gpt-6-luna"}
     owner = await a_user()
     source_thread = await octomate.thread_manager.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", str(owner.id), uuid7().hex)

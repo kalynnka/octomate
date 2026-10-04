@@ -542,17 +542,22 @@ def build_trunkline_router(
                 status_code=503,
                 detail=f"No agent here drives a fork of {runtime.native_id}",
             )
+        sender = UserProfile(
+            channel_tentacle_id=channel.id,
+            channel_user_id=str(user.id),
+            user_id=user.id,
+            name=user.name,
+            nickname=user.nickname,
+        )
+        # With its runs, which name the turn the fork takes and the model it ran.
+        source = await octomate.conversations.get(sources[-1].id)
         try:
+            # Before the thread exists, so a refusal leaves nothing behind.
+            await agent.validate_fork(source, sender=sender)
             return await agent.fork(
-                sources[-1],
+                source,
                 ThreadKey(channel.id, "thread", str(user.id), uuid7().hex),
-                sender=UserProfile(
-                    channel_tentacle_id=channel.id,
-                    channel_user_id=str(user.id),
-                    user_id=user.id,
-                    name=user.name,
-                    nickname=user.nickname,
-                ),
+                sender=sender,
             )
         except FileNotFoundError as error:
             raise HTTPException(status_code=404, detail="No conversation") from error

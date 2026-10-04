@@ -148,6 +148,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     config: ClaudeCodeConfig = field(init=False)
     native_id: ClassVar[str] = CLAUDE_NATIVE_ID
+    # Claude Code's own names for models, such as `opus`, to the catalog entry each
+    # runs now, so a pin saved under one still finds its model.
+    model_aliases: dict[str, str] = field(init=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -193,6 +196,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             weakref.WeakValueDictionary()
         )
         self.models = {}
+        self.model_aliases = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
@@ -611,8 +615,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             provider = "anthropic"
         models: dict[str, Model | str] = {}
         claims: dict[str, Claim] = {}
+        aliases: dict[str, str] = {}
         for model in info.models:
-            key = f"{provider}:{model.value}"
+            # Named by the model it runs, so a pinned conversation keeps that model
+            # when Claude Code's own names move on; the first entry describes it.
+            resolved = model.resolved_model or model.value
+            key = f"{provider}:{resolved}"
+            aliases[model.value] = key
+            if key in models:
+                continue
             configured = self.config.claims.get(key)
             if model.supported_effort_levels is not None:
                 efforts: tuple[ThinkingEffort, ...] = tuple(
@@ -625,13 +636,34 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 efforts = ()
             else:
                 efforts = configured.efforts if configured else ()
-            models[key] = model.value
+            models[key] = resolved
             claims[key] = Claim(
                 model.description
                 or (configured.ability if configured else model.display_name),
                 efforts,
             )
         self.set_model_catalog(models, claims)
+        self.model_aliases = aliases
+
+    def served_model(self, name: str) -> str | None:
+        """An entry by its own name, by a name Claude Code itself uses (`opus`,
+        `anthropic:opus[1m]`), or by the model id a transcript records, which
+        drops the context-window suffix an entry may carry: the larger window
+        takes whatever history there is."""
+        if name in self.models:
+            return name
+        bare = name.rpartition(":")[2]
+        alias = self.model_aliases.get(bare) or self.model_aliases.get(
+            bare.partition("[")[0]
+        )
+        if alias is not None:
+            return alias
+        windows = [
+            key
+            for key, model in self.models.items()
+            if str(model).partition("[")[0] == bare
+        ]
+        return max(windows, key=lambda key: "[" in key, default=None)
 
     async def __aenter__(self) -> ClaudeCodeTentacle:
         await self.discover_models()

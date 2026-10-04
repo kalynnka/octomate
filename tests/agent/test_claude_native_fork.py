@@ -158,6 +158,8 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
         return SimpleNamespace(session_id="forked-session")
 
     monkeypatch.setattr(claude_base, "fork_session", fork_session)
+    # The model the session's turns ran, as a transcript records it.
+    tentacle.models = {"anthropic:claude-opus-4-8": "claude-opus-4-8"}
     await tentacle.validate_fork(source, sender=sender)
 
     landed = await tentacle.fork(
@@ -172,6 +174,32 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
     [copy] = await octomate.conversations.for_thread(landed.id)
     assert copy.agent_tentacle_id == "claude"
     assert copy.external_id == "forked-session"
+
+
+async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork() -> None:
+    """Refused while nothing has moved: resumed here, the session could only run
+    on a model its history was never written on."""
+    octomate, tentacle, sender = await a_native_session()
+    assert sender.user_id is not None
+    tailer = tentacle.session_tailer
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, sender)
+    conversation = state.conversation
+    assert conversation is not None
+    kept = 0
+    for agent_id, start, end, line in frames(TURN_ONE + TURN_TWO):
+        await tailer.feed_remote(state, agent_id, line, start, end)
+        kept = await tentacle.keep_transcript(
+            conversation,
+            StreamLine(start=start, end=end, line=line),
+            kept,
+            owner_id=sender.user_id,
+        )
+    await tailer.finish_remote(state)
+    source = await octomate.conversations.get(conversation.id)
+    tentacle.models = {"anthropic:claude-sonnet-5-5": "claude-sonnet-5-5"}
+
+    with pytest.raises(ValueError, match="'claude-opus-4-8', which 'claude' does not"):
+        await tentacle.validate_fork(source, sender=sender)
 
 
 async def test_a_native_session_with_nothing_kept_cannot_fork() -> None:

@@ -551,6 +551,84 @@ async def test_models_are_discovered_on_connect(
         assert tentacle.default_model is None
 
 
+class PickerClaudeClient(FakeClaudeClient):
+    """Claude Code's picker as it lists it: its own names, each with the model it
+    runs, two of them running the same one."""
+
+    async def get_server_info(self) -> JsonObject:
+        return {
+            "models": [
+                {
+                    "value": "default",
+                    "resolvedModel": "claude-opus-5-5",
+                    "displayName": "Default (recommended)",
+                    "description": "Opus 5.5 · Best for everyday, complex tasks",
+                },
+                {
+                    "value": "opus",
+                    "resolvedModel": "claude-opus-5-5",
+                    "displayName": "Opus 5.5",
+                    "description": "For complex work and everyday tasks",
+                },
+                {
+                    "value": "opus[1m]",
+                    "resolvedModel": "claude-opus-5-5[1m]",
+                    "displayName": "Opus 5.5 (1M context)",
+                },
+                {
+                    "value": "sonnet",
+                    "resolvedModel": "claude-sonnet-5-5",
+                    "displayName": "Sonnet 5.5",
+                },
+            ],
+            "account": {"apiProvider": "firstParty"},
+        }
+
+
+async def test_the_catalog_names_each_model_by_what_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", PickerClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        assert tentacle.models == {
+            "anthropic:claude-opus-5-5": "claude-opus-5-5",
+            "anthropic:claude-opus-5-5[1m]": "claude-opus-5-5[1m]",
+            "anthropic:claude-sonnet-5-5": "claude-sonnet-5-5",
+        }
+        # Two names for one model are one entry, described by the first.
+        assert tentacle.claims["anthropic:claude-opus-5-5"].ability == (
+            "Opus 5.5 · Best for everyday, complex tasks"
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "served"),
+    [
+        ("anthropic:claude-sonnet-5-5", "anthropic:claude-sonnet-5-5"),
+        # A pin saved under Claude Code's own name finds what that name runs now,
+        # with or without its provider, and one whose window is gone too.
+        ("anthropic:default", "anthropic:claude-opus-5-5"),
+        ("opus[1m]", "anthropic:claude-opus-5-5[1m]"),
+        ("anthropic:sonnet[1m]", "anthropic:claude-sonnet-5-5"),
+        # A transcript records the id without the window; the larger one wins.
+        ("claude-opus-5-5", "anthropic:claude-opus-5-5[1m]"),
+        ("claude-sonnet-5-5", "anthropic:claude-sonnet-5-5"),
+        ("claude-opus-4-8", None),
+        ("", None),
+    ],
+)
+async def test_a_stored_model_name_finds_the_entry_it_means(
+    monkeypatch: pytest.MonkeyPatch, name: str, served: str | None
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", PickerClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        assert tentacle.served_model(name) == served
+
+
 def test_build_structured_result_validates_into_model() -> None:
     accumulator = ClaudeRunAccumulator()
     accumulator.structured_output = _SUMMON_OUTPUT

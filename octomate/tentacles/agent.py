@@ -230,6 +230,18 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Inkling's configured first model; harnesses override with native defaults."""
         return next(iter(self.models), None)
 
+    def served_model(self, name: str) -> str | None:
+        """The catalog entry a stored model name means: the entry itself, or, for
+        a name saved without its provider, the one entry it can be. None when this
+        agent serves no such model."""
+        if name in self.models:
+            return name
+        if name and ":" not in name:
+            matches = [key for key in self.models if key.partition(":")[2] == name]
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
     # waiter, instead of resuming durably through the triage graph. In-process
@@ -334,10 +346,17 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         )
 
     async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
-        """Refuse unusable native history before a destination is created."""
+        """Refuse unusable native history before a destination is created,
+        including a session last run on a model this agent does not serve."""
         if sender.user_id is None:
             raise ValueError("A native fork requires a registered owner")
-        await self.read_fork_transcript(source, owner_id=sender.user_id)
+        _, completed = await self.read_fork_transcript(source, owner_id=sender.user_id)
+        model = completed.model_name
+        if model is not None and self.served_model(model) is None:
+            raise ValueError(
+                f"This session last ran {model!r}, which {self.id!r} does not offer "
+                "here; the server's runtime needs updating to continue it."
+            )
 
     async def read_fork_transcript(
         self, source: Conversation, *, owner_id: uuid.UUID

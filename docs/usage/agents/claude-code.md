@@ -22,9 +22,10 @@ tentacles:
 ```
 
 The harness supplies the model catalog: at startup Octomate asks the CLI for its
-models and the account's provider, and keys each as `<provider>:<model>`, with
-`anthropic` for a first-party login. Descriptions and supported efforts come from
-the same call where the CLI reports them.
+models and the account's provider, and keys each as `<provider>:<model>` by the
+model it runs, such as `anthropic:claude-opus-5-5`. Descriptions and supported
+efforts come from the same call where the CLI reports them. The CLI is the one
+the Claude Agent SDK bundles, so the models on offer follow the SDK's version.
 
 ## Driven runs
 

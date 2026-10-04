@@ -214,13 +214,18 @@ async def test_a_native_claude_thread_forks_through_the_claude_agent(
     landed = await app.thread_manager.ensure(
         ThreadKey("trunkline", "thread", str(owner.id), "claude-fork")
     )
+    validate = AsyncMock()
     fork = AsyncMock(return_value=landed)
+    monkeypatch.setattr(ClaudeCodeTentacle, "validate_fork", validate)
     monkeypatch.setattr(ClaudeCodeTentacle, "fork", fork)
 
     response = await client.post(f"/api/trunkline/threads/{source.id}/fork")
 
     assert response.status_code == 201, response.text
     assert response.json()["id"] == str(landed.id)
+    # Checked before the thread it lands in is made, on the same conversation.
+    assert validate.await_args is not None
+    assert validate.await_args.args[0].id == conversation.id
     assert fork.await_args is not None
     assert fork.await_args.args[0].id == conversation.id
     case.fork.assert_not_awaited()
@@ -286,6 +291,20 @@ async def test_failed_fork_does_not_publish_a_destination(
     response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
     assert response.status_code == 409
     assert "No completed Codex turn" in response.json()["detail"]
+    listed = await client.get("/api/trunkline/threads")
+    assert [row["id"] for row in listed.json()] == [str(case.source.thread_id)]
+
+
+async def test_a_session_on_a_model_no_agent_here_offers_is_not_forked(
+    case: ForkCase, client: httpx.AsyncClient
+) -> None:
+    case.tentacle.models = {"openai:gpt-6-sol": "gpt-6-sol"}
+
+    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
+
+    assert response.status_code == 409
+    assert "'gpt-6-luna', which 'codex' does not offer" in response.json()["detail"]
+    case.fork.assert_not_awaited()
     listed = await client.get("/api/trunkline/threads")
     assert [row["id"] for row in listed.json()] == [str(case.source.thread_id)]
 

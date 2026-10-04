@@ -97,9 +97,10 @@ selected destination must expose an agent of the same runtime; its first
 compatible configured route handles the import, and the history continues there
 in a session Octomate drives.
 
-Native teleport checks transcript ownership, the completed turn, its permissions
-and import metadata before opening or announcing a destination. Missing or
-unusable history is refused without creating a thread.
+Native teleport checks transcript ownership, the completed turn, its permissions,
+its model and import metadata before opening or announcing a destination. Missing
+or unusable history, or a model the receiving agent does not offer, is refused
+without creating a thread.
 
 A conversation can cross to a new destination only when its current conversation
 is private. For a task that began in a group,
