@@ -226,14 +226,19 @@ async def test_only_a_thread_binds_and_a_dm_is_told_to_open_one(
     assert not inky(harness).exists()
 
 
-async def test_a_thread_binds_once(tmp_path: Path) -> None:
+@pytest.mark.parametrize("new_thread", [False, True])
+async def test_a_thread_about_a_project_names_none(
+    tmp_path: Path, new_thread: bool
+) -> None:
+    # A teleport carries the thread's project wherever it lands, so naming one is
+    # either a switch or a fresh tree that would drop the work: refused both ways.
     harness = await a_harness(tmp_path)
     project = harness.workspaces.projects.get("inky")
     assert project is not None
     await harness.threads.bind(harness.thread.id, project)
 
-    with pytest.raises(GatewayRefusal, match="binds once"):
-        await harness.session.teleport(hint="h", new_thread=False, project="inky")
+    with pytest.raises(GatewayRefusal, match="never switches projects"):
+        await harness.session.teleport(hint="h", new_thread=new_thread, project="inky")
 
 
 async def test_a_bound_threads_agent_may_dismiss_its_workspace(tmp_path: Path) -> None:

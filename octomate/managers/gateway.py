@@ -625,15 +625,17 @@ class OctomateSession:
         somewhere else, its history with it. How the move happens is the graph's:
         the run ends on the decision and the Teleport node performs it.
 
-        A `project` makes the move one into that project's workspace: the thread
-        landed in is bound to it — a new sub-thread or crossing, or this thread
-        when `new_thread` is false, the one case a teleport may stay put. The
-        project and the ref are validated here, where a refusal reaches the model;
-        the binding itself is the graph's, on the thread that turns out to be
-        landed in. Binding is a trust act (a project's own `AGENTS.md` reaches the
-        agent as instructions), so it takes a registered user; only a thread binds,
-        and once — so staying put is refused for a DM or a group and for a thread
-        already about a project, before a mirror is synced for nothing.
+        A thread about a project carries it: the graph lands the move in a thread
+        about the same project, with the work as it stands, so a teleport never
+        switches one and naming a project there is refused. A `project` binds a
+        thread about none: the thread landed in — a new sub-thread or crossing,
+        or this thread when `new_thread` is false, the one case a teleport may
+        stay put. The project and the ref are validated here, where a refusal
+        reaches the model; the binding itself is the graph's, on the thread that
+        turns out to be landed in. Binding is a trust act (a project's own
+        `AGENTS.md` reaches the agent as instructions), so it takes a registered
+        user; only a thread binds, so staying put is refused for a DM or a group,
+        before a mirror is synced for nothing.
 
         Native history requires a stored thread and a runtime that can import its
         uploaded transcript. Anonymous native tool sessions still cannot teleport."""
@@ -658,6 +660,29 @@ class OctomateSession:
                 "This session speaks for no registered user, and binding a thread to "
                 "a project is a registered user's act."
             )
+        if project is not None:
+            if self.thread_id is None or self.threads is None:
+                raise RuntimeError(
+                    "a teleport naming a project needs the thread this turn is in, "
+                    "and the ledger it is written to"
+                )
+            thread = await self.threads.get(self.thread_id)
+            if thread is None:
+                raise RuntimeError(f"thread {self.thread_id} vanished")
+            current = await thread.project
+            if current is not None:
+                raise GatewayRefusal(
+                    f"This thread is about {current.name!r}, and a teleport carries "
+                    "it: the thread you land in is about the same project, with the "
+                    "work as it stands. A teleport never switches projects, so omit "
+                    "`project`."
+                )
+            if not new_thread and thread.kind not in ATTRIBUTABLE_KINDS:
+                raise GatewayRefusal(
+                    f"This conversation is a {thread.kind}, and a DM or a group chat "
+                    "outlives every project in it — only a thread binds. Teleport "
+                    f"with `new_thread=true` to open one about {project!r}."
+                )
         if not new_thread:
             if destination != self.conversation_address:
                 raise GatewayRefusal("Only the current conversation can be reused.")
@@ -665,27 +690,6 @@ class OctomateSession:
                 raise GatewayRefusal(
                     "A teleport that stays put is you carrying on. Name a project to "
                     "bind this thread to, or somewhere to go."
-                )
-            if self.thread_id is None or self.threads is None:
-                raise RuntimeError(
-                    "a teleport that binds this thread needs the thread this turn "
-                    "is in, and the ledger it is written to"
-                )
-            thread = await self.threads.get(self.thread_id)
-            if thread is None:
-                raise RuntimeError(f"thread {self.thread_id} vanished")
-            if thread.kind not in ATTRIBUTABLE_KINDS:
-                raise GatewayRefusal(
-                    f"This conversation is a {thread.kind}, and a DM or a group chat "
-                    "outlives every project in it — only a thread binds. Teleport "
-                    f"with `new_thread=true` to open one about {project!r}."
-                )
-            current = await thread.project
-            if current is not None:
-                raise GatewayRefusal(
-                    f"This thread is already about {current.name!r}, and a thread "
-                    "binds once — a different project is a different thread, which "
-                    "`new_thread=true` opens."
                 )
         else:
             source = self.conversation_address

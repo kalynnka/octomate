@@ -81,9 +81,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   dimmed and says so. When a private conversation is about to land somewhere
   shared, the composer says who will be able to read the thread it continues in.
   A conversation about a project lands in a thread about the same project, in a
-  workspace of its own that holds the work as it stood. The project picker
-  beside the agent chip files the landed thread under another project instead,
-  starting from a branch, tag or commit you type, or its default branch.
+  workspace of its own that holds the work as it stood; a teleport never
+  switches projects.
   Summon uses your draft as the brief. Where an in-place handover is offered it
   is the destination until you pick another: the destination browser then lists
   "This conversation" first, and any other pick opens a thread there for the
@@ -147,9 +146,8 @@ suggestion: it is validated again when Teleport or Summon submits it. The
 destination browser calls it once per level opened.
 
 `POST /api/trunkline/threads/{id}/teleport` accepts a `ChannelAddress` as
-`destination`, a `new_thread` flag (true by default), an opening hint, and an
-optional `project` with the `ref` its workspace starts from. A native session's
-teleport refuses a `project`: its import keeps the project the session is about.
+`destination`, a `new_thread` flag (true by default), and an opening hint. The
+thread it lands in is about the source's project, when the source has one.
 The console sends `new_thread=false` only for Summon's in-place handover, and a
 picked destination with no flag to open a thread there.
 `POST /api/trunkline/threads/{id}/summon` also requires an agent, model and

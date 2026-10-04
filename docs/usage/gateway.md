@@ -77,12 +77,14 @@ default DM, the current parent, and any channel or group you and the bot are bot
 in; a thread there is read by its members.
 
 A teleport out of a thread that is about a project lands in a thread about the
-same project, unless you name another: the new thread gets a workspace of its
+same project, for any agent Octomate drives: the new thread gets a workspace of its
 own holding the work as it stood, uncommitted changes and ignored files such as
-an `.env` included, on a branch of its own, and the source keeps its own.
+an `.env` included, on a branch of its own, and the source keeps its own. A
+teleport never switches projects; asking for another one is refused.
 
 With `new_thread=false`, Summon takes over the current conversation in place.
-Teleport uses that setting only to bind the current thread to a project.
+Teleport uses that setting only to bind a current thread that is about no
+project.
 Neither operation reuses an unrelated existing conversation. A failed thread
 creation does not silently turn into an in-place operation.
 
@@ -109,7 +111,8 @@ names its thread on every call, and Claude Code has it stamped in by the
 session's own permission prompt is the approval, so no card follows, and the move
 starts at once. A session whose history Octomate has not received yet is refused.
 
-You can also ask the agent to use a project before starting file work:
+In a conversation about no project, you can also ask the agent to use one before
+starting file work:
 
 > Continue this task in the website project, starting from the release branch.
 

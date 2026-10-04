@@ -133,10 +133,6 @@ class TeleportBody(TypedDict):
     destination: ChannelAddress
     new_thread: NotRequired[bool]
     hint: Annotated[str, Field(min_length=1, max_length=1_000)]
-    # The project the landed thread is about, and the ref its workspace starts
-    # from; left out, a project thread's own project is carried.
-    project: NotRequired[str | None]
-    ref: NotRequired[str | None]
 
 
 class SummonBody(TypedDict):

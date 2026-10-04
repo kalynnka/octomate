@@ -508,8 +508,10 @@ class GatewayCapability(AbstractCapability[None]):
                 the current thread to a project without opening another one.
                 For creation, the address must have no `channel_thread_id`.
             project: A project's name, copied exactly from `inspect`
-                (`reveal="projects"`): the thread you land in is bound to it, and
-                you resume in its workspace, where work is kept.
+                (`reveal="projects"`), for a conversation about no project: the
+                thread you land in is bound to it, and you resume in its workspace,
+                where work is kept. A conversation about a project carries it
+                wherever it goes, so omit this there.
             ref: The branch, tag or commit that workspace starts from; omit it for
                 the project's default branch.
         """

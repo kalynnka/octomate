@@ -226,26 +226,6 @@ async def test_a_turn_the_agent_moved_ends_where_it_landed(
     assert landing["destination"]["channel_tentacle_id"] == "far"
 
 
-async def test_teleport_names_the_project_the_landed_thread_is_about(
-    case: Case, client: httpx.AsyncClient
-) -> None:
-    """The console can file the landed thread under a project, validated like an
-    agent's: one not registered here is refused before anything moves."""
-    response = await client.post(
-        f"/api/trunkline/threads/{case.thread.id}/teleport",
-        json={
-            "destination": asdict(ChannelAddress("far", "dm", "", "alice")),
-            "hint": "Work here",
-            "project": "nowhere",
-            "ref": "main",
-        },
-    )
-
-    assert response.status_code == 409
-    assert "No project called 'nowhere'" in response.json()["detail"]
-    assert case.far.opened_dms == []
-
-
 @pytest.mark.parametrize("operation", ["teleport", "summon"])
 async def test_actions_require_thread_ownership(
     case: Case, client: httpx.AsyncClient, operation: str
