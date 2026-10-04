@@ -120,17 +120,19 @@ export const level = (channel: string, depth: number) => LEVELS[channel]?.[depth
 
 /**
  * The browser's first level: each connected channel, to open or to land in.
- * A channel the op has no route on is barred, with `unrouted` saying why.
+ * A channel nothing can land in is barred with the relay's reason, and one the
+ * op has no route on with `unrouted`.
  */
 export function channelRows(
   channels: ChannelMeta[], suggestions: ChannelAddress[], sourceChannel: string,
-  routes: Record<string, ApiAgentRoute[]>, unrouted: string,
+  routes: Record<string, ApiAgentRoute[]>, unrouted: string, barred: Record<string, string>,
 ): DestinationRow[] {
   return channels.map((channel) => {
     // A channel that lands straight in a thread of its own has nothing to open.
     const direct = suggestions.find((one) => one.channel_tentacle_id === channel.id && one.chat_type === 'thread')
     const row = { key: channel.id, label: channel.label, glyph: channel.label[0], brand: channel.brand, here: channel.id === sourceChannel }
-    if (!routes[channel.id]?.length) return { ...row, sub: unrouted, barred: unrouted }
+    const closed = barred[channel.id] ?? (routes[channel.id]?.length ? undefined : unrouted)
+    if (closed) return { ...row, sub: closed, barred: closed }
     if (direct) return { ...row, sub: 'a new private thread', address: direct }
     return { ...row, sub: `${channel.sub} · ${level(channel.id, 0).many}`, open: { label: channel.label, channel: channel.id } }
   })

@@ -14,7 +14,7 @@ const tint = (share: number) => `color-mix(in srgb, var(--color-accent) ${share}
  * relay already made for a channel head its first level. With `here`, picking
  * nothing stays in this conversation, and the first row returns to that.
  */
-export function DestinationPicker({ threadId, sourceChannel, suggestions, routes, unrouted, here, selection, crumbs, open, onOpen, onCrumbs, onSelect }: {
+export function DestinationPicker({ threadId, sourceChannel, suggestions, routes, unrouted, barred, here, selection, crumbs, open, onOpen, onCrumbs, onSelect }: {
   threadId: string
   sourceChannel: string
   suggestions: ChannelAddress[]
@@ -22,6 +22,8 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
   routes: Record<string, ApiAgentRoute[]>
   /** why a channel with no route cannot be picked */
   unrouted: string
+  /** channels nothing can land in, with why */
+  barred: Record<string, string>
   here: boolean
   selection: Destination | null
   crumbs: Crumb[]
@@ -41,11 +43,14 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
   // A refusal says why this level has nothing to list; anything else failed.
   const refused = listing.error instanceof ApiError && listing.error.status === 409
   const loading = Boolean(at) && listing.isPending
-  const suggested = crumbs.length === 1 ? suggestions.filter((one) => one.channel_tentacle_id === at?.channel) : []
+  // A suggestion the level lists as well is shown once, as the listing names it.
+  const suggested = crumbs.length === 1
+    ? suggestions.filter((one) => one.channel_tentacle_id === at?.channel && !listing.data?.some((listed) => sameAddress(one, listed)))
+    : []
 
   const rows: DestinationRow[] = at
     ? [...suggested, ...(listing.data ?? [])].map((address) => addressRow(address, crumbs))
-    : channelRows(channels ?? [], suggestions, sourceChannel, routes, unrouted)
+    : channelRows(channels ?? [], suggestions, sourceChannel, routes, unrouted, barred)
   const needle = filter.trim().toLowerCase()
   // Staying is a choice like any other at the top, and is not one of the surfaces.
   const stay: DestinationRow[] = here && !at

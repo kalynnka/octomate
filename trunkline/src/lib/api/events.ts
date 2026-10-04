@@ -683,10 +683,12 @@ export interface OperationAvailability {
 }
 
 export interface ThreadOperations {
-  /** whether anyone besides its user can read this conversation's surface */
-  shared: boolean
+  /** the surface this conversation is on; its `shared` against a destination's warns of exposure */
+  source: ChannelAddress | null
   teleport: OperationAvailability
   summon: OperationAvailability
+  /** connected channels where no conversation can land, with why */
+  barred: Record<string, string>
 }
 
 export interface TeleportBody {

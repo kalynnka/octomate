@@ -44,7 +44,7 @@ const refused: OperationAvailability = { destinations: [], here: null, routes: {
 // No suggested address at all: the in-place handover alone keeps Summon open.
 const inPlace: OperationAvailability = { destinations: [], here, routes: { trunkline: routes }, reason: null }
 const elsewhere: OperationAvailability = { destinations: [fresh], here: null, routes: { trunkline: routes, discord: routes }, reason: null }
-const options: ThreadOperations = { shared: false, teleport: refused, summon: inPlace }
+const options: ThreadOperations = { source: here, teleport: refused, summon: inPlace, barred: {} }
 const sse = (...events: WireEvent[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
 
 before(async () => {
@@ -267,22 +267,25 @@ test('the destination picker opens on the connected surfaces and marks what land
     { id: 'trunkline', label: 'Trunkline', sub: 'mention-free', brand: 'orange' },
     { id: 'discord', label: 'Discord', sub: 'gateway', brand: 'blue' },
     { id: 'lark', label: 'Lark', sub: 'webhook', brand: 'grey' },
+    { id: 'napcat', label: 'NapCat', sub: 'onebot', brand: 'grey' },
   ])
   const picker = (open: boolean, selection: { address: ChannelAddress; path: string[] } | null) =>
     renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
-      threadId: 'source', sourceChannel: 'trunkline', suggestions: [fresh], routes: { trunkline: routes, discord: routes }, unrouted: 'does not run claude',
-      here: false, selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
+      threadId: 'source', sourceChannel: 'trunkline', suggestions: [fresh], routes: { trunkline: routes, discord: routes, napcat: routes }, unrouted: 'does not run claude',
+      barred: { napcat: 'This channel has no threads, so no conversation can land here.' }, here: false, selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
     })))
   assert.ok(picker(false, null).includes('choose destination'))
   assert.ok(!picker(false, null).includes('Surfaces'))
   const root = picker(true, null)
-  assert.ok(root.includes('3 surfaces'))
+  assert.ok(root.includes('4 surfaces'))
   assert.ok(root.includes('a new private thread'))
   assert.ok(root.includes('● here'))
   assert.ok(root.includes('gateway · servers'))
   // Lark has no route for the op, so it is listed and cannot be opened.
   assert.ok(!root.includes('webhook · destinations'))
   assert.match(root, /<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*Lark(?:(?!<\/button>).)*does not run claude/)
+  // NapCat runs the agent, but nothing can land there: listed, disabled, with why.
+  assert.match(root, /<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*NapCat(?:(?!<\/button>).)*no conversation can land here/)
   assert.ok(root.includes('title="Open Discord"'))
   // Only the surface that lands directly can be the selection at this level.
   assert.equal(root.match(/aria-pressed=/g)?.length, 1)
@@ -295,7 +298,7 @@ test('the destination picker opens on the connected surfaces and marks what land
   const staying = (selection: { address: ChannelAddress; path: string[] } | null) =>
     renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
       threadId: 'source', sourceChannel: 'trunkline', suggestions: [], routes: { discord: routes }, unrouted: 'runs no other agent',
-      here: true, selection, crumbs: [], open: true, onOpen() {}, onCrumbs() {}, onSelect() {},
+      barred: {}, here: true, selection, crumbs: [], open: true, onOpen() {}, onCrumbs() {}, onSelect() {},
     })))
   assert.ok(staying(null).includes('this conversation'))
   assert.match(staying(null), /aria-pressed="true"[^>]*title="Hand over in place"/)

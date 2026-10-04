@@ -480,7 +480,7 @@ export function Composer() {
   // What a channel with no route for the op says in the destination browser.
   const carrierless = `does not run ${sesAgent || 'this agent'}`
   const unrouted = mode === 'teleport' ? carrierless : 'runs no other agent'
-  const exposed = mode === 'teleport' && operations && !operations.shared && form.destination?.address.shared
+  const exposed = mode === 'teleport' && operations && !operations.source?.shared && form.destination?.address.shared
     ? `this chat is private — everyone at ${form.destination.path.at(-1)} can read the thread it continues in`
     : undefined
   const submitGateway = () => {
@@ -519,7 +519,7 @@ export function Composer() {
         all.findIndex((other) => other.agent_id === one.agent_id && other.model === one.model) === index)
   const surfaces = channelRows(
     channels ?? [], operations?.teleport.destinations ?? [], selChannel,
-    operations?.teleport.routes ?? {}, carrierless,
+    operations?.teleport.routes ?? {}, carrierless, operations?.barred ?? {},
   ).filter((row) => !row.barred)
   const surfaceValue = (row: DestinationRow) => (row.open ? `${row.key}/` : row.key)
   const offered: Argument[] = line?.phase !== 'argument' || closed[line.command.name] ? []
@@ -871,6 +871,7 @@ export function Composer() {
                     suggestions={availability.destinations}
                     routes={availability.routes}
                     unrouted={unrouted}
+                    barred={operations?.barred ?? {}}
                     here={mode === 'summon' && Boolean(availability.here)}
                     selection={form.destination}
                     crumbs={form.crumbs}
