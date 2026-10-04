@@ -69,8 +69,9 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
 from octomate.schemas.user import ProfileInfo, User, UserProfile
+from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -500,7 +501,8 @@ def build_trunkline_router(
 
     @router.post(
         "/threads/{thread_id}/fork",
-        summary="Fork a native Codex thread into a new private Trunkline thread",
+        summary="Fork a native Codex or Claude Code thread into a new private "
+        "Trunkline thread",
         response_model_exclude={"messages", "parent"},
         status_code=201,
     )
@@ -508,9 +510,18 @@ def build_trunkline_router(
         thread: Annotated[Thread, Depends(accessible_thread)],
         user: Annotated[User, Depends(current_user)],
     ) -> Thread:
-        if thread.active_agent_tentacle_id != CODEX_NATIVE_ID:
+        runtime = next(
+            (
+                one
+                for one in (CodexTentacle, ClaudeCodeTentacle)
+                if one.native_id == thread.active_agent_tentacle_id
+            ),
+            None,
+        )
+        if runtime is None:
             raise HTTPException(
-                status_code=422, detail="Only native Codex threads can be forked here"
+                status_code=422,
+                detail="Only native Codex and Claude Code threads can be forked here",
             )
         sources = [
             conversation
@@ -526,12 +537,15 @@ def build_trunkline_router(
             (
                 octomate.agents[agent_id]
                 for agent_id in channel.agent_ids
-                if isinstance(octomate.agents.get(agent_id), CodexTentacle)
+                if isinstance(octomate.agents.get(agent_id), runtime)
             ),
             None,
         )
-        if not isinstance(agent, CodexTentacle):
-            raise HTTPException(status_code=503, detail="No Codex agent is configured")
+        if agent is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"No agent here drives a fork of {runtime.native_id}",
+            )
         try:
             return await agent.fork(
                 sources[-1],

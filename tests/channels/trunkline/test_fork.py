@@ -1,4 +1,5 @@
-"""Forking native Codex history through the authenticated console API."""
+"""Forking native Codex and Claude Code history through the authenticated console
+API."""
 
 from collections.abc import AsyncGenerator
 from io import BytesIO
@@ -11,15 +12,17 @@ import pytest
 from fastapi import UploadFile
 
 from octomate.auth import current_user
+from octomate.config import ClaudeCodeConfig
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
+from octomate.schemas.thread import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
+from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.test_codex_transcript_fork import ForkCase
@@ -182,6 +185,45 @@ async def test_fork_uses_only_an_available_server_project(
     stored_source = await app.thread_manager.get(case.source.thread_id)
     assert stored_source is not None
     assert stored_source.project_id == project.id
+
+
+async def test_a_native_claude_thread_forks_through_the_claude_agent(
+    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = case.tentacle.octomate
+    claude = app.connect(ClaudeCodeTentacle("claude", app, config=ClaudeCodeConfig()))
+    trunkline = app.channels["trunkline"]
+    monkeypatch.setattr(trunkline.config, "agents", [case.tentacle.id, claude.id])
+    async with async_session() as session:
+        owner = await session.get(User, case.owner_id)
+    assert owner is not None
+    source = await app.thread_manager.ensure(
+        ThreadKey(CLAUDE_NATIVE_ID, "thread", "claude-session")
+    )
+    conversation = await app.conversations.ensure(
+        source.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    await app.thread_manager.record_outbound(
+        source,
+        agent_tentacle_id=CLAUDE_NATIVE_ID,
+        segments=[TextSegment(data={"text": "Native Claude history"})],
+        sender=UserProfile(
+            channel_user_id=owner.username, user_id=owner.id, name=owner.name
+        ),
+    )
+    landed = await app.thread_manager.ensure(
+        ThreadKey("trunkline", "thread", str(owner.id), "claude-fork")
+    )
+    fork = AsyncMock(return_value=landed)
+    monkeypatch.setattr(ClaudeCodeTentacle, "fork", fork)
+
+    response = await client.post(f"/api/trunkline/threads/{source.id}/fork")
+
+    assert response.status_code == 201, response.text
+    assert response.json()["id"] == str(landed.id)
+    assert fork.await_args is not None
+    assert fork.await_args.args[0].id == conversation.id
+    case.fork.assert_not_awaited()
 
 
 async def test_fork_requires_source_ownership(

@@ -75,9 +75,9 @@ same thread. A session's own title becomes the thread's name. Permission mode
 changes are observed and recorded, never set.
 
 The tail's bytes of the session transcript are also kept, for their owner, so the
-session can [teleport](../gateway.md#teleport): its history up to the last whole
-turn is forked into the landed thread's workspace and resumed there by this
-tentacle. A session that began streaming before this was kept has nothing to fork.
+session can [teleport](../gateway.md#teleport), or be forked from Trunkline: its
+history up to the last whole turn is forked into the landed thread's workspace and
+resumed there by this tentacle. A session that began streaming before this was kept has nothing to fork.
 The installer also registers a `PreToolUse` hook for the gateway's teleport alone,
 which stamps the session's id into the call so the session can teleport itself;
 re-run the installer to add it.
