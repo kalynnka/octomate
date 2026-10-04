@@ -9,7 +9,6 @@ from pydantic_ai import AgentRunResult
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.reflex.nodes.react import React
-from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import (
     DeferredResult,
     ReflexDeps,
@@ -18,21 +17,17 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.triage import SummonDecision
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)
 
-TELEPORT_DECLINED = "The user declined the move: this conversation stays where it is."
-
 
 @dataclass
 class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Resolves a batch from the user's reply and, once it is whole, resumes the
-    suspended run through `React` — through `Teleport` first when the batch held
-    a move the user approved."""
+    suspended run through `React`."""
 
     awake: DeferredActionBatchResponse
 
@@ -40,7 +35,7 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Teleport | End[ReflexGraphResult]:
+    ) -> React | End[ReflexGraphResult]:
         state = ctx.state
         with reflex_logfire.span(
             "resume_deferred",
@@ -141,24 +136,5 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         )
         state.user_prompt = None
         state.run_name = "resume"
-        teleport = TeleportRequest.of(batch.requests)
-        if teleport is None or teleport.tool_call_id is None:
-            reflex_logfire.info("resume routes to React", batch_id=str(batch.id))
-            return React(resume_batch_id=batch.id)
-        # The graph performs the move, so its verdict never reaches the agent as an
-        # approval: the call resolves to where the run continues, or to the refusal.
-        results = batch.build_results()
-        approved = results.approvals.pop(teleport.tool_call_id) is True
-        await ctx.deps.action_manager.mark_batch(batch.id, "completed", completed=True)
-        reflex_logfire.info(
-            "resume routes a teleport", batch_id=str(batch.id), approved=approved
-        )
-        if approved:
-            return Teleport(
-                request=teleport,
-                origin=target,
-                agent_id=batch.agent_tentacle_id,
-                results=results,
-            )
-        results.calls[teleport.tool_call_id] = TELEPORT_DECLINED
-        return React(resume_results=results)
+        reflex_logfire.info("resume routes to React", batch_id=str(batch.id))
+        return React(resume_batch_id=batch.id)

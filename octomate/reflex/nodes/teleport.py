@@ -3,7 +3,7 @@ somewhere else and resumes it there."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass
 
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_graph import BaseNode, GraphRunContext
@@ -33,8 +33,6 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     request: TeleportRequest
     origin: ResponseTarget
     agent_id: str
-    # The rest of the batch the move was approved in, resumed alongside its call.
-    results: DeferredToolResults = field(default_factory=DeferredToolResults)
 
     @reflex_logfire.instrument("reflex.teleport", extract_args=False)
     async def run(
@@ -184,9 +182,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             state.user_prompt = f"{sentence}\nCurrent channel address: {new_address}"
             return React()
         return React(
-            resume_results=replace(
-                self.results,
-                calls={**self.results.calls, self.request.tool_call_id: sentence},
+            resume_results=DeferredToolResults(
+                calls={self.request.tool_call_id: sentence}
             )
         )
 

@@ -45,6 +45,7 @@ from octomate.capabilities.harness.react import (
 from octomate.capabilities.todos import TodoCapability
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import DeferredActionCollection, DeferredApproval
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.triage import TELEPORT_DEFER_KIND
 from octomate.tentacles.inkling import (
@@ -355,20 +356,19 @@ async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
 
 
 @pytest.mark.parametrize(
-    ("mode", "interactive"),
+    ("mode", "interactive", "approved"),
     [
-        ("default", True),
-        ("bypassPermissions", True),
-        ("dontAsk", True),
-        ("default", False),
+        ("default", True, False),
+        ("default", True, True),
+        ("bypassPermissions", True, True),
+        ("dontAsk", True, False),
+        ("default", False, False),
     ],
 )
-async def test_a_teleport_defers_the_validated_move_whatever_the_posture(
-    mode: InklingPermissionMode, interactive: bool
+async def test_a_teleport_follows_the_approval_posture(
+    mode: InklingPermissionMode, interactive: bool, approved: bool
 ) -> None:
-    """Teleport gates nothing itself: the gate validates the move, the call
-    defers, and the graph asks for it. No posture answers that deferral; only a
-    run with nobody to ask declines it."""
+    """Teleport declares approval; the harness decides whether to ask or resolve it."""
     agent, _ = build_scripted_agent(
         [
             ScriptedTurn(
@@ -407,22 +407,50 @@ async def test_a_teleport_defers_the_validated_move_whatever_the_posture(
         interactive=interactive,
     )
 
-    if not interactive:
+    if not interactive or mode == "dontAsk":
         assert result.output == "Staying here."
         assert suspender.suspended == []
+        assert session.decision is None
         return
 
     [suspended] = suspender.suspended
-    assert session.decision is not None
-    assert suspended.approvals == []
-    assert [call.tool_name for call in suspended.calls] == ["teleport"]
-    assert suspended.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
-    assert isinstance(result.output, DeferredToolRequests)
+    if mode == "bypassPermissions":
+        assert session.decision is not None
+        assert suspended.approvals == []
+        assert [call.tool_name for call in suspended.calls] == ["teleport"]
+        assert suspended.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
+        return
+
+    assert suspended.calls == []
+    assert [call.tool_name for call in suspended.approvals] == ["teleport"]
+    assert session.decision is None
+    [action] = DeferredActionCollection.validate_python(suspended)
+    assert isinstance(action, DeferredApproval)
+    assert action.args.tool_name == "teleport"
+    assert action.args.args["hint"] == "carrying on over here"
+
+    result = await tentacle.run(
+        None,
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        deferred_suspender=suspender,
+        capabilities=capabilities,
+        deferred_tool_results=DeferredToolResults(
+            approvals={"call_tp_1": approved}, metadata=suspended.metadata
+        ),
+    )
+    if approved:
+        assert session.decision is not None
+        assert isinstance(result.output, DeferredToolRequests)
+        assert result.output.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
+    else:
+        assert session.decision is None
+        assert result.output == "Staying here."
 
 
 async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
-    """A question and a teleport cast together reach the suspender as one batch,
-    which presents the question beside the approval of the move."""
+    """The normal approval flow presents the question and teleport approval together."""
 
     async def both(
         messages: list[ModelMessage], info: AgentInfo
@@ -481,11 +509,8 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
 
     assert "approvals go through without one" not in str(conversation.messages)
     [suspended] = suspender.suspended
-    assert [call.tool_name for call in suspended.calls] == [
-        "ask_questions",
-        "teleport",
-    ]
-    assert suspended.approvals == []
+    assert [call.tool_name for call in suspended.calls] == ["ask_questions"]
+    assert [call.tool_name for call in suspended.approvals] == ["teleport"]
 
 
 @pytest.mark.parametrize(

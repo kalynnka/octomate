@@ -710,9 +710,8 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     assert isinstance(options.mcp_servers, dict)
     server = options.mcp_servers["octomate"]
     assert server.get("type") == "sdk"
-    # Ordinary MCP tools on the normal approval route. Teleport alone is
-    # pre-allowed: the graph asks for the move once the gate has validated it.
-    assert options.allowed_tools == ["mcp__octomate__gateway_teleport"]
+    # Ordinary MCP tools on the normal approval route: nothing is pre-allowed.
+    assert options.allowed_tools == []
     # The routing contract rides the same preset append as the run instructions.
     assert isinstance(options.system_prompt, dict)
     append = options.system_prompt.get("append")

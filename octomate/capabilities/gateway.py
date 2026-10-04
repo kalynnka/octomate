@@ -293,9 +293,9 @@ class GatewayCapability(AbstractCapability[None]):
         toolset.tool(name=GatewayTool.SUMMON, retries=2)(self.summon)
         # `retries` to match its siblings: teleport refuses a surface with no
         # sub-thread to open, so it needs the same room to be told and correct.
-        # No `requires_approval`: the graph asks for the move once the gate has
-        # validated it, the same way for every runtime.
-        toolset.tool(name=GatewayTool.TELEPORT, retries=2)(self.teleport)
+        toolset.tool(name=GatewayTool.TELEPORT, retries=2, requires_approval=True)(
+            self.teleport
+        )
         toolset.tool(name=GatewayTool.SCHEME, retries=2)(self.scheme)
         toolset.tool(name=GatewayTool.SEND, retries=2)(self.send)
         toolset.tool(name=GatewayTool.DISMISS, retries=2)(self.dismiss)
@@ -494,9 +494,8 @@ class GatewayCapability(AbstractCapability[None]):
         new_thread: bool = True,
     ) -> str:
         """Continue this conversation yourself somewhere else; everything said so
-        far comes with you. This turn ends on it and the user is asked to approve
-        the move: you are re-awoken there with your context intact, or here if
-        they decline.
+        far comes with you. This turn ends on it, and you are re-awoken there with
+        your context intact.
 
         Args:
             hint: The short, user-facing thread-starter message.

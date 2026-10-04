@@ -107,9 +107,8 @@ Inkling is the one agent that can resolve a deferral without a human and keep go
 - `bypassPermissions` grants approvals without a card and still decides questions
   itself.
 
-[Teleport](../gateway.md#teleport) is not one of them: it declares no approval of
-its own, no posture answers it, and Octomate puts the validated move to you on a
-card whatever the posture.
+[Teleport](../gateway.md#teleport) declares `requires_approval` like other gated
+tools: `default` asks, `bypassPermissions` grants, and `dontAsk` denies it.
 
 A commissioned run applies the same posture, then declines any remaining deferrals
 since it has no user. Because Inkling's deferrals go through the persisted graph

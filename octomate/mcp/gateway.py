@@ -55,8 +55,8 @@ if TYPE_CHECKING:
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
 TELEPORT_RECORDED = (
-    "Teleporting — this turn ends here and the user is asked to approve the move; "
-    "you continue over there with your context intact, or here if they decline."
+    "Teleporting — this turn ends here; you continue over there, with your context "
+    "intact."
 )
 # What a native session is told: it approved the call itself, so the move goes
 # ahead, carrying its history to a driven session there; this one stays as it is.

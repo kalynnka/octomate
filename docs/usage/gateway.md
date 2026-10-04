@@ -31,15 +31,14 @@ supported destination.
 
 > Continue this in my private conversation on the other connected channel.
 
-An agent's teleport ends its turn on an approval card, the same for every agent.
-Octomate asks after the gateway has validated the move, so the card names where
-it really goes, and never asks about a move the gateway refuses. When a
-private conversation would land somewhere shared, such as a Discord channel, the
-card says that everyone there can read the thread it continues in. Approving
-performs the move and resumes the agent there; declining resumes it where it was,
-told that you declined. The card is asked whatever the agent's permission mode,
-bypass modes and earlier grants included. Trunkline's own Teleport is already
-your request, so it asks nothing, and shows the same warning before you submit.
+Teleport requires tool approval, handled by the agent's harness according to its
+configured permissions. Automatic review, bypass modes and existing grants keep
+their normal behavior. When the harness asks for a person, Octomate relays that
+request through the existing approval or question cards. Denying approval prevents
+the tool from recording a move. The approval comes before the gateway validates
+the destination, so a destination it refuses goes back to the agent to correct.
+Trunkline's own Teleport is already your request, so it asks nothing, and warns
+before you submit when a private conversation would land somewhere shared.
 
 First [link your profiles](../installation/accounts.md#link-your-channel-profiles)
 so Octomate can find you there. Available destinations depend on the channel;

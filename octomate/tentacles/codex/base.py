@@ -36,6 +36,7 @@ import anyio
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
+from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
@@ -980,6 +981,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             "url": str(url),
             "bearer_token_env_var": MCP_TOKEN_ENV,
             "env_http_headers": {CONVERSATION_HEADER: MCP_CONVERSATION_ENV},
+            # Teleport always takes Codex's approval route, so the preset decides.
+            "tools": {gateway_tool(GatewayTool.TELEPORT): {"approval_mode": "prompt"}},
         }
         return {"mcp_servers": servers}
 

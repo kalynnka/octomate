@@ -50,8 +50,6 @@ from octomate.reflex.graph import (
     Route,
     build_reflex_graph,
 )
-from octomate.reflex.nodes.resume_deferred import TELEPORT_DECLINED
-from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.awakes import (
     DeferredActionBatchResponse,
     NativeGatewaySignal,
@@ -108,42 +106,6 @@ async def _run(
     on its own."""
     return await build_reflex_graph(type(entry)).run(
         inputs=entry, state=state, deps=deps
-    )
-
-
-async def _answer_the_move(
-    deps: ReflexDeps,
-    parked: ReflexGraphResult,
-    *,
-    approved: bool = True,
-    beside: DeferredToolResults | None = None,
-) -> ReflexGraphResult:
-    """Answer the card a teleport parks as the person it asks would — with
-    `beside`, the rest of its batch — and run the graph on from that answer."""
-    assert isinstance(parked, DeferredResult)
-    actions = cast(FakeActionManager, deps.action_manager)
-    created = actions.create_calls[-1]
-    teleport = TeleportRequest.of(created.requests)
-    assert teleport is not None
-    assert teleport.tool_call_id is not None
-    actions.batch = FakeDeferredBatch(
-        id=created.batch_id,
-        source_address=created.source_address,
-        target_address=created.target_address,
-        requests=created.requests,
-        deferred_results=DeferredToolResults(
-            calls=beside.calls if beside is not None else {},
-            approvals={teleport.tool_call_id: approved},
-        ),
-        conversation_id=created.conversation.id,
-        agent_tentacle_id=created.agent_tentacle_id,
-        target_mode=created.target_mode,
-        decision=created.decision,
-    )
-    return await _run(
-        ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=created.batch_id)),
-        state=ReflexState(),
-        deps=deps,
     )
 
 
@@ -1622,20 +1584,17 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         )
     )
     deps = _summon_deps(im, entry, second, far)
-    parked = await _run(
-        React(),
-        state=ReflexState(
-            source_target=target,
-            target=target,
-            decision=_summon(),
-            thread=await deps.thread_manager.ensure(address),
-        ),
-        deps=deps,
-    )
-    # Nothing moves before the person answers.
-    assert far.opened_dms == []
     with expected:
-        result = await _answer_the_move(deps, parked)
+        result = await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=await deps.thread_manager.ensure(address),
+            ),
+            deps=deps,
+        )
 
     if not fork_supported:
         assert len(entry.turns) == 1
@@ -1671,19 +1630,18 @@ async def test_a_teleport_crossing_that_never_opens_refuses_the_move() -> None:
     )
     target = _source_target(address)
     deps = _summon_deps(im, entry, second, far)
-    parked = await _run(
-        React(),
-        state=ReflexState(
-            source_target=target,
-            target=target,
-            decision=_summon(),
-            thread=await deps.thread_manager.ensure(address),
-        ),
-        deps=deps,
-    )
 
     with pytest.raises(ValueError, match="nothing was teleported"):
-        await _answer_the_move(deps, parked)
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target,
+                target=target,
+                decision=_summon(),
+                thread=await deps.thread_manager.ensure(address),
+            ),
+            deps=deps,
+        )
 
     assert len(entry.turns) == 1
     assert far.sub_threads == []
@@ -1706,7 +1664,7 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
     target = _source_target(address)
     deps = _summon_deps(im, entry, second)
 
-    parked = await _run(
+    result = await _run(
         React(),
         state=ReflexState(
             source_target=target,
@@ -1716,11 +1674,6 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
         ),
         deps=deps,
     )
-    # A question cast beside the move is answered on the same batch, and its
-    # answer resumes with the move's sentence.
-    result = await _answer_the_move(
-        deps, parked, beside=DeferredToolResults(calls={"call_question": ["blue"]})
-    )
 
     assert not isinstance(result, DeferredResult)
     assert len(entry.turns) == 2
@@ -1728,45 +1681,9 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
     assert resumed.prompt is None
     assert resumed.deferred_results is not None
     assert resumed.deferred_results.calls == {
-        "call_question": ["blue"],
-        "call_teleport": "Continuing the conversation here.",
+        "call_teleport": "Continuing the conversation here."
     }
-    assert resumed.deferred_results.approvals == {}
     assert resumed.address.channel_thread_id == "hint-thread"
-
-
-async def test_a_declined_teleport_resumes_the_agent_where_it_was() -> None:
-    address = _key()
-    entry = FakeAgent(
-        id="other",
-        reception_recorded_teleport="carrying on in a thread",
-        reception_output="staying",
-        allow_reception_run=True,
-    )
-    second = FakeAgent(id="second", reception_output="unused")
-    im = _channel(stream=False)
-    target = _source_target(address)
-    deps = _summon_deps(im, entry, second)
-    thread = await deps.thread_manager.ensure(address)
-
-    parked = await _run(
-        React(),
-        state=ReflexState(
-            source_target=target, target=target, decision=_summon(), thread=thread
-        ),
-        deps=deps,
-    )
-    result = await _answer_the_move(deps, parked, approved=False)
-
-    assert not isinstance(result, DeferredResult)
-    resumed = entry.turns[-1]
-    assert resumed.deferred_results is not None
-    assert resumed.deferred_results.calls == {"call_teleport": TELEPORT_DECLINED}
-    assert resumed.deferred_results.approvals == {}
-    assert resumed.thread_id == thread.id
-    assert im.sub_threads == []
-    actions = cast(FakeActionManager, deps.action_manager)
-    assert actions.marked[-1][1:] == ("completed", True)
 
 
 async def test_reception_returns_deferred_result_on_human_question() -> None:
@@ -2530,14 +2447,13 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
     deps.thread_manager = threads
     target = _source_target(address)
 
-    parked = await _run(
+    result = await _run(
         React(),
         state=ReflexState(
             source_target=target, target=target, decision=_summon(), thread=thread
         ),
         deps=deps,
     )
-    result = await _answer_the_move(deps, parked)
 
     assert not isinstance(result, DeferredResult)
     first, resumed = agent.turns
@@ -2611,14 +2527,13 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     deps.conversation_manager = ConversationManager()
     target = _source_target(address)
 
-    parked = await _run(
+    result = await _run(
         React(),
         state=ReflexState(
             source_target=target, target=target, decision=_summon(), thread=thread
         ),
         deps=deps,
     )
-    result = await _answer_the_move(deps, parked)
 
     assert not isinstance(result, DeferredResult)
     _first, resumed = agent.turns

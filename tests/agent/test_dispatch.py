@@ -23,8 +23,8 @@ from octomate.config import (
 from octomate.config.channels import ChatRecapConfig
 from octomate.database import async_session
 from octomate.prompts import untagged
-from octomate.reflex.state import RECAP_HEADER, DeferredResult
-from octomate.schemas.awakes import DeferredActionBatchResponse, UserMessageSignal
+from octomate.reflex.state import RECAP_HEADER
+from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -367,18 +367,7 @@ async def test_teleport_forks_history_into_a_sub_thread_and_resumes() -> None:
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    parked = await octomate.kick(
-        UserMessageSignal([_event(text="do the multi-step thing")])
-    )
-    # Nothing moves until the person approves the move on its card.
-    assert channel.sub_threads == []
-    assert isinstance(parked, DeferredResult)
-    assert parked.batch_id is not None
-    batch = await octomate.deferred_actions.get_batch(parked.batch_id)
-    [approval] = batch.approvals
-    await octomate.kick(
-        DeferredActionBatchResponse(batch_id=batch.id, approvals={approval.id: True})
-    )
+    await octomate.kick(UserMessageSignal([_event(text="do the multi-step thing")]))
 
     # A sub-thread was opened, and the agent resumed there and delivered its answer.
     assert channel.sub_threads[0][1] == "Let's move to a thread"
@@ -401,18 +390,9 @@ async def test_teleport_on_main_only_channel_refuses_the_move() -> None:
     channel = MainOnlyChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
-    parked = await octomate.kick(UserMessageSignal([_event(text="do it")]))
-    assert isinstance(parked, DeferredResult)
-    assert parked.batch_id is not None
-    batch = await octomate.deferred_actions.get_batch(parked.batch_id)
-    [approval] = batch.approvals
 
     with pytest.raises(ValueError, match="nothing was teleported"):
-        await octomate.kick(
-            DeferredActionBatchResponse(
-                batch_id=batch.id, approvals={approval.id: True}
-            )
-        )
+        await octomate.kick(UserMessageSignal([_event(text="do it")]))
 
     assert channel.sub_threads == []
     assert entry.turns[-1].address == _key()

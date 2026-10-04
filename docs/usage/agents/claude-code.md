@@ -61,9 +61,9 @@ The bridge parks the live SDK client while it waits, so an answer is not durable
 across an Octomate restart: restart mid-question and the run is gone, though the
 conversation resumes on the next message.
 
-The gateway's [teleport tool](../gateway.md#teleport) is pre-allowed, so it takes
-neither bridge. The turn ends on the move, and Octomate asks for it once the
-gateway has validated it, on a card that does survive a restart.
+The gateway's [teleport tool](../gateway.md#teleport) follows Claude's normal MCP
+permissions, including bypass mode and existing grants. Octomate relays approval
+requests through the same bridge without adding another confirmation.
 
 ## Native sessions
 

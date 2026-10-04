@@ -1,12 +1,11 @@
-"""The reflex graph's deferred suspender: where a run's deferrals go — to a human
-as a persisted batch, a teleport as the approval of a move the graph performs."""
+"""The reflex graph's deferred suspender: where a run's deferrals go — a teleport
+back to the graph, everything else to a human as a persisted batch."""
 
 from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass, field
 
-from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -21,12 +20,6 @@ from octomate.schemas.triage import (
 )
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel import ChannelTentacle
-from octomate.types.json import JsonObject
-
-TELEPORT_EXPOSURE = (
-    "This conversation is private and the destination is shared: everyone there "
-    "can read the thread it continues in."
-)
 
 
 @dataclass(frozen=True)
@@ -50,8 +43,8 @@ class TeleportRequest:
 
     @classmethod
     def of(cls, requests: DeferredToolRequests) -> TeleportRequest | None:
-        """The teleport these requests carry, deferred or awaiting approval."""
-        for call in [*requests.calls, *requests.approvals]:
+        """The teleport these requests carry."""
+        for call in requests.calls:
             meta = requests.metadata.get(call.tool_call_id, {})
             if meta.get("kind") != TELEPORT_DEFER_KIND:
                 continue
@@ -71,11 +64,11 @@ class TeleportRequest:
 @dataclass
 class ReflexSuspender:
     """The reflex graph's `DeferredSuspender`: every deferral a run ends on comes
-    through here once and goes to a human, persisted as a batch and presented on
-    the channel. A `teleport` goes as the approval of the move the gate validated,
-    which the graph performs once granted. React builds it with the run's context;
-    Inkling reaches it through `ResolveDeferred`, a runtime a tool result cannot
-    suspend through the `deferred_suspender` its run was handed.
+    through here once, and each kind goes where it is resolved — a `teleport` to
+    the graph, which performs it and resumes the agent; anything else to a human,
+    persisted as a batch and presented on the channel. React builds it with the
+    run's context; Inkling reaches it through `ResolveDeferred`, a runtime a tool
+    result cannot suspend through the `deferred_suspender` its run was handed.
     """
 
     channel: ChannelTentacle
@@ -90,29 +83,18 @@ class ReflexSuspender:
     thread_id: uuid.UUID | None = None
     emit_on_stream: bool = False
     suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
+    # The deferred `teleport`, for the graph to perform instead of a batch.
+    teleport: TeleportRequest | None = field(default=None, init=False)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         teleport = TeleportRequest.of(requests)
-        if teleport is not None and teleport.tool_call_id is not None:
-            # The gate validated the move before the call deferred, so the card asks
-            # about the place it really goes, and warns where that is more public.
-            call_id = teleport.tool_call_id
-            meta: JsonObject = requests.metadata[call_id]
-            if (
-                teleport.destination is not None
-                and teleport.destination.shared
-                and not self.target_address.shared
-            ):
-                meta = {**meta, "description": TELEPORT_EXPOSURE}
-            calls: list[ToolCallPart] = []
-            approvals = list(requests.approvals)
-            for call in requests.calls:
-                (approvals if call.tool_call_id == call_id else calls).append(call)
-            requests = DeferredToolRequests(
-                calls=calls,
-                approvals=approvals,
-                metadata={**requests.metadata, call_id: meta},
-            )
+        if teleport is not None:
+            # The agent's own permission check already let the call through, so
+            # nothing here asks: the graph moves it once the run ends.
+            if len(requests.calls) + len(requests.approvals) > 1:
+                raise RuntimeError("a teleport was deferred beside other calls")
+            self.teleport = teleport
+            return None
         with reflex_logfire.span(
             "suspend_for_review",
             run_name=self.run_name,
