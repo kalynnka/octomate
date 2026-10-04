@@ -16,7 +16,11 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
+from octomate.capabilities.harness.events import (
+    MessageSentEvent,
+    RunStartedEvent,
+    StreamEvents,
+)
 from octomate.reflex.state import (
     DeferredResult,
     PendingHandoff,
@@ -175,6 +179,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     async def stream_events() -> AsyncGenerator[
                         StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                     ]:
+                        # Where the run reports, for a consumer that asked elsewhere.
+                        yield RunStartedEvent(address=target_address)
                         async with agent.run_stream_events(
                             user_prompt,
                             conversation_address=target_address,

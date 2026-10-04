@@ -450,8 +450,8 @@ export function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selThreadId])
 
-  // A gateway op takes the composer over: Summon's brief is the draft already
-  // in it, Teleport's prompt is its own, and the op's controls replace the send row.
+  // A gateway op takes the composer over: the draft already in it is Summon's
+  // brief or Teleport's prompt, and the op's controls replace the send row.
   const mode = !ntOn && gatewayMode?.threadId === selThreadId ? gatewayMode.action : null
   const copy = mode ? GATEWAY_MODES[mode] : null
   // The header keeps this fresh; here it is read, and asked again by a command.
@@ -467,9 +467,8 @@ export function Composer() {
   const routes = (routeChannel && availability?.routes[routeChannel]) || []
   const route = pickRoute(routes, form.agent, form.model)
   const { efforts, effort } = routeEffort(route, form.effort)
-  const text = mode === 'teleport' ? form.prompt : composerText
   const request = mode && availability
-    ? gatewayRequest(mode, availability, { text, destination: form.destination, route, effort })
+    ? gatewayRequest(mode, availability, { text: composerText, destination: form.destination, route, effort })
     : null
   const blocked = !mode ? undefined
     : running ? 'Wait for the current run to finish.'
@@ -477,7 +476,7 @@ export function Composer() {
         : availability.reason
           ?? (mode === 'summon' && routeChannel && !routes.length ? 'No other agent runs at that destination.' : undefined)
           // Only a thread here can take the message after the move.
-          ?? (mode === 'teleport' && text.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
+          ?? (mode === 'teleport' && composerText.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
             ? 'A prompt can follow a teleport only into a Trunkline thread.' : undefined)
   const ready = Boolean(request) && !blocked
   // What a channel with no route for the op says in the destination browser.
@@ -492,7 +491,7 @@ export function Composer() {
       if (!inPlace && !form.destination) patchForm({ menu: 'destination' })
       return
     }
-    if (mode === 'summon') aui.composer.setText('')
+    aui.composer.setText('')
     void gateway(selThreadId, request)
   }
 
@@ -725,9 +724,8 @@ export function Composer() {
                   rows={copy.rows}
                   maxLength={copy.max}
                   placeholder={copy.placeholder}
-                  value={text}
-                  onChange={(event) =>
-                    mode === 'teleport' ? patchForm({ prompt: event.target.value }) : aui.composer.setText(event.target.value)}
+                  value={composerText}
+                  onChange={(event) => aui.composer.setText(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === 'Escape') {
                       event.preventDefault()
@@ -774,7 +772,7 @@ export function Composer() {
                     color: 'transparent',
                   }}
                 >
-                  {text.slice(0, caretAt)}
+                  {composerText.slice(0, caretAt)}
                   <span
                     style={{
                       display: 'inline-block',
@@ -786,7 +784,7 @@ export function Composer() {
                       animation: 'trkBlink 1.1s step-end infinite',
                     }}
                   />
-                  {line && caretAt === text.length && <span style={{ color: 'var(--fg-3)' }}>{completion(line, matches, at)}</span>}
+                  {line && caretAt === composerText.length && <span style={{ color: 'var(--fg-3)' }}>{completion(line, matches, at)}</span>}
                 </span>
               )}
             </span>

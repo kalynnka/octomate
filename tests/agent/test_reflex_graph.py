@@ -23,7 +23,7 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.harness.events import MessageSentEvent, RunStartedEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
@@ -1792,6 +1792,7 @@ async def test_reception_closes_agent_stream_before_releasing_gateway(
         timeline: DroppingTimelineState,
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> None:
+        assert isinstance(await anext(stream), RunStartedEvent)
         await anext(stream)
         if cancel:
             raise asyncio.CancelledError

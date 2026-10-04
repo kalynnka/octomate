@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiConversation, ApiThread } from '../src/lib/api/events.ts'
+import type { ApiConversation, ApiThread, ApiThreadMessage } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
 let liveThreadSummary: typeof import('../src/lib/api/live.ts').liveThreadSummary
@@ -34,6 +34,21 @@ test('an imported session displays its conversation agent without a handoff', ()
     ...thread, channel_tentacle_id: 'trunkline', active_agent_tentacle_id: 'codex',
   }
   assert.equal(liveThreadSummary(imported).agentLabel, 'codex')
+})
+
+test('an import notice of several lines reads as a system row per line', () => {
+  const notice: ApiThreadMessage = {
+    id: 'notice', thread_id: thread.id, platform_message_id: null,
+    happened_at: '2026-09-29T00:00:00Z', direction: 'inbound', actor_kind: 'system',
+    agent_tentacle_id: null, sender: null, segments: [], created_at: '2026-09-29T00:00:00Z',
+    message_text: 'Forked from conversation native-session.\n\nCurrent channel address:\ntrunkline/thread/owner/landed/owner.',
+  }
+  const detail = liveThreadDetail({ thread, conversations: [], messages: [notice], project: null, batches: [] })
+  assert.deepEqual(detail.ledger.flatMap((item) => (item.kind === 'system' ? [item.text] : [])), [
+    'Forked from conversation native-session.',
+    'Current channel address:',
+    'trunkline/thread/owner/landed/owner.',
+  ])
 })
 
 for (const agent of ['codex-native', 'codex']) {

@@ -292,7 +292,10 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         },
       })
     } else if (message.actor_kind === 'system') {
-      dated.push({ at, item: { kind: 'system', text } })
+      // A system row is one line wide, so a notice of several lines is several rows.
+      for (const line of text.split('\n')) {
+        if (line.trim()) dated.push({ at, item: { kind: 'system', text: line.trim() } })
+      }
     } else {
       dated.push({
         at,

@@ -59,7 +59,8 @@ separate triage pass: the entry agent self-routes with the gateway if it wants t
 channel the run will happen on, records the handoff if one is pending, mounts the
 gateway and the user's capabilities, registers the session at the gateway so a
 second concurrent turn is refused, then runs the agent, streaming through the
-channel's feelers or presenting the result once. After the run it reads what the
+channel's feelers or presenting the result once. A streamed run opens with a
+`run_started` custom event naming the thread it reports into. After the run it reads what the
 gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a teleport
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.

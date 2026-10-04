@@ -175,6 +175,44 @@ test('a failed or incomplete stream cannot report a successful gateway action', 
   await assert.rejects(streamGateway('source', request, () => {}), /without confirming a destination/)
 })
 
+const landedAt: ChannelAddress = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: 'landed-key', shared: false }
+const started: WireEvent = { event_kind: 'custom', name: 'run_started', address: landedAt }
+const refusedRun: WireEvent = { event_kind: 'run_error', message: 'The model refused.' }
+
+test('a run started where the move landed carries its own failure', async () => {
+  mock.method(globalThis, 'fetch', async () => sse(started, refusedRun))
+  const events: WireEvent[] = []
+  assert.equal(await streamGateway('source', request, (event) => events.push(event)), undefined)
+  assert.deepEqual(events, [started, refusedRun])
+})
+
+/** Teleport from `source` over `events`, with selection doing what the real one does to the state. */
+async function followMove(...events: WireEvent[]) {
+  const landed: ApiThread = { ...destination, id: 'landed-id', channel_tentacle_id: 'trunkline', chat_id: 'owner', channel_thread_id: 'landed-key' }
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(...events) : Response.json([landed]))
+  const select = mock.method(useConsole.getState().actions, 'selectThread', async (_channel: string, id: string) => {
+    useConsole.setState({ selThreadId: id, live: [], running: false })
+  })
+  useConsole.setState({ detail: { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } } })
+  await useConsole.getState().actions.gateway('source', request)
+  return { selected: select.mock.calls.map((call) => call.arguments), state: useConsole.getState() }
+}
+
+test('a run starting where the move landed opens that thread at once and streams there', async () => {
+  const { selected, state } = await followMove(started, result, { ...gateway, destination: landedAt })
+  assert.deepEqual(selected, [['trunkline', 'landed-id']])
+  assert.ok(state.live.some((item) => item.kind === 'stream' && item.text === 'Arrived'))
+  assert.equal(state.running, false)
+  assert.equal(state.gatewayPending, null)
+})
+
+test('a run that fails after the move shows its failure where it landed', async () => {
+  const { selected, state } = await followMove(started, refusedRun)
+  assert.deepEqual(selected, [['trunkline', 'landed-id']])
+  assert.ok(state.live.some((item) => item.kind === 'notice' && item.text.includes('The model refused.')))
+  assert.deepEqual(state.notices, [])
+})
+
 test('successful arrival selects the thread matching the complete channel address', async () => {
   const wrong = { ...destination, id: 'wrong', chat_id: 'other-account' }
   mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(result, gateway) : Response.json([wrong, destination]))

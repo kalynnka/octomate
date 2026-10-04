@@ -17,6 +17,8 @@ One stream, with these event families:
 - **Action batch** (`ActionBatchEvent`) — a persisted batch of deferred actions
   (questions + approvals) presented as one unit; the run suspends until the user
   replies. `batch_id` correlates the reply through the deferred-action machinery.
+- **Graph events** (`RunStartedEvent`) — Pydantic AI `CustomEvent`s the reflex
+  graph puts on the stream it drives, about the run rather than inside it.
 
 Display and action events are emitted by capabilities (a capability bundles a tool
 + instructions + `wrap_run_event_stream`); the output events are emitted by
@@ -41,7 +43,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-from pydantic_ai import AgentStreamEvent
+from pydantic_ai import AgentStreamEvent, CustomEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 
@@ -87,6 +89,14 @@ class SubagentSettledEvent(BaseModel):
     status: SubagentActivityStatus
     detail: str | None = None
     response: str = ""
+
+
+@dataclass(kw_only=True)
+class RunStartedEvent(CustomEvent):
+    """A run's first event, from the graph: the thread it reports into — another
+    than the one asked about when a move carried the turn there."""
+
+    address: ChannelAddress
 
 
 class RunResultEvent(BaseModel):

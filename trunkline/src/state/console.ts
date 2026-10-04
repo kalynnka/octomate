@@ -455,14 +455,17 @@ export const useConsole = create<ConsoleState>()((set, get) => {
    * stream ends. Once the user navigates away the fold goes permanently dead
    * (its cursors point at a wiped overlay) — the run keeps going server-side,
    * lands in the thread's ledger, and a re-select after it ends rehydrates.
-   * A turn the agent moved elsewhere opens where it landed, as an operation does.
+   * A turn the agent moved elsewhere opens where it landed, as an operation does:
+   * at once when a run starts there, else once the stream ends.
    */
   const runLive = async (
-    selId: string,
+    from: string,
     request: (onEvent: (event: WireEvent) => void) => Promise<void>,
     quietClose = 'stream closed without a result',
   ) => {
     openRuns++
+    // The thread the run streams into, until a run starts in another.
+    let selId = from
     let dead = false
     const alive = () => {
       if (!dead && get().selThreadId !== selId) dead = true
@@ -473,7 +476,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let received = 0
     let terminal = false
     let landing: ChannelAddress | undefined
-    const fold = new TurnFold({
+    const turnFold = () => new TurnFold({
       push: (item) => {
         clearDots()
         if (!alive()) return 'stale'
@@ -487,16 +490,46 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (alive() && openRuns === 1) set({ running: false })
       },
     })
+    let fold = turnFold()
+    const feed = (event: WireEvent) => {
+      received++
+      if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
+      fold.feed(event)
+    }
+    // Opening the thread a run started in; what streams meanwhile waits for it.
+    let following: Promise<void> | undefined
+    const held: WireEvent[] = []
+    const follow = async (address: ChannelAddress) => {
+      const landed = await landedThread(selId, address)
+      if (landed && alive()) {
+        await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        selId = landed.id
+        set({ running: true })
+        fold = turnFold()
+      }
+      following = undefined
+      held.splice(0).forEach(feed)
+    }
     try {
       await request((event) => {
         if (event.event_kind === 'gateway') {
           landing = event.destination
           return
         }
-        received++
-        if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
-        fold.feed(event)
+        if (following) {
+          held.push(event)
+          return
+        }
+        if (event.event_kind === 'custom' && event.name === 'run_started') {
+          const { channel_tentacle_id, channel_thread_id } = event.address
+          if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
+            following = follow(event.address)
+          }
+          return
+        }
+        feed(event)
       })
+      await following
       fold.abort(
         received === 0
           ? quietClose
@@ -505,7 +538,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       )
       if (landing && alive()) {
         const landed = await landedThread(selId, landing)
-        if (landed && alive()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        if (landed && landed.id !== selId && alive()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       }
       return true
     } catch (err) {

@@ -73,7 +73,7 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   channels and opens Teleport on the one you pick, or on the destination
   browser when you pick none. A command that is unavailable is dimmed and shows
   its reason. A line that names no command is sent as an ordinary message.
-  Teleport needs a destination and takes an optional prompt, sent as your next
+  Teleport needs a destination; your draft, if any, is sent as your next
   message once it lands in a Trunkline thread. Browse destinations one level at a time: the connected
   channels, then what each holds, loaded as you open it. The filter narrows the
   rows already loaded. A channel that does not run the conversation's agent is
@@ -93,7 +93,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Run output streams into the message panel. After the server confirms arrival,
   the console opens the destination thread if you are still viewing the source.
   It does the same when the agent moves the conversation itself in the middle of
-  a turn.
+  a turn. When a run starts there, the console opens the thread then and streams
+  the run into it.
 - **Account**: change password, issue and revoke API keys, unlink channel profiles,
   start a Slack or Discord profile link.
 - **MCP**: install connectors from the configured offerings or by URL, authorise
@@ -158,7 +159,8 @@ picked destination with no flag to open a thread there.
 brief (up to 8,000 characters). Both require access to the source thread and
 refuse active gateway turns or pending approvals/questions. They stream native
 run events, ending with `gateway` and the destination address; execution
-failures appear as `run_error` events. A message's stream, and the stream of
+failures appear as `run_error` events. Every run opens with a `custom` event
+named `run_started`, carrying the address of the thread it runs in. A message's stream, and the stream of
 an answered approval or question, also end with a `gateway` event when the agent
 moved the conversation to another thread during the turn; its `action` names the
 spell, `teleport`, `summon` or `scheme`.

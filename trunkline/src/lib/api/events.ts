@@ -314,6 +314,14 @@ export interface RunUsage {
   cache_write_tokens: number
 }
 
+/** A run's first event, a Pydantic AI custom event from the graph: the thread it
+ *  reports into — another than the one asked about when a move carried the turn there. */
+export interface RunStartedEvent {
+  event_kind: 'custom'
+  name: 'run_started'
+  address: ChannelAddress
+}
+
 export interface RunResultEvent {
   event_kind: 'run_result'
   output: string | WireSegment[] | null
@@ -373,6 +381,7 @@ export type WireEvent =
   | ActionBatchEvent
   | SubagentStartedEvent
   | SubagentSettledEvent
+  | RunStartedEvent
   | RunResultEvent
   | RunErrorEvent
   | GatewayEvent

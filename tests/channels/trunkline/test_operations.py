@@ -266,6 +266,20 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
     assert stored is not None
     [asked] = [one for one in stored.messages if one.direction == "inbound"]
     assert asked.message_text == "Pick up the review"
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    # The run there is announced before it streams, so the console can follow it.
+    assert [event["event_kind"] for event in events] == [
+        "message_sent",  # the move, announced where it left
+        "custom",
+        "run_result",
+        "gateway",
+    ]
+    assert events[1]["name"] == "run_started"
+    assert events[1]["address"]["channel_thread_id"] == landed.channel_thread_id
 
 
 async def test_a_prompt_follows_a_teleport_only_into_trunkline(

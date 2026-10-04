@@ -257,18 +257,23 @@ export async function streamGateway(
   threadId: string,
   request: GatewayRequest,
   onEvent: (event: WireEvent) => void,
-): Promise<GatewayEvent> {
-  const completion: { event?: GatewayEvent; error?: string } = {}
+): Promise<GatewayEvent | undefined> {
+  const completion: { event?: GatewayEvent; error?: string; started?: boolean } = {}
   await streamSse(
     `/api/trunkline/threads/${encodeURIComponent(threadId)}/${request.action}`,
     request.body,
     (event) => {
       if (event.event_kind === 'gateway') completion.event = event
-      else if (event.event_kind === 'run_error') completion.error = event.message
-      else onEvent(event)
+      // Once a run starts where the move landed, a failure is that run's, shown there.
+      else if (event.event_kind === 'run_error' && !completion.started) completion.error = event.message
+      else {
+        if (event.event_kind === 'custom' && event.name === 'run_started') completion.started = true
+        onEvent(event)
+      }
     },
   )
   if (completion.error) throw new Error(completion.error)
+  if (completion.started && !completion.event) return undefined
   if (!completion.event || completion.event.action !== request.action) {
     throw new Error('The stream closed without confirming a destination. Check the thread before retrying.')
   }

@@ -19,8 +19,6 @@ export interface Destination {
 }
 
 export interface GatewayForm {
-  /** what Teleport sends where it lands, as your next message; Summon's brief is the composer's own draft */
-  prompt: string
   agent: string | null
   model: string | null
   effort: EffortLevel
@@ -37,7 +35,6 @@ const HINTS: Record<GatewayAction, string> = {
 }
 
 const blank = (action: GatewayAction | null): GatewayForm => ({
-  prompt: '',
   agent: null,
   model: null,
   effort: 'auto',
