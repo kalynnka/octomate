@@ -242,6 +242,18 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
     ]
+    # Codex runs a tool that says it only reads without asking first.
+    assert [
+        tool.name
+        for tool in tools
+        if tool.annotations is not None and tool.annotations.read_only_hint
+    ] == [
+        "gateway_inspect",
+        *map(history_tool, HISTORY_TOOLS),
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        LIST_MCP_TOOLS,
+    ]
 
 
 async def test_a_bare_deployment_is_served_locked() -> None:

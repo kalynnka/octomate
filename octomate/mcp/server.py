@@ -248,6 +248,7 @@ def tentacles_mcp(
     @mcp.tool(
         name=LIST_MCP_TOOLS,
         description="Load tool schemas for one of the current user's installed MCPs.",
+        annotations={"readOnlyHint": True},
     )
     async def list_tools(namespace: str) -> McpToolCatalog:
         try:

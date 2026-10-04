@@ -224,6 +224,7 @@ def mount_gateway(
     @mcp.tool(
         name=GatewayTool.INSPECT,
         description=capability_contract(GatewayCapability.inspect),
+        annotations={"readOnlyHint": True},
     )
     @spoken
     async def inspect(
