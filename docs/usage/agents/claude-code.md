@@ -72,8 +72,10 @@ requests through the same bridge without adding another confirmation.
 `SubagentStart` and `SubagentStop`, and launches a tail on each prompt. The hooks
 sketch the turn live; the tail then replaces the sketch with the full run from the
 transcript, subagents included, each subagent as its own conversation under the
-same thread. A session's own title becomes the thread's name. Permission mode
-changes are observed and recorded, never set.
+same thread. A turn is recorded when the transcript shows it ended, so one that
+stopped while Octomate was down lands once the tail reconnects. A session's own
+title becomes the thread's name. Permission mode changes are observed and
+recorded, never set.
 
 The tail's bytes of the session transcript are also kept, for their owner, so the
 session can [teleport](../gateway.md#teleport): its history up to the last whole

@@ -38,6 +38,7 @@ from octomate.tentacles.claude.transcript import (
     TranscriptAiTitleLine,
     TranscriptAssistantLine,
     TranscriptLine,
+    TranscriptSystemLine,
     TranscriptUserLine,
     prompt_text,
     transcript_line_adapter,
@@ -100,8 +101,9 @@ def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> N
 class OpenTurn:
     """The turn currently being assembled off the live tail — its accumulator fed line
     by line, its byte range advancing to cover the last transcript line folded in. It
-    commits as an `ExternalAgentRun` when the next prompt line closes it, when its own
-    `Stop` hook reaches `stop_turn`, or at `finalize`."""
+    commits as an `ExternalAgentRun` when the next prompt line or its `Stop` hooks'
+    summary line closes it, when its own `Stop` hook reaches `stop_turn`, or at
+    `finalize`."""
 
     prompt_id: str
     prompt_text: str  # the human's clean prompt, for creating the inbound ledger row
@@ -422,9 +424,10 @@ class ClaudeTranscriptTailer:
     ) -> None:
         """Route one typed line: a `prompt_source` user line opens a turn (closing the
         previous one); other user (tool-result) and assistant lines fold into the open
-        turn. Inline `is_sidechain` lines are skipped — transcripts since 2.1.177 keep
-        subagents in their own files (`pump_subagents`), so this guards only against an
-        older transcript's inline relics."""
+        turn, and a `stop_hook_summary` closes it. Inline `is_sidechain` lines are
+        skipped — transcripts since 2.1.177 keep subagents in their own files
+        (`pump_subagents`), so this guards only against an older transcript's inline
+        relics."""
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
@@ -440,6 +443,11 @@ class ClaudeTranscriptTailer:
                 return
             if state.open_turn is not None:
                 self.fold(state, line, end)
+        elif isinstance(line, TranscriptSystemLine):
+            # Claude writes it once the turn's `Stop` hooks have run, delivered or
+            # not: a server down through the stop never hears the hook.
+            if line.subtype == "stop_hook_summary" and not line.is_sidechain:
+                await self.close_turn(state)
         elif isinstance(line, TranscriptAiTitleLine):
             await self.record_title(state, line.ai_title)
 

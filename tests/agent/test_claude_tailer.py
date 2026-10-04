@@ -340,6 +340,51 @@ async def test_restreaming_committed_bytes_is_idempotent() -> None:
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
 
+def stop_summary_record(parent: str, second: int) -> JsonObject:
+    """The line Claude writes once a turn's `Stop` hooks have run — here with
+    Octomate's own hook refused, as when the server restarts through the stop."""
+    return {
+        "type": "system",
+        "subtype": "stop_hook_summary",
+        "isSidechain": False,
+        "userType": "external",
+        "cwd": "/repo",
+        "sessionId": SESSION_ID,
+        "version": "2.1.0",
+        "gitBranch": "main",
+        "parentUuid": parent,
+        "entrypoint": "cli",
+        "uuid": f"s-{parent}",
+        "timestamp": f"2026-07-09T10:00:{second:02d}.000Z",
+        "level": "suggestion",
+        "hookCount": 1,
+        "hookInfos": [{"command": "emit.py --path /hooks/claude", "durationMs": 453}],
+        "hookErrors": ["octomate: hook delivery failed: Connection refused"],
+        "hookAdditionalContext": [],
+        "preventedContinuation": False,
+        "stopReason": "",
+        "hasOutput": True,
+    }
+
+
+async def test_a_turn_commits_on_its_stop_summary_without_the_hook() -> None:
+    """A turn whose `Stop` hook never arrived still ends where the transcript says it
+    did, not at the next prompt — so a teleport in between carries it."""
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+
+    await feed_records(tailer, state, [*TURN_ONE, stop_summary_record("a2", 5)])
+
+    [run] = await runs_of(octomate)
+    assert (run.id, run.last_line_uuid) == ("p1", "a2")
+    assert run.end_offset == total_bytes(TURN_ONE)
+    # No eof: the connection dies, and the next one resumes past the committed turn.
+    tailer.detach_remote(state)
+    _, offsets = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
+    assert offsets[tailer_mod.SESSION_FILE] == total_bytes(TURN_ONE)
+
+
 def wired(octomate: Octomate) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]:
     """The ingest + tailer as the tentacle wires them: sharing one per-session lock
     registry so hook ledger writes and tailer run commits serialize."""
