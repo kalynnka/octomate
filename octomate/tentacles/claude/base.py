@@ -336,6 +336,20 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         conversation = state.conversation
         if conversation is None:
             raise RuntimeError(f"session {hello.session_id} attached without a home")
+        # How much of the session file is kept, so the session can be forked onto
+        # another surface; only its owner's bytes, and only a registered owner's.
+        # Read before the welcome, so a client leaving at once cancels no read.
+        kept = (
+            (
+                await self.octomate.files.get(
+                    conversation.transcript_file_id,
+                    owner_id=sender.user_id,
+                )
+            ).size
+            if conversation.transcript_file_id is not None
+            and sender.user_id is not None
+            else 0
+        )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
@@ -355,18 +369,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 )
 
         relay = asyncio.create_task(relay_finalize())
-        # How much of the session file is kept, so the session can be forked onto
-        # another surface; only its owner's bytes, and only a registered owner's.
-        kept = (
-            (
-                await self.octomate.files.get(
-                    conversation.transcript_file_id, owner_id=sender.user_id
-                )
-            ).size
-            if conversation.transcript_file_id is not None
-            and sender.user_id is not None
-            else 0
-        )
         # Per-file contiguity: each line must start where the last one ended, so a
         # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
         # instead of a silently mis-assembled turn. The welcome's map, already sent,
