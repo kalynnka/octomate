@@ -40,6 +40,8 @@ class TeleportRequest:
     # from; None carries the conversation only.
     project: str | None = None
     ref: str | None = None
+    # Whether the agent carries on at once where it lands.
+    resume: bool = False
 
     @classmethod
     def of(cls, requests: DeferredToolRequests) -> TeleportRequest | None:
@@ -55,6 +57,7 @@ class TeleportRequest:
                 new_thread=bool(meta.get("new_thread", True)),
                 project=str(meta.get("project") or "") or None,
                 ref=str(meta.get("ref") or "") or None,
+                resume=bool(meta.get("resume", False)),
                 # The address validates itself, being a pydantic dataclass.
                 destination=ChannelAddress(**destination) if destination else None,
             )

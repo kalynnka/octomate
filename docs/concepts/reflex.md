@@ -30,6 +30,7 @@ flowchart TD
   Summon --> React
   Scheme --> React
   Teleport -->|resumed where it landed| React
+  Teleport -->|landed, not resumed| Done
   ResumeDeferred -->|batch still incomplete| Deferred
   ResumeDeferred -->|already resumed| Done
   ResumeDeferred -->|answers as tool results| React
@@ -76,8 +77,9 @@ as an ordinary hand-off with the brief.
 thread at the prepared address, forks the conversation's messages into the landed thread, binds the
 project and forks its workspace if one was named, or carries the source thread's
 project and the tree it stands at when none was, relocates the agent's session,
-and re-enters `React` with the teleport call answered by a sentence saying where it
-now is. A failed open refuses the move; it does not resume at the source.
+and, when the agent asked to carry on, re-enters `React` with the teleport call
+answered by a sentence saying where it now is. Otherwise the move ends there, with
+the handoff recorded and the workspace saved. A failed open refuses the move; it does not resume at the source.
 For native history, `Awake` asks the receiving agent to validate the source before
 entering `Teleport`, so an unusable transcript cannot create or announce a destination.
 

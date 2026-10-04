@@ -161,6 +161,11 @@ class TeleportDecision(BaseModel):
         description="The branch, tag or commit that workspace starts from; None "
         "for the project's default branch.",
     )
+    resume: bool = Field(
+        default=False,
+        description="Whether the agent carries on at once where it lands; false "
+        "leaves the conversation there for the next message.",
+    )
 
     def metadata(self) -> JsonObject:
         """What the deferral carries, as plain values: enough for the graph to
@@ -174,6 +179,7 @@ class TeleportDecision(BaseModel):
             "new_thread": self.new_thread,
             "project": self.project or "",
             "ref": self.ref or "",
+            "resume": self.resume,
         }
 
     def deferral(self, tool_call_id: str) -> DeferredToolRequests:
@@ -191,6 +197,7 @@ class TeleportDecision(BaseModel):
                         "new_thread": self.new_thread,
                         "project": self.project,
                         "ref": self.ref,
+                        "resume": self.resume,
                     },
                     tool_call_id=tool_call_id,
                 )

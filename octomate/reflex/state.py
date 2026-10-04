@@ -77,7 +77,7 @@ class ResponseTarget:
 class PendingHandoff:
     """A handoff one node decided, as far as it is known before it lands: the source
     side. The target is what landing resolves — the decision's route, as the agent
-    is actually mounted — so React reads it there when it records the row, and
+    is actually mounted — so it is read there when the row is recorded, and
     nothing here could name it without risking a second, drifting copy.
 
     The source is who handed the conversation over, and where from as the row names
@@ -91,6 +91,38 @@ class PendingHandoff:
     source_conversation_id: uuid.UUID | None = None
     source_run_id: str | None = None
     source_model_message_id: uuid.UUID | None = None
+
+    async def land(
+        self, deps: ReflexDeps, thread: Thread, decision: SummonDecision
+    ) -> None:
+        """Record this handoff on the chat `thread` belongs to, naming the agent
+        and model `decision` resolved to, unless that chat already names them."""
+        target_conversation = await deps.conversation_manager.ensure(
+            thread.id, agent_tentacle_id=decision.agent_id, with_history=False
+        )
+        # A handoff pins who owns the chat, so it is read and written there: a
+        # chat room's sub-thread is new every kick and would forget the owner.
+        chat = await deps.thread_manager.surface(thread)
+        latest = chat.latest_handoff
+        if (
+            latest is not None
+            and latest.to_agent_tentacle_id == decision.agent_id
+            and latest.to_model == decision.model
+        ):
+            return
+        await deps.thread_manager.record_handoff(
+            chat,
+            source_agent_tentacle_id=self.source_agent_tentacle_id,
+            to_agent_tentacle_id=decision.agent_id,
+            to_model=decision.model,
+            reason=decision.reason,
+            hint=decision.hint,
+            brief=decision.summon,
+            source_conversation_id=self.source_conversation_id,
+            target_conversation_id=target_conversation.id,
+            source_run_id=self.source_run_id,
+            source_model_message_id=self.source_model_message_id,
+        )
 
 
 @dataclass

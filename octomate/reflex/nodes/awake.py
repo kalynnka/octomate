@@ -193,6 +193,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     new_thread=decision.new_thread,
                     project=decision.project,
                     ref=decision.ref,
+                    resume=decision.resume,
                 ),
                 origin=origin,
                 agent_id=agent.id,

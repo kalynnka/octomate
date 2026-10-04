@@ -293,6 +293,7 @@ def mount_gateway(
         project: str | None = None,
         ref: str | None = None,
         new_thread: bool = True,
+        resume: bool = False,
         session_id: Annotated[
             str | None,
             Field(
@@ -311,6 +312,7 @@ def mount_gateway(
             new_thread=new_thread,
             project=project,
             ref=ref,
+            resume=resume,
         )
         if not session.native:
             return TELEPORT_RECORDED

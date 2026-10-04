@@ -492,10 +492,11 @@ class GatewayCapability(AbstractCapability[None]):
         project: str | None = None,
         ref: str | None = None,
         new_thread: bool = True,
+        resume: bool = False,
     ) -> str:
         """Continue this conversation yourself somewhere else; everything said so
-        far comes with you. This turn ends on it, and you are re-awoken there with
-        your context intact.
+        far comes with you. This turn ends on it, and your context is intact
+        there.
 
         Args:
             hint: The short, user-facing thread-starter message.
@@ -514,6 +515,9 @@ class GatewayCapability(AbstractCapability[None]):
                 wherever it goes, so omit this there.
             ref: The branch, tag or commit that workspace starts from; omit it for
                 the project's default branch.
+            resume: Carry on working there at once, as after any tool call. Leave
+                it false when the move is all that was asked: you continue when
+                the user next writes there.
         """
         try:
             decision = await self.session.teleport(
@@ -522,6 +526,7 @@ class GatewayCapability(AbstractCapability[None]):
                 new_thread=new_thread,
                 project=project,
                 ref=ref,
+                resume=resume,
             )
         except GatewayRefusal as refusal:
             raise ModelRetry(str(refusal)) from refusal

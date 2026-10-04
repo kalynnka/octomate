@@ -176,8 +176,9 @@ async def test_teleport_creates_independent_owned_destination(
         assert event["destination"]["chat_id"] == "another-room"
         assert event["destination"]["shared"]
         assert case.far.opened_dms == []
-    assert case.agent.turns[-1].deferred_results is None
-    assert "Current channel address:" in str(case.agent.turns[-1].prompt)
+    # You asked for the move, so nothing runs there until you write.
+    assert case.agent.turns == []
+    assert case.agent.streams == []
     threads = await case.app.thread_manager.list_threads(user_id=case.owner.id)
     landed = next(thread for thread in threads if thread.channel_tentacle_id == "far")
     assert landed.id != case.thread.id
@@ -186,7 +187,12 @@ async def test_teleport_creates_independent_owned_destination(
     assert copied.permission_mode == "default"
     assert copied.runs[-1].model_name == "opus"
     assert len((await case.app.conversations.get(copied.id)).messages) == 2
-    assert case.agent.turns[-1].model == "picked-model"
+    # The landing is still recorded, on the model the conversation ran.
+    stored = await case.app.thread_manager.get(landed.id)
+    assert stored is not None
+    assert stored.latest_handoff is not None
+    assert stored.latest_handoff.to_agent_tentacle_id == "first"
+    assert stored.latest_handoff.to_model == "opus"
     assert (await case.app.conversations.get(source.id)).thread_id == case.thread.id
 
 

@@ -81,7 +81,11 @@ ScriptedOutput = str | DeferredToolRequests
 
 
 def _teleport_requests(
-    hint: str, destination: str = "thread", project: str | None = None
+    hint: str,
+    destination: str = "thread",
+    project: str | None = None,
+    *,
+    resume: bool,
 ) -> DeferredToolRequests:
     """A reception run's `teleport` deferral — the suspender skips it and the graph
     forks + resumes. On the resumed run (deferred results present) the fake answers
@@ -116,6 +120,7 @@ def _teleport_requests(
                 "new_thread": destination != "here",
                 "project": project or "",
                 "ref": "",
+                "resume": resume,
             }
         },
     )
@@ -195,6 +200,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     reception_teleport_destination: str = "thread"
     # The project the teleport carries, binding the thread landed in.
     reception_teleport_project: str | None = None
+    # Whether the teleport asks to carry on at once where it lands.
+    reception_teleport_resume: bool = True
     # When set, the first reception run records a teleport decision on the mounted
     # gateway's session — the way an external runtime's MCP tool does — and ends
     # its turn as the same deferral, the way that runtime's tentacle does once
@@ -299,7 +306,9 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
             )
             if gateway is None:
                 raise AssertionError("a recorded teleport requires a mounted gateway")
-            decision = await gateway.session.teleport(hint=recorded_teleport)
+            decision = await gateway.session.teleport(
+                hint=recorded_teleport, resume=self.reception_teleport_resume
+            )
             deferral = decision.deferral("call_teleport")
             if deferred_suspender is not None:
                 await deferred_suspender.suspend(deferral)
@@ -309,6 +318,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 self.reception_teleport,
                 self.reception_teleport_destination,
                 self.reception_teleport_project,
+                resume=self.reception_teleport_resume,
             )
         else:
             output = self.reception_output
@@ -451,6 +461,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 self.reception_teleport,
                 self.reception_teleport_destination,
                 self.reception_teleport_project,
+                resume=self.reception_teleport_resume,
             )
         else:
             output = self.reception_output

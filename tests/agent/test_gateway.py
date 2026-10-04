@@ -796,6 +796,7 @@ async def test_teleport_defers_a_crossing_with_the_far_account_named(
         "new_thread": True,
         "project": "",
         "ref": "",
+        "resume": False,
     }
 
 

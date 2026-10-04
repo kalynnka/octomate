@@ -6,7 +6,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from pydantic_ai.tools import DeferredToolResults
-from pydantic_graph import BaseNode, GraphRunContext
+from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.reflex.crossing import open_crossing
 from octomate.reflex.nodes.react import React
@@ -14,6 +14,7 @@ from octomate.reflex.state import (
     PendingHandoff,
     ReflexDeps,
     ReflexGraphResult,
+    ReflexResult,
     ReflexState,
     ResponseTarget,
 )
@@ -38,7 +39,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React:
+    ) -> React | End[ReflexGraphResult]:
         state = ctx.state
         state.run_name = "teleport"
         origin = self.origin
@@ -113,6 +114,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 state.thread = landed
                 state.target = new_target
                 state.handoff = None
+                if not self.request.resume:
+                    return await self.land(ctx)
                 state.user_prompt = f"Continuing the conversation here.\nCurrent channel address: {new_address}"
                 return React()
             landed = await ctx.deps.thread_manager.enter(
@@ -178,6 +181,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     conversation, external_id
                 )
             await agent.relocate(conversation, cwd=cwd)
+        if not self.request.resume:
+            return await self.land(ctx)
         # The pending call resolves into the resumed run, whichever runtime cast it.
         if self.request.tool_call_id is None:
             state.user_prompt = f"{sentence}\nCurrent channel address: {new_address}"
@@ -185,6 +190,30 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         return React(
             resume_results=DeferredToolResults(
                 calls={self.request.tool_call_id: sentence}
+            )
+        )
+
+    async def land(
+        self, ctx: GraphRunContext[ReflexState, ReflexDeps]
+    ) -> End[ReflexGraphResult]:
+        """End the move where it landed, for the next message there to carry on:
+        the handoff is recorded and the workspace saved, as a turn's end would."""
+        state = ctx.state
+        if state.decision is None or state.target is None or state.thread is None:
+            raise ValueError("Teleport lands with a decision, a target and a thread")
+        resolved = ctx.deps.resolve_agent(
+            state.target.channel_id, state.decision.agent_id, state.decision.model
+        )
+        state.decision = state.decision.model_copy(
+            update={"agent_id": resolved.agent, "model": resolved.model}
+        )
+        if state.handoff is not None:
+            await state.handoff.land(ctx.deps, state.thread, state.decision)
+            state.handoff = None
+        await ctx.deps.workspaces.save(state.thread)
+        return End(
+            ReflexResult(
+                decision=state.decision, target=state.target, moved_by=state.moved_by
             )
         )
 

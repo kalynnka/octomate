@@ -42,8 +42,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
     resume_batch_id: uuid.UUID | None = None
     # Set by Teleport to resume the same agent where it landed, with its pending
-    # call resolved — against the forked history, or in place — and by
-    # ResumeDeferred to resume it where it was, when the move was declined.
+    # call resolved — against the forked history, or in place.
     resume_results: DeferredToolResults | None = None
 
     @reflex_logfire.instrument("reflex.react", extract_args=False)
@@ -107,34 +106,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:
-            target_conversation = await ctx.deps.conversation_manager.ensure(
-                state.thread.id,
-                agent_tentacle_id=agent.id,
-                with_history=False,
-            )
-            # A handoff pins who owns the chat, so it is read and written there: a
-            # chat room's sub-thread is new every kick and would forget the owner.
-            chat = await ctx.deps.thread_manager.surface(state.thread)
-            latest_handoff = chat.latest_handoff
-            target_model = model
-            if (
-                latest_handoff is None
-                or latest_handoff.to_agent_tentacle_id != agent.id
-                or latest_handoff.to_model != target_model
-            ):
-                await ctx.deps.thread_manager.record_handoff(
-                    chat,
-                    source_agent_tentacle_id=claim.source_agent_tentacle_id,
-                    to_agent_tentacle_id=agent.id,
-                    to_model=target_model,
-                    reason=decision.reason,
-                    hint=decision.hint,
-                    brief=decision.summon,
-                    source_conversation_id=claim.source_conversation_id,
-                    target_conversation_id=target_conversation.id,
-                    source_run_id=claim.source_run_id,
-                    source_model_message_id=claim.source_model_message_id,
-                )
+            await claim.land(ctx.deps, state.thread, decision)
             state.handoff = None
         target_channel = ctx.deps.channel(target)
         state.summon_routes = [

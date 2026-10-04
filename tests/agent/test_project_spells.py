@@ -328,6 +328,7 @@ async def test_inkling_defers_the_move_for_the_graph_to_perform(tmp_path: Path) 
         "new_thread": False,
         "project": "inky",
         "ref": "",
+        "resume": False,
     }
     # Nothing bound yet: that is the graph's, on the thread it lands in.
     unbound = await harness.threads.get(harness.thread.id)

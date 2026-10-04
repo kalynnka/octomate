@@ -1653,15 +1653,19 @@ async def test_a_teleport_crossing_that_never_opens_refuses_the_move() -> None:
     assert far.sub_threads == []
 
 
-async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
+@pytest.mark.parametrize("resume", [True, False])
+async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral(
+    resume: bool,
+) -> None:
     """A runtime a tool result cannot suspend records the teleport as a decision,
     is interrupted on it, and ends its turn as the same deferral Inkling raises;
-    the graph performs one move for both and resolves the call into the resumed
-    run."""
+    the graph performs one move for both and, when the agent asked to carry on,
+    resolves the call into the resumed run."""
     address = _key()
     entry = FakeAgent(
         id="other",
         reception_recorded_teleport="carrying on in a thread",
+        reception_teleport_resume=resume,
         reception_output="continued",
         allow_reception_run=True,
     )
@@ -1682,6 +1686,17 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral() -> None:
     )
 
     assert not isinstance(result, DeferredResult)
+    assert result.moved_by == "teleport"
+    assert result.target.address is not None
+    assert result.target.address.channel_thread_id == "hint-thread"
+    if not resume:
+        # Landed, and waiting there for the next message, its tree saved as a
+        # turn's end would.
+        assert len(entry.turns) == 1
+        landed = await deps.thread_manager.ensure(result.target.address)
+        workspaces = cast(RecordingWorkspaceManager, deps.workspaces)
+        assert workspaces.saved[-1] == landed.id
+        return
     assert len(entry.turns) == 2
     resumed = entry.turns[-1]
     assert resumed.prompt is None

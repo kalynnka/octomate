@@ -297,12 +297,13 @@ async def test_teleport_records_and_tells_the_runtime_to_wrap_up() -> None:
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "gateway_teleport", {"hint": "carrying on in a thread"}
+            "gateway_teleport", {"hint": "carrying on in a thread", "resume": True}
         )
 
     assert result.data == TELEPORT_RECORDED
     assert isinstance(session.decision, TeleportDecision)
     assert session.decision.hint == "carrying on in a thread"
+    assert session.decision.resume
     assert session.decision.destination == session.conversation_address
 
 

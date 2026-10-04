@@ -31,6 +31,10 @@ supported destination.
 
 > Continue this in my private conversation on the other connected channel.
 
+The agent decides whether to carry on at once where it lands. Otherwise, and
+always after Trunkline's own Teleport, the conversation waits there for your next
+message.
+
 Teleport requires tool approval, handled by the agent's harness according to its
 configured permissions. Automatic review, bypass modes and existing grants keep
 their normal behavior. When the harness asks for a person, Octomate relays that

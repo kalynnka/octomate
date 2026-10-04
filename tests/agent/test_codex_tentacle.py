@@ -783,6 +783,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
                 tool_call_id="move",
                 destination=KEY,
                 new_thread=not here,
+                resume=True,
             ),
             origin=origin,
             agent_id="codex",

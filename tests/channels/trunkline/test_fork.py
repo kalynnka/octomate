@@ -411,10 +411,55 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         == case.prefix
     )
     assert not landed.handoffs
-    assert [run.model for run in (*runner.turns, *runner.streams)] == ["test"]
+    # Nothing runs there until someone writes: neither the console nor the session
+    # asked to carry on.
+    assert [*runner.turns, *runner.streams] == []
     assert (
         await app.conversations.get(case.source.id)
     ).external_id == case.source.external_id
+
+
+async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
+    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = case.tentacle.octomate
+    case.tentacle.models = {"gpt-6-luna": "test"}
+    runner = FakeAgent(id=case.tentacle.id, allow_reception_run=True)
+    monkeypatch.setattr(case.tentacle, "run", runner.run)
+    monkeypatch.setattr(case.tentacle, "run_stream_events", runner.run_stream_events)
+    options = (
+        await client.get(f"/api/trunkline/threads/{case.source.thread_id}/operations")
+    ).json()
+    [address] = [
+        one
+        for one in options["teleport"]["destinations"]
+        if one["channel_tentacle_id"] == "trunkline"
+    ]
+    async with async_session() as session:
+        user = await session.get(User, case.owner_id)
+    assert user is not None
+    owner = await app.users.native_profile(CODEX_NATIVE_ID, user.username)
+    source = await app.thread_manager.get(case.source.thread_id)
+    assert owner is not None
+    assert source is not None
+
+    await app.kick(
+        NativeGatewaySignal(
+            decision=TeleportDecision(
+                agent_id=case.tentacle.id,
+                hint="Continue here",
+                destination=ChannelAddress(**address),
+                resume=True,
+            ),
+            agent_id=CODEX_NATIVE_ID,
+            user_profile=owner,
+            source=source.key.address(owner.channel_user_id),
+        )
+    )
+
+    [run] = [*runner.turns, *runner.streams]
+    assert run.model == "test"
+    assert "Continuing the conversation here." in str(run.prompt)
 
 
 @pytest.mark.parametrize(
