@@ -4,7 +4,7 @@
  */
 
 export interface Command {
-  name: 'summon' | 'teleport' | 'fork'
+  name: 'summon' | 'teleport'
   /** how its argument reads: `<needed>`, `[optional]`, or empty for none */
   takes: string
   /** what its argument is picked from, in a word */
@@ -15,7 +15,6 @@ export interface Command {
 export const COMMANDS: Command[] = [
   { name: 'summon', takes: '<agent>', offers: 'agent', description: 'Let another agent take over from a prepared brief. Opens the summon composer.' },
   { name: 'teleport', takes: '[destination]', offers: 'surface', description: 'Carry this chat to another destination with the same agent and history.' },
-  { name: 'fork', takes: '', offers: '', description: 'Start an independent thread with this history. The original stays available.' },
 ]
 
 /** One thing a command's argument can be. */

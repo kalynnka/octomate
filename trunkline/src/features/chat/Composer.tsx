@@ -20,12 +20,12 @@ const GATEWAY_MODES = {
   teleport: {
     title: 'Teleport',
     description: 'carry this chat to another destination with the same agent and history',
-    placeholder: 'optional note — opens the thread at the destination…',
+    placeholder: 'optional prompt — sent there as your next message…',
     hint: '⌘↵ teleport · esc back to chat',
-    field: 'Note',
+    field: 'Prompt',
     icon: 'arrowRightLeft',
     rows: 2,
-    max: 1000,
+    max: 8000,
   },
   summon: {
     title: 'Summon',
@@ -433,9 +433,8 @@ export function Composer() {
   const ntModel = useConsole((s) => s.ntModel)
   const ntEffort = useConsole((s) => s.ntEffort)
   const running = useConsole((s) => s.running)
-  const forkPending = useConsole((s) => s.forkPending)
   const gatewayMode = useConsole((s) => s.gatewayMode)
-  const { removeQueued, setGatewayMode, gateway, fork } = useConsole((s) => s.actions)
+  const { removeQueued, setGatewayMode, gateway } = useConsole((s) => s.actions)
   const username = useAuth((s) => s.user?.username ?? 'operator')
 
   const isReview = useConsole((s) => s.pvOpen)
@@ -452,7 +451,7 @@ export function Composer() {
   }, [selThreadId])
 
   // A gateway op takes the composer over: Summon's brief is the draft already
-  // in it, Teleport's note is its own, and the op's controls replace the send row.
+  // in it, Teleport's prompt is its own, and the op's controls replace the send row.
   const mode = !ntOn && gatewayMode?.threadId === selThreadId ? gatewayMode.action : null
   const copy = mode ? GATEWAY_MODES[mode] : null
   // The header keeps this fresh; here it is read, and asked again by a command.
@@ -468,14 +467,18 @@ export function Composer() {
   const routes = (routeChannel && availability?.routes[routeChannel]) || []
   const route = pickRoute(routes, form.agent, form.model)
   const { efforts, effort } = routeEffort(route, form.effort)
-  const text = mode === 'teleport' ? form.note : composerText
+  const text = mode === 'teleport' ? form.prompt : composerText
   const request = mode && availability
     ? gatewayRequest(mode, availability, { text, destination: form.destination, route, effort })
     : null
   const blocked = !mode ? undefined
     : running ? 'Wait for the current run to finish.'
       : !availability ? 'Checking available destinations…'
-        : availability.reason ?? (mode === 'summon' && routeChannel && !routes.length ? 'No other agent runs at that destination.' : undefined)
+        : availability.reason
+          ?? (mode === 'summon' && routeChannel && !routes.length ? 'No other agent runs at that destination.' : undefined)
+          // Only a thread here can take the message after the move.
+          ?? (mode === 'teleport' && text.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
+            ? 'A prompt can follow a teleport only into a Trunkline thread.' : undefined)
   const ready = Boolean(request) && !blocked
   // What a channel with no route for the op says in the destination browser.
   const carrierless = `does not run ${sesAgent || 'this agent'}`
@@ -505,12 +508,11 @@ export function Composer() {
   const [cursor, setCursor] = useState(0)
   const [hidden, setHidden] = useState(false)
   const [handover, setHandover] = useState<{ agent: string; model: string | null; effort: EffortLevel } | null>(null)
-  const line = !mode && !ntOn && detail && !running && !forkPending && !hidden ? readCommand(composerText) : null
+  const line = !mode && !ntOn && detail && !running && !hidden ? readCommand(composerText) : null
   const waiting = eligibility.isError ? eligibility.error.message : 'Checking available destinations…'
   const closed = {
     summon: operations ? operations.summon.reason ?? undefined : waiting,
     teleport: operations ? operations.teleport.reason ?? undefined : waiting,
-    fork: detail?.canFork ? undefined : 'Fork is available for native Codex and Claude Code threads only.',
   }
   // Summon in place offers this channel's agents; elsewhere, every channel's.
   const summonRoutes = operations?.summon.here
@@ -556,7 +558,6 @@ export function Composer() {
     const picked = matches[index]?.argument
     if (needed && !picked) return
     write('')
-    if (command.name === 'fork') return void fork(selThreadId)
     if (command.name === 'summon') {
       seedForm('summon', { agent: picked.value, ...(handover?.agent === picked.value ? { model: handover.model, effort: handover.effort } : {}) })
     } else {
@@ -726,7 +727,7 @@ export function Composer() {
                   placeholder={copy.placeholder}
                   value={text}
                   onChange={(event) =>
-                    mode === 'teleport' ? patchForm({ note: event.target.value }) : aui.composer.setText(event.target.value)}
+                    mode === 'teleport' ? patchForm({ prompt: event.target.value }) : aui.composer.setText(event.target.value)}
                   onKeyDown={(event) => {
                     if (event.key === 'Escape') {
                       event.preventDefault()

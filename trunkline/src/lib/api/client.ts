@@ -154,13 +154,6 @@ export function fetchThreads(): Promise<ApiThread[]> {
   return getJson<ApiThread[]>('/api/trunkline/threads')
 }
 
-export async function forkThread(threadId: string): Promise<ApiThread> {
-  const path = `/api/trunkline/threads/${encodeURIComponent(threadId)}/fork`
-  const res = await apiFetch(path, { method: 'POST' })
-  if (!res.ok) return refuse(res)
-  return (await res.json()) as ApiThread
-}
-
 /**
  * One read under a thread. Every /threads/{id} sub-resource 404s together —
  * an id the relay does not know is not an empty ledger — so a missing thread

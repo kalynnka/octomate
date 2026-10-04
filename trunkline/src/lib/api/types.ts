@@ -305,8 +305,6 @@ export interface ThreadDetail {
   channel?: string
   /** trunkline directive key; absent = read-only (another channel's thread) */
   sendKey?: string
-  /** Whether this thread can be forked into a new Trunkline thread. */
-  canFork?: boolean
   msgCount: number
   sessions: SessionInfo[]
   ledger: LedgerItem[]

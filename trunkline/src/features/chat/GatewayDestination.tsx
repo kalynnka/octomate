@@ -159,7 +159,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
           <label className="trk-gateway-filter" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 12px', borderBottom: '1px solid var(--line-color)', flexShrink: 0 }}>
             <span aria-hidden="true" style={{ ...mono(9), color: 'var(--fg-3)' }}>⌕</span>
             <input
-              // Opening the picker is asking where to go; the note can wait.
+              // Opening the picker is asking where to go; the prompt can wait.
               autoFocus
               value={filter}
               onChange={(event) => setFilter(event.target.value)}

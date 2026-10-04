@@ -698,9 +698,11 @@ export interface TeleportBody {
   /** false only for Summon's in-place handover, which names this conversation */
   new_thread?: boolean
   hint: string
+  /** sent to the Trunkline thread the move lands in, as your next message */
+  prompt?: string
 }
 
-export interface SummonBody extends TeleportBody {
+export interface SummonBody extends Omit<TeleportBody, 'prompt'> {
   agent_id: string
   model: string
   brief: string

@@ -1,28 +1,25 @@
-"""Forking native Codex and Claude Code history through the authenticated console
-API."""
+"""Teleporting native Codex history through the authenticated console API: the
+import into a thread a driven agent carries on in."""
 
 from collections.abc import AsyncGenerator
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
-from uuid import UUID
 
 import httpx
 import pytest
 from fastapi import UploadFile
 
 from octomate.auth import current_user
-from octomate.config import ClaudeCodeConfig
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
 from octomate.database import async_session
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CLAUDE_NATIVE_ID, CODEX_NATIVE_ID, Thread, ThreadKey
+from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
-from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.agent.test_codex_transcript_fork import ForkCase
@@ -65,41 +62,38 @@ async def client(case: ForkCase) -> AsyncGenerator[httpx.AsyncClient]:
         yield client
 
 
-async def test_fork_creates_an_owned_driven_thread(
+async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Thread:
+    """The console's teleport of the native thread into a new Trunkline thread, and
+    the thread it landed in."""
+    app = case.tentacle.octomate
+    path = f"/api/trunkline/threads/{case.source.thread_id}"
+    options = (await client.get(f"{path}/operations")).json()
+    [address] = [
+        one
+        for one in options["teleport"]["destinations"]
+        if one["channel_tentacle_id"] == "trunkline"
+    ]
+    response = await client.post(
+        f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
+    )
+    assert "run_error" not in response.text, response.text
+    listed = await app.thread_manager.list_threads(user_id=case.owner_id)
+    [landed] = [one for one in listed if one.channel_tentacle_id == "trunkline"]
+    stored = await app.thread_manager.get(landed.id)
+    assert stored is not None
+    return stored
+
+
+async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 201, response.text
-    destination = response.json()
-    assert destination["channel_tentacle_id"] == "trunkline"
-    assert destination["chat_id"] == str(case.owner_id)
-    assert UUID(destination["channel_thread_id"]).version == 7
-    assert destination["id"] != str(case.source.thread_id)
-    assert destination["handoffs"] == []
-    assert destination["active_agent_tentacle_id"] == case.tentacle.id
-    detail = await client.get(f"/api/trunkline/threads/{destination['id']}")
-    assert detail.status_code == 200
-    conversations = await client.get(
-        f"/api/trunkline/threads/{destination['id']}/conversations"
-    )
-    [forked] = conversations.json()
-    assert forked["external_id"] == case.fork.return_value
-    assert forked["permission_mode"] == "auto_review"
-    assert forked["runs"][-1]["model_name"] == "gpt-6-luna"
-    assert forked["transcript_file_id"] != str(case.source.transcript_file_id)
-    assert (
-        await app.files.read(UUID(forked["transcript_file_id"]), owner_id=case.owner_id)
-        == case.prefix
-    )
-    assert (
-        await app.conversations.get(case.source.id)
-    ).external_id == case.source.external_id
+    stored = await teleport_to_trunkline(case, client)
 
-    stored = await app.thread_manager.get(UUID(destination["id"]))
-    assert stored is not None
+    assert stored.chat_id == str(case.owner_id)
+    assert stored.handoffs == []
     assert stored.active_agent_tentacle_id == case.tentacle.id
-    [notice] = stored.messages
+    notice = stored.messages[-1]
     assert notice.actor_kind == "system"
     assert notice.direction == "inbound"
     assert notice.platform_message_id is None
@@ -109,7 +103,6 @@ async def test_fork_creates_an_owned_driven_thread(
         "and its files were not transferred.\n\n"
         f"Current channel address:\n{stored.key}/{case.owner_id}."
     )
-    assert stored.source_cursor_message_id is None
     pending = await app.thread_manager.pending_prompt_messages(
         stored, notice.id, case.tentacle.id
     )
@@ -118,12 +111,11 @@ async def test_fork_creates_an_owned_driven_thread(
     kick = AsyncMock()
     monkeypatch.setattr(app, "kick", kick)
     sent = await client.post(
-        f"/api/trunkline/threads/{destination['channel_thread_id']}/messages",
+        f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
         json={"text": "continue the work"},
     )
     assert sent.status_code == 200
     kick.assert_awaited_once()
-    assert case.fork.await_count == 1
     after = await app.thread_manager.get(stored.id)
     assert after is not None
     assert after.handoffs == []
@@ -134,7 +126,7 @@ async def test_fork_creates_an_owned_driven_thread(
     assert pending[-1].message_text == "continue the work"
 
     refused = await client.post(
-        f"/api/trunkline/threads/{destination['channel_thread_id']}/messages",
+        f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
         json={"text": "switch agent", "model": "another-agent:"},
     )
     assert refused.status_code == 409
@@ -142,15 +134,13 @@ async def test_fork_creates_an_owned_driven_thread(
 
     other = await a_user("other-reader")
     app.dependency_overrides[current_user] = lambda: other
-    assert (
-        await client.get(f"/api/trunkline/threads/{destination['id']}")
-    ).status_code == 404
+    assert (await client.get(f"/api/trunkline/threads/{stored.id}")).status_code == 404
 
 
 @pytest.mark.parametrize(
     "availability", ["available", "missing", "disabled", "unregistered"]
 )
-async def test_fork_uses_only_an_available_server_project(
+async def test_a_native_session_lands_on_its_project_only_where_it_is_served(
     case: ForkCase,
     client: httpx.AsyncClient,
     tmp_path: Path,
@@ -171,83 +161,17 @@ async def test_fork_uses_only_an_available_server_project(
     if availability != "unregistered":
         app.projects.index([project])
 
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 201, response.text
-    destination = response.json()
+    stored = await teleport_to_trunkline(case, client)
+
     available = availability == "available"
-    assert destination["project_id"] == (str(project.id) if available else None)
+    assert stored.project_id == (project.id if available else None)
     assert (
         case.fork.call_args.kwargs["cwd"]
-        == app.workspaces.open(
-            UUID(destination["id"]), project if available else None
-        ).path
+        == app.workspaces.open(stored.id, project if available else None).path
     )
     stored_source = await app.thread_manager.get(case.source.thread_id)
     assert stored_source is not None
     assert stored_source.project_id == project.id
-
-
-async def test_a_native_claude_thread_forks_through_the_claude_agent(
-    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    app = case.tentacle.octomate
-    claude = app.connect(ClaudeCodeTentacle("claude", app, config=ClaudeCodeConfig()))
-    trunkline = app.channels["trunkline"]
-    monkeypatch.setattr(trunkline.config, "agents", [case.tentacle.id, claude.id])
-    async with async_session() as session:
-        owner = await session.get(User, case.owner_id)
-    assert owner is not None
-    source = await app.thread_manager.ensure(
-        ThreadKey(CLAUDE_NATIVE_ID, "thread", "claude-session")
-    )
-    conversation = await app.conversations.ensure(
-        source.id, agent_tentacle_id=CLAUDE_NATIVE_ID
-    )
-    await app.thread_manager.record_outbound(
-        source,
-        agent_tentacle_id=CLAUDE_NATIVE_ID,
-        segments=[TextSegment(data={"text": "Native Claude history"})],
-        sender=UserProfile(
-            channel_user_id=owner.username, user_id=owner.id, name=owner.name
-        ),
-    )
-    landed = await app.thread_manager.ensure(
-        ThreadKey("trunkline", "thread", str(owner.id), "claude-fork")
-    )
-    validate = AsyncMock()
-    fork = AsyncMock(return_value=landed)
-    monkeypatch.setattr(ClaudeCodeTentacle, "validate_fork", validate)
-    monkeypatch.setattr(ClaudeCodeTentacle, "fork", fork)
-
-    response = await client.post(f"/api/trunkline/threads/{source.id}/fork")
-
-    assert response.status_code == 201, response.text
-    assert response.json()["id"] == str(landed.id)
-    # Checked before the thread it lands in is made, on the same conversation.
-    assert validate.await_args is not None
-    assert validate.await_args.args[0].id == conversation.id
-    assert fork.await_args is not None
-    assert fork.await_args.args[0].id == conversation.id
-    case.fork.assert_not_awaited()
-
-
-async def test_fork_requires_source_ownership(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    other = await a_user("other-owner")
-    case.tentacle.octomate.dependency_overrides[current_user] = lambda: other
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 404
-    case.fork.assert_not_awaited()
-
-
-async def test_fork_requires_csrf_header(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    client.headers.pop("X-Octomate-Request")
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 403
-    case.fork.assert_not_awaited()
 
 
 async def test_thread_access_does_not_grant_transcript_ownership(
@@ -268,66 +192,23 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     app.dependency_overrides[current_user] = lambda: other
     visible = await client.get(f"/api/trunkline/threads/{case.source.thread_id}")
     assert visible.status_code == 200
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 404
-    case.fork.assert_not_awaited()
-
-
-async def test_fork_requires_a_codex_agent(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    case.tentacle.octomate.tentacles.pop(case.tentacle.id)
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 503
-    case.fork.assert_not_awaited()
-
-
-async def test_failed_fork_does_not_publish_a_destination(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    case.fork.side_effect = ValueError(
-        "No completed Codex turn has been fully uploaded"
+    response = await client.post(
+        f"/api/trunkline/threads/{case.source.thread_id}/teleport",
+        json={
+            "destination": {
+                "channel_tentacle_id": "trunkline",
+                "chat_type": "thread",
+                "chat_id": str(other.id),
+                "user_id": str(other.id),
+            },
+            "hint": "Continue here",
+        },
     )
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 409
-    assert "No completed Codex turn" in response.json()["detail"]
-    listed = await client.get("/api/trunkline/threads")
-    assert [row["id"] for row in listed.json()] == [str(case.source.thread_id)]
-
-
-async def test_a_session_on_a_model_no_agent_here_offers_is_not_forked(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    case.tentacle.models = {"openai:gpt-6-sol": "gpt-6-sol"}
-
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-
-    assert response.status_code == 409
-    assert "'gpt-6-luna', which 'codex' does not offer" in response.json()["detail"]
+    # Refused before anything moves: the transcript is its owner's alone.
+    assert '"event_kind":"run_error"' in response.text
     case.fork.assert_not_awaited()
-    listed = await client.get("/api/trunkline/threads")
-    assert [row["id"] for row in listed.json()] == [str(case.source.thread_id)]
-
-
-async def test_fork_requires_the_thread_id(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    wrong_id = await client.post(f"/api/trunkline/threads/{case.source.id}/fork")
-    assert wrong_id.status_code == 404
-    old_entry = await client.post(f"/api/trunkline/conversations/{case.source.id}/fork")
-    assert old_entry.status_code == 404
-    case.fork.assert_not_awaited()
-
-
-async def test_fork_uses_the_threads_active_conversation(
-    case: ForkCase, client: httpx.AsyncClient
-) -> None:
-    await case.tentacle.octomate.conversations.ensure(
-        case.source.thread_id, agent_tentacle_id="another-agent"
-    )
-    response = await client.post(f"/api/trunkline/threads/{case.source.thread_id}/fork")
-    assert response.status_code == 422
-    case.fork.assert_not_awaited()
+    listed = await app.thread_manager.list_threads(user_id=other.id)
+    assert [thread.id for thread in listed] == [case.source.thread_id]
 
 
 @pytest.mark.parametrize("asked_by", ["console", "session"])
@@ -462,6 +343,35 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
     assert "Continuing the conversation here." in str(run.prompt)
 
 
+async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
+    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The prompt is the user's next message there, so the turn reads it with the
+    import notice still waiting, as a message typed there would."""
+    case.tentacle.models = {"gpt-6-luna": "test"}
+    runner = FakeAgent(id=case.tentacle.id, allow_reception_run=True)
+    monkeypatch.setattr(case.tentacle, "run", runner.run)
+    monkeypatch.setattr(case.tentacle, "run_stream_events", runner.run_stream_events)
+    path = f"/api/trunkline/threads/{case.source.thread_id}"
+    options = (await client.get(f"{path}/operations")).json()
+    [address] = [
+        one
+        for one in options["teleport"]["destinations"]
+        if one["channel_tentacle_id"] == "trunkline"
+    ]
+
+    response = await client.post(
+        f"{path}/teleport",
+        json={"destination": address, "hint": "Continue here", "prompt": "Ship it"},
+    )
+
+    assert "run_error" not in response.text, response.text
+    [run] = [*runner.turns, *runner.streams]
+    assert run.model == "test"
+    assert "Ship it" in str(run.prompt)
+    assert f"Forked from conversation {case.source.id}." in str(run.prompt)
+
+
 @pytest.mark.parametrize(
     ("invalid", "message"),
     [
@@ -471,6 +381,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
         ("boundary", "line boundary"),
         ("identity", "source session"),
         ("ancestor", "ancestor files"),
+        ("model", "'gpt-6-luna', which 'codex' does not offer"),
     ],
 )
 async def test_native_teleport_validates_history_before_opening_destination(
@@ -481,7 +392,9 @@ async def test_native_teleport_validates_history_before_opening_destination(
     message: str,
 ) -> None:
     app = case.tentacle.octomate
-    case.tentacle.models = {"gpt-6-luna": "test"}
+    case.tentacle.models = (
+        {"gpt-6-sol": "test"} if invalid == "model" else {"gpt-6-luna": "test"}
+    )
     far = app.connect(
         FakeChannelTentacle(
             "far", app, config=ChannelConfig(type="fake", agents=[case.tentacle.id])

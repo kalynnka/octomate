@@ -1,19 +1,12 @@
 import assert from 'node:assert/strict'
-import { after, afterEach, before, mock, test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { createElement } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
-import { QueryClientProvider } from '@tanstack/react-query'
 import { createServer, type ViteDevServer } from 'vite'
 import type { ApiConversation, ApiThread } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
-let forkThread: typeof import('../src/lib/api/client.ts').forkThread
 let liveThreadSummary: typeof import('../src/lib/api/live.ts').liveThreadSummary
 let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
-let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
-let useConsole: typeof import('../src/state/console.ts').useConsole
-let ChatHeader: typeof import('../src/features/chat/ChatHeader.tsx').ChatHeader
 
 const thread: ApiThread = {
   id: 'native-thread', kind: 'native_thread', chat_type: 'thread', chat_id: 'native-session',
@@ -32,63 +25,15 @@ before(async () => {
     root: fileURLToPath(new URL('../', import.meta.url)),
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
-  ;({ forkThread } = await server.ssrLoadModule('/src/lib/api/client.ts'))
   ;({ liveThreadDetail, liveThreadSummary } = await server.ssrLoadModule('/src/lib/api/live.ts'))
-  ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
-  ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
-  ;({ ChatHeader } = await server.ssrLoadModule('/src/features/chat/ChatHeader.tsx'))
 })
 after(async () => { await server?.close() })
-afterEach(() => {
-  mock.restoreAll()
-  queryClient.clear()
-  useConsole.getInitialState().detail = null
-})
 
-test('fork sends a CSRF-protected POST without accepting an owner identity', async () => {
-  const destination = { ...thread, id: 'destination', channel_tentacle_id: 'trunkline', channel_thread_id: 'new-key' }
-  const fetch = mock.method(globalThis, 'fetch', async () => Response.json(destination, { status: 201 }))
-  assert.deepEqual(await forkThread('source/id'), destination)
-  const [path, init] = fetch.mock.calls[0].arguments
-  assert.equal(path, '/api/trunkline/threads/source%2Fid/fork')
-  assert.equal(init?.method, 'POST')
-  assert.equal(new Headers(init?.headers).get('X-Octomate-Request'), '1')
-  assert.equal(init?.body, undefined)
-})
-
-test('a refused fork surfaces the server reason without retrying', async () => {
-  const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'No completed Codex turn has been fully uploaded' }, { status: 409 }))
-  await assert.rejects(forkThread(thread.id), /No completed Codex turn/)
-  assert.equal(fetch.mock.callCount(), 1)
-})
-
-for (const kind of ['native', 'claude', 'child', 'driven'] as const) {
-  test(`the ${kind} conversation falls back to fork only when eligible`, () => {
-    const source = { ...conversation }
-    const native = kind === 'native' || kind === 'claude'
-    if (kind === 'child') source.subagent_id = 'child'
-    if (kind === 'driven') source.agent_tentacle_id = 'codex'
-    if (kind === 'claude') source.agent_tentacle_id = 'claude-native'
-    const owner = kind === 'claude' ? { ...thread, active_agent_tentacle_id: 'claude-native' } : thread
-    const detail = liveThreadDetail({ thread: owner, conversations: [source], messages: [], project: null, batches: [] })
-    assert.equal(detail.canFork, native)
-    useConsole.getInitialState().detail = detail
-    queryClient.setQueryData(['threads'], {})
-    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
-    assert.ok(html.includes(native ? '>Fork</span></button>' : '>Teleport</span></button>'))
-    assert.ok(html.includes('aria-label="Choose thread operation"'))
-    assert.equal(html.includes('aria-disabled="true"'), !native)
-    assert.equal(html.includes('title="Checking available destinations…"'), !native)
-    assert.ok(!html.includes('title="Start an independent thread'))
-  })
-}
-
-
-test('a fork displays its conversation agent without a handoff', () => {
-  const forked: ApiThread = {
+test('an imported session displays its conversation agent without a handoff', () => {
+  const imported: ApiThread = {
     ...thread, channel_tentacle_id: 'trunkline', active_agent_tentacle_id: 'codex',
   }
-  assert.equal(liveThreadSummary(forked).agentLabel, 'codex')
+  assert.equal(liveThreadSummary(imported).agentLabel, 'codex')
 })
 
 for (const agent of ['codex-native', 'codex']) {

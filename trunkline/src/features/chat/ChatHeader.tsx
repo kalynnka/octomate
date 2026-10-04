@@ -8,10 +8,9 @@ import { ellipsis, label, mono } from '@/components/text'
 const operations = {
   teleport: { label: 'Teleport', description: 'Carry this chat to another destination with the same agent and history.' },
   summon: { label: 'Summon', description: 'Let another agent take over from a prepared brief.' },
-  fork: { label: 'Fork', description: 'Start an independent thread with this history. The original stays available.' },
 }
 type Operation = keyof typeof operations
-const operationOrder: Operation[] = ['teleport', 'summon', 'fork']
+const operationOrder: Operation[] = ['teleport', 'summon']
 
 export function ChatHeader() {
   const selThreadId = useConsole((s) => s.selThreadId)
@@ -20,17 +19,16 @@ export function ChatHeader() {
   const ntOn = useConsole((s) => s.ntOn)
   const ntTitle = useConsole((s) => s.ntTitle)
   const pending = useConsole((s) => s.gatewayPending)
-  const forkPending = useConsole((s) => s.forkPending)
   const running = useConsole((s) => s.running)
   const traceOn = useConsole((s) => s.traceOn) ?? true
   const theme = useConsole((s) => s.theme)
   const sysDark = useConsole((s) => s.sysDark)
   const gatewayMode = useConsole((s) => s.gatewayMode)
-  const { toggleTheme, toggleTrace, setGatewayMode, fork } = useConsole((s) => s.actions)
+  const { toggleTheme, toggleTrace, setGatewayMode } = useConsole((s) => s.actions)
   const eligibility = useThreadOperations(selThreadId, Boolean(selThreadId && detail && !ntOn && !running && !pending))
   // The op the composer is expanded for, when it was opened on this thread.
   const expanded = !ntOn && gatewayMode?.threadId === selThreadId ? gatewayMode.action : null
-  const expand = (action: 'teleport' | 'summon') => {
+  const expand = (action: Operation) => {
     void eligibility.refetch()
     setGatewayMode({ threadId: selThreadId, action })
   }
@@ -40,12 +38,10 @@ export function ChatHeader() {
   const trigger = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const openMenu = menu?.threadId === selThreadId ? menu.kind : null
-  const busyReason = forkPending ? 'Wait for the fork to finish.'
-    : pending ? `Wait for ${pending.action} to finish.` : running ? 'Wait for the current run to finish.' : undefined
+  const busyReason = pending ? `Wait for ${pending.action} to finish.` : running ? 'Wait for the current run to finish.' : undefined
   const threadReason = ntOn || !detail ? 'Open an existing thread first.' : undefined
   const loadingReason = eligibility.isError ? eligibility.error.message : !eligibility.data ? 'Checking available destinations…' : undefined
   const unavailable: Record<Operation, string | undefined> = {
-    fork: threadReason ?? (detail?.canFork ? undefined : 'Fork is available for native Codex and Claude Code threads only.'),
     // The relay's reason is the whole answer: an empty suggestion list leaves
     // an in-place Summon, or a destination found by browsing, still open.
     teleport: threadReason ?? loadingReason ?? eligibility.data?.teleport.reason ?? undefined,
@@ -137,13 +133,12 @@ export function ChatHeader() {
           type="button"
           aria-disabled={Boolean(disabledReason)}
           aria-description={disabledReason}
-          aria-pressed={operation === 'fork' ? undefined : expanded === operation}
+          aria-pressed={expanded === operation}
           title={disabledReason ?? (expanded === operation ? 'Back to chat' : undefined)}
           onClick={() => {
             if (disabledReason) return
             setMenu(null)
-            if (operation === 'fork') void fork(selThreadId)
-            else if (expanded === operation) setGatewayMode(null)
+            if (expanded === operation) setGatewayMode(null)
             else expand(operation)
           }}
           className={disabledReason ? undefined : 'hov-teal-ghost'}
@@ -158,12 +153,8 @@ export function ChatHeader() {
           }}
         >
           <span key={operation} className="trk-operation-label">
-            <Icon name={operation === 'teleport' ? 'arrowRightLeft' : operation === 'fork' ? 'gitFork' : 'wandSparkles'} size={12} style={{ flexShrink: 0 }} />
-            {forkPending === selThreadId ? (
-              <span aria-label="Forking" style={{ display: 'inline-flex', alignItems: 'baseline' }}>
-                Forking<span className="lt-fork-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
-              </span>
-            ) : pending?.threadId === selThreadId ? (
+            <Icon name={operation === 'teleport' ? 'arrowRightLeft' : 'wandSparkles'} size={12} style={{ flexShrink: 0 }} />
+            {pending?.threadId === selThreadId ? (
               <span aria-label={pending.action === 'teleport' ? 'Teleporting' : 'Summoning'}>
                 {pending.action === 'teleport' ? 'Moving' : 'Summon'}<span className="lt-fork-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
               </span>
@@ -173,7 +164,7 @@ export function ChatHeader() {
         <button
           ref={trigger}
           type="button"
-          disabled={Boolean(forkPending || pending)}
+          disabled={Boolean(pending)}
           aria-label="Choose thread operation"
           aria-expanded={openMenu === 'operations'}
           aria-controls={openMenu === 'operations' ? menuId : undefined}
@@ -217,9 +208,8 @@ export function ChatHeader() {
                   if (unavailable[value]) return
                   setChoice(value)
                   setMenu(null)
-                  // Picking an op that fills the composer goes straight to it;
-                  // Fork acts at once, so it waits for the button.
-                  if (value !== 'fork' && !busyReason) return expand(value)
+                  // Picking an op goes straight to the composer it fills.
+                  if (!busyReason) return expand(value)
                   trigger.current?.focus()
                 }}
                 className={unavailable[value] ? undefined : 'hov-wash'}

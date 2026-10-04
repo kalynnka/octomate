@@ -114,7 +114,7 @@ Every rail folds by animating `width` (`.trk-rail[data-folded]`), drags via a
   choices as chips, with the typed letters in accent. The rest of the name or
   argument under the cursor trails the caret in `--fg-3`, and the hint row
   shows the command's signature. The composer keeps the focus throughout.
-  Only Summon, Teleport and Fork are commands; the comp's session and
+  Only Summon and Teleport are commands; the comp's session and
   harness commands are not built.
 
 ## Motion rules (delegated details, decided here)

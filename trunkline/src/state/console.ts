@@ -15,7 +15,7 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
-import { fetchThreads, forkThread, streamGateway } from '@/lib/api/client'
+import { fetchThreads, streamGateway } from '@/lib/api/client'
 import type { BatchResponseBody, ChannelAddress, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
@@ -194,7 +194,6 @@ export interface ConsoleActions {
   toggleTimelineFold(id: string): void
   reportThreadError(threadId: string, message: string): void
   gateway(threadId: string, request: GatewayRequest): Promise<void>
-  fork(threadId: string): Promise<void>
   setGatewayMode(mode: ConsoleState['gatewayMode']): void
   vsOpen(): void
   resolveApproval(uid: string, verdict: 'approved' | 'dismissed'): void
@@ -268,8 +267,6 @@ interface ConsoleState {
   railDrag: RailKey | null
 
   gatewayPending: { threadId: string; action: GatewayRequest['action'] } | null
-  /** the thread a fork is being cut from */
-  forkPending: string | null
   /** the gateway op the composer is expanded for, and the thread it was opened on */
   gatewayMode: { threadId: string; action: GatewayRequest['action'] } | null
   vsLaunch: boolean
@@ -807,19 +804,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         set({ gatewayPending: null })
         void queryClient.invalidateQueries({ queryKey: ['thread-operations', threadId] })
         refreshThreads()
-      }
-    },
-    async fork(threadId) {
-      if (get().forkPending) return
-      set({ forkPending: threadId })
-      try {
-        const thread = await forkThread(threadId)
-        await queryClient.invalidateQueries({ queryKey: ['threads'] })
-        if (get().selThreadId === threadId) await actions.selectThread(thread.channel_tentacle_id, thread.id)
-      } catch (error) {
-        actions.reportThreadError(threadId, `fork failed — ${error instanceof Error ? error.message : String(error)}`)
-      } finally {
-        set({ forkPending: null })
       }
     },
     /**
@@ -1410,7 +1394,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     widths: {},
     railDrag: null,
     gatewayPending: null,
-    forkPending: null,
     gatewayMode: null,
     vsLaunch: false,
     pvOpen: false,

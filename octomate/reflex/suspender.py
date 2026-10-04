@@ -42,6 +42,8 @@ class TeleportRequest:
     ref: str | None = None
     # Whether the agent carries on at once where it lands.
     resume: bool = False
+    # The user's next message where it lands, which the agent answers there.
+    prompt: str | None = None
 
     @classmethod
     def of(cls, requests: DeferredToolRequests) -> TeleportRequest | None:

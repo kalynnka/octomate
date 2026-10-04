@@ -109,7 +109,7 @@ function sessionLink(channel: string, chatId: string): string | undefined {
 }
 
 /**
- * The current conversation owns a fork; explicit handoffs can change its agent.
+ * The current conversation owns an imported session; explicit handoffs can change its agent.
  */
 function activeRoute(thread: ApiThread): {
   agent: string | null
@@ -414,8 +414,6 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     key: thread.channel_thread_id || threadTag(thread.id),
     live: true,
     channel: thread.channel_tentacle_id,
-    canFork: (agent === 'codex-native' || agent === 'claude-native')
-      && own.some((conversation) => conversation.agent_tentacle_id === agent),
     project:
       project === null
         ? undefined

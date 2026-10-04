@@ -41,7 +41,6 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from pydantic_ai.settings import ThinkingEffort
-from uuid_utils.compat import uuid7
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
@@ -69,10 +68,8 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.user import ProfileInfo, User, UserProfile
-from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -133,6 +130,8 @@ class TeleportBody(TypedDict):
     destination: ChannelAddress
     new_thread: NotRequired[bool]
     hint: Annotated[str, Field(min_length=1, max_length=1_000)]
+    # Sent to the Trunkline thread the move lands in, as its user's next message.
+    prompt: NotRequired[Annotated[str, Field(min_length=1, max_length=8_000)]]
 
 
 class SummonBody(TypedDict):
@@ -290,8 +289,19 @@ def build_trunkline_router(
         body: TeleportBody,
         session: Annotated[OctomateSession, Depends(thread_gateway)],
     ) -> StreamingResponse:
+        prompt = body.get("prompt")
+        # Only a thread here takes a message from this console.
+        if prompt is not None and body["destination"].channel_tentacle_id != channel.id:
+            raise HTTPException(
+                409, "A prompt can follow a teleport only into a Trunkline thread."
+            )
         try:
-            await session.teleport(**body)
+            await session.teleport(
+                destination=body["destination"],
+                new_thread=body.get("new_thread", True),
+                hint=body["hint"],
+                prompt=prompt,
+            )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
         return channel.stream_kick(session.thread_operation())
@@ -494,75 +504,6 @@ def build_trunkline_router(
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
-
-    @router.post(
-        "/threads/{thread_id}/fork",
-        summary="Fork a native Codex or Claude Code thread into a new private "
-        "Trunkline thread",
-        response_model_exclude={"messages", "parent"},
-        status_code=201,
-    )
-    async def fork_thread(
-        thread: Annotated[Thread, Depends(accessible_thread)],
-        user: Annotated[User, Depends(current_user)],
-    ) -> Thread:
-        runtime = next(
-            (
-                one
-                for one in (CodexTentacle, ClaudeCodeTentacle)
-                if one.native_id == thread.active_agent_tentacle_id
-            ),
-            None,
-        )
-        if runtime is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Only native Codex and Claude Code threads can be forked here",
-            )
-        sources = [
-            conversation
-            for conversation in thread.conversations
-            if conversation.agent_tentacle_id == thread.active_agent_tentacle_id
-            and not conversation.subagent_id
-        ]
-        if not sources:
-            raise HTTPException(
-                status_code=409, detail="The thread has no active conversation to fork"
-            )
-        agent = next(
-            (
-                octomate.agents[agent_id]
-                for agent_id in channel.agent_ids
-                if isinstance(octomate.agents.get(agent_id), runtime)
-            ),
-            None,
-        )
-        if agent is None:
-            raise HTTPException(
-                status_code=503,
-                detail=f"No agent here drives a fork of {runtime.native_id}",
-            )
-        sender = UserProfile(
-            channel_tentacle_id=channel.id,
-            channel_user_id=str(user.id),
-            user_id=user.id,
-            name=user.name,
-            nickname=user.nickname,
-        )
-        # With its runs, which name the turn the fork takes and the model it ran.
-        source = await octomate.conversations.get(sources[-1].id)
-        try:
-            # Before the thread exists, so a refusal leaves nothing behind.
-            await agent.validate_fork(source, sender=sender)
-            return await agent.fork(
-                source,
-                ThreadKey(channel.id, "thread", str(user.id), uuid7().hex),
-                sender=sender,
-            )
-        except FileNotFoundError as error:
-            raise HTTPException(status_code=404, detail="No conversation") from error
-        except ValueError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
 
     @router.patch(
         "/conversations/{conversation_id}/permission-mode",

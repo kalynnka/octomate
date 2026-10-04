@@ -166,6 +166,11 @@ class TeleportDecision(BaseModel):
         description="Whether the agent carries on at once where it lands; false "
         "leaves the conversation there for the next message.",
     )
+    prompt: str | None = Field(
+        default=None,
+        description="The user's next message, sent where the move lands; only the "
+        "console's own Teleport has one.",
+    )
 
     def metadata(self) -> JsonObject:
         """What the deferral carries, as plain values: enough for the graph to

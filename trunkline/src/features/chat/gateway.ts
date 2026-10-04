@@ -19,8 +19,8 @@ export interface Destination {
 }
 
 export interface GatewayForm {
-  /** Teleport's note; Summon's brief is the composer's own draft. */
-  note: string
+  /** what Teleport sends where it lands, as your next message; Summon's brief is the composer's own draft */
+  prompt: string
   agent: string | null
   model: string | null
   effort: EffortLevel
@@ -30,14 +30,14 @@ export interface GatewayForm {
   menu: 'route' | 'destination' | null
 }
 
-// The line that opens the destination when the operator wrote none.
+// The line that opens the destination.
 const HINTS: Record<GatewayAction, string> = {
   teleport: 'Continuing this conversation here.',
   summon: 'Continuing with another agent.',
 }
 
 const blank = (action: GatewayAction | null): GatewayForm => ({
-  note: '',
+  prompt: '',
   agent: null,
   model: null,
   effort: 'auto',
@@ -193,7 +193,7 @@ export function gatewayRequest(
   const text = form.text.trim()
   if (action === 'teleport') {
     if (!form.destination) return null
-    return { action, body: { destination: form.destination.address, hint: text || HINTS.teleport } }
+    return { action, body: { destination: form.destination.address, hint: HINTS.teleport, ...(text ? { prompt: text } : {}) } }
   }
   const destination = form.destination?.address ?? availability.here
   if (!destination || !form.route || !text) return null

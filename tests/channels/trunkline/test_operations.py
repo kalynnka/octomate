@@ -232,6 +232,59 @@ async def test_a_turn_the_agent_moved_ends_where_it_landed(
     assert landing["destination"]["channel_tentacle_id"] == "far"
 
 
+async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
+    case: Case, client: httpx.AsyncClient
+) -> None:
+    """The console's shortcut for a teleport and the message after it: the prompt
+    is the user's next message in the thread the move landed in."""
+    path = f"/api/trunkline/threads/{case.thread.id}"
+    options = (await client.get(f"{path}/operations")).json()
+    [address] = [
+        one
+        for one in options["teleport"]["destinations"]
+        if one["channel_tentacle_id"] == "trunkline"
+    ]
+
+    response = await client.post(
+        f"{path}/teleport",
+        json={
+            "destination": address,
+            "hint": "Continuing this conversation here.",
+            "prompt": "Pick up the review",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "run_error" not in response.text, response.text
+    assert '"event_kind":"gateway"' in response.text
+    [run] = case.agent.streams
+    assert "Pick up the review" in str(run.prompt)
+    threads = await case.app.thread_manager.list_threads(user_id=case.owner.id)
+    [landed] = [thread for thread in threads if thread.id != case.thread.id]
+    assert run.thread_id == landed.id
+    stored = await case.app.thread_manager.get(landed.id)
+    assert stored is not None
+    [asked] = [one for one in stored.messages if one.direction == "inbound"]
+    assert asked.message_text == "Pick up the review"
+
+
+async def test_a_prompt_follows_a_teleport_only_into_trunkline(
+    case: Case, client: httpx.AsyncClient
+) -> None:
+    response = await client.post(
+        f"/api/trunkline/threads/{case.thread.id}/teleport",
+        json={
+            "destination": asdict(ChannelAddress("far", "dm", "", "alice")),
+            "hint": "Work here",
+            "prompt": "Pick up the review",
+        },
+    )
+
+    assert response.status_code == 409
+    assert "only into a Trunkline thread" in response.json()["detail"]
+    assert case.far.opened_dms == []
+
+
 @pytest.mark.parametrize("operation", ["teleport", "summon"])
 async def test_actions_require_thread_ownership(
     case: Case, client: httpx.AsyncClient, operation: str

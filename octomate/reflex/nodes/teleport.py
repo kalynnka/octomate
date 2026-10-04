@@ -19,6 +19,8 @@ from octomate.reflex.state import (
     ResponseTarget,
 )
 from octomate.reflex.suspender import TeleportRequest
+from octomate.schemas.events import MessageEvent
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.telemetry import reflex_logfire
 
@@ -48,6 +50,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         origin_address = origin.address
         source = state.thread
         hint = self.request.hint or "Octomate is continuing this request here."
+        sentence = "Continuing the conversation here."
 
         new_target = origin
         if self.request.new_thread:
@@ -114,10 +117,9 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 state.thread = landed
                 state.target = new_target
                 state.handoff = None
-                if not self.request.resume:
+                if self.request.prompt is None and not self.request.resume:
                     return await self.land(ctx)
-                state.user_prompt = f"Continuing the conversation here.\nCurrent channel address: {new_address}"
-                return React()
+                return await self.carry_on(ctx, sentence)
             landed = await ctx.deps.thread_manager.enter(
                 new_address, current=state.thread
             )
@@ -132,7 +134,6 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             state.target = new_target
             state.handoff = PendingHandoff(source_agent_tentacle_id=self.agent_id)
 
-        sentence = "Continuing the conversation here."
         project = self.request.project
         carried = (
             await ctx.deps.workspaces.projects.of(source)
@@ -181,17 +182,51 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     conversation, external_id
                 )
             await agent.relocate(conversation, cwd=cwd)
-        if not self.request.resume:
+        if self.request.prompt is None and not self.request.resume:
             return await self.land(ctx)
-        # The pending call resolves into the resumed run, whichever runtime cast it.
-        if self.request.tool_call_id is None:
-            state.user_prompt = f"{sentence}\nCurrent channel address: {new_address}"
-            return React()
-        return React(
-            resume_results=DeferredToolResults(
-                calls={self.request.tool_call_id: sentence}
+        return await self.carry_on(ctx, sentence)
+
+    async def carry_on(
+        self, ctx: GraphRunContext[ReflexState, ReflexDeps], sentence: str
+    ) -> React:
+        """Run the agent where the move landed: on the user's prompt, recorded there
+        as their message, or on its own call answered by where it now is."""
+        state = ctx.state
+        address = state.target.address if state.target is not None else None
+        if address is None:
+            raise ValueError("Teleport carries on only where the move landed")
+        prompt = self.request.prompt
+        if prompt is None:
+            # The pending call resolves into the resumed run, whichever runtime cast it.
+            if self.request.tool_call_id is None:
+                state.user_prompt = f"{sentence}\nCurrent channel address: {address}"
+                return React()
+            return React(
+                resume_results=DeferredToolResults(
+                    calls={self.request.tool_call_id: sentence}
+                )
+            )
+        if state.user_profile is None:
+            raise ValueError("A prompt after a teleport needs its user")
+        channel = ctx.deps.channel(address.channel_tentacle_id)
+        message = await ctx.deps.thread_manager.record_inbound(
+            MessageEvent(
+                tentacle_id=channel.id,
+                chat_type=address.chat_type,
+                chat_id=address.chat_id,
+                user_id=address.user_id,
+                channel_thread_id=address.channel_thread_id,
+                shared=address.shared,
+                self_id=channel.self_profile.channel_user_id,
+                sender=state.user_profile,
+                segments=[TextSegment(data={"text": prompt})],
+                raw=prompt,
             )
         )
+        state.source_target = state.target
+        state.trigger_thread_message_id = message.id
+        await ctx.deps.load_pending_prompt(state, self.agent_id)
+        return React()
 
     async def land(
         self, ctx: GraphRunContext[ReflexState, ReflexDeps]

@@ -621,6 +621,7 @@ class OctomateSession:
         project: str | None = None,
         ref: str | None = None,
         resume: bool = False,
+        prompt: str | None = None,
     ) -> TeleportDecision:
         """Validate and record a teleport decision — the same agent continuing
         somewhere else, its history with it. How the move happens is the graph's:
@@ -754,6 +755,7 @@ class OctomateSession:
             project=project,
             ref=ref,
             resume=resume,
+            prompt=prompt,
         )
         self.decision = decision
         return decision

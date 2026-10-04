@@ -134,14 +134,14 @@ test('summon opens a thread where one is picked, and otherwise hands over in pla
   assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, route: undefined }), null)
 })
 
-test('teleport needs a destination, and its note is the line that opens it', () => {
+test('teleport needs a destination, and its prompt is the message sent where it lands', () => {
   const draft = { text: '', destination: null, route: undefined, effort: 'auto' as const }
   assert.equal(forms.gatewayRequest('teleport', elsewhere, draft), null)
   const destination = { address: fresh, path: ['Trunkline'] }
   assert.deepEqual(forms.gatewayRequest('teleport', elsewhere, { ...draft, destination }),
     { action: 'teleport', body: { destination: fresh, hint: 'Continuing this conversation here.' } })
   assert.deepEqual(forms.gatewayRequest('teleport', elsewhere, { ...draft, destination, text: 'Pick this up on the phone' }),
-    { action: 'teleport', body: { destination: fresh, hint: 'Pick this up on the phone' } })
+    { action: 'teleport', body: { destination: fresh, hint: 'Continuing this conversation here.', prompt: 'Pick this up on the phone' } })
 })
 
 test('the effort scale only ever lands on a level the route takes', () => {
@@ -225,20 +225,6 @@ test('an error after a run result still appears in the message panel', async () 
   mock.method(globalThis, 'fetch', async () => sse(result, { event_kind: 'run_error', message: 'The destination could not create a thread.' }))
   await useConsole.getState().actions.gateway('source', request)
   assert.ok(useConsole.getState().notices.some((one) => one.kind === 'notice' && one.text.includes('could not create a thread')))
-})
-
-test('a fork opens the new thread, and a refused one is reported on its source', async () => {
-  const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ ...destination, id: 'forked', channel_tentacle_id: 'trunkline' }, { status: 201 }))
-  const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
-  const forking = useConsole.getState().actions.fork('source')
-  assert.equal(useConsole.getState().forkPending, 'source')
-  await forking
-  assert.deepEqual(select.mock.calls[0].arguments, ['trunkline', 'forked'])
-  assert.equal(useConsole.getState().forkPending, null)
-  fetch.mock.mockImplementation(async () => Response.json({ detail: 'No completed Codex turn has been fully uploaded' }, { status: 409 }))
-  await useConsole.getState().actions.fork('source')
-  assert.equal(select.mock.callCount(), 1)
-  assert.ok(useConsole.getState().notices.some((one) => one.kind === 'notice' && /fork failed — No completed Codex turn/.test(one.text)))
 })
 
 test('the header follows the relay: an in-place summon is open with no suggested address', () => {
@@ -325,8 +311,8 @@ test('a line is a command only while it can still name a gateway op', () => {
     const line = commands.readCommand(text)
     return line?.phase === 'name' ? line.matches.map((one) => one.command.name) : line
   }
-  assert.deepEqual(names('/'), ['summon', 'teleport', 'fork'])
-  assert.deepEqual(names('/o'), ['summon', 'teleport', 'fork'])
+  assert.deepEqual(names('/'), ['summon', 'teleport'])
+  assert.deepEqual(names('/o'), ['summon', 'teleport'])
   assert.deepEqual(names('/tp'), ['teleport'])
   // Anything else starting with a slash is still a directive.
   for (const text of ['/etc/hosts is wrong', '/compact', '/summon\nnow', '/fork now', 'run /fork', '']) {
@@ -361,10 +347,10 @@ test('the command finder lists the ops, then the agents with the route one would
     line: commands.readCommand(text)!, matches: [], offered: 0, cursor: 0, closed: {}, route: null,
     onCursor() {}, onRun() {}, onDismiss() {}, onSettled() {}, ...props,
   }))
-  const naming = panel('/', { cursor: 2, closed: { fork: 'Fork is available for native Codex threads only.' } })
-  assert.ok(naming.includes('3 of 3 · trunkline gateway'))
-  assert.equal(naming.match(/role="option"/g)?.length, 3)
-  assert.match(naming, /aria-selected="true" aria-disabled="true" title="Fork is available for native Codex threads only\."/)
+  const naming = panel('/', { cursor: 1, closed: { teleport: 'No connected channel runs this agent.' } })
+  assert.ok(naming.includes('2 of 2 · trunkline gateway'))
+  assert.equal(naming.match(/role="option"/g)?.length, 2)
+  assert.match(naming, /aria-selected="true" aria-disabled="true" title="No connected channel runs this agent\."/)
   assert.ok(naming.includes('>unavailable<'))
   assert.ok(panel('/su').includes('needs &lt;agent&gt; · ⇥ to add it · runs in trunkline gateway'))
   assert.ok(panel('/tele').includes('↵ runs /teleport in trunkline gateway · ⇥ adds [destination]'))
@@ -401,15 +387,14 @@ test('a listed address reads as a place to open, one to land in, or one that is 
   assert.deepEqual([barred.label, barred.sub, barred.barred], ['#general', 'The bot cannot see this channel.', 'The bot cannot see this channel.'])
 })
 
-for (const [teleport, summon, fork, expected] of [
-  [true, true, true, 'Teleport'],
-  [false, true, true, 'Summon'],
-  [false, false, true, 'Fork'],
-  [false, false, false, 'Teleport'],
+for (const [teleport, summon, expected] of [
+  [true, true, 'Teleport'],
+  [false, true, 'Summon'],
+  [false, false, 'Teleport'],
 ] as const) {
-  test(`operation priority picks ${expected} with eligibility ${teleport}/${summon}/${fork}`, () => {
+  test(`operation priority picks ${expected} with eligibility ${teleport}/${summon}`, () => {
     useConsole.getInitialState().selThreadId = 'source'
-    useConsole.getInitialState().detail = { key: 'source', canFork: fork, msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
+    useConsole.getInitialState().detail = { key: 'source', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
     queryClient.setQueryData(['threads'], {})
     queryClient.setQueryData(['thread-operations', 'source'], {
       teleport: teleport ? inPlace : refused,
@@ -417,6 +402,6 @@ for (const [teleport, summon, fork, expected] of [
     })
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
     assert.ok(html.includes(`>${expected}</span></button>`))
-    assert.equal(html.includes('aria-disabled="true"'), !teleport && !summon && !fork)
+    assert.equal(html.includes('aria-disabled="true"'), !teleport && !summon)
   })
 }
