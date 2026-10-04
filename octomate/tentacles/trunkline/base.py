@@ -605,7 +605,8 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
 
     def stream_kick(self, signal: AwakeSignal) -> StreamingResponse:
         """Run the kick in a free task with this request's sink active and
-        encode the run stream it forwards as an SSE response.
+        encode the run stream it forwards as an SSE response. A turn a spell
+        carried into another thread ends with where it landed.
 
         The task is deliberately not tied to the response: a client that
         disconnects mid-run just stops watching — the run finishes and records
@@ -634,6 +635,18 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                         send,
                         GatewayEvent(
                             action=signal.decision.action,
+                            destination=result.target.address,
+                        ),
+                    )
+                elif (
+                    result is not None
+                    and result.moved_by is not None
+                    and result.target.address is not None
+                ):
+                    await send_quietly(
+                        send,
+                        GatewayEvent(
+                            action=result.moved_by,
                             destination=result.target.address,
                         ),
                     )

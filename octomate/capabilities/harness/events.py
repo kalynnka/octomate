@@ -50,6 +50,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
+from octomate.schemas.triage import GatewayAction
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -109,10 +110,11 @@ class RunErrorEvent(BaseModel):
 
 
 class GatewayEvent(BaseModel):
-    """The address reached by a user-requested gateway action."""
+    """Where a streamed turn ended, when a spell carried it to another thread: the
+    console's own operation, or one the agent cast itself mid-turn."""
 
     event_kind: Literal["gateway"] = "gateway"
-    action: Literal["teleport", "summon"]
+    action: GatewayAction
     destination: ChannelAddress
 
 

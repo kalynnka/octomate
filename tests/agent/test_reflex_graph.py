@@ -902,6 +902,7 @@ async def test_reception_summons_another_agent_into_sub_thread() -> None:
     assert not isinstance(result, DeferredResult)
     assert isinstance(result.decision, SummonDecision)
     assert result.decision.agent_id == "second"
+    assert result.moved_by == "summon"
     assert [turn.prompt for turn in second.turns] == ["Please debug this in reception."]
     assert im.sub_threads[0][1] == "Working on it"
 
@@ -935,6 +936,8 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     assert not isinstance(result, DeferredResult)
     assert im.sub_threads == []
     assert second.turns[0].address == address
+    # Taken over where it was, so nothing carried it anywhere.
+    assert result.moved_by is None
 
 
 async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
@@ -1106,6 +1109,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     )
 
     assert not isinstance(result, DeferredResult)
+    assert result.moved_by == "scheme"
     assert im.opened_dms == ["alice"]
     # The DM's own owner picked it up, with the brief as its prompt.
     assert second.turns[0].prompt == "Finish the migration write-up."
@@ -1252,6 +1256,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     assert not isinstance(result, DeferredResult)
     assert im.opened_dms == ["alice"]
     assert result.target.address == address
+    assert result.moved_by is None
     assert second.turns == []
 
 
@@ -1602,6 +1607,7 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         return
 
     assert not isinstance(result, DeferredResult)
+    assert result.moved_by == "teleport"
     # Their direct messages there, then a sub-thread inside them — and the agent
     # resumed against the fork in it.
     assert far.opened_dms == ["ou_alice"]

@@ -83,6 +83,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # for the same agent so follow-ups continue there, and resume against
             # the fork. The runtime prepares its destination handle after the
             # destination workspace is ready.
+            state.moved_by = "teleport"
             if state.thread.kind == "native_thread":
                 source_agent_id = state.thread.active_agent_tentacle_id
                 if (

@@ -82,6 +82,7 @@ class Summon(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 thread_strategy=channel.thread_strategy,
                 mode="sub",
             )
+            state.moved_by = "summon"
         elif (
             decision.destination is not None and decision.destination != target_address
         ):

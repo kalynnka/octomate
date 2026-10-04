@@ -31,6 +31,7 @@ from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
+    GatewayAction,
     ResponseTargetMode,
     RunName,
     SummonDecision,
@@ -100,6 +101,8 @@ class ReflexResult:
     decision: SummonDecision | None
     target: ResponseTarget
     result: AgentRunResult[ChannelOutput] | None = None
+    # The spell that carried the turn into another thread, if one did.
+    moved_by: GatewayAction | None = None
 
 
 @dataclass
@@ -114,6 +117,8 @@ class DeferredResult:
     run_name: str
     result: AgentRunResult[Any]
     batch_id: uuid.UUID | None = None
+    # The spell that carried the turn into another thread, if one did.
+    moved_by: GatewayAction | None = None
 
 
 type ReflexGraphResult = ReflexResult | DeferredResult
@@ -147,6 +152,8 @@ class ReflexState:
     handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
+    # The spell that carried this turn into another thread, once one has.
+    moved_by: GatewayAction | None = None
 
 
 @dataclass

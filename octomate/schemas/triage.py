@@ -203,6 +203,8 @@ class TeleportDecision(BaseModel):
 type GatewayDecision = Annotated[
     SummonDecision | SchemeDecision | TeleportDecision, Field(discriminator="action")
 ]
+# Which of those a decision is, by its `action`.
+type GatewayAction = Literal["summon", "scheme", "teleport"]
 
 
 @dataclass(frozen=True)

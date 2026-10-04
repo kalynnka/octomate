@@ -156,7 +156,10 @@ picked destination with no flag to open a thread there.
 brief (up to 8,000 characters). Both require access to the source thread and
 refuse active gateway turns or pending approvals/questions. They stream native
 run events, ending with `gateway` and the destination address; execution
-failures appear as `run_error` events.
+failures appear as `run_error` events. A message's stream, and the stream of
+an answered approval or question, also end with a `gateway` event when the agent
+moved the conversation to another thread during the turn; its `action` names the
+spell, `teleport`, `summon` or `scheme`.
 
 Native Codex and Claude Code teleport imports the latest fully uploaded completed
 turn through the runtime's transcript fork, preserving its model and permissions.

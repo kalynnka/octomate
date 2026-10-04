@@ -434,6 +434,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                             run_name=state.run_name,
                             result=run_result,
                             batch_id=suspender.suspended_batch_id,
+                            moved_by=state.moved_by,
                         )
                     )
 
@@ -497,6 +498,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         decision=decision,
                         target=target,
                         result=run_result,
+                        moved_by=state.moved_by,
                     )
                 )
 

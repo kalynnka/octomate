@@ -190,6 +190,42 @@ async def test_teleport_creates_independent_owned_destination(
     assert (await case.app.conversations.get(source.id)).thread_id == case.thread.id
 
 
+@pytest.mark.parametrize("moves", [True, False])
+async def test_a_turn_the_agent_moved_ends_where_it_landed(
+    case: Case, client: httpx.AsyncClient, moves: bool
+) -> None:
+    """An agent's own teleport mid-turn ends the stream the way the console's
+    operation does, naming the spell, so the console can follow it; a turn that
+    stays says nothing."""
+    if moves:
+        case.agent.reception_teleport = "carrying on over there"
+        case.agent.reception_teleport_destination = "far"
+        # The far account the fake's crossing names.
+        await case.app.users.ensure_profile(
+            "far", UserProfile(channel_user_id="ou_alice", user_id=case.owner.id)
+        )
+
+    response = await client.post(
+        f"/api/trunkline/threads/{case.thread.channel_thread_id}/messages",
+        json={"text": "take this elsewhere"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert "run_error" not in response.text, response.text
+    frames = [
+        json.loads(line[6:])
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    landings = [frame for frame in frames if frame["event_kind"] == "gateway"]
+    if not moves:
+        assert landings == []
+        return
+    [landing] = landings
+    assert landing["action"] == "teleport"
+    assert landing["destination"]["channel_tentacle_id"] == "far"
+
+
 async def test_teleport_names_the_project_the_landed_thread_is_about(
     case: Case, client: httpx.AsyncClient
 ) -> None:

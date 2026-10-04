@@ -87,6 +87,7 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             thread_strategy=channel.thread_strategy,
             mode="main",
         )
+        state.moved_by = "scheme"
         state.decision = SummonDecision(
             action="summon",
             agent_id=resolved.agent,
