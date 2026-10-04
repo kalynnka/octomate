@@ -71,7 +71,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   agents Summon offers, with the model and effort to hand over, and opens the
   Summon composer on the one you pick. `/teleport` lists the connected
   channels and opens Teleport on the one you pick, or on the destination
-  browser when you pick none. `/fork` forks at once. A command that is
+  browser when you pick none. `/fork` forks at once. Fork is offered on a
+  native Codex or Claude Code session's thread: it copies the session's history
+  into a new private thread, driven by an agent of the same runtime. A command that is
   unavailable is dimmed and shows its reason. A line that names no command is
   sent as an ordinary message.
   Teleport needs a destination and takes an optional note, which opens the
@@ -93,6 +95,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   not, the scale starts at Auto, which leaves the level to the agent.
   Run output streams into the message panel. After the server confirms arrival,
   the console opens the destination thread if you are still viewing the source.
+  It does the same when the agent moves the conversation itself in the middle of
+  a turn.
 - **Account**: change password, issue and revoke API keys, unlink channel profiles,
   start a Slack or Discord profile link.
 - **MCP**: install connectors from the configured offerings or by URL, authorise
@@ -104,7 +108,8 @@ Teleport and Summon can create a new Trunkline thread directly. Open Discord in
 the destination browser to list the servers you share with the bot, then the
 channels you can see in one. Selecting a text channel creates a private thread
 when this conversation is private and a public one otherwise; a forum channel
-takes a public post. A channel a thread cannot start in is dimmed and shows why.
+takes a public post; each row says which. A channel a thread cannot start in is
+dimmed and shows why.
 When viewing a Discord conversation, its server's eligible channels are also
 suggested at the top of that level. Existing Discord DMs are omitted because they
 cannot hold an isolated new thread. Slack and Lark list your DM and the channels

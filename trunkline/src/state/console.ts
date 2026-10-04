@@ -16,7 +16,7 @@ import type {
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
 import { fetchThreads, forkThread, streamGateway } from '@/lib/api/client'
-import type { BatchResponseBody, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
+import type { BatchResponseBody, ChannelAddress, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
@@ -439,12 +439,26 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // lifts when the last of them closes rather than the first.
   let openRuns = 0
 
+  /** Your thread at `address`, if your list holds it, with both ends' details refetched. */
+  const landedThread = async (from: string, address: ChannelAddress) => {
+    await queryClient.invalidateQueries({ queryKey: ['thread-detail', from] })
+    const landed = (await fetchThreads()).find((thread) =>
+      thread.channel_tentacle_id === address.channel_tentacle_id
+      && thread.chat_type === address.chat_type
+      && thread.chat_id === address.chat_id
+      && (thread.channel_thread_id ?? null) === (address.channel_thread_id ?? null),
+    )
+    if (landed) await queryClient.invalidateQueries({ queryKey: ['thread-detail', landed.id] })
+    return landed
+  }
+
   /**
    * Drive one live run: fold the SSE events into the live overlay, drop the
    * dispatch dots on the first real event, and settle `running` when the
    * stream ends. Once the user navigates away the fold goes permanently dead
    * (its cursors point at a wiped overlay) — the run keeps going server-side,
    * lands in the thread's ledger, and a re-select after it ends rehydrates.
+   * A turn the agent moved elsewhere opens where it landed, as an operation does.
    */
   const runLive = async (
     selId: string,
@@ -461,6 +475,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const clearDots = () => set((s) => ({ live: s.live.filter((it) => it.uid !== dotsUid) }))
     let received = 0
     let terminal = false
+    let landing: ChannelAddress | undefined
     const fold = new TurnFold({
       push: (item) => {
         clearDots()
@@ -477,6 +492,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     })
     try {
       await request((event) => {
+        if (event.event_kind === 'gateway') {
+          landing = event.destination
+          return
+        }
         received++
         if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
         fold.feed(event)
@@ -487,6 +506,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           : 'stream closed without a result — the run continues on the relay',
         received === 0 ? 'info' : 'warning',
       )
+      if (landing && alive()) {
+        const landed = await landedThread(selId, landing)
+        if (landed && alive()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+      }
       return true
     } catch (err) {
       const message = `relay error — ${err instanceof Error ? err.message : String(err)}`
@@ -773,18 +796,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           result.arrived = await streamGateway(threadId, request, onEvent)
         })
         if (!completed || !result.arrived) return
-        await queryClient.invalidateQueries({ queryKey: ['thread-detail', threadId] })
-        const address = result.arrived.destination
-        const landed = (await fetchThreads()).find((thread) =>
-          thread.channel_tentacle_id === address.channel_tentacle_id
-          && thread.chat_type === address.chat_type
-          && thread.chat_id === address.chat_id
-          && (thread.channel_thread_id ?? null) === (address.channel_thread_id ?? null),
-        )
+        const landed = await landedThread(threadId, result.arrived.destination)
         if (!landed) {
           throw new Error(`${request.action} completed, but its destination is not visible in your thread list.`)
         }
-        await queryClient.invalidateQueries({ queryKey: ['thread-detail', landed.id] })
         if (get().selThreadId === threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       } catch (error) {
         actions.reportThreadError(threadId, error instanceof Error ? error.message : String(error))

@@ -345,9 +345,11 @@ export interface ChannelAddress {
   metadata?: AddressMetadata
 }
 
+/** Where a streamed turn ended, when a spell carried it to another thread: the
+ *  console's own operation, or one the agent cast itself mid-turn. */
 export interface GatewayEvent {
   event_kind: 'gateway'
-  action: 'teleport' | 'summon'
+  action: 'teleport' | 'summon' | 'scheme'
   destination: ChannelAddress
 }
 

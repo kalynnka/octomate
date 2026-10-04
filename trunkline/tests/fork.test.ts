@@ -62,21 +62,23 @@ test('a refused fork surfaces the server reason without retrying', async () => {
   assert.equal(fetch.mock.callCount(), 1)
 })
 
-for (const kind of ['native', 'child', 'driven', 'claude'] as const) {
+for (const kind of ['native', 'claude', 'child', 'driven'] as const) {
   test(`the ${kind} conversation falls back to fork only when eligible`, () => {
     const source = { ...conversation }
+    const native = kind === 'native' || kind === 'claude'
     if (kind === 'child') source.subagent_id = 'child'
     if (kind === 'driven') source.agent_tentacle_id = 'codex'
     if (kind === 'claude') source.agent_tentacle_id = 'claude-native'
-    const detail = liveThreadDetail({ thread, conversations: [source], messages: [], project: null, batches: [] })
-    assert.equal(detail.canFork, kind === 'native')
+    const owner = kind === 'claude' ? { ...thread, active_agent_tentacle_id: 'claude-native' } : thread
+    const detail = liveThreadDetail({ thread: owner, conversations: [source], messages: [], project: null, batches: [] })
+    assert.equal(detail.canFork, native)
     useConsole.getInitialState().detail = detail
     queryClient.setQueryData(['threads'], {})
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
-    assert.ok(html.includes(kind === 'native' ? '>Fork</span></button>' : '>Teleport</span></button>'))
+    assert.ok(html.includes(native ? '>Fork</span></button>' : '>Teleport</span></button>'))
     assert.ok(html.includes('aria-label="Choose thread operation"'))
-    assert.equal(html.includes('aria-disabled="true"'), kind !== 'native')
-    assert.equal(html.includes('title="Checking available destinations…"'), kind !== 'native')
+    assert.equal(html.includes('aria-disabled="true"'), !native)
+    assert.equal(html.includes('title="Checking available destinations…"'), !native)
     assert.ok(!html.includes('title="Start an independent thread'))
   })
 }

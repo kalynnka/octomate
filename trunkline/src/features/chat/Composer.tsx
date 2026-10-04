@@ -510,7 +510,7 @@ export function Composer() {
   const closed = {
     summon: operations ? operations.summon.reason ?? undefined : waiting,
     teleport: operations ? operations.teleport.reason ?? undefined : waiting,
-    fork: detail?.canFork ? undefined : 'Fork is available for native Codex threads only.',
+    fork: detail?.canFork ? undefined : 'Fork is available for native Codex and Claude Code threads only.',
   }
   // Summon in place offers this channel's agents; elsewhere, every channel's.
   const summonRoutes = operations?.summon.here

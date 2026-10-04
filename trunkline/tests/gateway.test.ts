@@ -199,6 +199,20 @@ test('arrival does not navigate away from a different thread selected during the
   assert.equal(select.mock.callCount(), 0)
 })
 
+test('a turn the agent moved opens where it landed, and one that stayed opens nothing', async () => {
+  for (const events of [[result, gateway], [result]]) {
+    mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/messages') ? sse(...events) : Response.json([destination]))
+    const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+    useConsole.setState({ detail: { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } } })
+    useConsole.getState().actions.sendDirective('take this elsewhere')
+    const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+    for (let at = 0; at < 200 && (useConsole.getState().running || (events.length === 2 && select.mock.callCount() === 0)); at++) await tick()
+    for (let at = 0; at < 5; at++) await tick()
+    assert.deepEqual(select.mock.calls.map((call) => call.arguments), events.length === 2 ? [['lark', 'destination-id']] : [])
+    mock.restoreAll()
+  }
+})
+
 test('missing destination visibility is reported in the message panel', async () => {
   mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(result, gateway) : Response.json([]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
@@ -378,7 +392,11 @@ test('a listed address reads as a place to open, one to land in, or one that is 
   assert.equal(server.sub, 'server · open to list its channels')
   const inside = [...crumbs, server.open!]
   const usable = forms.addressRow(room, inside)
-  assert.deepEqual([usable.label, usable.sub, usable.barred], ['#general', 'Community · a new thread starts here', undefined])
+  assert.deepEqual([usable.label, usable.sub, usable.barred], ['#general', 'Community · a new thread everyone there can read', undefined])
+  assert.equal(forms.addressRow({ ...room, shared: false }, inside).sub, 'Community · a new private thread starts here')
+  // Slack and Lark list one level, of channels and of groups.
+  assert.equal(forms.level('slack', 0).many, 'channels')
+  assert.equal(forms.addressRow({ ...room, channel_tentacle_id: 'lark', metadata: { name: 'team' } }, [{ label: 'Lark', channel: 'lark' }]).sub, 'group · a new thread everyone there can read')
   const barred = forms.addressRow({ ...room, metadata: { ...room.metadata, barred: 'The bot cannot see this channel.' } }, inside)
   assert.deepEqual([barred.label, barred.sub, barred.barred], ['#general', 'The bot cannot see this channel.', 'The bot cannot see this channel.'])
 })

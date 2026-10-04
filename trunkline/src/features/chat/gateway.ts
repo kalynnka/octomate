@@ -115,6 +115,8 @@ export interface DestinationRow {
 // a channel absent here reads as plain destinations.
 const LEVELS: Record<string, { many: string; one: string }[]> = {
   discord: [{ many: 'servers', one: 'server' }, { many: 'channels', one: 'text channel' }],
+  slack: [{ many: 'channels', one: 'channel' }],
+  lark: [{ many: 'groups', one: 'group' }],
 }
 export const level = (channel: string, depth: number) => LEVELS[channel]?.[depth] ?? { many: 'destinations', one: 'destination' }
 
@@ -153,7 +155,8 @@ export function addressRow(address: ChannelAddress, crumbs: Crumb[]): Destinatio
     }
   }
   if (address.chat_type === 'group') {
-    return { key, label: `#${name ?? address.chat_id}`, sub: barred ?? `${server ?? kind.one} · a new thread starts here`, glyph: '#', address, barred }
+    const lands = address.shared ? 'a new thread everyone there can read' : 'a new private thread starts here'
+    return { key, label: `#${name ?? address.chat_id}`, sub: barred ?? `${server ?? kind.one} · ${lands}`, glyph: '#', address, barred }
   }
   if (address.chat_type === 'dm') {
     return { key, label: 'Direct message', sub: barred ?? 'a new thread starts in your direct messages', glyph: '@', address, barred }

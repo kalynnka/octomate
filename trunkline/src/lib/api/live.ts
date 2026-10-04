@@ -414,7 +414,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     key: thread.channel_thread_id || threadTag(thread.id),
     live: true,
     channel: thread.channel_tentacle_id,
-    canFork: agent === 'codex-native' && own.some((conversation) => conversation.agent_tentacle_id === agent),
+    canFork: (agent === 'codex-native' || agent === 'claude-native')
+      && own.some((conversation) => conversation.agent_tentacle_id === agent),
     project:
       project === null
         ? undefined

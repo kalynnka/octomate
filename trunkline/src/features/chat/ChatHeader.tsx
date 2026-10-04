@@ -45,7 +45,7 @@ export function ChatHeader() {
   const threadReason = ntOn || !detail ? 'Open an existing thread first.' : undefined
   const loadingReason = eligibility.isError ? eligibility.error.message : !eligibility.data ? 'Checking available destinations…' : undefined
   const unavailable: Record<Operation, string | undefined> = {
-    fork: threadReason ?? (detail?.canFork ? undefined : 'Fork is available for native Codex threads only.'),
+    fork: threadReason ?? (detail?.canFork ? undefined : 'Fork is available for native Codex and Claude Code threads only.'),
     // The relay's reason is the whole answer: an empty suggestion list leaves
     // an in-place Summon, or a destination found by browsing, still open.
     teleport: threadReason ?? loadingReason ?? eligibility.data?.teleport.reason ?? undefined,
