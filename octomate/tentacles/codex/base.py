@@ -1093,6 +1093,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                 return future.result()
             except Exception as exc:
                 return self.deny_sdk_request(str(exc))
+        if self.is_mcp_tool_approval(method, params):
+            future = context.task_context.copy().run(
+                asyncio.run_coroutine_threadsafe,
+                self.answer_sdk_mcp_tool_approval(context=context, params=params or {}),
+                context.loop,
+            )
+            try:
+                return future.result()
+            except Exception as exc:
+                return {"action": "decline", "message": str(exc)}
         if self.is_question_request(method):
             future = context.task_context.copy().run(
                 asyncio.run_coroutine_threadsafe,
@@ -1203,6 +1213,36 @@ class CodexTentacle(AgentTentacle[str, None]):
             f"The user declined permission to run {tool_name}."
         )
 
+    async def answer_sdk_mcp_tool_approval(
+        self, *, context: CodexBridgeContext, params: JsonObject
+    ) -> JsonObject:
+        """Codex asking to run an MCP tool, as an approve-or-decline card in Codex's
+        own words, which are the only place it names the tool, showing the
+        arguments the call would run with."""
+        server = str(params.get("serverName") or "mcp")
+        tool_call_id = self.sdk_request_id("mcpServer/elicitation/request", params)
+        message = params.get("message")
+        meta = params.get("_meta")
+        arguments = meta.get("tool_params") if isinstance(meta, dict) else None
+        requests = DeferredToolRequests(
+            approvals=[
+                ToolCallPart(
+                    tool_name=f"codex_mcp_{server}",
+                    args=arguments if isinstance(arguments, dict) else {},
+                    tool_call_id=tool_call_id,
+                    provider_name=CODEX_PROVIDER_NAME,
+                )
+            ],
+            metadata={tool_call_id: {"description": message}}
+            if isinstance(message, str)
+            else {},
+        )
+        batch, response = await self._await_human(context=context, requests=requests)
+        action = next(iter(batch.approvals))
+        if response is not None and response.approvals.get(action.id, False):
+            return {"action": "accept", "content": {}}
+        return {"action": "decline"}
+
     async def answer_sdk_question_request(
         self,
         *,
@@ -1274,6 +1314,18 @@ class CodexTentacle(AgentTentacle[str, None]):
         # forgoes review says so to the SDK — `auto_review` reviews there, and the
         # sandbox bounds the rest — so no request reaches this bridge to short-circuit.
         return tool_name in context.session_allowed
+
+    @staticmethod
+    def is_mcp_tool_approval(method: str, params: JsonObject | None) -> bool:
+        """Codex's approval prompt for an MCP tool call, which it sends as an
+        elicitation marked with the kind of approval it is."""
+        if method != "mcpServer/elicitation/request" or params is None:
+            return False
+        meta = params.get("_meta")
+        return (
+            isinstance(meta, dict)
+            and meta.get("codex_approval_kind") == "mcp_tool_call"
+        )
 
     @staticmethod
     def is_question_request(method: str) -> bool:

@@ -60,7 +60,10 @@ those tools under `mcp__octomate_driven`. Your `developer_instructions` and
 ## Approvals and questions
 
 Codex's own approval requests, command execution and file changes, and its
-elicitations become Octomate actions. A denied request tells Codex why. Choices
+elicitations become Octomate actions. A denied request tells Codex why. Its
+request to run an MCP tool becomes an approval card in Codex's own words, showing
+the arguments the call would run with: approving lets the call run, and declining
+refuses it. Choices
 Codex offers, such as MCP consent prompts, are presented as they are. Under
 `auto_review` and `full_access` no request reaches the bridge at all. As with
 Claude, the wait is in process, so an answer is not durable across a restart.

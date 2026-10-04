@@ -1085,6 +1085,70 @@ async def test_question_requests_bridge_to_cards() -> None:
     }
 
 
+@pytest.mark.parametrize("approved", [True, False])
+async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) -> None:
+    """Codex asks to run an MCP tool as an elicitation; it is approved or declined
+    on a card worded as Codex words it, not answered as a free-text question."""
+    prompt = 'Allow the octomate_driven MCP server to run tool "gateway_teleport"?'
+    approval = DeferredApproval(
+        tool_name="codex_mcp_octomate_driven",
+        tool_call_id="mcp-1",
+        args=ApprovalRequest(tool_name="codex_mcp_octomate_driven"),
+    )
+    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    deferred_actions = RecordingDeferredActions()
+    octomate = Octomate(
+        deferred_actions=cast(DeferredActionManager, deferred_actions),
+        tentacles={"im": a_channel(feelers)},
+    )
+    tentacle = CodexTentacle(
+        "codex", octomate, config=CodexConfig(permission_mode="user_review")
+    )
+    octomate.connect(tentacle)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
+        FakeConversation(thread_id=_THREAD)
+    )
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            tentacle.handle_sdk_request,
+            _THREAD,
+            "mcpServer/elicitation/request",
+            {
+                "threadId": "thread-1",
+                "requestId": "mcp-1",
+                "serverName": "octomate_driven",
+                "mode": "form",
+                "_meta": {
+                    "codex_approval_kind": "mcp_tool_call",
+                    "tool_params": {"hint": "Continue here", "new_thread": True},
+                },
+                "message": prompt,
+                "requestedSchema": {"type": "object", "properties": {}},
+            },
+        )
+    )
+    batch_id = await wait_for_pending(tentacle, feelers)
+    await octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, approvals={approval.id: approved}
+        )
+    )
+    response = await task
+
+    [presented] = feelers.requests
+    assert isinstance(presented, DeferredToolRequests)
+    assert presented.calls == []
+    [call] = presented.approvals
+    assert call.tool_name == "codex_mcp_octomate_driven"
+    # The card shows what the call would run with.
+    assert call.args == {"hint": "Continue here", "new_thread": True}
+    assert presented.metadata == {"mcp-1": {"description": prompt}}
+    assert response == (
+        {"action": "accept", "content": {}} if approved else {"action": "decline"}
+    )
+
+
 async def test_codex_approval_deny_and_timeout_paths() -> None:
     approval = DeferredApproval(
         tool_name="codex_command_execution",
