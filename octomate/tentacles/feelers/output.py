@@ -60,7 +60,6 @@ from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     ResultTextDeltaEvent,
     StreamEvents,
-    SubagentActivity,
     SubagentActivityStatus,
     SubagentSettledEvent,
     SubagentStartedEvent,
@@ -622,7 +621,7 @@ class TimelineState:
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[SubagentTimelineState]:
         """Ignore child activity when this timeline has no streaming renderer."""
         yield SubagentTimelineState()
@@ -630,11 +629,7 @@ class TimelineState:
     async def start_subagent(self, event: SubagentStartedEvent) -> None:
         """Open an accomplice's own timeline; a renderer that fails is logged and
         never interrupts the parent's stream."""
-        context = self.open_subagent(
-            SubagentActivity(
-                invocation_id=event.invocation_id, kind=event.kind, name=event.name
-            )
-        )
+        context = self.open_subagent(event)
         try:
             state = await context.__aenter__()
         except Exception:

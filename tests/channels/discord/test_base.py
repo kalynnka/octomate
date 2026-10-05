@@ -149,6 +149,7 @@ async def test_gateway_lifecycle(
         "DiscordQuestionAnswerButton",
         "DiscordQuestionChoiceButton",
         "DiscordQuestionNavButton",
+        "DiscordQuestionPicksSelect",
     ]
 
     async with channel:

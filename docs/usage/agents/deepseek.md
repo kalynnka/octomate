@@ -64,9 +64,9 @@ If dsh finishes generating a title after that lookup, it is collected after a la
 turn.
 
 Approvals and questions arrive on the event socket and are answered through the
-gateway. Questions are matched back by option label; a multi-select question
-carries several picks from the console, and one from other channels. A commissioned run with no user rejects
-approvals and cancels questions at once.
+gateway. Questions are matched back by option label, and a multi-select question
+carries several picks. A commissioned run with no user rejects approvals and
+cancels questions at once.
 
 ## Native sessions
 

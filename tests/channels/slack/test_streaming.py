@@ -32,7 +32,7 @@ from octomate import Octomate
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     StreamEvents,
-    SubagentActivity,
+    SubagentStartedEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoStatusChangedEvent,
@@ -569,9 +569,15 @@ async def test_slack_subagents_own_streams_separate_from_parent_and_siblings() -
     ink = FakeSlackInk()
     channel = slack_channel(ink)
 
-    first_activity = SubagentActivity("call-a", "commission", "audit")
-    second_activity = SubagentActivity("call-b", "commission", "tests")
-    third_activity = SubagentActivity("call-c", "commission", "docs")
+    first_activity = SubagentStartedEvent(
+        invocation_id="call-a", kind="commission", name="audit"
+    )
+    second_activity = SubagentStartedEvent(
+        invocation_id="call-b", kind="commission", name="tests"
+    )
+    third_activity = SubagentStartedEvent(
+        invocation_id="call-c", kind="commission", name="docs"
+    )
     async with channel.feelers.timeline.open(slack_key()) as parent:
         await parent.thinking_start()
         await parent.thinking_delta("parent work")

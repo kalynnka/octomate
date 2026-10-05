@@ -390,8 +390,8 @@ class ChannelTentacle(
                 )
             )
         except Exception:
-            # The active `ingest` span carries the full error; the graph already
-            # told the user a failed turn's trace id.
+            # The active `ingest` span carries the full error. A turn that failed was
+            # reported to the chat by the graph; a failure before it ran is only logged.
             trace_id = format(
                 trace.get_current_span().get_span_context().trace_id, "032x"
             )

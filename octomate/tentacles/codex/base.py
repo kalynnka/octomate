@@ -1745,8 +1745,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                 summary=summary,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
+            # Closed with the turn's other resources, so its reader never outlives it.
+            notifications = await resources.enter_async_context(
+                contextlib.aclosing(interjections.around(turn.stream()))
+            )
             interrupted = False
-            async for notification in interjections.around(turn.stream()):
+            async for notification in notifications:
                 if isinstance(notification, ActionBatchEvent):
                     # A batch the turn paused on, for whoever draws the run.
                     yield notification

@@ -45,10 +45,7 @@ from octomate.tentacles.slack.feelers.oauth import (
 from octomate.tentacles.slack.feelers.output import SlackTimelineFeeler
 from octomate.tentacles.slack.feelers.questions import (
     SlackAskQuestionFeeler,
-    SlackQuestionActionValueAdapter,
-    ask_question_blocks,
-    collect_current_answer,
-    question_title,
+    collect_answers,
     submitted_blocks,
 )
 from octomate.tentacles.slack.ink import SlackInk
@@ -148,13 +145,8 @@ class SlackTentacle(
             self.on_approval_action
         )
         self.app.action(SlackBlockAction.APPROVAL_DENY.value)(self.on_approval_action)
-        self.app.action(SlackBlockAction.ASK_QUESTION_BACK.value)(self.on_question_nav)
-        self.app.action(SlackBlockAction.ASK_QUESTION_NEXT.value)(self.on_question_nav)
         self.app.action(SlackBlockAction.ASK_QUESTION_SUBMIT.value)(
-            self.on_question_nav
-        )
-        self.app.action(SlackBlockAction.ASK_QUESTION_CHOICE.value)(
-            self.on_question_nav
+            self.on_question_submit
         )
         # A url button still posts an interaction; ack it so Slack does not mark the
         # message as failed.
@@ -344,7 +336,7 @@ class SlackTentacle(
             )
         )
 
-    async def on_question_nav(self, ack, body: SlackQuestionActionBody) -> None:
+    async def on_question_submit(self, ack, body: SlackQuestionActionBody) -> None:
         await ack()
         try:
             action_body = SlackQuestionActionBodyAdapter.validate_python(body)
@@ -359,86 +351,21 @@ class SlackTentacle(
                 ),
             )
             return
-        action = action_body["actions"][0]
-        action_value = action.get("value")
-        if action_value is None:
-            for block in reversed(action_body["message"].get("blocks", [])):
-                if block.get("type") != "actions":
-                    continue
-                elements = block.get("elements", [])
-                if not isinstance(elements, list):
-                    continue
-                for raw_element in elements:
-                    if not isinstance(raw_element, dict):
-                        continue
-                    if raw_element.get("action_id") not in {
-                        SlackBlockAction.ASK_QUESTION_BACK.value,
-                        SlackBlockAction.ASK_QUESTION_NEXT.value,
-                        SlackBlockAction.ASK_QUESTION_SUBMIT.value,
-                    }:
-                        continue
-                    value = raw_element.get("value")
-                    if not isinstance(value, str):
-                        continue
-                    try:
-                        action_value = SlackQuestionActionValueAdapter.validate_json(
-                            value
-                        )
-                    except ValidationError:
-                        continue
-                    break
-                if action_value is not None:
-                    break
-        if action_value is None:
-            logger.warning(
-                "Channel %s: ignored Slack question action without navigation state",
-                self.id,
-            )
-            return
+        action_value = action_body["actions"][0]["value"]
         actions = action_value["questions"]
-        page = action_value["page"]
-        answers = dict(action_value["answers"])
-        action_id = action["action_id"]
-        answers = collect_current_answer(
-            action_body["state"],
-            actions,
-            page,
-            answers,
-            prefer_choice=action_id == SlackBlockAction.ASK_QUESTION_CHOICE.value,
-        )
-        if action_id == SlackBlockAction.ASK_QUESTION_BACK.value:
-            page -= 1
-        elif action_id in {
-            SlackBlockAction.ASK_QUESTION_NEXT.value,
-            SlackBlockAction.ASK_QUESTION_CHOICE.value,
-        }:
-            page += 1
-        else:
-            await self.ink.update_message(
-                action_body["channel"]["id"],
-                action_body["message"]["ts"],
-                text="Answers submitted",
-                blocks=submitted_blocks(actions, answers),
-            )
-            await self.octomate.kick(
-                DeferredActionBatchResponse(
-                    batch_id=action_value["batch_id"],
-                    responder_id=action_body["user"]["id"],
-                    answers={
-                        action.id: str(answers.get(action.id, "")) for action in actions
-                    },
-                )
-            )
-            return
+        answers = collect_answers(action_body["state"], actions)
         await self.ink.update_message(
             action_body["channel"]["id"],
             action_body["message"]["ts"],
-            text=question_title(actions),
-            blocks=ask_question_blocks(
-                actions,
-                page=page,
-                answers=answers,
-            ),
+            text="Answers submitted",
+            blocks=submitted_blocks(actions, answers),
+        )
+        await self.octomate.kick(
+            DeferredActionBatchResponse(
+                batch_id=action_value["batch_id"],
+                responder_id=action_body["user"]["id"],
+                answers={action.id: answers.get(action.id, "") for action in actions},
+            )
         )
 
     async def ensure_assistant_thread(

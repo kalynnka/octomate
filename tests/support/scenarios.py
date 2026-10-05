@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncGenerator, Sequence
+from pathlib import Path
 
 import anyio
+from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -47,6 +49,7 @@ from octomate.capabilities.harness.events import (
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionCollection,
     DeferredApproval,
     DeferredQuestion,
 )
@@ -65,6 +68,9 @@ from octomate.types.json import JsonObject
 ChannelScript = list[ReactStreamEvent[ChannelOutput]]
 
 SCENARIO_CONVERSATION_ID = uuid.UUID(int=0x0C70)
+RECORDED_QUESTIONS = (
+    Path(__file__).parent.parent / "src" / "events" / "inkling_questions.jsonl"
+)
 
 
 async def play(
@@ -306,6 +312,19 @@ def batch_requests() -> DeferredToolRequests:
             ToolCallPart(tool_name="deploy", args={}, tool_call_id="call_deploy_1")
         ],
     )
+
+
+def recorded_questions(batch_id: uuid.UUID) -> list[DeferredQuestion]:
+    """The questions a real Inkling run asked, recorded by
+    `scripts/capture_inkling_events.py --questions`: a multi-select question,
+    then a single pick."""
+    *_, last = RECORDED_QUESTIONS.read_text().splitlines()
+    result = TypeAdapter(AgentRunResultEvent[DeferredToolRequests]).validate_json(last)
+    return [
+        action.model_copy(update={"batch_id": batch_id})
+        for action in DeferredActionCollection.validate_python(result.result.output)
+        if isinstance(action, DeferredQuestion)
+    ]
 
 
 def action_batch(

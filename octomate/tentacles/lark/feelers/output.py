@@ -21,8 +21,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import (
-    SubagentActivity,
     SubagentActivityStatus,
+    SubagentStartedEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -210,7 +210,7 @@ class LarkRunStateCards(TimelineState):
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[LarkSubagentTimelineState]:
         state = LarkSubagentTimelineState(
             ink=self.ink,
@@ -596,7 +596,7 @@ class LarkSubagentTimelineState(SubagentTimelineState):
     and terminal status when it settles."""
 
     ink: LarkInk
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     chat_id: str
     chat_type: str
     channel_thread_id: str

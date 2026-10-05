@@ -56,8 +56,8 @@ Two bridges, both landing on the same cards:
   agent to proceed another way.
 - **Questions.** Claude's `AskUserQuestion` tool is intercepted by a hook. Since a
   hook can only allow or deny, the user's answer travels back as the reason for a
-  deny, which Claude reads as the answer. Choices are capped at five. A
-  multi-select question takes several picks in the console, and one elsewhere.
+  deny, which Claude reads as the answer. Choices are capped at five, and a
+  multi-select question takes several picks.
 
 The bridge parks the live SDK client while it waits, so an answer is not durable
 across an Octomate restart: restart mid-question and the run is gone, though the

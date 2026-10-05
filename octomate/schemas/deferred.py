@@ -45,9 +45,9 @@ from octomate.types.json import JsonObject
 
 # Max suggested choices a question may carry — octomate keeps question cards to a
 # small, consistent set. It bounds what the inkling ask tool may suggest, and
-# bridged agents whose native tool offers more are truncated to fit. Channels render
-# each choice as a button, five to a Discord row; the user can always answer with
-# free text, so this is guidance, not a hard UI limit.
+# bridged agents whose native tool offers more are truncated to fit. Discord renders
+# each choice as a button, five to a row; the user can always answer with free
+# text, so this is guidance, not a hard UI limit.
 MAX_QUESTION_CHOICES = 5
 
 # One question's answer: the text typed or the one choice picked, or the choices

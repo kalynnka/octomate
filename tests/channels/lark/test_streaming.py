@@ -26,7 +26,7 @@ from pydantic_ai.messages import (
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     StreamEvents,
-    SubagentActivity,
+    SubagentStartedEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
 )
@@ -488,8 +488,12 @@ async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> N
         user_id="u1",
     )
 
-    first_activity = SubagentActivity("call-a", "commission", "audit")
-    second_activity = SubagentActivity("call-b", "commission", "tests")
+    first_activity = SubagentStartedEvent(
+        invocation_id="call-a", kind="commission", name="audit"
+    )
+    second_activity = SubagentStartedEvent(
+        invocation_id="call-b", kind="commission", name="tests"
+    )
     async with channel.feelers.timeline.open(address) as parent:
         await parent.thinking_start()
         await parent.thinking_delta("parent work")

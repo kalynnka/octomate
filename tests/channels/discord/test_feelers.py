@@ -39,12 +39,15 @@ from octomate.tentacles.discord.feelers.questions import (
     QUESTION_ANSWER_CUSTOM_ID_TEMPLATE,
     QUESTION_CHOICE_CUSTOM_ID_TEMPLATE,
     QUESTION_NAV_CUSTOM_ID_TEMPLATE,
+    QUESTION_PICKS_CUSTOM_ID_TEMPLATE,
     DiscordAskQuestionFeeler,
     DiscordQuestionAnswerButton,
     DiscordQuestionChoiceButton,
     DiscordQuestionModal,
     DiscordQuestionNavButton,
+    DiscordQuestionPicksSelect,
     question_summary_content,
+    question_view,
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
@@ -763,4 +766,96 @@ async def test_question_navigator_preserves_drafts_and_submits_the_batch(
         ("These questions were already submitted.", True)
     ]
     assert len(octomate.kicks) == 1
+    await client.close()
+
+
+def test_a_fifth_choice_moves_other_onto_its_own_row() -> None:
+    view = question_view([question("Which?", choices=["a", "b", "c", "d", "e"])])
+
+    [container] = view.children
+    assert isinstance(container, discord.ui.Container)
+    rows = [
+        [type(item) for item in row.children]
+        for row in container.children
+        if isinstance(row, discord.ui.ActionRow)
+    ]
+    assert rows[:2] == [
+        [DiscordQuestionChoiceButton] * 5,
+        [DiscordQuestionAnswerButton],
+    ]
+
+
+async def test_multi_select_question_records_every_pick_and_submits_them(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    batch = await create_batch(
+        questions=[
+            {
+                "question": "Which checks?",
+                "choices": ["lint", "types", "tests"],
+                "multi_select": True,
+            }
+        ]
+    )
+    [action] = batch.questions
+    events: list[str] = []
+    octomate = ResolvingOctomate(events)
+    client = discord.Client(intents=discord.Intents.none())
+    router = DiscordComponentRouter(octomate)
+    router.bind(client)
+
+    picks = next(
+        item
+        for item in question_view([action]).walk_children()
+        if isinstance(item, DiscordQuestionPicksSelect)
+    )
+    assert [option.label for option in picks.item.options] == [
+        "lint",
+        "types",
+        "tests",
+    ]
+    assert picks.item.max_values == 3
+    match = QUESTION_PICKS_CUSTOM_ID_TEMPLATE.fullmatch(picks.custom_id)
+    assert match is not None
+    interaction = FakeInteraction(client, events)
+    restored = await DiscordQuestionPicksSelect.from_custom_id(
+        cast("discord.Interaction[discord.Client]", interaction),
+        discord.ui.Select(custom_id=picks.custom_id, options=picks.item.options),
+        match,
+    )
+    restored.item._values = ["0", "2"]
+    await restored.callback(cast("discord.Interaction[discord.Client]", interaction))
+
+    assert router.question_answers == {batch.id: {action.id: ["lint", "tests"]}}
+    [page] = interaction.edits
+    assert isinstance(page.view, discord.ui.LayoutView)
+    assert "**Answer:** lint, tests" in layout_text(page.view)
+    reopened = next(
+        item
+        for item in page.view.walk_children()
+        if isinstance(item, DiscordQuestionPicksSelect)
+    )
+    assert [option.default for option in reopened.item.options] == [True, False, True]
+
+    submit = next(
+        item
+        for item in page.view.walk_children()
+        if isinstance(item, DiscordQuestionNavButton) and item.operation == "submit"
+    )
+    assert not submit.item.disabled
+    submit_match = QUESTION_NAV_CUSTOM_ID_TEMPLATE.fullmatch(submit.custom_id)
+    assert submit_match is not None
+    submit_interaction = FakeInteraction(client, events)
+    restored_submit = await DiscordQuestionNavButton.from_custom_id(
+        cast("discord.Interaction[discord.Client]", submit_interaction),
+        discord.ui.Button(label="Submit", custom_id=submit.custom_id),
+        submit_match,
+    )
+    await restored_submit.callback(
+        cast("discord.Interaction[discord.Client]", submit_interaction)
+    )
+
+    assert [kick.answers for kick in octomate.kicks] == [{action.id: ["lint", "tests"]}]
+    [answered] = (await octomate.deferred_actions.get_batch(batch.id)).questions
+    assert answered.result == ["lint", "tests"]
     await client.close()

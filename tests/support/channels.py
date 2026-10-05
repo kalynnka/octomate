@@ -28,8 +28,8 @@ from octomate import Octomate
 from octomate.capabilities.harness.events import (
     GatewayEvent,
     RunErrorEvent,
-    SubagentActivity,
     SubagentActivityStatus,
+    SubagentStartedEvent,
     TodoEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
@@ -256,7 +256,7 @@ class RecordingTimelineFeeler:
 @dataclass
 class RecordingSubagentTimelineState(SubagentTimelineState):
     address: ChannelAddress
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     response: str = ""
     settlements: list[tuple[SubagentActivityStatus, str | None]] = field(
         default_factory=list
@@ -411,7 +411,7 @@ class RecordingTimeline(TimelineState):
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[RecordingSubagentTimelineState]:
         if self.fail_subagent_open:
             raise RuntimeError("subagent timeline open failed")

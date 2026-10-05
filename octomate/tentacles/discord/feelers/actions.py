@@ -19,6 +19,7 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
+    QuestionAnswer,
 )
 
 if TYPE_CHECKING:
@@ -36,6 +37,11 @@ class DiscordChoiceAnswer:
 
     index: int
 
+    def resolve(self, choices: list[str]) -> str:
+        if not 0 <= self.index < len(choices):
+            raise DiscordActionUnavailable("This answer choice is no longer available.")
+        return choices[self.index]
+
 
 class DiscordComponentRouter:
     """Per-client router from component interactions to deferred-action
@@ -51,7 +57,7 @@ class DiscordComponentRouter:
         self.callback_locks: WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
             WeakValueDictionary()
         )
-        self.question_answers: dict[uuid.UUID, dict[uuid.UUID, str]] = {}
+        self.question_answers: dict[uuid.UUID, dict[uuid.UUID, QuestionAnswer]] = {}
 
     def bind(self, client: discord.Client) -> None:
         self.routers[client] = self
@@ -110,7 +116,7 @@ class DiscordComponentRouter:
     async def load_questions(
         self,
         batch_id: uuid.UUID,
-    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, str]]:
+    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, QuestionAnswer]]:
         try:
             batch = await self.octomate.deferred_actions.get_batch(batch_id)
         except ValueError as error:
@@ -128,8 +134,8 @@ class DiscordComponentRouter:
         *,
         batch_id: uuid.UUID,
         action_id: uuid.UUID,
-        answer: str | DiscordChoiceAnswer,
-    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, str]]:
+        answer: str | DiscordChoiceAnswer | list[DiscordChoiceAnswer],
+    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, QuestionAnswer]]:
         callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
         async with callback_lock:
             actions, answers = await self.load_questions(batch_id)
@@ -146,13 +152,11 @@ class DiscordComponentRouter:
                     "These questions were already submitted."
                 )
 
+            choices = action.args.get("choices") or []
             if isinstance(answer, DiscordChoiceAnswer):
-                choices = action.args.get("choices") or []
-                if not 0 <= answer.index < len(choices):
-                    raise DiscordActionUnavailable(
-                        "This answer choice is no longer available."
-                    )
-                resolved_answer = choices[answer.index]
+                resolved_answer: QuestionAnswer = answer.resolve(choices)
+            elif isinstance(answer, list):
+                resolved_answer = [pick.resolve(choices) for pick in answer]
             else:
                 resolved_answer = answer
             answers[action_id] = resolved_answer
@@ -164,7 +168,7 @@ class DiscordComponentRouter:
         batch_id: uuid.UUID,
         responder_id: str,
         settle_message: Callable[
-            [list[DeferredQuestion], dict[uuid.UUID, str]], Awaitable[None]
+            [list[DeferredQuestion], dict[uuid.UUID, QuestionAnswer]], Awaitable[None]
         ],
     ) -> list[DeferredQuestion]:
         callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
@@ -203,7 +207,7 @@ class DiscordComponentRouter:
             answers={
                 action.id: action.result
                 for action in batch.questions
-                if action.status == "answered" and isinstance(action.result, str)
+                if action.status == "answered" and isinstance(action.result, str | list)
             },
             approvals={
                 action.id: action.result

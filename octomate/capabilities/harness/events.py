@@ -63,17 +63,9 @@ SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
 
 
-@dataclass(frozen=True)
-class SubagentActivity:
-    """One commissioned child run rendered on its own channel timeline."""
-
-    invocation_id: str
-    kind: SubagentActivityKind
-    name: str
-
-
 class SubagentStartedEvent(BaseModel):
-    """An accomplice's run opened, named by the call that started it."""
+    """An accomplice's run opened, named by the call that started it; a channel
+    draws it on a timeline of its own."""
 
     event_kind: Literal["subagent_started"] = "subagent_started"
     invocation_id: str

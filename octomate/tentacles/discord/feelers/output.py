@@ -10,8 +10,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from octomate.capabilities.harness.events import (
-    SubagentActivity,
     SubagentActivityStatus,
+    SubagentStartedEvent,
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ChannelAddress
@@ -82,7 +82,7 @@ class DiscordTimelineState(TimelineState):
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[DiscordSubagentTimelineState]:
         state = DiscordSubagentTimelineState(
             ink=self.ink,
@@ -320,7 +320,7 @@ class DiscordSubagentTimelineState(SubagentTimelineState):
 
     ink: DiscordInk
     chromo: DiscordChromo
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     chat_id: str
     chat_type: str
     channel_thread_id: str

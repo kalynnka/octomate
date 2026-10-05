@@ -93,7 +93,8 @@ drawn. Images and files are real attachments. Mentions are allowed only for user
 the agent named.
 
 Approvals are one message per action with Approve and Deny buttons. Questions are a
-component view: a button per choice, an "Other" button that opens a modal for free
+component view: a button per choice, or a menu when the question takes several
+picks, an "Other" button that opens a modal for free
 text, and Previous, Next and Submit. Button identities carry only ids, and the
 action is reloaded from the database when pressed, so they survive a restart.
 Answers typed but not yet submitted do not.

@@ -1,4 +1,4 @@
-"""Slack question wizard: one Block Kit message paged through a batch of questions."""
+"""Slack question card: one Block Kit message holding a whole batch of questions."""
 
 from __future__ import annotations
 
@@ -8,9 +8,17 @@ from uuid import UUID
 from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredQuestion
+from octomate.schemas.deferred import (
+    MAX_QUESTION_CHOICES,
+    DeferredQuestion,
+    QuestionAnswer,
+)
 from octomate.telemetry import slack_logfire
-from octomate.tentacles.feelers.deferred import QuestionFeeler, question_text
+from octomate.tentacles.feelers.deferred import (
+    QuestionFeeler,
+    answer_text,
+    question_text,
+)
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.slack.feelers.actions import SlackBlockAction
 from octomate.tentacles.slack.schema import (
@@ -38,8 +46,8 @@ SlackQuestionActionValueAdapter = TypeAdapter(SlackQuestionActionValue)
 
 
 class SlackAskQuestionFeeler(QuestionFeeler):
-    """The wizard as one Block Kit message: radio choices or a text input per
-    page, the navigation state carried in the Back, Next and Submit buttons."""
+    """The batch as one Block Kit message: radio buttons, checkboxes or a text
+    input per question, all read together when Submit is pressed."""
 
     def __init__(self, ink: SlackInk) -> None:
         self.ink = ink
@@ -70,104 +78,49 @@ class SlackAskQuestionFeeler(QuestionFeeler):
         return {action.id: message_id for action in actions}
 
 
-def ask_question_blocks(
-    actions: list[DeferredQuestion],
-    *,
-    page: int = 0,
-    answers: dict[UUID, str] | None = None,
-) -> list[SlackBlock]:
-    if not actions:
-        return []
-    answers = answers or {}
-    page = max(0, min(page, len(actions) - 1))
-    action = actions[page]
-    choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
-    hint = action.args.get("hint") or ""
-    saved = answers.get(action.id, "")
-    progress = f"Questions {page + 1} of {len(actions)}" if len(actions) > 1 else ""
-    question_label = question_input_label(question_text(action))
+def ask_question_blocks(actions: list[DeferredQuestion]) -> list[SlackBlock]:
+    """Every question's inputs, then one Submit. Input blocks keep their values in
+    the client until a button is pressed, so nothing is sent before Submit."""
     blocks: list[SlackBlock] = []
-    if progress:
-        blocks.append(question_progress_block(progress))
-    if choices:
+    for index, action in enumerate(actions, start=1):
+        choices = list(action.args.get("choices") or [])[:MAX_QUESTION_CHOICES]
+        hint = action.args.get("hint") or ""
+        question = question_text(action)
+        label = f"{index}. {question}" if len(actions) > 1 else question
+        if choices:
+            blocks.append(
+                question_input_block(
+                    block_id=question_choice_block_id(action),
+                    label=label,
+                    element=choice_element(
+                        choices, multi=action.args.get("multi_select", False)
+                    ),
+                    hint=hint,
+                )
+            )
+        input_element: SlackBlock = {
+            "type": "plain_text_input",
+            "action_id": SlackBlockAction.ASK_QUESTION_ANSWER.value,
+            "multiline": not bool(choices),
+            "placeholder": {
+                "type": "plain_text",
+                "text": "Optional note or other answer"
+                if choices
+                else "Type an answer",
+            },
+        }
+        if choices:
+            input_element["max_length"] = 160
         blocks.append(
             question_input_block(
-                block_id=question_choice_block_id(action),
-                label=question_label,
-                element=choice_radio_buttons(choices, saved),
-                hint=hint,
-                dispatch_action=True,
+                block_id=question_answer_block_id(action),
+                label="Other" if choices else label,
+                element=input_element,
+                hint="" if choices else hint,
             )
         )
-    input_element: SlackBlock = {
-        "type": "plain_text_input",
-        "action_id": SlackBlockAction.ASK_QUESTION_ANSWER.value,
-        "multiline": not bool(choices),
-        "placeholder": {
-            "type": "plain_text",
-            "text": "Optional note or other answer" if choices else "Type an answer",
-        },
-    }
-    if choices:
-        input_element["max_length"] = 160
-    if saved and saved not in choices:
-        input_element["initial_value"] = saved
-    blocks.append(
-        question_input_block(
-            block_id=question_answer_block_id(action),
-            label="Other" if choices else question_label,
-            element=input_element,
-            hint="" if choices else hint,
-        )
-    )
-    nav: list[SlackBlock] = []
-    if page > 0:
-        nav.append(
-            question_button(
-                "Back",
-                SlackBlockAction.ASK_QUESTION_BACK,
-                actions,
-                page,
-                answers,
-            )
-        )
-    if page < len(actions) - 1:
-        nav.append(
-            question_button(
-                "Next",
-                SlackBlockAction.ASK_QUESTION_NEXT,
-                actions,
-                page,
-                answers,
-                style="primary",
-            )
-        )
-    else:
-        nav.append(
-            question_button(
-                "Submit",
-                SlackBlockAction.ASK_QUESTION_SUBMIT,
-                actions,
-                page,
-                answers,
-                style="primary",
-            )
-        )
-    nav_elements: list[JsonValue] = [*nav]
-    actions_block: SlackBlock = {"type": "actions", "elements": nav_elements}
-    blocks.append(actions_block)
+    blocks.append({"type": "actions", "elements": [submit_button(actions)]})
     return blocks
-
-
-def question_progress_block(progress: str) -> SlackBlock:
-    return {
-        "type": "section",
-        "text": {"type": "mrkdwn", "text": f"*{progress}*"},
-    }
-
-
-def question_input_label(question: object) -> str:
-    return str(question)
 
 
 def question_input_block(
@@ -176,7 +129,6 @@ def question_input_block(
     label: str,
     element: SlackBlock,
     hint: object = "",
-    dispatch_action: bool = False,
 ) -> SlackBlock:
     block: SlackBlock = {
         "type": "input",
@@ -185,8 +137,6 @@ def question_input_block(
         "element": element,
         "label": {"type": "plain_text", "text": label},
     }
-    if dispatch_action:
-        block["dispatch_action"] = True
     if hint:
         block["hint"] = {"type": "plain_text", "text": str(hint)}
     return block
@@ -194,7 +144,7 @@ def question_input_block(
 
 def submitted_blocks(
     actions: list[DeferredQuestion],
-    answers: dict[UUID, str] | None = None,
+    answers: dict[UUID, QuestionAnswer] | None = None,
 ) -> list[SlackBlock]:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
@@ -202,7 +152,7 @@ def submitted_blocks(
     summary = "\n\n".join(
         (
             f"*{index}. {question_text(action)}*\n"
-            f"{answers.get(action.id) or '[No answer provided]'}"
+            f"{answer_text(answers.get(action.id)) or '[No answer provided]'}"
         )
         for index, action in enumerate(actions, start=1)
     )
@@ -225,100 +175,61 @@ def question_answer_block_id(action: DeferredQuestion) -> str:
     return f"answer_block:{action.id}"
 
 
-def collect_current_answer(
+def collect_answers(
     state: SlackQuestionState,
     actions: list[DeferredQuestion],
-    page: int,
-    answers: dict[UUID, str],
-    *,
-    prefer_choice: bool = False,
-) -> dict[UUID, str]:
-    if not actions:
-        return answers
-    page = max(0, min(page, len(actions) - 1))
-    action_id = actions[page].id
-    answer = ""
-    choice = ""
-    for block in state["values"].values():
-        if SlackBlockAction.ASK_QUESTION_ANSWER.value in block:
-            answer = str(
-                block[SlackBlockAction.ASK_QUESTION_ANSWER.value].get("value") or ""
-            ).strip()
-        if SlackBlockAction.ASK_QUESTION_CHOICE.value in block:
-            select_state = block[SlackBlockAction.ASK_QUESTION_CHOICE.value]
-            # Bound rather than re-subscripted: `selected_option` is not a required key,
-            # and only `in` narrows a TypedDict — the `.get()` RUF019 wants does not, so
-            # reading it back would be an unchecked access.
-            if (selected := select_state.get("selected_option")) is not None:
-                choice = str(selected["value"]).strip()
-    if prefer_choice:
-        answers[action_id] = choice or answer or answers.get(action_id, "")
-    else:
-        answers[action_id] = answer or choice or answers.get(action_id, "")
+) -> dict[UUID, QuestionAnswer]:
+    """Each question's answer from the submitted state: a typed answer over a
+    single pick, a multi-select question's checked boxes over typed text."""
+    answers: dict[UUID, QuestionAnswer] = {}
+    for action in actions:
+        choice_state = state["values"].get(question_choice_block_id(action), {})
+        answer_state = state["values"].get(question_answer_block_id(action), {})
+        typed = answer_state.get(SlackBlockAction.ASK_QUESTION_ANSWER.value, {})
+        answer = str(typed.get("value") or "").strip()
+        picked = choice_state.get(SlackBlockAction.ASK_QUESTION_CHOICE.value, {})
+        if action.args.get("multi_select"):
+            checked = picked.get("selected_options") or []
+            answers[action.id] = [str(option["value"]) for option in checked] or answer
+            continue
+        selected = picked.get("selected_option")
+        answers[action.id] = answer or (str(selected["value"]) if selected else "")
     return answers
 
 
-def choice_radio_buttons(
-    choices: list[str],
-    saved: str,
-) -> SlackBlock:
-    options: list[JsonValue] = []
-    initial_option: SlackBlock | None = None
-    for choice in choices:
-        option: SlackBlock = {
-            "text": {"type": "plain_text", "text": str(choice)},
-            "value": str(choice),
-        }
-        options.append(option)
-        if option["value"] == saved:
-            initial_option = option
-    element: SlackBlock = {
-        "type": "radio_buttons",
+def choice_element(choices: list[str], *, multi: bool) -> SlackBlock:
+    """A radio list, or checkboxes for a multi-select question."""
+    options: list[JsonValue] = [
+        {"text": {"type": "plain_text", "text": str(choice)}, "value": str(choice)}
+        for choice in choices
+    ]
+    return {
+        "type": "checkboxes" if multi else "radio_buttons",
         "action_id": SlackBlockAction.ASK_QUESTION_CHOICE.value,
         "options": options,
     }
-    if initial_option is not None:
-        element["initial_option"] = initial_option
-    return element
 
 
-def question_button(
-    text: str,
-    action: SlackBlockAction | str,
-    actions: list[DeferredQuestion],
-    page: int,
-    answers: dict[UUID, str],
-    *,
-    style: str | None = None,
-) -> SlackBlock:
+def submit_button(actions: list[DeferredQuestion]) -> SlackBlock:
     batch_id = actions[0].batch_id
     if batch_id is None:
         raise ValueError("question buttons require a batch id")
-    value: SlackQuestionActionValue = {
-        "batch_id": batch_id,
-        "questions": actions,
-        "page": page,
-        "answers": answers,
-    }
-    button: SlackBlock = {
+    value: SlackQuestionActionValue = {"batch_id": batch_id, "questions": actions}
+    return {
         "type": "button",
-        "text": {"type": "plain_text", "text": text},
-        "action_id": action.value if isinstance(action, SlackBlockAction) else action,
+        "text": {"type": "plain_text", "text": "Submit"},
+        "action_id": SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+        "style": "primary",
         "value": SlackQuestionActionValueAdapter.dump_json(
             value,
             include={
                 "batch_id": True,
                 "questions": {"__all__": QUESTION_STATE_FIELDS},
-                "page": True,
-                "answers": True,
             },
             exclude_defaults=True,
             exclude_none=True,
         ).decode(),
     }
-    if style:
-        button["style"] = style
-    return button
 
 
 def question_title(actions: list[DeferredQuestion]) -> str:

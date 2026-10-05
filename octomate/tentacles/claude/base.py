@@ -1009,6 +1009,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 workspace,
                 self.driving(session_id),
                 ClaudeSDKClient(options=options) as client,
+                # Closed before the client, so its reader never outlives the SDK.
+                contextlib.aclosing(
+                    interjections.around(client.receive_response())
+                ) as messages,
             ):
                 # One live run per conversation: register this client and interrupt
                 # any prior run for the same conversation so a mid-run follow-up
@@ -1021,7 +1025,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         await previous.interrupt()
                 await client.query(prompt_text)
                 interrupted = False
-                async for message in interjections.around(client.receive_response()):
+                async for message in messages:
                     if isinstance(message, ActionBatchEvent):
                         # A batch the run paused on, for whoever draws the run.
                         yield message

@@ -10,6 +10,7 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
+    QuestionAnswer,
 )
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownFeeler
@@ -24,6 +25,14 @@ def question_text(action: DeferredQuestion) -> str:
     text = str(action.args["question"]).strip()
     cleaned = QUESTION_PROGRESS_SUFFIX.sub("", text).strip()
     return cleaned or text
+
+
+def answer_text(answer: QuestionAnswer | None) -> str:
+    """An answer as one line of text, for a card to show: a multi-select
+    question's picks are listed."""
+    if isinstance(answer, list):
+        return ", ".join(answer)
+    return answer or ""
 
 
 class ApprovalFeeler(ABC):

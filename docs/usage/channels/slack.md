@@ -80,9 +80,10 @@ own streamed message, and the assistant status line reads "Thinking", "Writing t
 response" or "Waiting for your input" as the turn moves.
 
 Approvals arrive as one paged message per batch with Approve and Deny buttons.
-Questions are a small wizard: radio buttons for choices, a free-text field, Back,
-Next and Submit. The buttons carry the batch's state, so they keep working across
-a restart.
+Questions are one message holding the whole batch: radio buttons for choices, or
+checkboxes when the question takes several picks, a free-text field, and one
+Submit. Nothing reaches Octomate until Submit is pressed, and Submit keeps working
+across a restart.
 
 ## MCP tools acting as the person
 

@@ -68,9 +68,10 @@ own with their response in folded panels. A card Lark refuses to render falls ba
 to a plain message carrying the raw text.
 
 Approvals are one card per action with Approve and Deny; the click toasts and the
-card is replaced with the resolution. Questions are one card for the batch, paged,
-with a button per choice, a text field, and Back, Next and Submit. Buttons carry
-enough state to keep working across a restart.
+card is replaced with the resolution. Questions are one card holding the whole
+batch: a dropdown for choices, which takes several picks when the question allows
+them, a text field, and one Submit. Nothing reaches Octomate until Submit is
+pressed, and Submit keeps working across a restart.
 
 ## Profile linking
 

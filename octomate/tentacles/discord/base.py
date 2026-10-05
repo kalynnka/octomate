@@ -38,6 +38,7 @@ from octomate.tentacles.discord.feelers.questions import (
     DiscordQuestionAnswerButton,
     DiscordQuestionChoiceButton,
     DiscordQuestionNavButton,
+    DiscordQuestionPicksSelect,
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.oauth import DiscordOAuthConnector, DiscordTokenExchange
@@ -117,6 +118,7 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
             DiscordQuestionAnswerButton,
             DiscordQuestionChoiceButton,
             DiscordQuestionNavButton,
+            DiscordQuestionPicksSelect,
         )
         self.client.event(self.on_message)
         if config.oauth is not None:

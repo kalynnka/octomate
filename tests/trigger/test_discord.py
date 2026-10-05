@@ -16,6 +16,7 @@ from uuid import uuid4
 
 import pytest
 import pytest_asyncio
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import OAuthDeviceAuthorizationEvent
@@ -40,6 +41,7 @@ from tests.support.scenarios import (
     mid_run_notice,
     plain_answer,
     play,
+    recorded_questions,
     segment_result_events,
     streamed_text,
     subagent_run,
@@ -69,7 +71,7 @@ async def discord_run_thread(
     if target.chat_type != "group":
         pytest.skip("discord live replay requires a group text-channel target")
 
-    channel = DiscordTentacle("discord", Octomate(), config=config)
+    channel = DiscordTentacle("discord", Octomate(config=live_config), config=config)
     main_address = ChannelAddress(
         channel_tentacle_id="discord",
         chat_type="group",
@@ -247,6 +249,23 @@ async def test_discord_renders_action_controls(
     assert set(question_ids) == {choice_question.id, text_question.id}
     assert all(message_id for message_id in question_ids.values())
     assert approval_ids.get(approval.id)
+    assert "timeline render failed" not in caplog.text
+
+
+async def test_discord_renders_recorded_question_batch(
+    discord_run_thread: tuple[DiscordTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The batch a real run asked: a menu for the multi-select question, then a
+    button per choice for the single pick."""
+    channel, address = discord_run_thread
+    questions = recorded_questions(uuid7())
+
+    with caplog.at_level("WARNING"):
+        question_ids = await channel.feelers.ask_questions.present(address, questions)
+
+    assert set(question_ids) == {question.id for question in questions}
+    assert all(question_ids.values())
     assert "timeline render failed" not in caplog.text
 
 

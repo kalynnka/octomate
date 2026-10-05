@@ -23,8 +23,8 @@ from slack_sdk.web.async_chat_stream import AsyncChatStream
 
 from octomate.capabilities.harness.events import (
     MessageSentEvent,
-    SubagentActivity,
     SubagentActivityStatus,
+    SubagentStartedEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -179,7 +179,7 @@ class SlackTimelineState(TimelineState):
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[SlackSubagentTimelineState]:
         state = SlackSubagentTimelineState(
             ink=self.ink,
@@ -681,7 +681,7 @@ class SlackSubagentTimelineState(SubagentTimelineState):
     folded into the root task when it settles."""
 
     ink: SlackInk
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     channel: str
     thread_ts: str
     recipient_user_id: str | None
