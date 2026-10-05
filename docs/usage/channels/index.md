@@ -69,7 +69,7 @@ that channel.
 
 The first time someone speaks, the channel records a **visitor profile**: a platform
 identity owned by nobody. The agent still answers. What a visitor lacks is
-everything that follows the person across channels: history search, summons into
+everything that follows the person across channels: history search, moves into
 their direct messages elsewhere, their MCP connectors. Linking the profile to an
 account fixes that; see [Accounts and tokens](../../installation/accounts.md#link-
 your-channel-profiles).

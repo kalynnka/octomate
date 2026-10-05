@@ -51,8 +51,8 @@ A sub-thread is opened by sending the hint and replying under it. Lark identifie
 a thread reply by its root message id, which is what the continuation is keyed on.
 
 
-Teleport and Summon use the current group or DM as the parent for a new sub-thread.
-They do not offer nested sub-threads inside an existing thread. Entry from another
+Teleport uses the current group or DM as the parent for a new sub-thread.
+It does not offer nested sub-threads inside an existing thread. Entry from another
 platform uses the linked account's one-to-one chat, or a group you and the bot are
 both in: browsing Lark lists those groups, and a thread opened in one is read by
 its members. Listing reads the members of every group the bot is in, so one group

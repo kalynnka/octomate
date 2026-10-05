@@ -53,16 +53,18 @@ CLAUDE_ROUTE = AgentRoute(
 SUMMON_ARGUMENTS = {
     "agent_id": "claude",
     "model": "opus",
-    "destination": None,
     "hint": "Working on it",
     "reason": "needs coding",
     "summon": "Please investigate the failing test.",
 }
 
 
-def a_turn() -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadManager]:
-    """The gateway as a driven runtime mounts it for one turn on a group main: every
-    call against one fixed session, delivering through the fakes handed back."""
+def a_turn(
+    *, in_thread: bool = False
+) -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadManager]:
+    """The gateway as a driven runtime mounts it for one turn on a group main, or in a
+    thread of it — the shared surface a summon can take over: every call against one
+    fixed session, delivering through the fakes handed back."""
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
     session = OctomateSession(
@@ -71,9 +73,10 @@ def a_turn() -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadM
         channels={"im": channel},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="group",
+            chat_type="thread" if in_thread else "group",
             chat_id="room",
             user_id="alice",
+            channel_thread_id="t-1" if in_thread else None,
             shared=True,
         ),
     )
@@ -196,7 +199,6 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
         for argument in (
             "ChannelAddress",
             "destination=null",
-            "channel=destination.channel_tentacle_id",
             "new_thread=true",
             "new_thread=false",
             "channel_thread_id=null",
@@ -230,17 +232,16 @@ async def test_schemas_carry_no_runtime_state() -> None:
 
 
 async def test_summon_records_the_decision_it_validated() -> None:
-    server, session, _channel, _threads = a_turn()
+    server, session, _channel, _threads = a_turn(in_thread=True)
 
     async with Client(server) as client:
         result = await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
-    assert result.data == "Summoning claude (opus) → im/group/room/-/alice."
+    assert result.data == "Summoning claude (opus) to take over here."
     assert session.decision == SummonDecision(
         action="summon",
         agent_id="claude",
         model="opus",
-        destination=session.conversation_address,
         effort=None,
         hint="Working on it",
         reason="needs coding",
@@ -249,7 +250,7 @@ async def test_summon_records_the_decision_it_validated() -> None:
 
 
 async def test_a_refusal_reaches_the_caller_as_the_same_sentence() -> None:
-    server, session, _channel, _threads = a_turn()
+    server, session, _channel, _threads = a_turn(in_thread=True)
 
     async with Client(server) as client:
         with pytest.raises(ToolError) as refusal:
@@ -267,12 +268,11 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
     server, session, _channel, _threads = a_turn()
 
     async with Client(server) as client:
-        # The bad destination kind is the input under test: the server validates
+        # The bad effort level is the input under test: the server validates
         # against the tool's own schema before any policy is consulted.
-        with pytest.raises(ToolError, match="destination"):
+        with pytest.raises(ToolError, match="effort"):
             await client.call_tool(
-                "gateway_summon",
-                {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}},
+                "gateway_summon", {**SUMMON_ARGUMENTS, "effort": "everything"}
             )
 
     assert session.decision is None
@@ -344,7 +344,7 @@ async def test_send_to_dm_opens_it_and_lands_there() -> None:
 async def test_a_native_session_inspects_only_crossings(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    server, session, _channel, _threads, _kicks = await a_native_call()
+    server, _session, _channel, _threads, _kicks = await a_native_call()
 
     async with Client(server) as client:
         routes = await client.call_tool("gateway_inspect", {"reveal": "routes"})
@@ -354,9 +354,6 @@ async def test_a_native_session_inspects_only_crossings(
     # landing exists — everywhere it can go is the linked account's crossing.
     assert routes.data == "- (none)"
     assert json.loads(places.data) == [asdict(ChannelAddress("im", "dm", "", "alice"))]
-    assert (await session.operations).summon.destinations == [
-        ChannelAddress("im", "dm", "", "alice")
-    ]
 
 
 async def test_a_native_session_with_no_linked_accounts_inspects_nowhere(
@@ -373,8 +370,8 @@ async def test_a_native_session_with_no_linked_accounts_inspects_nowhere(
     # account anywhere a destination could light up.
     assert session.user_profile is not None
     assert result.data == "- (none)"
-    # The truthful dead end: no linked account, so nowhere left to land.
-    assert "requires a destination" in str(refusal.value)
+    # And a native session has nothing here to hand over, whoever is linked.
+    assert "teleport it into a thread first" in str(refusal.value)
     assert kicks == []
 
 
@@ -495,36 +492,19 @@ async def test_a_native_send_delivers_to_a_crossing(
     assert kicks == []
 
 
-async def test_a_native_summon_kicks_its_handoff_at_once(
+async def test_a_native_summon_is_refused_and_kicks_nothing(
     in_memory_engine: AsyncEngine,
 ) -> None:
+    """A summon takes the conversation over where it is; a native session has no
+    conversation here to take over, so it teleports into a thread first."""
     server, session, _channel, _threads, kicks = await a_native_call()
 
     async with Client(server) as client:
-        result = await client.call_tool(
-            "gateway_summon",
-            {
-                **SUMMON_ARGUMENTS,
-                "destination": {
-                    "channel_tentacle_id": "im",
-                    "chat_type": "dm",
-                    "chat_id": "",
-                    "user_id": "alice",
-                },
-            },
-        )
+        with pytest.raises(ToolError, match="teleport it into a thread first"):
+            await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
-    assert result.data == "Summoning claude (opus) → im/dm//-/alice."
-    [signal] = kicks
-    assert signal.agent_id == CLAUDE_NATIVE_ID
-    assert signal.user_profile is session.user_profile
-    assert signal.source is not None
-    assert signal.source.channel_tentacle_id == CLAUDE_NATIVE_ID
-    assert isinstance(signal.decision, SummonDecision)
-    assert signal.decision.summon == "Please investigate the failing test."
-    assert signal.decision.destination == ChannelAddress(
-        channel_tentacle_id="im", chat_type="dm", chat_id="", user_id="alice"
-    )
+    assert session.decision is None
+    assert kicks == []
 
 
 async def test_a_native_scheme_kicks_its_handoff_at_once(

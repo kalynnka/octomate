@@ -68,7 +68,6 @@ from octomate.schemas.segments import (
     TextSegment,
 )
 from octomate.schemas.thread import Thread
-from octomate.schemas.triage import SummonDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
     ChannelOutput,
@@ -625,12 +624,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                 if isinstance(signal, DrivenGatewaySignal):
                     if result is None or result.target.address is None:
                         raise ValueError("The operation did not reach a destination.")
-                    if (
-                        isinstance(signal.decision, SummonDecision)
-                        and signal.decision.new_thread
-                        and result.target.address == signal.source
-                    ):
-                        raise ValueError("The destination could not create a thread.")
                     await send_quietly(
                         send,
                         GatewayEvent(

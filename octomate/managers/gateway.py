@@ -109,8 +109,9 @@ class OctomateSession:
     conversation_id: uuid.UUID | None = None
     # An anonymous native session — a terminal run reaching the served gateway with
     # a runtime attribution and nothing else. Policy, never schema: there is no
-    # here or sub-thread to land on, every destination is a crossing, and a summon
-    # or scheme is kicked as its own turn instead of being read after this one.
+    # here or sub-thread to land on, every destination is a crossing, nothing here
+    # can be summoned, and a teleport or scheme is kicked as its own turn instead of
+    # being read after this one.
     native: bool = False
     # What the project spells work with — a `teleport` that binds, `dismiss`, the
     # `projects` facet: the ledger a binding is written to and read from, and the
@@ -272,20 +273,15 @@ class OctomateSession:
             or self.channels[address.channel_tentacle_id].accepts_sub_thread(address)
         ]
         source = self.conversation_address
-        routes = {
-            channel: [
-                route for route in routes if route.agent_id != self.current_agent_id
-            ]
-            for channel, routes in self.channel_routes.items()
-        }
-        here = (
-            source
-            if self.allow_here
-            and source is not None
-            and routes.get(source.channel_tentacle_id)
-            else None
+        # Summon only hands this conversation over where it is; moving it is Teleport's.
+        handover = self.summon_unavailable
+        summon = (
+            OperationAvailability(
+                here=source, routes={source.channel_tentacle_id: self.other_routes}
+            )
+            if handover is None and source is not None
+            else OperationAvailability(reason=handover)
         )
-        summon = [one for one in suggestions if routes.get(one.channel_tentacle_id)]
         reason = self.teleport_unavailable
         # What each channel offers that can carry this conversation on; a channel
         # with none takes no teleport from another one.
@@ -320,14 +316,7 @@ class OctomateSession:
             teleport=OperationAvailability(
                 destinations=teleport, routes=carriers, reason=reason
             ),
-            summon=OperationAvailability(
-                destinations=summon,
-                here=here,
-                routes=routes,
-                reason=None
-                if any(routes.values())
-                else "No other agent is connected on any channel.",
-            ),
+            summon=summon,
             barred={
                 channel.id: reason
                 for channel in self.channels.values()
@@ -345,6 +334,17 @@ class OctomateSession:
             and agent.native_id == self.current_agent_id
             and type(agent).fork_transcript is not AgentTentacle.fork_transcript
         )
+
+    @property
+    def summon_unavailable(self) -> str | None:
+        """Why this conversation cannot be handed to another agent where it is."""
+        if self.native:
+            return "A native session cannot be handed over; teleport it into a thread first."
+        if not self.allow_here:
+            return "A group's main channel cannot be handed to one agent; teleport into a thread first."
+        if not self.other_routes:
+            return "No other agent runs on this channel."
+        return None
 
     @property
     def teleport_unavailable(self) -> str | None:
@@ -561,56 +561,32 @@ class OctomateSession:
         *,
         agent_id: str,
         model: str,
-        destination: ChannelAddress | None = None,
-        new_thread: bool = True,
         hint: str,
         reason: str,
         summon: str,
         effort: ThinkingEffort | None = None,
     ) -> str:
-        """Validate an address and record a handoff for the graph to perform."""
+        """Validate and record a handoff of this conversation, where it is, for the
+        graph to perform. Continuing somewhere else is `teleport`'s."""
         if agent_id == self.current_agent_id:
             raise GatewayRefusal(
                 f"Cannot summon yourself {self.current_agent_id!r}. "
                 f'Call `{GatewayTool.INSPECT}` with `reveal="routes"` to choose a valid route.'
             )
-        destination = destination or self.conversation_address
-        if destination is None:
-            raise GatewayRefusal("Summon requires a destination address.")
-        if new_thread:
-            destination = await self.prepare_address(destination)
-        elif (
-            self.native
-            or not self.allow_here
-            or destination != self.conversation_address
-        ):
-            raise GatewayRefusal(
-                "Only the current conversation can be taken over in place."
-            )
+        if refusal := self.summon_unavailable:
+            raise GatewayRefusal(refusal)
         route = self.claimed_route(
-            agent_id,
-            model,
-            effort,
-            spell="summon",
-            offered=[
-                route
-                for route in self.channel_routes.get(
-                    destination.channel_tentacle_id, []
-                )
-                if route.agent_id != self.current_agent_id
-            ],
+            agent_id, model, effort, spell="summon", offered=self.other_routes
         )
         self.decision = SummonDecision(
             agent_id=route.agent_id,
             model=route.model,
-            destination=destination,
-            new_thread=new_thread,
             effort=effort,
             hint=hint,
             reason=reason,
             summon=summon,
         )
-        return f"Summoning {route.agent_id} ({route.model}) → {destination}."
+        return f"Summoning {route.agent_id} ({route.model}) to take over here."
 
     async def teleport(
         self,
@@ -870,8 +846,10 @@ class OctomateSession:
         own turn. Only a native spell leaves one, so anything else asking is a
         wiring bug, not a refusal a model could correct from."""
         decision = self.decision
-        if not self.native or decision is None:
-            raise RuntimeError("only a native spell kicks a handoff")
+        if not self.native or not isinstance(
+            decision, SchemeDecision | TeleportDecision
+        ):
+            raise RuntimeError("only a native teleport or scheme kicks a handoff")
         return NativeGatewaySignal(
             decision=decision,
             agent_id=self.current_agent_id,

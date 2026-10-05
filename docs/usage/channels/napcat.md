@@ -75,8 +75,8 @@ create a subthread. With `mention_only: true`, each group request needs an
 `@`-mention. A quoted reply alone does not count as addressing the bot. DMs need
 no mention.
 
-Nothing can be teleported or summoned onto NapCat: QQ has no threads to hold a
-moved conversation. Trunkline's destination browser lists the channel disabled,
+Nothing can be teleported onto NapCat: QQ has no threads to hold a moved
+conversation. Trunkline's destination browser lists the channel disabled,
 with that reason.
 
 ## Rendering

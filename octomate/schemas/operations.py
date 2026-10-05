@@ -11,9 +11,10 @@ class OperationAvailability(BaseModel):
     here: ChannelAddress | None = None
     routes: dict[str, list[AgentRoute]] = Field(
         default_factory=dict,
-        description="What the operation can run on each connected channel, keyed "
-        "by channel id: every other agent for Summon, the conversation's own for "
-        "Teleport. A channel with none cannot be the destination.",
+        description="What the operation can run, keyed by channel id: for Summon, "
+        "every other agent on this conversation's own channel; for Teleport, the "
+        "conversation's own on each connected channel, where a channel with none "
+        "cannot be the destination.",
     )
     reason: str | None = None
 

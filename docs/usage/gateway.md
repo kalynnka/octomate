@@ -17,9 +17,10 @@ Use a handoff when you want a different agent to own the task and its follow-ups
 > to show me the changes before committing.
 
 The receiving agent gets a brief with the goal and relevant context. Be explicit
-about decisions it must preserve. Depending on the channel, the handoff can stay
-in the thread, open a new thread or go to your private conversation elsewhere.
-The agent can only choose from the agents enabled at the destination.
+about decisions it must preserve. It takes over this conversation where it is; to
+continue somewhere else as well, [teleport](#teleport) first and hand over from
+there. The agent can only choose from the agents this channel runs. A group's main
+channel and a native session cannot be handed over: teleport into a thread first.
 
 The tool for this is **summon**. A handoff does not transfer a running process or
 copy files from your machine.
@@ -55,10 +56,10 @@ platform, under your linked DM or a channel or group you and the bot are both in
 Discord suggests eligible text and forum channels in the source server, without enumerating
 all servers. Discord DMs cannot host an isolated thread, so they are not
 suggested. NapCat has no threads at all: `inspect` lists its DM with
-`metadata.barred` saying so, and Teleport and Summon refuse it for that reason.
+`metadata.barred` saying so, and Teleport refuses it for that reason.
 
-Teleport and Summon accept a `destination` address and a `new_thread` flag, which
-defaults to true. A null destination uses the current conversation's address.
+Teleport accepts a `destination` address and a `new_thread` flag, which defaults
+to true. A null destination uses the current conversation's address.
 The address uses the same fields as the conversation address:
 connected channel, chat type, chat ID, user ID and optional thread ID. Discovery
 suggests addresses; it is not an allowlist. To look further, `inspect` with
@@ -67,9 +68,8 @@ an address whose `metadata.inside` is set is a place to open by passing that
 value as `inside`, and one without it can host a new thread unless
 `metadata.barred` says why not. Discord lists the servers you share with the bot,
 then the channels you can see in one; a channel that cannot be browsed says so.
-To choose an agent for an address,
-use `inspect` with `reveal="routes"` and its `channel_tentacle_id` as `channel`. The channel validates each submitted
-address before creating anything, and the user must match your linked identity.
+The channel validates each submitted address before creating anything, and the
+user must match your linked identity.
 
 A known Discord text or forum channel can be selected directly, including from a
 private conversation on another platform. Its address has `chat_type="group"` and
@@ -86,11 +86,9 @@ own holding the work as it stood, uncommitted changes and ignored files such as
 an `.env` included, on a branch of its own, and the source keeps its own. A
 teleport never switches projects; asking for another one is refused.
 
-With `new_thread=false`, Summon takes over the current conversation in place.
-Teleport uses that setting only to bind a current thread that is about no
-project.
-Neither operation reuses an unrelated existing conversation. A failed thread
-creation does not silently turn into an in-place operation.
+Teleport uses `new_thread=false` only to bind a current thread that is about no
+project. It never reuses an unrelated existing conversation, and a failed thread
+creation does not silently turn into an in-place move.
 
 Teleport requires independent history copying: driven Codex, Claude and Inkling
 support it; DeepSeek does not yet. An owned native Codex or Claude Code session

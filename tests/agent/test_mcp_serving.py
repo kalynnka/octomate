@@ -13,7 +13,6 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from dataclasses import asdict
 from typing import Literal, Self
 
 import httpx
@@ -51,7 +50,7 @@ from octomate.mcp.server import (
 )
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import SchemeDecision
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
@@ -436,34 +435,29 @@ async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
     assert octomate.gateway.sessions == {}
 
 
-async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
+async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
     octomate = await a_native_deployment()
-    destination = ChannelAddress("im", "dm", "", "alice")
     async with served(octomate) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
             result = await client.call_tool(
-                "gateway_summon",
+                "gateway_scheme",
                 {
-                    "agent_id": "other",
-                    "model": "test",
-                    "destination": asdict(destination),
                     "hint": "Working on it",
-                    "reason": "the operator asked",
-                    "summon": "Please take this up.",
+                    "brief": "Please take this up.",
+                    "destination": {"kind": "dm", "channel": "im"},
                 },
             )
         await asyncio.gather(*octomate.background)
 
-    assert result.data == f"Summoning other (test) → {destination}."
+    assert result.data.startswith("Taking this to")
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
     assert isinstance(signal, NativeGatewaySignal)
     assert signal.agent_id == CLAUDE_NATIVE_ID
-    # The handoff carries who the bearer named, so the summoned run knows whose
+    # The handoff carries who the bearer named, so the run it starts knows whose
     # behalf it was asked on.
     assert signal.user_profile is not None
     assert signal.user_profile.name == "luhui"
-    assert isinstance(signal.decision, SummonDecision)
-    assert signal.decision.destination == destination
-    assert signal.decision.new_thread is True
-    assert signal.decision.summon == "Please take this up."
+    assert isinstance(signal.decision, SchemeDecision)
+    assert signal.decision.destination == ChannelAddress("im", "dm", "", "alice")
+    assert signal.decision.brief == "Please take this up."

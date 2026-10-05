@@ -3,7 +3,7 @@
  * becomes the request. Kept out of the components so it reads without them.
  */
 import { useState } from 'react'
-import type { ApiAgentRoute, ChannelAddress, GatewayRequest, OperationAvailability } from '@/lib/api/events'
+import type { ApiAgentRoute, ChannelAddress, GatewayRequest } from '@/lib/api/events'
 import type { ChannelMeta } from '@/lib/api/types'
 
 export type GatewayAction = GatewayRequest['action']
@@ -102,8 +102,6 @@ export interface DestinationRow {
   open?: Crumb
   /** set on an address to land in */
   address?: ChannelAddress
-  /** set on the choice to land nowhere and stay in this conversation */
-  stay?: boolean
   /** why the address cannot be picked */
   barred?: string
 }
@@ -179,12 +177,11 @@ export function sameAddress(a: ChannelAddress, b: ChannelAddress): boolean {
 
 /**
  * The request the form stands for, or null while it is missing a part.
- * Summon opens a thread at the destination picked; with none picked it hands
- * this conversation over in place, where that is offered.
+ * Teleport moves the conversation to the destination picked; Summon hands it to
+ * another agent where it is.
  */
 export function gatewayRequest(
   action: GatewayAction,
-  availability: OperationAvailability,
   form: { text: string; destination: Destination | null; route: ApiAgentRoute | undefined; effort: EffortLevel },
 ): GatewayRequest | null {
   const text = form.text.trim()
@@ -192,13 +189,10 @@ export function gatewayRequest(
     if (!form.destination) return null
     return { action, body: { destination: form.destination.address, hint: HINTS.teleport, ...(text ? { prompt: text } : {}) } }
   }
-  const destination = form.destination?.address ?? availability.here
-  if (!destination || !form.route || !text) return null
+  if (!form.route || !text) return null
   return {
     action,
     body: {
-      destination,
-      ...(form.destination ? {} : { new_thread: false }),
       agent_id: form.route.agent_id,
       model: form.route.model,
       brief: text,

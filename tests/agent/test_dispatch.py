@@ -168,36 +168,6 @@ async def test_entry_agent_answers_in_one_run_without_claiming_ownership() -> No
     assert thread.active_agent_tentacle_id is None
 
 
-async def test_entry_agent_summons_into_a_sub_thread() -> None:
-    octomate = Octomate()
-    entry = FakeAgent(
-        reception_summon=SummonDecision(
-            action="summon",
-            agent_id="claude",
-            model="opus",
-            destination=None,
-            reason="needs code work",
-            hint="Working on it",
-            summon="Please debug this.",
-        ),
-        allow_reception_run=True,
-    )
-    claude = FakeAgent(
-        id="claude", reception_output="debugged", allow_reception_run=True
-    )
-    channel = FakeChannelTentacle(config=_summon_config(stream=False))
-    _register_agents(octomate, entry, claude)
-    octomate.connect(channel)
-
-    await octomate.kick(UserMessageSignal([_event(text="please debug")]))
-
-    assert [turn.prompt for turn in claude.turns] == ["Please debug this."]
-    assert channel.sub_threads[0][1] == "Working on it"
-    handoff_thread = await octomate.thread_manager.ensure(_key(thread_id="hint-thread"))
-    assert handoff_thread.active_agent_tentacle_id == "claude"
-    assert channel.sent[-1][2][0]["text"] == "debugged"
-
-
 async def test_summon_here_transmits_current_dm_ownership() -> None:
     octomate = Octomate()
     entry = FakeAgent(
@@ -205,8 +175,6 @@ async def test_summon_here_transmits_current_dm_ownership() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=None,
-            new_thread=False,
             reason="you own this DM now",
             hint="Taking over",
             summon="Continue with the user directly.",
@@ -237,7 +205,6 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=None,
             reason="needs code work",
             hint="Working on it",
             summon="Please debug this.",
@@ -249,12 +216,10 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
     octomate.connect(channel)
 
     await octomate.kick(UserMessageSignal([_event(text="please debug")]))
-    # A follow-up in the handoff thread routes straight to the owner, no entry run.
-    await octomate.kick(
-        UserMessageSignal([_event(text="more detail", thread_id="hint-thread")])
-    )
+    # A follow-up in the chat it took over routes straight to the owner, no entry run.
+    await octomate.kick(UserMessageSignal([_event(text="more detail")]))
 
-    handoff_address = _key(thread_id="hint-thread")
+    handoff_address = _key()
     handoff_thread = await octomate.thread_manager.ensure(handoff_address)
     assert handoff_thread.active_agent_tentacle_id == "claude"
     assert len(entry.streams) == 1  # the entry agent ran only on the first turn
@@ -271,7 +236,6 @@ async def test_owner_survives_cold_manager_reload() -> None:
                 action="summon",
                 agent_id="claude",
                 model="opus",
-                destination=None,
                 reason="needs code work",
                 hint="Working on it",
                 summon="Please debug this.",
@@ -290,14 +254,12 @@ async def test_owner_survives_cold_manager_reload() -> None:
     # Fresh managers over the same DB: ownership reloads from the persisted
     # handoff, so the follow-up routes to Claude without a new entry run.
     second, second_entry, second_claude = _build()
-    await second.kick(
-        UserMessageSignal([_event(text="more detail", thread_id="hint-thread")])
-    )
+    await second.kick(UserMessageSignal([_event(text="more detail")]))
 
     assert second_entry.turns == []
     assert second_entry.streams == []
     assert [stream.run_name for stream in second_claude.streams] == ["react"]
-    reloaded = await second.thread_manager.ensure(_key(thread_id="hint-thread"))
+    reloaded = await second.thread_manager.ensure(_key())
     assert reloaded.active_agent_tentacle_id == "claude"
 
 
@@ -308,7 +270,6 @@ async def test_chained_summon_updates_thread_owner() -> None:
             action="summon",
             agent_id="first",
             model="test",
-            destination=None,
             reason="needs first pass",
             hint="First pass",
             summon="First agent brief.",
@@ -321,8 +282,6 @@ async def test_chained_summon_updates_thread_owner() -> None:
             action="summon",
             agent_id="second",
             model="test",
-            destination=None,
-            new_thread=False,
             reason="needs second pass",
             hint="Second pass",
             summon="Second agent brief.",
@@ -346,7 +305,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
 
     await octomate.kick(UserMessageSignal([_event(text="please debug")]))
 
-    handoff_thread = await octomate.thread_manager.ensure(_key(thread_id="hint-thread"))
+    handoff_thread = await octomate.thread_manager.ensure(_key())
     assert [handoff.to_agent_tentacle_id for handoff in handoff_thread.handoffs] == [
         "first",
         "second",
@@ -409,8 +368,6 @@ async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> No
             action="summon",
             agent_id="claude",
             model="opus",
-            destination=None,
-            new_thread=False,
             reason="needs work",
             hint="needs work",
             summon="Please investigate this in main.",
@@ -454,7 +411,6 @@ async def test_reception_model_is_resolved_from_agent() -> None:
             action="summon",
             agent_id="claude",
             model="openai:gpt-4o-mini",
-            destination=None,
             reason="needs stronger model",
             hint="needs stronger model",
             summon="Use the stronger model.",
@@ -621,29 +577,19 @@ async def test_a_channel_can_turn_the_recap_off() -> None:
     assert "the auth bug is in login" not in prompt
 
 
-async def test_a_summon_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
+async def test_a_teleport_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
     """The opener is a real message in the room — the new thread hangs off it — but
     it went out through the ink, not the ledger. The room's next kick reads the
     ledger, so without the row the work just stops mid-chat with nothing saying
     where it went."""
     octomate = Octomate()
     entry = FakeAgent(
-        reception_summon=SummonDecision(
-            action="summon",
-            agent_id="claude",
-            model="opus",
-            destination=None,
-            reason="needs code work",
-            hint="Working on it",
-            summon="Please debug this.",
-        ),
+        reception_teleport="Working on it",
+        reception_output="continued in the thread",
         allow_reception_run=True,
     )
-    claude = FakeAgent(
-        id="claude", reception_output="debugged", allow_reception_run=True
-    )
-    channel = FakeChannelTentacle(config=_summon_config(stream=False))
-    _register_agents(octomate, entry, claude)
+    channel = FakeChannelTentacle(config=_entry_config(stream=False))
+    _register_agents(octomate, entry)
     octomate.connect(channel)
 
     await octomate.kick(UserMessageSignal([_event(text="please debug")]))
@@ -653,7 +599,7 @@ async def test_a_summon_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
         message for message in room.messages if message.message_text == "Working on it"
     ]
     assert opener.direction == "outbound"
-    assert opener.agent_tentacle_id == "claude"
+    assert opener.agent_tentacle_id == entry.id
     # The opener's own id, so the ledger and the platform name one message: it is
     # the message the sub-thread hangs off.
     assert opener.platform_message_id == "hint-thread"

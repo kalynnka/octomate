@@ -76,7 +76,7 @@ each server the bot is in, and happens only when the Discord level is opened. It
 is served by the
 [thread operation API](trunkline.md#thread-operation-api).
 
-Teleport and Summon can target a known text or forum channel directly with a connected channel ID
+Teleport can target a known text or forum channel directly with a connected channel ID
 and the text-channel ID in the address's `chat_id`, including from a private conversation on another platform.
 The channel validates that parent without enumerating servers and rechecks access before
 posting. The requesting user needs a linked Discord profile. This accepts text

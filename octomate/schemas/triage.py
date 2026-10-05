@@ -78,20 +78,14 @@ DIRECT_TARGET = DirectTarget()
 
 
 class SummonDecision(BaseModel):
-    """A handoff decision: continue this turn with another agent, from a brief."""
+    """A handoff decision: continue this turn with another agent, from a brief, in the
+    conversation where it already is."""
 
     action: Literal["summon"] = "summon"
     reason: str
     agent_id: str
     model: AgentRouteModelName | None = Field(
         description="Selected model, or null to use the harness's native default."
-    )
-    destination: ChannelAddress | None = Field(
-        default=None,
-        description="The address to use; None means the current conversation.",
-    )
-    new_thread: bool = Field(
-        default=True, description="Create a thread at the address before handing over."
     )
     effort: ThinkingEffort | None = None
     hint: str

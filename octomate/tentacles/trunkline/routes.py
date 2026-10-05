@@ -135,8 +135,6 @@ class TeleportBody(TypedDict):
 
 
 class SummonBody(TypedDict):
-    destination: ChannelAddress
-    new_thread: NotRequired[bool]
     agent_id: str
     model: str
     brief: Annotated[str, Field(min_length=1, max_length=8_000)]
@@ -315,8 +313,6 @@ def build_trunkline_router(
             await session.summon(
                 agent_id=body["agent_id"],
                 model=body["model"],
-                destination=body["destination"],
-                new_thread=body.get("new_thread", True),
                 hint=body["hint"],
                 reason="Summon requested from Trunkline",
                 summon=body["brief"],

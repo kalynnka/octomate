@@ -17,7 +17,6 @@ flowchart TD
   START([kick]) --> Awake
   Awake -->|user message| Route
   Awake -->|resolved batch| ResumeDeferred
-  Awake -->|native summon| Summon
   Awake -->|native scheme| Scheme
   Awake -->|thread summon API| Summon
   Awake -->|thread teleport API| Teleport
@@ -65,10 +64,9 @@ gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a telepo
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
 
-**Summon** performs a summon using its address and `new_thread` flag. It takes
-over the current conversation or asks the destination channel to create a thread,
-then re-enters `React` with the brief as the new agent's prompt. Failed creation
-ends the handoff without claiming the parent conversation.
+**Summon** hands the current conversation to the agent the decision names, where
+it is, then re-enters `React` with the brief as the new agent's prompt. Moving a
+conversation elsewhere is `Teleport`'s.
 
 **Scheme** opens the asking user's direct messages with the hint, finds who already
 owns that DM or falls back to that channel's default agent, and re-enters `React`

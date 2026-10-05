@@ -57,12 +57,12 @@ channel and `@`-mention it, or open its assistant pane. Verify a reply.
 Slack's streaming API takes a thread and nothing else, so the bot never streams
 into a channel root. When it opens a sub-thread it posts the hint as a message and
 that message becomes the thread. A private hand-off opens a thread inside your DM
-the same way. Teleport and Summon into a new DM thread post one opener at the
-DM root and continue in that thread.
+the same way. A teleport into a new DM thread posts one opener at the DM root
+and continues in that thread.
 
 
-Teleport and Summon use the current group or DM as the parent for a new sub-thread.
-They do not offer nested sub-threads inside an existing thread. Entry from another
+Teleport uses the current group or DM as the parent for a new sub-thread.
+It does not offer nested sub-threads inside an existing thread. Entry from another
 platform uses the linked account's DM, or a channel you and the bot are both in:
 browsing Slack lists those channels, public and private, and a thread opened in
 one is read by its members. Without `channels:read` and `groups:read` the listing

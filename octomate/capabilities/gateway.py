@@ -90,7 +90,7 @@ well or do the work, do it and call none of them. Routing is the exception — r
 tool only when one of the signals below clearly fires.
 
 ### Addresses and discovery
-For `{summon}` and `{teleport}`, `destination` is a `ChannelAddress` object, or
+For `{teleport}`, `destination` is a `ChannelAddress` object, or
 `destination=null` to use the current conversation's address. An address carries
 `channel_tentacle_id`, `chat_type`, `chat_id`, `user_id`, and optional
 `channel_thread_id` and `shared` visibility. Use known identifiers and preserve
@@ -122,17 +122,15 @@ Do NOT summon when:
 - No route clearly fits — handle it yourself or ask; never summon on a guess.
 
 When one fires, call `{inspect}` with `reveal="routes"` first to see the agents and what
-each is for. For another destination channel, also pass
-`channel=destination.channel_tentacle_id` to inspect that channel's routes.
-Every route carries a claim: its ability (what that agent+model is for)
+each is for. Every route carries a claim: its ability (what that agent+model is for)
 and the effort levels it accepts — pick the route whose ability covers the work. Set
 `effort` only when the user explicitly asked for a level; otherwise leave it unset so
 the agent's own default applies. Then `{summon}` — copying its `agent_id` and `model`
 exactly from that route, and writing a self-contained brief since the other agent may
-not see this chat. Use `new_thread=false` to hand over the current conversation
-in place when supported, or keep `new_thread=true` to create a thread at the
-selected address. In-place takeover is refused on a group's main conversation
-and in native sessions. You yourself are not a valid summon target.
+not see this chat. Summon hands over this conversation where it is; to continue
+somewhere else, `{teleport}` there with `resume=true` and summon from the thread you
+land in. It is refused on a group's main conversation and in native sessions. You
+yourself are not a valid summon target.
 
 ### `{teleport}` — relocate yourself
 Move this conversation into a new thread that *you* keep handling, carrying
@@ -407,8 +405,7 @@ class GatewayCapability(AbstractCapability[None]):
 
         Args:
             reveal: `routes` — agent/model choices on the current or selected channel.
-                Summon uses the destination's routes; commission uses the current
-                channel's routes.
+                Summon and commission use the current channel's routes.
                 `destinations` — optional address suggestions, validated independently
                 when used; known addresses need not appear in this list. With
                 `channel`, one level of that channel's addresses instead.
@@ -432,29 +429,19 @@ class GatewayCapability(AbstractCapability[None]):
         ctx: RunContext[None],
         agent_id: str,
         model: str,
-        destination: ChannelAddress | None,
         hint: str,
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
-        new_thread: bool = True,
     ) -> str:
-        """Hand this conversation to another Octomate agent, who takes it over.
+        """Hand this conversation to another Octomate agent, who takes it over where
+        it is.
 
         Args:
             agent_id: The target agent, copied exactly from an `inspect` route
-                (`reveal="routes"`) — pass the destination's `channel_tentacle_id`
-                as `channel` when moving elsewhere.
+                (`reveal="routes"`).
             model: That route's model, copied exactly.
-            destination: A known ChannelAddress, or null for the current conversation.
-                Discovery offers suggestions; the address is validated independently.
-                Its user must match the requesting user's linked identity. Supply an
-                explicit address when no current conversation is attached.
-            new_thread: Create a thread at the address. Set false only to hand
-                over the current conversation in place, where takeover is allowed.
-                For creation, the address must have no `channel_thread_id`.
-            hint: A short, user-facing note announcing the handoff; used as the
-                opener when a new thread is started.
+            hint: A short, user-facing note announcing the handoff, recorded with it.
             reason: One line on why this agent fits — recorded with the handoff, not
                 shown to the user as the reply.
             summon: The self-contained brief the other agent starts from. It becomes
@@ -474,8 +461,6 @@ class GatewayCapability(AbstractCapability[None]):
             return await self.session.summon(
                 agent_id=agent_id,
                 model=model,
-                destination=destination,
-                new_thread=new_thread,
                 hint=hint,
                 reason=reason,
                 summon=summon,

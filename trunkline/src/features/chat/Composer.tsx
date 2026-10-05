@@ -461,34 +461,30 @@ export function Composer() {
   const [form, patchForm, seedForm] = useGatewayForm(selThreadId, mode)
   const modeInput = useRef<HTMLTextAreaElement>(null)
   const draftInput = useRef<HTMLTextAreaElement>(null)
-  // Summon stays in this conversation until a destination is picked for it.
-  const inPlace = mode === 'summon' && !form.destination ? availability?.here : null
-  const routeChannel = (form.destination?.address ?? inPlace)?.channel_tentacle_id
-  const routes = (routeChannel && availability?.routes[routeChannel]) || []
-  const route = pickRoute(routes, form.agent, form.model)
+  // Summon hands this conversation over where it is, to an agent its channel runs.
+  const summonRoutes = Object.values(operations?.summon.routes ?? {}).flat()
+  const route = pickRoute(summonRoutes, form.agent, form.model)
   const { efforts, effort } = routeEffort(route, form.effort)
   const request = mode && availability
-    ? gatewayRequest(mode, availability, { text: composerText, destination: form.destination, route, effort })
+    ? gatewayRequest(mode, { text: composerText, destination: form.destination, route, effort })
     : null
   const blocked = !mode ? undefined
     : running ? 'Wait for the current run to finish.'
       : !availability ? 'Checking available destinations…'
         : availability.reason
-          ?? (mode === 'summon' && routeChannel && !routes.length ? 'No other agent runs at that destination.' : undefined)
           // Only a thread here can take the message after the move.
           ?? (mode === 'teleport' && composerText.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
             ? 'A prompt can follow a teleport only into a Trunkline thread.' : undefined)
   const ready = Boolean(request) && !blocked
-  // What a channel with no route for the op says in the destination browser.
+  // What a channel that cannot carry this conversation says in the destination browser.
   const carrierless = `does not run ${sesAgent || 'this agent'}`
-  const unrouted = mode === 'teleport' ? carrierless : 'runs no other agent'
   const exposed = mode === 'teleport' && operations && !operations.source?.shared && form.destination?.address.shared
     ? `this chat is private — everyone at ${form.destination.path.at(-1)} can read the thread it continues in`
     : undefined
   const submitGateway = () => {
     if (!mode || blocked) return
     if (!request) {
-      if (!inPlace && !form.destination) patchForm({ menu: 'destination' })
+      if (mode === 'teleport' && !form.destination) patchForm({ menu: 'destination' })
       return
     }
     aui.composer.setText('')
@@ -513,11 +509,6 @@ export function Composer() {
     summon: operations ? operations.summon.reason ?? undefined : waiting,
     teleport: operations ? operations.teleport.reason ?? undefined : waiting,
   }
-  // Summon in place offers this channel's agents; elsewhere, every channel's.
-  const summonRoutes = operations?.summon.here
-    ? operations.summon.routes[operations.summon.here.channel_tentacle_id] ?? []
-    : Object.values(operations?.summon.routes ?? {}).flat().filter((one, index, all) =>
-        all.findIndex((other) => other.agent_id === one.agent_id && other.model === one.model) === index)
   const surfaces = channelRows(
     channels ?? [], operations?.teleport.destinations ?? [], selChannel,
     operations?.teleport.routes ?? {}, carrierless, operations?.barred ?? {},
@@ -851,7 +842,7 @@ export function Composer() {
                 </span>
               ) : (
                 <SummonRoute
-                  routes={routes}
+                  routes={summonRoutes}
                   route={route}
                   efforts={efforts}
                   effort={effort}
@@ -861,17 +852,16 @@ export function Composer() {
                   onEffort={(level) => patchForm({ effort: level })}
                 />
               )}
-              {availability && (
+              {mode === 'teleport' && availability && (
                 <>
-                  <span aria-hidden="true" className={mode === 'teleport' ? 'trk-gateway-carry' : undefined} style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'var(--color-teal)', padding: '0 3px' }}>→</span>
+                  <span aria-hidden="true" className="trk-gateway-carry" style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'var(--color-teal)', padding: '0 3px' }}>→</span>
                   <DestinationPicker
                     threadId={selThreadId}
                     sourceChannel={selChannel}
                     suggestions={availability.destinations}
                     routes={availability.routes}
-                    unrouted={unrouted}
+                    unrouted={carrierless}
                     barred={operations?.barred ?? {}}
-                    here={mode === 'summon' && Boolean(availability.here)}
                     selection={form.destination}
                     crumbs={form.crumbs}
                     open={form.menu === 'destination'}

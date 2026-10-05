@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.triage import GatewayDecision, SummonDecision, TeleportDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
 
 
@@ -52,7 +52,8 @@ class NativeGatewaySignal:
     validated decision straight to the graph instead.
     """
 
-    decision: GatewayDecision
+    # A native session cannot be summoned: there is nothing here to hand over.
+    decision: SchemeDecision | TeleportDecision
     # The native pseudo-channel the handoff is attributed to — its ledger `from` side.
     agent_id: str
     # The registry profile the native id is linked to; None when nobody claims it.

@@ -106,16 +106,6 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     response = await client.post(
         f"{path}/summon",
         json={
-            "destination": asdict(
-                ChannelAddress(
-                    case.thread.channel_tentacle_id,
-                    case.thread.chat_type,
-                    case.thread.chat_id,
-                    str(case.owner.id),
-                    case.thread.channel_thread_id,
-                )
-            ),
-            "new_thread": False,
             "agent_id": "second",
             "model": "test",
             "brief": "Investigate the existing work",
@@ -307,17 +297,19 @@ async def test_actions_require_thread_ownership(
     case.app.dependency_overrides[current_user] = lambda: other
     path = f"/api/trunkline/threads/{case.thread.id}"
     assert (await client.get(f"{path}/operations")).status_code == 404
-    body = {
-        "destination": {
-            "channel_tentacle_id": "far",
-            "chat_type": "dm",
-            "chat_id": "",
-            "user_id": "alice",
-        },
-        "hint": "go",
-    }
-    if operation == "summon":
-        body.update(agent_id="second", model="test", brief="Take over")
+    body = (
+        {"agent_id": "second", "model": "test", "brief": "Take over", "hint": "go"}
+        if operation == "summon"
+        else {
+            "destination": {
+                "channel_tentacle_id": "far",
+                "chat_type": "dm",
+                "chat_id": "",
+                "user_id": "alice",
+            },
+            "hint": "go",
+        }
+    )
     assert (await client.post(f"{path}/{operation}", json=body)).status_code == 404
     assert not case.far.opened_dms
 
@@ -329,16 +321,6 @@ async def test_validation_precedes_side_effects(
     invalid = await client.post(
         f"{path}/summon",
         json={
-            "destination": asdict(
-                ChannelAddress(
-                    case.thread.channel_tentacle_id,
-                    case.thread.chat_type,
-                    case.thread.chat_id,
-                    str(case.owner.id),
-                    case.thread.channel_thread_id,
-                )
-            ),
-            "new_thread": False,
             "agent_id": "first",
             "model": "test",
             "brief": "Take over",
@@ -404,46 +386,6 @@ async def test_failed_open_reports_stream_error(
     assert "run_error" in response.text
     assert '"event_kind":"gateway"' not in response.text
     assert not case.agent.turns
-
-
-async def test_summon_requires_the_requested_thread_to_open(
-    case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    address = ChannelAddress(
-        channel_tentacle_id="far",
-        chat_type="dm",
-        chat_id="alice",
-        user_id="alice",
-    )
-    thread = await case.app.thread_manager.ensure(address)
-    await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
-    profile = await case.app.users.profile("far", "alice")
-    assert profile is not None
-    await case.app.thread_manager.record_outbound(
-        thread,
-        agent_tentacle_id="first",
-        sender=profile,
-        segments=[TextSegment(data={"text": "Original private conversation"})],
-    )
-    monkeypatch.setattr(case.far, "start_sub_thread", AsyncMock(return_value=address))
-    response = await client.post(
-        f"/api/trunkline/threads/{thread.id}/summon",
-        json={
-            "destination": asdict(address),
-            "agent_id": "second",
-            "model": "test",
-            "brief": "Investigate in a new thread",
-            "hint": "Open a thread",
-        },
-    )
-    assert '"event_kind":"run_error"' in response.text
-    assert '"event_kind":"gateway"' not in response.text
-    assert not case.receiver.turns
-    assert not case.receiver.streams
-    unchanged = await case.app.thread_manager.get(thread.id)
-    assert unchanged is not None
-    assert unchanged.active_agent_tentacle_id == "first"
-    assert not unchanged.handoffs
 
 
 async def test_trunkline_has_no_dm_or_sub_thread_surface(case: Case) -> None:
@@ -514,10 +456,8 @@ async def test_external_thread_unknown_privacy_does_not_export_history(
     assert options["source"]["shared"] is True
     assert options["teleport"]["destinations"] == []
     assert "Shared history" in options["teleport"]["reason"]
-    assert any(
-        one["channel_tentacle_id"] == "trunkline"
-        for one in options["summon"]["destinations"]
-    )
+    # Another agent can still take it over where it is.
+    assert options["summon"]["here"]["channel_thread_id"] == thread.channel_thread_id
     response = await client.post(
         f"{path}/teleport",
         json={
@@ -625,10 +565,7 @@ async def test_native_teleport_requires_a_transcript_fork_agent(
     options = (await client.get(f"{path}/operations")).json()
     assert options["teleport"]["destinations"] == []
     assert "import this native history" in options["teleport"]["reason"]
-    assert any(
-        one["channel_tentacle_id"] == "trunkline"
-        for one in options["summon"]["destinations"]
-    )
+    assert "teleport it into a thread first" in options["summon"]["reason"]
     response = await client.post(
         f"{path}/teleport",
         json={
@@ -676,7 +613,7 @@ async def test_an_empty_offer_is_closed_only_by_what_rules_it_out(
         assert operations.teleport.reason is None
     else:
         assert refusal in (operations.teleport.reason or "")
-    # Another agent is connected somewhere, so Summon stays open as well.
+    # Another agent runs on this channel, so Summon stays open as well.
     assert operations.summon.reason is None
 
 
@@ -754,9 +691,8 @@ async def test_discord_dm_threads_are_not_offered(case: Case) -> None:
     )
 
 
-@pytest.mark.parametrize("operation", ["teleport", "summon"])
 async def test_new_trunkline_destination_is_owned_and_independent(
-    case: Case, client: httpx.AsyncClient, operation: str
+    case: Case, client: httpx.AsyncClient
 ) -> None:
     body = {
         "destination": {
@@ -767,10 +703,8 @@ async def test_new_trunkline_destination_is_owned_and_independent(
         },
         "hint": "New workspace",
     }
-    if operation == "summon":
-        body.update(agent_id="second", model="test", brief="Continue the investigation")
     response = await client.post(
-        f"/api/trunkline/threads/{case.thread.id}/{operation}", json=body
+        f"/api/trunkline/threads/{case.thread.id}/teleport", json=body
     )
     assert "run_error" not in response.text, response.text
     assert '"event_kind":"gateway"' in response.text
@@ -779,9 +713,7 @@ async def test_new_trunkline_destination_is_owned_and_independent(
     assert landed.channel_tentacle_id == "trunkline"
     assert landed.chat_type == "thread"
     assert landed.channel_thread_id != case.thread.channel_thread_id
-    assert landed.active_agent_tentacle_id == (
-        "first" if operation == "teleport" else "second"
-    )
+    assert landed.active_agent_tentacle_id == "first"
     original = await case.app.thread_manager.get(case.thread.id)
     assert original is not None
     assert original.active_agent_tentacle_id == "first"

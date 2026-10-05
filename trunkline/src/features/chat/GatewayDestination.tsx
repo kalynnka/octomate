@@ -11,10 +11,9 @@ const tint = (share: number) => `color-mix(in srgb, var(--color-accent) ${share}
 /**
  * Where a gateway op lands, browsed one level at a time: the connected
  * channels, then what each holds, fetched as it is opened. Suggestions the
- * relay already made for a channel head its first level. With `here`, picking
- * nothing stays in this conversation, and the first row returns to that.
+ * relay already made for a channel head its first level.
  */
-export function DestinationPicker({ threadId, sourceChannel, suggestions, routes, unrouted, barred, here, selection, crumbs, open, onOpen, onCrumbs, onSelect }: {
+export function DestinationPicker({ threadId, sourceChannel, suggestions, routes, unrouted, barred, selection, crumbs, open, onOpen, onCrumbs, onSelect }: {
   threadId: string
   sourceChannel: string
   suggestions: ChannelAddress[]
@@ -24,13 +23,12 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
   unrouted: string
   /** channels nothing can land in, with why */
   barred: Record<string, string>
-  here: boolean
   selection: Destination | null
   crumbs: Crumb[]
   open: boolean
   onOpen: (open: boolean) => void
   onCrumbs: (crumbs: Crumb[]) => void
-  onSelect: (destination: Destination | null) => void
+  onSelect: (destination: Destination) => void
 }) {
   const [filter, setFilter] = useState('')
   const trigger = useRef<HTMLButtonElement>(null)
@@ -52,11 +50,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
     ? [...suggested, ...(listing.data ?? [])].map((address) => addressRow(address, crumbs))
     : channelRows(channels ?? [], suggestions, sourceChannel, routes, unrouted, barred)
   const needle = filter.trim().toLowerCase()
-  // Staying is a choice like any other at the top, and is not one of the surfaces.
-  const stay: DestinationRow[] = here && !at
-    ? [{ key: 'stay', label: 'This conversation', sub: 'the next agent takes over here', glyph: '●', stay: true }]
-    : []
-  const shown = [...stay, ...rows].filter((row) => !needle || row.label.toLowerCase().includes(needle))
+  const shown = rows.filter((row) => !needle || row.label.toLowerCase().includes(needle))
   const go = (next: Crumb[]) => {
     onCrumbs(next)
     setFilter('')
@@ -94,7 +88,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
       >
         <i style={{ width: 6, height: 6, flexShrink: 0, background: selection ? channelMeta(selection.address.channel_tentacle_id).brand : 'var(--line-divider)' }} />
         <span style={{ minWidth: 0, ...ellipsis, color: selection ? 'var(--fg-1)' : 'var(--fg-3)' }}>
-          {selection ? selection.path.join(' / ') : here ? 'this conversation' : 'choose destination'}
+          {selection ? selection.path.join(' / ') : 'choose destination'}
         </span>
         <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
       </button>
@@ -170,17 +164,17 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
           </label>
           <span style={{ display: 'block', maxHeight: 248, overflowY: 'auto', overscrollBehavior: 'contain', borderBottom: '1px solid var(--line-color)' }}>
             {shown.map((row) => {
-              const on = row.stay ? !selection : Boolean(row.address && selection && sameAddress(row.address, selection.address))
+              const on = Boolean(row.address && selection && sameAddress(row.address, selection.address))
               return (
                 <button
                   key={row.key}
                   type="button"
                   disabled={Boolean(row.barred)}
-                  aria-pressed={row.address || row.stay ? on : undefined}
-                  title={row.barred ? undefined : row.open ? `Open ${row.label}` : row.stay ? 'Hand over in place' : 'Land here'}
+                  aria-pressed={row.address ? on : undefined}
+                  title={row.barred ? undefined : row.open ? `Open ${row.label}` : 'Land here'}
                   onClick={() => {
                     if (row.open) return go([...crumbs, row.open])
-                    onSelect(row.address ? { address: row.address, path: [...crumbs.map((crumb) => crumb.label), row.label] } : null)
+                    if (row.address) onSelect({ address: row.address, path: [...crumbs.map((crumb) => crumb.label), row.label] })
                   }}
                   className={row.barred ? undefined : 'hov-wash'}
                   style={{
@@ -256,7 +250,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
             )}
           </span>
           <span style={{ display: 'block', padding: '7px 12px', flexShrink: 0, ...mono(7.5), color: 'var(--fg-3)', letterSpacing: '.04em', lineHeight: 1.5, ...ellipsis }}>
-            {selection ? `→ ${selection.path.join(' / ')}` : here ? '→ this conversation, in place' : 'pick a destination · levels load from the gateway as you open them'}
+            {selection ? `→ ${selection.path.join(' / ')}` : 'pick a destination · levels load from the gateway as you open them'}
           </span>
         </span>
       )}

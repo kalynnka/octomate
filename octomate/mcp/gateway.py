@@ -217,7 +217,7 @@ def mount_gateway(
     through — `Depends(...)` of a fixed session for a server mounted in-process for
     one turn, of a per-request lookup for a server that answers over HTTP.
     `thread_manager` is the ledger a delivering spell writes through. `kick` is how
-    a native session's summon or scheme becomes its own turn at once, so only the
+    a native session's teleport or scheme becomes its own turn at once, so only the
     served mount — the one place a native session can arrive — needs one.
     """
 
@@ -256,31 +256,20 @@ def mount_gateway(
     async def summon(
         agent_id: str,
         model: str,
-        destination: ChannelAddress | None,
         hint: str,
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
-        new_thread: bool = True,
         session: OctomateSession = octomate_session,
     ) -> str:
-        sentence = await session.summon(
+        return await session.summon(
             agent_id=agent_id,
             model=model,
-            destination=destination,
-            new_thread=new_thread,
             hint=hint,
             reason=reason,
             summon=summon,
             effort=effort,
         )
-        if session.native:
-            if kick is None:
-                raise RuntimeError(
-                    "a native session reached a gateway mounted without a kick"
-                )
-            kick(session.native_handoff())
-        return sentence
 
     @mcp.tool(
         name=GatewayTool.TELEPORT,

@@ -43,7 +43,6 @@ const result: WireEvent = { event_kind: 'run_result', output: 'Arrived', usage: 
 const refused: OperationAvailability = { destinations: [], here: null, routes: {}, reason: 'This native session cannot teleport.' }
 // No suggested address at all: the in-place handover alone keeps Summon open.
 const inPlace: OperationAvailability = { destinations: [], here, routes: { trunkline: routes }, reason: null }
-const elsewhere: OperationAvailability = { destinations: [fresh], here: null, routes: { trunkline: routes, discord: routes }, reason: null }
 const options: ThreadOperations = { source: here, teleport: refused, summon: inPlace, barred: {} }
 const sse = (...events: WireEvent[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
 
@@ -79,7 +78,7 @@ after(async () => { await server?.close() })
 for (const action of ['teleport', 'summon'] as const) {
   test(`${action} posts the typed payload once and waits for its confirmed destination`, async () => {
     const payload: GatewayRequest = action === 'teleport' ? request : { action, body: {
-      destination: here, new_thread: false, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Handing over', effort: 'high',
+      agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Handing over', effort: 'high',
     } }
     const fetch = mock.method(globalThis, 'fetch', async () => sse(result, { ...gateway, action }))
     const events: WireEvent[] = []
@@ -114,33 +113,25 @@ test('a destination level is listed on its own, and a refusal keeps its reason',
     error.status === 409 && /cannot be browsed/.test(error.message))
 })
 
-test('summon opens a thread where one is picked, and otherwise hands over in place when offered', () => {
+test('summon hands this conversation over where it is, with the draft as its brief', () => {
   const draft = { text: ' Review the patch ', destination: null, route: routes[0], effort: 'high' as const }
-  assert.deepEqual(forms.gatewayRequest('summon', inPlace, draft), { action: 'summon', body: {
-    destination: here, new_thread: false, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch',
-    hint: 'Continuing with another agent.', effort: 'high',
+  assert.deepEqual(forms.gatewayRequest('summon', draft), { action: 'summon', body: {
+    agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.', effort: 'high',
   } })
-  assert.equal(forms.gatewayRequest('summon', elsewhere, draft), null)
-  assert.deepEqual(
-    forms.gatewayRequest('summon', elsewhere, { ...draft, effort: 'auto', destination: { address: room, path: ['Discord', 'Community', '#general'] } }),
-    { action: 'summon', body: { destination: room, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.' } },
-  )
-  // Offered in place, a picked destination still wins: the thread opens there.
-  assert.deepEqual(
-    forms.gatewayRequest('summon', inPlace, { ...draft, destination: { address: room, path: ['Discord', 'Community', '#general'] } }),
-    { action: 'summon', body: { destination: room, agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.', effort: 'high' } },
-  )
-  assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, text: '  ' }), null)
-  assert.equal(forms.gatewayRequest('summon', inPlace, { ...draft, route: undefined }), null)
+  assert.deepEqual(forms.gatewayRequest('summon', { ...draft, effort: 'auto' }), { action: 'summon', body: {
+    agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Continuing with another agent.',
+  } })
+  assert.equal(forms.gatewayRequest('summon', { ...draft, text: '  ' }), null)
+  assert.equal(forms.gatewayRequest('summon', { ...draft, route: undefined }), null)
 })
 
 test('teleport needs a destination, and its prompt is the message sent where it lands', () => {
   const draft = { text: '', destination: null, route: undefined, effort: 'auto' as const }
-  assert.equal(forms.gatewayRequest('teleport', elsewhere, draft), null)
+  assert.equal(forms.gatewayRequest('teleport', draft), null)
   const destination = { address: fresh, path: ['Trunkline'] }
-  assert.deepEqual(forms.gatewayRequest('teleport', elsewhere, { ...draft, destination }),
+  assert.deepEqual(forms.gatewayRequest('teleport', { ...draft, destination }),
     { action: 'teleport', body: { destination: fresh, hint: 'Continuing this conversation here.' } })
-  assert.deepEqual(forms.gatewayRequest('teleport', elsewhere, { ...draft, destination, text: 'Pick this up on the phone' }),
+  assert.deepEqual(forms.gatewayRequest('teleport', { ...draft, destination, text: 'Pick this up on the phone' }),
     { action: 'teleport', body: { destination: fresh, hint: 'Continuing this conversation here.', prompt: 'Pick this up on the phone' } })
 })
 
@@ -310,7 +301,7 @@ test('the destination picker opens on the connected surfaces and marks what land
   const picker = (open: boolean, selection: { address: ChannelAddress; path: string[] } | null) =>
     renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
       threadId: 'source', sourceChannel: 'trunkline', suggestions: [fresh], routes: { trunkline: routes, discord: routes, napcat: routes }, unrouted: 'does not run claude',
-      barred: { napcat: 'This channel has no threads, so no conversation can land here.' }, here: false, selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
+      barred: { napcat: 'This channel has no threads, so no conversation can land here.' }, selection, crumbs: [], open, onOpen() {}, onCrumbs() {}, onSelect() {},
     })))
   assert.ok(picker(false, null).includes('choose destination'))
   assert.ok(!picker(false, null).includes('Surfaces'))
@@ -332,16 +323,6 @@ test('the destination picker opens on the connected surfaces and marks what land
   assert.ok(chosen.includes('→ Trunkline'))
   queryClient.setQueryData(['channels'], [{ id: 'discord', label: 'Discord', sub: 'gateway', brand: 'blue' }])
   assert.ok(picker(true, null).includes('1 surface<'))
-  // Where staying is offered it is the choice until a destination is picked.
-  const staying = (selection: { address: ChannelAddress; path: string[] } | null) =>
-    renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(DestinationPicker, {
-      threadId: 'source', sourceChannel: 'trunkline', suggestions: [], routes: { discord: routes }, unrouted: 'runs no other agent',
-      barred: {}, here: true, selection, crumbs: [], open: true, onOpen() {}, onCrumbs() {}, onSelect() {},
-    })))
-  assert.ok(staying(null).includes('this conversation'))
-  assert.match(staying(null), /aria-pressed="true"[^>]*title="Hand over in place"/)
-  assert.match(staying({ address: room, path: ['Discord', '#general'] }), /aria-pressed="false"[^>]*title="Hand over in place"/)
-  assert.ok(staying(null).includes('1 surface<'))
 })
 
 test('a line is a command only while it can still name a gateway op', () => {

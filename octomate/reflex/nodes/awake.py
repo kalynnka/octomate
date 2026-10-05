@@ -27,7 +27,7 @@ from octomate.schemas.awakes import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
+from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import reflex_logfire
 
@@ -88,16 +88,11 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             ctx.state.handoff = PendingHandoff(
                 source_agent_tentacle_id=self.signal.agent_id
             )
-            if isinstance(decision, SchemeDecision):
-                return Scheme(
-                    request=decision,
-                    origin=source_target,
-                    agent_id=self.signal.agent_id,
-                )
-            ctx.state.decision = decision
-            ctx.state.target = source_target
-            ctx.state.run_name = "summon"
-            return Summon()
+            return Scheme(
+                request=decision,
+                origin=source_target,
+                agent_id=self.signal.agent_id,
+            )
 
         if not self.signal:
             reflex_logfire.info("awake short-circuit: empty signal")
@@ -212,7 +207,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 None,
             ),
         )
-        return Summon(require_new_thread=True)
+        return Summon()
 
 
 # `Summon` and `Scheme` share an import cycle with `react`, which closes it at its

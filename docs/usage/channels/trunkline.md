@@ -82,12 +82,11 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   A conversation about a project lands in a thread about the same project, in a
   workspace of its own that holds the work as it stood; a teleport never
   switches projects.
-  Summon uses your draft as the brief. Where an in-place handover is offered it
-  is the destination until you pick another: the destination browser then lists
-  "This conversation" first, and any other pick opens a thread there for the
-  next agent. A channel that runs no other agent is dimmed. Its
-  chip picks the agent and model from the destination channel's routes, and
-  sets effort on a scale that dims the levels the model does not take. The scale
+  Summon hands this conversation to another agent where it is, with your draft
+  as the brief; to continue elsewhere as well, teleport first. A native session
+  or a group's main channel cannot be summoned. Its chip picks the agent and
+  model from the routes this channel runs, and sets effort on a scale that dims
+  the levels the model does not take. The scale
   starts at the route's default effort where the agent reports one. Where it does
   not, the scale starts at Auto, which leaves the level to the agent.
   Run output streams into the message panel. After the server confirms arrival,
@@ -102,7 +101,7 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 
 Every Trunkline conversation is a private thread; there is no DM surface or
 nested sub-thread. It never needs profile linking: you are your signed-in account.
-Teleport and Summon can create a new Trunkline thread directly. Open Discord in
+Teleport can create a new Trunkline thread directly. Open Discord in
 the destination browser to list the servers you share with the bot, then the
 channels you can see in one. Selecting a text channel creates a private thread
 when this conversation is private and a public one otherwise; a forum channel
@@ -117,11 +116,11 @@ disabled: QQ has no threads, so nothing can land there.
 ### Thread operation API
 
 The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
-Teleport and Summon destination addresses, an optional `here` address for in-place
-Summon, and agent/model `routes` keyed by connected channel ID, plus reasons when
-unavailable. Summon's `routes` are the other agents each channel runs; Teleport's
-are the routes that keep the conversation's own agent, so a channel with none
-cannot take it. `source` is the conversation's own address, whose `shared` says
+Teleport destination addresses and agent/model `routes` keyed by connected channel
+ID, plus reasons when unavailable. Teleport's routes are the ones that keep the
+conversation's own agent, so a channel with none cannot take it. Summon hands the
+conversation over where it is: its `here` is this conversation's address and its
+`routes` the other agents this channel runs. `source` is the conversation's own address, whose `shared` says
 whether anyone besides you can read it, and `barred` names each connected channel
 nothing can land in, with why.
 The header uses this response to enable its choices and refreshes it when you
@@ -135,7 +134,8 @@ from its address by that channel: a Slack assistant pane, a thread in a Slack DM
 a Lark one-to-one topic and a Discord private thread are private and can
 teleport, while a public Discord thread and a thread in a Slack channel or Lark
 group are shared and cannot.
-Summon's reason is set only when no other agent is connected.
+Summon's reason is set for a native session, a group's main channel, or a
+channel that runs no other agent.
 
 `GET /api/trunkline/threads/{id}/channels/{channel}/addresses` lists one level of
 a connected channel's destinations, fetched when that level is opened. Each row
@@ -145,7 +145,7 @@ it holds. A row without it is an address a thread can land in, unless
 `metadata.barred` says why it cannot. Discord lists servers, then the channels
 you can see in one. A channel that cannot be browsed, has no connected agent, or
 is not linked to your account answers 409 with the reason. A listed address is a
-suggestion: it is validated again when Teleport or Summon submits it. The
+suggestion: it is validated again when Teleport submits it. The
 destination browser calls it once per level opened.
 
 `POST /api/trunkline/threads/{id}/teleport` accepts a `ChannelAddress` as
@@ -153,17 +153,17 @@ destination browser calls it once per level opened.
 optional `prompt`, which runs in the Trunkline thread it lands in, on the same
 stream; another destination refuses it. The thread it lands in is about the
 source's project, when the source has one.
-The console sends `new_thread=false` only for Summon's in-place handover, and a
-picked destination with no flag to open a thread there.
-`POST /api/trunkline/threads/{id}/summon` also requires an agent, model and
-brief (up to 8,000 characters). Both require access to the source thread and
+The console sends no `new_thread`: Teleport opens a thread at the destination
+picked. `POST /api/trunkline/threads/{id}/summon` takes an agent, model, brief (up
+to 8,000 characters) and hint, and hands the conversation over in place. Both
+require access to the source thread and
 refuse active gateway turns or pending approvals/questions. They stream native
 run events, ending with `gateway` and the destination address; execution
 failures appear as `run_error` events. Every run opens with a `custom` event
 named `run_started`, carrying the address of the thread it runs in. A message's stream, and the stream of
 an answered approval or question, also end with a `gateway` event when the agent
 moved the conversation to another thread during the turn; its `action` names the
-spell, `teleport`, `summon` or `scheme`.
+spell, `teleport` or `scheme`.
 
 Native Codex and Claude Code teleport imports the latest fully uploaded completed
 turn through the runtime's transcript fork, preserving its model and permissions.

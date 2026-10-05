@@ -704,17 +704,17 @@ export interface ThreadOperations {
 
 export interface TeleportBody {
   destination: ChannelAddress
-  /** false only for Summon's in-place handover, which names this conversation */
-  new_thread?: boolean
   hint: string
   /** sent to the Trunkline thread the move lands in, as your next message */
   prompt?: string
 }
 
-export interface SummonBody extends Omit<TeleportBody, 'prompt'> {
+/** Summon hands this conversation to another agent where it is. */
+export interface SummonBody {
   agent_id: string
   model: string
   brief: string
+  hint: string
   effort?: EffortStep | null
 }
 

@@ -51,7 +51,7 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         target = self.request.destination
         channel = ctx.deps.channel(target.channel_tentacle_id)
 
-        # The hint opens it, the way a summon's does the sub-thread it lands in: on a
+        # The hint opens it, the way a teleport's does the sub-thread it lands in: on a
         # channel that can only be run inside a thread it is the message that thread
         # hangs from, and it is written to be read. The brief is not — that goes to
         # whoever answers, as their prompt.
@@ -92,8 +92,6 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             action="summon",
             agent_id=resolved.agent,
             model=resolved.model,
-            destination=dm_address,
-            new_thread=False,
             reason="Continuing with this user privately.",
             hint=self.request.hint,
             summon=self.request.brief,
