@@ -46,6 +46,12 @@ HANDLED_HOOK_EVENTS: tuple[HandledHookEvent, ...] = (
 )
 
 
+# A native session's teleport names no session of its own, so Octomate's server
+# stamps it into the call's input: a `PreToolUse` registered for that one tool,
+# whatever name the server was installed under, so no other call pays for a hook.
+TELEPORT_TOOL_MATCHER = "mcp__.*__gateway_teleport"
+
+
 # Bound so a wedged or slow Octomate can never freeze someone's Claude session: past
 # this the CLI abandons the hook and carries on.
 HOOK_TIMEOUT = 10
@@ -191,12 +197,18 @@ def install(
             hooks.setdefault(event, []).append(group)
         if event == "UserPromptSubmit":
             hooks[event].append(launcher_group)
+    hooks.setdefault("PreToolUse", []).append(
+        HookGroup.model_validate(
+            {"matcher": TELEPORT_TOOL_MATCHER, "hooks": [claude_emit_handler(url)]}
+        )
+    )
     document.hooks = hooks
     document.write(path)
 
     target = url if url is not None else f"${CLISettings.env('url')} at fire time"
     typer.echo(f"Installed Octomate hooks → {target}")
     typer.echo(f"  events:   {', '.join(HANDLED_HOOK_EVENTS)}")
+    typer.echo(f"  teleport: PreToolUse on {TELEPORT_TOOL_MATCHER}")
     stream = (
         stream_url_for(url)
         if url is not None

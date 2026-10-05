@@ -79,7 +79,7 @@ agent and the CLI inside WSL.
    arrived and the tail did not.
 2. In the runtime's MCP UI, confirm the `octomate` server is connected. `mcp show`
    checks the file, not the connection.
-3. Ask the agent to call `gateway_scry` with `reveal: "routes"`. It is read-only and
+3. Ask the agent to call `gateway_inspect` with `reveal: "routes"`. It is read-only and
    returns the routes your account can reach.
 
 ## Rotate, move, or remove

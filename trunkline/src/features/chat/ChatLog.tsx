@@ -93,8 +93,8 @@ export function ChatLog() {
         {live.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
         ))}
-        {notices.map((text, i) => (
-          <LedgerRow key={`nt${i}`} item={{ kind: 'notice', uid: `nt${i}`, text }} cardMax={CARD_MAX} />
+        {notices.map((item) => (
+          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
         ))}
       </div>
     </div>

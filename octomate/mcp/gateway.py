@@ -22,31 +22,28 @@ from typing import TYPE_CHECKING, Annotated
 
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
-from fastmcp.server.dependencies import get_access_token, get_http_headers
-from pydantic import Field
+from fastmcp.server.dependencies import (
+    get_access_token,
+    get_context,
+    get_http_headers,
+)
+from octomate_protocol.gateway import GatewayTool
+from pydantic import Field, TypeAdapter
 from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
-from octomate.schemas.awakes import GatewayHandoffSignal
-from octomate.schemas.messages import SEND_TOOL_NAME
+from octomate.schemas.awakes import NativeGatewaySignal
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.triage import (
     DIRECT_TARGET,
-    DISPEL_TOOL_NAME,
     HERE_TARGET,
-    SCHEME_TOOL_NAME,
-    SCRY_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    THREAD_TARGET,
+    InspectFacet,
     SchemeTarget,
-    ScryFacet,
     SendTarget,
-    SummonTarget,
-    TeleportTarget,
 )
 from octomate.types.threads import NATIVE_TENTACLE_IDS
 
@@ -55,22 +52,17 @@ if TYPE_CHECKING:
     # module's servers); the resolver only needs the host's type here.
     from octomate.base import Octomate
 
-# The spells the gateway offers, in the order it registers them. `commission` and
-# `whisper` are deliberately absent: external runtimes bring their own subagents.
-GATEWAY_SPELLS: tuple[str, ...] = (
-    SCRY_TOOL_NAME,
-    SUMMON_TOOL_NAME,
-    TELEPORT_TOOL_NAME,
-    SCHEME_TOOL_NAME,
-    SEND_TOOL_NAME,
-    DISPEL_TOOL_NAME,
-)
-
 # What a runtime a tool result cannot suspend is told: the decision is recorded, its
 # turn is interrupted on it, and the graph performs the move and resumes it there.
 TELEPORT_RECORDED = (
     "Teleporting — this turn ends here; you continue over there, with your context "
     "intact."
+)
+# What a native session is told: it approved the call itself, so the move goes
+# ahead, carrying its history to a driven session there; this one stays as it is.
+NATIVE_TELEPORT_STARTED = (
+    "Teleporting — this conversation continues at the destination, its history "
+    "with it, in a session Octomate runs there. This session stays as it is."
 )
 
 # The header a served call names its turn's conversation with. It comes from a
@@ -204,11 +196,20 @@ async def native_session(
     )
 
 
+def caller_thread() -> str | None:
+    """The native session a call came from, where its runtime says so itself:
+    Codex names its thread in every call's `_meta`."""
+    request = get_context().request_context
+    meta = request.meta if request is not None else None
+    thread_id = (meta or {}).get("threadId")
+    return thread_id if isinstance(thread_id, str) and thread_id else None
+
+
 def mount_gateway(
     mcp: FastMCP,
     octomate_session: OctomateSession,
     thread_manager: ThreadManager,
-    kick: Callable[[GatewayHandoffSignal], None] | None = None,
+    kick: Callable[[NativeGatewaySignal], None] | None = None,
 ) -> None:
     """Register the gateway's spells on `mcp`.
 
@@ -216,70 +217,104 @@ def mount_gateway(
     through — `Depends(...)` of a fixed session for a server mounted in-process for
     one turn, of a per-request lookup for a server that answers over HTTP.
     `thread_manager` is the ledger a delivering spell writes through. `kick` is how
-    a native session's summon or scheme becomes its own turn at once, so only the
+    a native session's teleport or scheme becomes its own turn at once, so only the
     served mount — the one place a native session can arrive — needs one.
     """
 
     @mcp.tool(
-        name=SCRY_TOOL_NAME, description=capability_contract(GatewayCapability.scry)
+        name=GatewayTool.INSPECT,
+        description=capability_contract(GatewayCapability.inspect),
+        annotations={"readOnlyHint": True},
     )
     @spoken
-    async def scry(
-        reveal: ScryFacet, session: OctomateSession = octomate_session
+    async def inspect(
+        reveal: InspectFacet,
+        channel: str | None = None,
+        inside: str | None = None,
+        session: OctomateSession = octomate_session,
     ) -> str:
+        if reveal == "destinations":
+            addresses = await session.inspect("destinations", channel, inside)
+            return (
+                TypeAdapter(list[ChannelAddress]).dump_json(addresses).decode()
+                if addresses
+                else "- (none)"
+            )
         # Lines, never the list: FastMCP renders an empty list as no content at all.
-        return "\n".join(str(one) for one in await session.scry(reveal)) or "- (none)"
+        return (
+            "\n".join(
+                str(one) for one in await session.inspect(reveal, channel, inside)
+            )
+            or "- (none)"
+        )
 
     @mcp.tool(
-        name=SUMMON_TOOL_NAME, description=capability_contract(GatewayCapability.summon)
+        name=GatewayTool.SUMMON,
+        description=capability_contract(GatewayCapability.summon),
     )
     @spoken
     async def summon(
         agent_id: str,
         model: str,
-        destination: SummonTarget,
         hint: str,
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
         effort: ThinkingEffort | None = None,
         session: OctomateSession = octomate_session,
     ) -> str:
-        sentence = await session.summon(
+        return await session.summon(
             agent_id=agent_id,
             model=model,
-            destination=destination,
             hint=hint,
             reason=reason,
             summon=summon,
             effort=effort,
         )
-        if session.native:
-            if kick is None:
-                raise RuntimeError(
-                    "a native session reached a gateway mounted without a kick"
-                )
-            kick(session.native_handoff())
-        return sentence
 
     @mcp.tool(
-        name=TELEPORT_TOOL_NAME,
+        name=GatewayTool.TELEPORT,
         description=capability_contract(GatewayCapability.teleport),
     )
     @spoken
     async def teleport(
         hint: str,
-        destination: TeleportTarget = THREAD_TARGET,
+        destination: ChannelAddress | None = None,
         project: str | None = None,
         ref: str | None = None,
+        new_thread: bool = True,
+        resume: bool = False,
+        session_id: Annotated[
+            str | None,
+            Field(
+                description="Filled in by Octomate's own hook for a session you "
+                "were not started by Octomate in; leave it out."
+            ),
+        ] = None,
         session: OctomateSession = octomate_session,
     ) -> str:
+        native_session_id = (session_id or caller_thread()) if session.native else None
+        if native_session_id is not None:
+            await session.attach_native_thread(native_session_id)
         await session.teleport(
-            hint=hint, destination=destination, project=project, ref=ref
+            hint=hint,
+            destination=destination,
+            new_thread=new_thread,
+            project=project,
+            ref=ref,
+            resume=resume,
         )
-        return TELEPORT_RECORDED
+        if not session.native:
+            return TELEPORT_RECORDED
+        if kick is None:
+            raise RuntimeError(
+                "a native session reached a gateway mounted without a kick"
+            )
+        kick(session.native_handoff())
+        return NATIVE_TELEPORT_STARTED
 
     @mcp.tool(
-        name=SCHEME_TOOL_NAME, description=capability_contract(GatewayCapability.scheme)
+        name=GatewayTool.SCHEME,
+        description=capability_contract(GatewayCapability.scheme),
     )
     @spoken
     async def scheme(
@@ -298,7 +333,7 @@ def mount_gateway(
         return sentence
 
     @mcp.tool(
-        name=SEND_TOOL_NAME, description=capability_contract(GatewayCapability.send)
+        name=GatewayTool.SEND, description=capability_contract(GatewayCapability.send)
     )
     @spoken
     async def send(
@@ -314,7 +349,7 @@ def mount_gateway(
         if target is None:
             raise GatewayRefusal(
                 "This session has no conversation of its own to land a send on — "
-                f'name a destination from `{SCRY_TOOL_NAME}` (`reveal="destinations"`).'
+                'use a destination with kind="dm" and an explicit connected channel ID.'
             )
         notice = "sent"
         if address is not None:
@@ -346,8 +381,9 @@ def mount_gateway(
         return notice
 
     @mcp.tool(
-        name=DISPEL_TOOL_NAME, description=capability_contract(GatewayCapability.dispel)
+        name=GatewayTool.DISMISS,
+        description=capability_contract(GatewayCapability.dismiss),
     )
     @spoken
-    async def dispel(session: OctomateSession = octomate_session) -> str:
-        return await session.dispel()
+    async def dismiss(session: OctomateSession = octomate_session) -> str:
+        return await session.dismiss()

@@ -122,6 +122,21 @@ export interface AskOption {
   desc: string
 }
 
+/** A question's answer: the text typed or the one option picked, or a
+ *  multi-select question's picks. */
+export type AskAnswer = string | string[]
+
+/** One question of a batch, and its answer once the batch is answered. */
+export interface AskQuestion {
+  body: string
+  options: AskOption[]
+  /** several options may be picked together */
+  multiSelect: boolean
+  answer?: AskAnswer
+  /** live deferred-action id; present when the card answers a real batch */
+  actionId?: string
+}
+
 export type LedgerItem =
   | { kind: 'divider'; uid: string; label: string }
   | { kind: 'system'; uid: string; text: string }
@@ -175,19 +190,17 @@ export type LedgerItem =
       kind: 'ask'
       uid: string
       title: string
-      body: string
-      options: AskOption[]
+      /** one batch's questions, in order; answered and sent together */
+      questions: AskQuestion[]
       /** the tool that asked */
       tool: string
       /** e.g. "ask_human · answer resumes the run" */
       meta: string
       state: 'waiting' | 'answered'
-      answer?: string
       via?: string
       resolvedT?: string
-      /** live deferred-action ids; present when the card answers a real batch */
+      /** live deferred-action batch; present when the card answers a real batch */
       batchId?: string
-      actionId?: string
     }
   | {
       kind: 'oauth'
@@ -203,7 +216,7 @@ export type LedgerItem =
   | { kind: 'dots'; uid: string; label: string }
   | { kind: 'stream'; uid: string; text: string; streaming: boolean }
   | { kind: 'end'; uid: string; label: string }
-  | { kind: 'notice'; uid: string; text: string }
+  | { kind: 'notice'; uid: string; text: string; tone?: 'error' | 'warning' | 'info' }
 
 /** `Omit<LedgerItem, 'uid'>` distributed over the union, so a draft keeps its
  * per-kind shape (plain Omit would collapse to the common keys only). */
@@ -295,13 +308,6 @@ export interface VsCodeTarget {
   folder: string
   /** reopens the native session in its own extension, when the thread is one */
   session?: string
-}
-
-export interface SurfaceInfo {
-  id: ChannelId
-  label: string
-  sub: string
-  brand: string
 }
 
 export interface ThreadDetail {

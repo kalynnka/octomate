@@ -19,9 +19,11 @@ import types
 from dataclasses import dataclass
 from io import TextIOBase
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import Literal, cast
 from uuid import uuid4
 
+import anyio
+from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -38,33 +40,30 @@ octomate_package.__path__ = [str(REPO_ROOT / "octomate")]
 sys.modules.setdefault("octomate", octomate_package)
 
 from pydantic_ai.tools import DeferredToolRequests
-from pydantic_ai.toolsets import AbstractToolset
 
 from octomate.base import Octomate
-from octomate.capabilities.ask import AskCapability
+from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME, AskCapability
 from octomate.capabilities.gateway import (
     GatewayCapability,
 )
 from octomate.capabilities.harness.agent import Agent
 from octomate.capabilities.todos import TodoCapability
-from octomate.config import OctomateConfig
+from octomate.config import OctomateConfig, SlackChannelConfig
 from octomate.config.agents import AgentRouteModelName
+from octomate.config.agents.inkling import InklingConfig
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.messages import SEND_TOOL_NAME
 from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
-    SCHEME_TOOL_NAME,
     AgentRoute,
     Claim,
 )
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelTentacle
-from octomate.tentacles.inkling import build_mcp_toolsets
 from octomate.tentacles.inkling.base import (
     InklingOutput,
     InklingTentacle,
@@ -86,8 +85,8 @@ SEGMENTS_PROMPT = (
     "Keep the message concise and do not ask questions."
 )
 SUBAGENTS_PROMPT = (
-    "This is a subagent capture test. First call scry. Then, in one assistant "
-    "turn, call commission twice using the route scry returns. Name the accomplices "
+    "This is a subagent capture test. First call inspect. Then, in one assistant "
+    "turn, call commission twice using the route inspect returns. Name the accomplices "
     "timeline-contract and failure-review. Ask timeline-contract for three "
     "invariants of an independent subagent activity timeline. Ask failure-review "
     "for three failure cases whose partial report should remain reviewable. After "
@@ -103,10 +102,16 @@ SCHEME_PROMPT = (
     "I want to go over my own performance review with you, line by line. Not in "
     "front of the channel — take this somewhere private and we will continue there."
 )
+QUESTIONS_PROMPT = (
+    "I am about to cut a release. Before you do anything, ask me two questions in "
+    "one batch: which checks to run first — lint, type check, unit tests, docs "
+    "build — where I may pick several together, and which environment to deploy "
+    "to, staging or production, where I pick one. Do not answer them for me."
+)
 DEFAULT_OUTPUT_DIR = Path("tests/src/events")
 DEFAULT_IMAGE = Path("tests/src/images/usagi.jpg")
-RawCapturedEvent: TypeAlias = AgentStreamEvent | AgentRunResultEvent[InklingOutput]
-Expectation: TypeAlias = Literal["plain_text", "segments_with_image", "private"]
+type RawCapturedEvent = AgentStreamEvent | AgentRunResultEvent[InklingOutput]
+type Expectation = Literal["plain_text", "segments_with_image", "private", "questions"]
 
 
 @dataclass(frozen=True)
@@ -172,9 +177,10 @@ def parser() -> argparse.ArgumentParser:
         "`send` with destination=dm, one `scheme`.",
     )
     parser.add_argument(
-        "--mcp",
+        "--questions",
         action="store_true",
-        help="Attach the operator MCP toolsets configured under `mcp`.",
+        help="Capture one real run that ends asking a multi-select and a "
+        "single-pick question in one batch.",
     )
     parser.add_argument(
         "--run-name",
@@ -207,7 +213,6 @@ async def capture(
     chat_id: str,
     user_id: str,
     channel_thread_id: str,
-    with_mcp: bool = False,
 ) -> dict[str, int]:
     config = OctomateConfig()
     conversations = ConversationManager()
@@ -216,16 +221,15 @@ async def capture(
     host = Octomate(conversations=conversations)
     threads = host.thread_manager
     registry = ProviderRegistry(config.providers)
-    toolsets: list[AbstractToolset[None]] = []
-    if with_mcp:
-        toolsets = build_mcp_toolsets(config.mcp)
-    model_config = config.agents.inkling.default_model
+    inkling = config.tentacles.get("inkling")
+    if not isinstance(inkling, InklingConfig):
+        raise RuntimeError("a capture needs the inkling tentacle configured")
+    model_config = inkling.default_model
     agent: Agent[None, InklingOutput] = Agent(
         registry.build_model(model_config),
         deps_type=type(None),
         name="octomate-inkling",
         output_type=[str, list[MessageSegment], DeferredToolRequests],
-        toolsets=toolsets,
         capabilities=[AskCapability(), TodoCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
@@ -233,9 +237,10 @@ async def capture(
     # it, which is a ClassVar, so nothing here opens a connection.
     dm_channel: ChannelTentacle | None = None
     if any(case.private for case in cases):
-        if config.channels.slack is None:
+        slack = config.tentacles.get("slack")
+        if not isinstance(slack, SlackChannelConfig):
             raise RuntimeError("a private-routing capture needs the slack channel")
-        dm_channel = SlackTentacle("slack", host, config=config.channels.slack)
+        dm_channel = SlackTentacle("slack", host, config=slack)
     accomplice: InklingTentacle | None = None
     if any(case.subagents for case in cases):
         accomplice = InklingTentacle(
@@ -245,7 +250,7 @@ async def capture(
             conversation_manager=conversations,
         )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    await anyio.Path(output_dir).mkdir(parents=True, exist_ok=True)
     case_counts: dict[str, int] = {}
     with sqlalchemy_materia():
         for case in cases:
@@ -305,16 +310,20 @@ async def capture_case(
     if case.private and dm_channel is not None:
         capabilities.append(
             GatewayCapability(
-                routes=[
-                    AgentRoute(
-                        agent_id="claude",
-                        model=subagent_model,
-                        claim=Claim(ability="coding work in a real repository"),
-                    )
-                ],
-                current_agent_id="inkling",
-                channels={dm_channel.id: dm_channel},
-                conversation_address=address,
+                session=OctomateSession(
+                    channel_routes={
+                        address.channel_tentacle_id: [
+                            AgentRoute(
+                                agent_id="claude",
+                                model=subagent_model,
+                                claim=Claim(ability="coding work in a real repository"),
+                            )
+                        ]
+                    },
+                    current_agent_id="inkling",
+                    channels={dm_channel.id: dm_channel},
+                    conversation_address=address,
+                )
             )
         )
     if case.subagents:
@@ -323,18 +332,24 @@ async def capture_case(
         agents: dict[str, AgentTentacle] = {accomplice.id: accomplice}
         capabilities.append(
             GatewayCapability(
-                routes=[
-                    AgentRoute(
-                        agent_id=accomplice.id,
-                        model=subagent_model,
-                        claim=Claim(ability="independent analysis for capture tests"),
-                    )
-                ],
-                current_agent_id="inkling",
-                agents=agents,
+                session=OctomateSession(
+                    channel_routes={
+                        address.channel_tentacle_id: [
+                            AgentRoute(
+                                agent_id=accomplice.id,
+                                model=subagent_model,
+                                claim=Claim(
+                                    ability="independent analysis for capture tests"
+                                ),
+                            )
+                        ]
+                    },
+                    current_agent_id="inkling",
+                    agents=agents,
+                    thread_id=thread.id,
+                    conversation_address=address,
+                ),
                 conversations=conversations,
-                thread_id=thread.id,
-                conversation_address=address,
             )
         )
     commission_calls = 0
@@ -356,19 +371,32 @@ async def capture_case(
                             called_tools.add(event.part.tool_name)
                         if (
                             isinstance(event, FunctionToolCallEvent)
-                            and event.part.tool_name == COMMISSION_TOOL_NAME
+                            and event.part.tool_name == GatewayTool.COMMISSION
                         ):
                             commission_calls += 1
                         elif (
                             isinstance(event, FunctionToolResultEvent)
-                            and event.part.tool_name == COMMISSION_TOOL_NAME
+                            and event.part.tool_name == GatewayTool.COMMISSION
                         ):
                             commission_results += 1
         if run.result is None:
             raise RuntimeError(f"{case.name} capture completed without a run result")
 
         output = run.result.output
-        if case.expectation in ("plain_text", "private"):
+        if case.expectation == "questions":
+            asked = [
+                question
+                for call in (
+                    output.calls if isinstance(output, DeferredToolRequests) else []
+                )
+                if call.tool_name == ASK_QUESTIONS_TOOL_NAME
+                for question in call.args_as_dict().get("questions", [])
+            ]
+            if not any(question.get("multi_select") for question in asked):
+                raise RuntimeError(
+                    f"{case.name} expected a multi-select question, got {output!r}"
+                )
+        elif case.expectation in ("plain_text", "private"):
             if not isinstance(output, str):
                 raise RuntimeError(
                     f"{case.name} expected str output, got {type(output)}"
@@ -423,7 +451,7 @@ def main() -> None:
                 output_type=str,
                 expectation="private",
                 private=True,
-                expect_tool=SEND_TOOL_NAME,
+                expect_tool=GatewayTool.SEND,
             ),
             CaptureCase(
                 name="scheme",
@@ -432,8 +460,18 @@ def main() -> None:
                 output_type=str,
                 expectation="private",
                 private=True,
-                expect_tool=SCHEME_TOOL_NAME,
+                expect_tool=GatewayTool.SCHEME,
             ),
+        ]
+    elif args.questions:
+        cases = [
+            CaptureCase(
+                name="questions",
+                file_name=args.file_name or "inkling_questions.jsonl",
+                prompt=args.prompt or QUESTIONS_PROMPT,
+                output_type=[str, DeferredToolRequests],
+                expectation="questions",
+            )
         ]
     elif args.subagents:
         cases = [
@@ -484,7 +522,6 @@ def main() -> None:
             chat_id=args.chat_id,
             user_id=args.user_id,
             channel_thread_id=args.channel_thread_id,
-            with_mcp=args.mcp,
         )
     )
     total = sum(case_counts.values())

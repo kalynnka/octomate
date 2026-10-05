@@ -13,8 +13,9 @@ octomate claude mcp show
 
 The hooks installer merges Octomate's handlers into `~/.claude/settings.json`, keeping
 every other hook. It registers `UserPromptSubmit`, `Stop`, `SessionEnd`,
-`SubagentStart` and `SubagentStop`, and adds the transcript launcher to
-`UserPromptSubmit`. `SessionStart` is deliberately absent: the first prompt starts
+`SubagentStart` and `SubagentStop`, adds the transcript launcher to
+`UserPromptSubmit`, and adds a `PreToolUse` handler matched to the gateway's
+teleport alone, which lets a session teleport itself. `SessionStart` is deliberately absent: the first prompt starts
 the session, so a handler there would spawn a process for nothing. Re-running
 replaces a stale Octomate handler in place. Restart Claude Code so it reads the file.
 

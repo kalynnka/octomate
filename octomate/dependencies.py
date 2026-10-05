@@ -7,6 +7,7 @@ from octomate.base import Octomate
 from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.files import FileManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
@@ -34,6 +35,10 @@ def auth_manager(app: Annotated[Octomate, Depends(application)]) -> AuthManager:
 
 def thread_manager(app: Annotated[Octomate, Depends(application)]) -> ThreadManager:
     return app.thread_manager
+
+
+def file_manager(app: Annotated[Octomate, Depends(application)]) -> FileManager:
+    return app.files
 
 
 def oauth_manager(app: Annotated[Octomate, Depends(application)]) -> OAuthManager:

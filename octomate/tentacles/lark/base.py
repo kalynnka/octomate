@@ -46,8 +46,7 @@ from octomate.tentacles.lark.feelers.output import (
 )
 from octomate.tentacles.lark.feelers.questions import (
     LarkAskQuestionFeeler,
-    ask_question_card_data,
-    collect_answer,
+    collect_answers,
     submitted_card_data,
 )
 from octomate.tentacles.lark.ink import LarkInk
@@ -67,7 +66,7 @@ LarkQuestionActionValueAdapter = TypeAdapter(LarkQuestionActionValue)
 LarkQuestionFormValueAdapter = TypeAdapter(LarkQuestionFormValue)
 
 
-def log_card_action_result(channel_id: str, task: asyncio.Task[None]) -> None:
+def log_card_action_result[T](channel_id: str, task: asyncio.Task[T]) -> None:
     if task.cancelled():
         return
     error = task.exception()
@@ -177,6 +176,11 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         await self.ws_client._disconnect()  # type: ignore[attr-defined]
         await super().__aexit__(*exc)
 
+    def is_shared(self, address: ChannelAddress) -> bool:
+        """A one-to-one chat is keyed on the person's open id, `ou_…`, and a topic
+        in one keeps it; a group's chat id is `oc_…`."""
+        return not address.chat_id.startswith("ou_")
+
     async def start_sub_thread(
         self,
         address: ChannelAddress,
@@ -266,12 +270,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 }
             )
 
-        if action in {
-            LarkCardAction.ASK_QUESTION_BACK,
-            LarkCardAction.ASK_QUESTION_NEXT,
-            LarkCardAction.ASK_QUESTION_SUBMIT,
-            LarkCardAction.ASK_QUESTION_CHOICE,
-        }:
+        if action == LarkCardAction.ASK_QUESTION_SUBMIT:
             try:
                 action_value = LarkQuestionActionValueAdapter.validate_python(value)
                 form_value = LarkQuestionFormValueAdapter.validate_python(
@@ -280,75 +279,26 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             except ValidationError:
                 return P2CardActionTriggerResponse({})
             question_actions = action_value["questions"]
-            page = action_value["page"]
-            last_page = len(question_actions) - 1
-            submit = False
-            if action == LarkCardAction.ASK_QUESTION_CHOICE:
-                answers = dict(action_value["answers"])
-                if 0 <= page <= last_page:
-                    answers[question_actions[page].id] = str(
-                        action_value.get("choice") or ""
-                    )
-                # Picking a choice acts like a radio: record and advance to the
-                # next question, or submit when it was the last one.
-                if page < last_page:
-                    page += 1
-                else:
-                    submit = True
-            else:
-                answers = collect_answer(
-                    question_actions,
-                    page,
-                    form_value,
-                    action_value["answers"],
-                )
-                if action == LarkCardAction.ASK_QUESTION_BACK:
-                    page -= 1
-                elif action == LarkCardAction.ASK_QUESTION_NEXT:
-                    page += 1
-                else:
-                    submit = True
-            if submit:
-                task = asyncio.create_task(
-                    self.octomate.kick(
-                        DeferredActionBatchResponse(
-                            batch_id=action_value["batch_id"],
-                            responder_id=responder_id,
-                            answers={
-                                question.id: str(answers.get(question.id, ""))
-                                for question in question_actions
-                            },
-                        )
+            answers = collect_answers(question_actions, form_value)
+            task = asyncio.create_task(
+                self.octomate.kick(
+                    DeferredActionBatchResponse(
+                        batch_id=action_value["batch_id"],
+                        responder_id=responder_id,
+                        answers={
+                            question.id: answers.get(question.id, "")
+                            for question in question_actions
+                        },
                     )
                 )
-                task.add_done_callback(
-                    lambda task: log_card_action_result(self.id, task)
-                )
-                return P2CardActionTriggerResponse(
-                    {
-                        "toast": {
-                            "type": "success",
-                            "content": "Answers submitted",
-                        },
-                        "card": {
-                            "type": "raw",
-                            "data": submitted_card_data(
-                                question_actions,
-                                answers,
-                            ),
-                        },
-                    }
-                )
+            )
+            task.add_done_callback(lambda task: log_card_action_result(self.id, task))
             return P2CardActionTriggerResponse(
                 {
-                    "toast": {"type": "success", "content": "Received"},
+                    "toast": {"type": "success", "content": "Answers submitted"},
                     "card": {
                         "type": "raw",
-                        "data": ask_question_card_data(
-                            actions=question_actions,
-                            page=page,
-                            answers=answers,
-                        ),
+                        "data": submitted_card_data(question_actions, answers),
                     },
                 }
             )

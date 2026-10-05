@@ -36,6 +36,7 @@ from tests.channels.discord.fakes import (
         (a_dm_channel(300), "dm", "300", None, False),
         (a_text_channel(400), "group", "400", None, True),
         (a_thread(500, parent_id=400), "thread", "400", "500", True),
+        (a_thread(501, parent_id=400, private=True), "thread", "400", "501", False),
     ],
 )
 async def test_discord_chromo_maps_supported_surfaces(

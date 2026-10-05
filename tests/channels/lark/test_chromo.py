@@ -7,6 +7,7 @@ import json
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from pydantic import TypeAdapter
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtSegment,
     ImageSegment,
@@ -15,6 +16,7 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.lark import LarkChromo
 from octomate.types.json import JsonObject
+from tests.channels.lark.fakes import FakeLarkInk, lark_channel
 
 JsonObjectAdapter = TypeAdapter(JsonObject)
 
@@ -154,6 +156,10 @@ async def test_lark_chromo_keeps_a_p2p_topic_private() -> None:
     assert event.chat_type == "thread"
     assert event.shared is False
     assert event.chat_id == "ou_private"
+    # A thread's row has only its address, and the channel reads the same off it.
+    assert not lark_channel(FakeLarkInk()).is_shared(
+        ChannelAddress("lark", "thread", event.chat_id, "ou_private", "om_root")
+    )
 
 
 async def test_lark_chromo_marks_a_group_topic_shared() -> None:
@@ -172,6 +178,9 @@ async def test_lark_chromo_marks_a_group_topic_shared() -> None:
     assert event is not None
     assert event.chat_type == "thread"
     assert event.shared is True
+    assert lark_channel(FakeLarkInk()).is_shared(
+        ChannelAddress("lark", "thread", event.chat_id, event.user_id, "om_root")
+    )
 
 
 async def test_lark_chromo_dates_the_message_by_larks_clock() -> None:

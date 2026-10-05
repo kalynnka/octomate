@@ -7,17 +7,20 @@ without importing its siblings.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, TypeVar, overload
 
+from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode
 
+from octomate.capabilities.harness.events import GatewayEvent, RunErrorEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
@@ -42,6 +45,9 @@ from octomate.tentacles.channel import (
     ChannelTentacle,
     ThreadStrategy,
 )
+from octomate.tentacles.feelers.output import IMMessageID
+
+logger = logging.getLogger(__name__)
 
 # Inside the marking, where an editor puts its own: the tag says this is not the
 # ask, and the sentence says why — an agent that answers the recap replies to what
@@ -76,7 +82,7 @@ class ResponseTarget:
 class PendingHandoff:
     """A handoff one node decided, as far as it is known before it lands: the source
     side. The target is what landing resolves — the decision's route, as the agent
-    is actually mounted — so React reads it there when it records the row, and
+    is actually mounted — so it is read there when the row is recorded, and
     nothing here could name it without risking a second, drifting copy.
 
     The source is who handed the conversation over, and where from as the row names
@@ -90,6 +96,38 @@ class PendingHandoff:
     source_conversation_id: UUID7 | None = None
     source_run_id: str | None = None
     source_model_message_id: UUID7 | None = None
+
+    async def land(
+        self, deps: ReflexDeps, thread: Thread, decision: SummonDecision
+    ) -> None:
+        """Record this handoff on the chat `thread` belongs to, naming the agent
+        and model `decision` resolved to, unless that chat already names them."""
+        target_conversation = await deps.conversation_manager.ensure(
+            thread.id, agent_tentacle_id=decision.agent_id, with_history=False
+        )
+        # A handoff pins who owns the chat, so it is read and written there: a
+        # chat room's sub-thread is new every kick and would forget the owner.
+        chat = await deps.thread_manager.surface(thread)
+        latest = chat.latest_handoff
+        if (
+            latest is not None
+            and latest.to_agent_tentacle_id == decision.agent_id
+            and latest.to_model == decision.model
+        ):
+            return
+        await deps.thread_manager.record_handoff(
+            chat,
+            source_agent_tentacle_id=self.source_agent_tentacle_id,
+            to_agent_tentacle_id=decision.agent_id,
+            to_model=decision.model,
+            reason=decision.reason,
+            hint=decision.hint,
+            brief=decision.summon,
+            source_conversation_id=self.source_conversation_id,
+            target_conversation_id=target_conversation.id,
+            source_run_id=self.source_run_id,
+            source_model_message_id=self.source_model_message_id,
+        )
 
 
 @dataclass
@@ -119,7 +157,8 @@ class DeferredResult:
 type ReflexGraphResult = ReflexResult | DeferredResult
 # The node a reflex graph is entered at — see `build_reflex_graph`.
 ReflexEntryT = TypeVar(
-    "ReflexEntryT", bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]"
+    "ReflexEntryT",
+    bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]",
 )
 
 
@@ -146,6 +185,9 @@ class ReflexState:
     handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
+    # The channel an operation on another channel's thread was performed in, which
+    # hears how the turn goes; None when the turn came from the source's channel.
+    operated_from: str | None = None
 
 
 @dataclass
@@ -256,18 +298,10 @@ class ReflexDeps:
             raise ValueError(f"agent {agent_id!r} has no available model catalog")
         if model is None:
             return AgentModelConfig(agent=agent_id, model=agent.default_model)
-        if model in agent.models:
-            return AgentModelConfig(agent=agent_id, model=model)
-
-        # Saved handoffs may omit the provider; only an unambiguous match is valid.
-        if model and ":" not in model:
-            matches = [name for name in agent.models if name.partition(":")[2] == model]
-            if len(matches) == 1:
-                return AgentModelConfig(agent=agent_id, model=matches[0])
-
-        raise ValueError(
-            f"agent {agent_id!r} does not serve model {model!r} with an unambiguous provider"
-        )
+        served = agent.served_model(model)
+        if served is None:
+            raise ValueError(f"agent {agent_id!r} does not serve model {model!r}")
+        return AgentModelConfig(agent=agent_id, model=served)
 
     async def render_chat(
         self, messages: list[ThreadMessage], *, ceiling: int = 0
@@ -310,6 +344,39 @@ class ReflexDeps:
             )
             parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
         return "\n\n".join(parts)
+
+    async def announce(
+        self, state: ReflexState, address: ChannelAddress, event: GatewayEvent
+    ) -> IMMessageID | None:
+        """Present a move where the conversation was, and in the channel it was
+        operated from when that is another. Answers the platform id of the line it
+        left."""
+        operated_from = state.operated_from
+        if operated_from is not None and operated_from != address.channel_tentacle_id:
+            await self.channel(operated_from).feelers.present(address, event)
+        # A native session's pseudo-channel has no feelers.
+        channel = self.channels.get(address.channel_tentacle_id)
+        return await channel.feelers.present(address, event) if channel else None
+
+    async def report(self, state: ReflexState, error: Exception) -> None:
+        """Tell the channel the turn came from, or the one it was operated from,
+        that it failed. A turn that failed before it knew its source has nobody to
+        tell."""
+        source = state.source_target.address if state.source_target else None
+        if source is None:
+            return
+        channel = self.channels.get(state.operated_from or source.channel_tentacle_id)
+        if channel is None:
+            return
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        try:
+            await channel.feelers.present(
+                source, RunErrorEvent(message=str(error), trace_id=trace_id)
+            )
+        except Exception:
+            logger.warning(
+                "Channel %s could not report a failed turn", channel.id, exc_info=True
+            )
 
     async def record_move(
         self,

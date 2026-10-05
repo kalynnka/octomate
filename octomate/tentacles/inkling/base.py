@@ -187,6 +187,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     def default_permission_mode(self) -> str | None:
         return self.permission_mode
 
+    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> None:
+        """Inkling resumes the copied Octomate history without an external session."""
+        if conversation.external_id is not None:
+            raise ValueError("Inkling conversations cannot have an external session id")
+
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "
         "coordinating multi-step work."
@@ -812,6 +817,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             # or nothing, since inkling has no configured directory to fall back to.
             cwd=workspace,
             model=model,
+            permission_mode=self.permission_mode,
             instructions=instructions,
             model_settings=model_settings,
             usage_limits=usage_limits or UsageLimits(request_limit=self.request_limit),

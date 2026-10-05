@@ -6,9 +6,10 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, TypeAdapter
+from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, TypeAdapter
 
 from octomate.types.json import JsonObject
+from octomate.types.permissions import CodexPermissionMode
 
 # Codex's own tree (`CODEX_HOME` relocates it): a workspace root under it is the
 # runtime's per-session storage, never a project.
@@ -81,6 +82,49 @@ class SessionMetadata(BaseModel):
 
 
 session_metadata_adapter = TypeAdapter(SessionMetadata)
+
+
+class WorkspaceWritePolicy(BaseModel):
+    """The workspace sandbox representable by Octomate's review presets."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["workspace-write"]
+    writable_roots: list[str] = Field(default_factory=list, max_length=0)
+    network_access: Literal[False] = False
+    exclude_tmpdir_env_var: Literal[False] = False
+    exclude_slash_tmp: Literal[False] = False
+
+
+class FullAccessPolicy(BaseModel):
+    """The unrestricted sandbox used by the full-access preset."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["danger-full-access"]
+
+
+class TurnPermissions(BaseModel):
+    """Permissions recorded in a native rollout's turn_context payload."""
+
+    approval_policy: Literal["on-request", "never"]
+    approvals_reviewer: Literal["user", "auto_review"] = "user"
+    sandbox_policy: WorkspaceWritePolicy | FullAccessPolicy = Field(
+        discriminator="type"
+    )
+
+    @property
+    def permission_mode(self) -> CodexPermissionMode:
+        if isinstance(self.sandbox_policy, FullAccessPolicy):
+            if self.approval_policy == "never":
+                return "full_access"
+        elif self.approval_policy == "on-request":
+            return (
+                "auto_review"
+                if self.approvals_reviewer == "auto_review"
+                else "user_review"
+            )
+        raise ValueError("Native Codex permissions do not match an Octomate preset")
 
 
 def payload_type(line: RolloutLine) -> str | None:

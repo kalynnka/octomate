@@ -34,6 +34,8 @@ class AgentRun(BaseTransmuter):
     kind: Literal["octomate"] = "octomate"
     conversation_id: UUID7
     name: str | None = None
+    model_name: str | None = None
+    permission_mode: str | None = None
     cwd: Path | None = Field(
         default=None,
         description=(

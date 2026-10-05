@@ -9,6 +9,7 @@ from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import noload
 from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
+from sqlalchemy import update
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
@@ -222,4 +223,19 @@ class DeferredActionManager(Manager):
             batch.updated_at = now
             if completed:
                 batch.completed_at = now
+            await session.commit()
+
+    async def expire_live(self) -> None:
+        """Expire every live request still pending. Its waiter lived in the process
+        that asked, so after a restart a reply has nowhere to go; expired, the reply
+        is refused rather than accepted and lost."""
+        async with async_session() as session:
+            await session.execute(
+                update(DeferredActionBatch)
+                .where(
+                    DeferredActionBatch["response_mode"] == "live",
+                    DeferredActionBatch["status"] == "pending",
+                )
+                .values(status="expired", updated_at=datetime.now(UTC))
+            )
             await session.commit()

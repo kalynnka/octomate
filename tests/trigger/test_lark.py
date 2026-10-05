@@ -26,6 +26,7 @@ from tests.support.scenarios import (
     batch_actions,
     mid_run_notice,
     play,
+    recorded_questions,
     showcase,
     streamed_text,
     subagent_run,
@@ -131,6 +132,27 @@ async def test_lark_renders_action_batch(
         await drive(channel, address, play(script))
 
     assert "timeline render failed" not in caplog.text
+
+
+async def test_lark_renders_recorded_question_batch(
+    lark_channel: tuple[LarkTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The batch a real run asked, on one card: a multi-select dropdown, then a
+    single-pick dropdown, and one Submit."""
+    channel, address = lark_channel
+    batch_id = uuid7()
+    script = action_batch(
+        batch_id=str(batch_id),
+        questions=recorded_questions(batch_id),
+        approvals=[],
+    )
+
+    with caplog.at_level("WARNING"):
+        await drive(channel, address, play(script))
+
+    # A card Lark refuses is only logged, so any warning fails the replay.
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
 
 
 async def test_lark_renders_mid_run_notice(

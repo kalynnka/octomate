@@ -11,7 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.base import reflex_graph
+from octomate.capabilities.harness.deferred import Interjections
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
+from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch, DeferredApproval
@@ -49,37 +51,53 @@ async def live_agent(
     return agent, conversation
 
 
+def a_suspender(agent: LiveAgent, conversation: Conversation) -> ReflexSuspender:
+    """The graph's suspender for a run nothing streams, so its cards go up through
+    the channel's feelers."""
+    app = agent.octomate
+    return ReflexSuspender(
+        channel=app.channels["im"],
+        action_manager=app.deferred_actions,
+        conversation_manager=app.conversations,
+        agent_tentacle_id=agent.id,
+        run_name="react",
+        source_address=ADDRESS,
+        target_address=ADDRESS,
+        target_mode="main",
+        decision=None,
+        thread_id=conversation.thread_id,
+    )
+
+
 async def ask(
     agent: LiveAgent, conversation: Conversation
 ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
     requests = DeferredToolRequests(
         approvals=[ToolCallPart("shell", {"cmd": "pwd"}, "call-1")]
     )
+    suspender = a_suspender(agent, conversation)
     if isinstance(agent, ClaudeCodeTentacle):
         return await agent._await_human(
-            conversation=conversation,
-            conversation_address=ADDRESS,
-            run_name="react",
-            requests=requests,
+            requests, suspender=suspender, interjections=Interjections()
         )
     if isinstance(agent, CodexTentacle):
         return await agent._await_human(
             context=CodexBridgeContext(
                 loop=asyncio.get_running_loop(),
                 conversation=conversation,
-                conversation_address=ADDRESS,
-                run_name="react",
                 session_allowed=set(),
+                suspender=suspender,
+                interjections=Interjections(),
             ),
             requests=requests,
         )
     return await agent._await_human(
         context=DeepseekBridgeContext(
             conversation=conversation,
-            conversation_address=ADDRESS,
-            run_name="react",
             session_allowed=set(),
             interactive=True,
+            suspender=suspender,
+            frames=asyncio.Queue(),
         ),
         requests=requests,
     )

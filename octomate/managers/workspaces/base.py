@@ -64,6 +64,11 @@ def thread_ref(thread_id: UUID7) -> str:
     return f"refs/octomate/threads/{thread_id}"
 
 
+def thread_branch(thread_id: uuid.UUID) -> str:
+    """The branch a thread's first fork starts on, its own."""
+    return f"octomate/thread-{thread_id}"
+
+
 class CopyError(RuntimeError):
     """A `cp` exited nonzero; the message carries its stderr."""
 
@@ -263,7 +268,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
     The whole lifecycle is here. A turn asks `open` for the workspace its thread
     runs in and enters it, which is what forks the tree and what ends it; the turn
     itself owes one more thing, `save`, which the graph does after the run — or
-    `dispel`, once the agent has said the thread's work is done. Those
+    `dismiss`, once the agent has said the thread's work is done. Those
     need the registry to say which project a thread is in and the mirrors to say
     where that project's is, which is why this holds both — which fork a thread gets
     is exactly what the registry says about it, so knowing what binds one is not a
@@ -602,7 +607,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         ) as span:
             if not await run_git("ls-remote", str(mirror), saved):
                 span.set_attribute("resumed", False)
-                branch = f"octomate/thread-{thread_id}"
+                branch = thread_branch(thread_id)
                 if ref is None:
                     await run_git("checkout", "-b", branch, cwd=workspace)
                     return
@@ -822,7 +827,67 @@ class WorkspaceManager(Manager, Locks[UUID7]):
             except Exception:
                 logger.exception("the workspace sweep failed")
 
-    async def dispel(self, thread: Thread) -> bool:
+    async def carry(self, source: Thread, thread: Thread) -> None:
+        """Give `thread`, landed in `source`'s project, a workspace holding the work
+        as `source` left it — what a conversation moving to another thread takes of
+        its work — and fork it.
+
+        Saved first: the source's last turn may not have been, and what it left
+        uncommitted has to travel as uncommitted. The snapshot is filed under
+        `thread` too, so its first fork resumes into it the way a pruned workspace
+        does; on a branch of its own when the source was on its own, since two
+        threads pushing one branch would overwrite each other. A source that never
+        forked a workspace has no snapshot, and `thread` forks the project fresh.
+
+        Ignored files are copied across, an `.env` among them, since a snapshot
+        never holds them. Ignored directories are not: they are dependencies and
+        build output, which the fork's install and the next build make again.
+        """
+        project = await self.projects.of(source)
+        if project is None:
+            return
+        await self.save(source)
+        mirror = self.mirrors.path(project)
+        saved = thread_ref(source.id)
+        if await run_git("ls-remote", str(mirror), saved):
+            subject = await run_git("show", "-s", "--format=%s", saved, cwd=mirror)
+            filed = saved
+            if subject.strip() == f"{SNAPSHOT_PREFIX}{thread_branch(source.id)}":
+                filed = await run_git(
+                    *self.identity.commit_flags,
+                    "commit-tree",
+                    f"{saved}^{{tree}}",
+                    "-p",
+                    f"{saved}^",
+                    "-m",
+                    f"{SNAPSHOT_PREFIX}{thread_branch(thread.id)}",
+                    cwd=mirror,
+                )
+            await run_git(
+                "update-ref", thread_ref(thread.id), filed.strip(), cwd=mirror
+            )
+        landed = await self.open(thread.id, project).prepare()
+        origin = self.existing(source.id)
+        if origin is None:
+            return
+        ignored = await run_git(
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+            cwd=origin,
+        )
+        for name in ignored.split("\0"):
+            if not name or name.endswith("/") or (landed / name).exists():
+                continue
+            (landed / name).parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                shutil.copy2, origin / name, landed / name, follow_symlinks=False
+            )
+
+    async def dismiss(self, thread: Thread) -> bool:
         """Release this thread's workspace on its agent's word that the work in it
         is done — the one release that is asked for rather than swept up — and
         answer whether it went.
@@ -833,7 +898,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
         a fork on the thread's next turn with the ref laid back over it.
         """
         with workspace_logfire.span(
-            "workspace.dispel", thread_id=str(thread.id), released=False
+            "workspace.dismiss", thread_id=str(thread.id), released=False
         ) as span:
             await self.save(thread)
             path = self.path(thread.id)
@@ -841,7 +906,7 @@ class WorkspaceManager(Manager, Locks[UUID7]):
                 return False
             if not await self.saved(path):
                 logger.warning(
-                    "the workspace for thread %s was dispelled but holds work the "
+                    "the workspace for thread %s was dismissed but holds work the "
                     "mirror does not have; keeping it",
                     thread.id,
                 )

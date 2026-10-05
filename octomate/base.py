@@ -28,6 +28,7 @@ from octomate.config.base import OctomateConfig
 from octomate.managers.auth import AuthManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.files import FileManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
@@ -41,13 +42,14 @@ from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
 from octomate.reflex import (
     Awake,
     ReflexDeps,
+    ReflexGraphResult,
     ReflexState,
     reflex_graph,
 )
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,
-    GatewayHandoffSignal,
+    NativeGatewaySignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
@@ -132,6 +134,7 @@ class Octomate(FastAPI):
     oauth: OAuthManager = field(init=False)
     mcp: McpManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
+    files: FileManager = field(default_factory=FileManager)
 
     # Scoped API tokens, shared by MCP verification and hook guards.
     bearers: KnownBearers = field(init=False)
@@ -150,7 +153,9 @@ class Octomate(FastAPI):
     # router builder reads `channels` while `connect` is still mounting.
     tentacles: dict[str, Tentacle] = field(default_factory=dict)
     # Fire-and-forget graph turns (`kick_soon`), held strongly until they settle.
-    background: set[asyncio.Task[None]] = field(default_factory=set, init=False)
+    background: set[asyncio.Task[ReflexGraphResult | None]] = field(
+        default_factory=set, init=False
+    )
     # The next console color for a tentacle with no brand of its own.
     log_styles: Iterator[Style] = field(
         default_factory=log_styles, init=False, repr=False
@@ -280,7 +285,7 @@ class Octomate(FastAPI):
     async def kick(
         self,
         signal: AwakeSignal,
-    ) -> None:
+    ) -> ReflexGraphResult | None:
         """Trigger the agent graph from a user message turn or deferred response."""
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
@@ -289,7 +294,7 @@ class Octomate(FastAPI):
                 address = signal.address
                 span.set_attribute("channel_id", address.channel_tentacle_id)
                 span.set_attribute("conversation_address", str(address))
-            elif isinstance(signal, GatewayHandoffSignal):
+            elif isinstance(signal, NativeGatewaySignal):
                 span.set_attribute("agent_id", signal.agent_id)
                 span.set_attribute("action", signal.decision.action)
             elif isinstance(signal, DeferredActionBatchResponse):
@@ -298,20 +303,23 @@ class Octomate(FastAPI):
                 if agent_id is not None:
                     span.set_attribute("resolved_live", agent_id)
                     return
-            with sqlalchemy_materia():
-                await reflex_graph.run(
-                    inputs=Awake(signal=signal),
-                    state=ReflexState(),
-                    deps=ReflexDeps(
-                        workspaces=self.workspaces,
-                        agents=self.agents,
-                        channels=self.channels,
-                        conversation_manager=self.conversations,
-                        thread_manager=self.thread_manager,
-                        action_manager=self.deferred_actions,
-                        gateway=self.gateway,
-                    ),
+            state = ReflexState()
+            deps = ReflexDeps(
+                workspaces=self.workspaces,
+                agents=self.agents,
+                channels=self.channels,
+                conversation_manager=self.conversations,
+                thread_manager=self.thread_manager,
+                action_manager=self.deferred_actions,
+                gateway=self.gateway,
+            )
+            try:
+                return await reflex_graph.run(
+                    inputs=Awake(signal=signal), state=state, deps=deps
                 )
+            except Exception as error:
+                await deps.report(state, error)
+                raise
 
     async def deliver_live_response(
         self, response: DeferredActionBatchResponse
@@ -348,6 +356,9 @@ class Octomate(FastAPI):
             # setting: probed here so the log says which mechanism this host
             # got, once, before anything asks for a workspace.
             await self.workspaces.detect()
+            # A live request's waiter died with the last process, so a reply to
+            # one still pending would be lost: it is refused as expired instead.
+            await self.deferred_actions.expire_live()
             async with (
                 # Starlette runs no lifespan for a mounted app, and the MCP
                 # transport's task group lives in that lifespan; the endpoint

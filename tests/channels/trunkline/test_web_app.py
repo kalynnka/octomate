@@ -20,6 +20,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
+from octomate.config.agents import DeepseekConfig
 from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
@@ -34,6 +35,7 @@ from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
@@ -534,6 +536,28 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
     }
 
 
+async def test_an_agent_that_did_not_start_leaves_the_others_listed(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """DeepSeek learns its modes from the harness at start; one that failed to start
+    has none to offer, and must not take every other agent's switcher down with it."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    octomate.connect(DeepseekTentacle("deepseek", octomate, config=DeepseekConfig()))
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        response = await client.get("/api/trunkline/permissions")
+
+    assert response.status_code == 200
+    assert list(response.json()) == ["inkling"]
+
+
 async def test_the_configured_default_is_what_the_endpoint_reports(
     in_memory_engine: AsyncEngine,
 ) -> None:
@@ -709,7 +733,11 @@ async def test_the_agents_endpoint_reports_each_routes_effort_vocabulary(
         {
             "agent_id": "inkling",
             "model": RECEPTION_MODEL,
-            "claim": {"ability": "triage and reply", "efforts": ["low", "high"]},
+            "claim": {
+                "ability": "triage and reply",
+                "efforts": ["low", "high"],
+                "default_effort": None,
+            },
         }
     ]
 
@@ -1061,13 +1089,14 @@ async def test_console_reads_never_load_the_model_ledger(
         assert len(ledger_reads) == 1
         assert "agent_runs" in ledger_reads[0] or "run_id" in ledger_reads[0]
 
-        # The listing names threads and opens none of them.
+        # Routing reads conversation metadata in one batch, without histories.
         selects.clear()
         await client.get("/api/trunkline/threads")
         assert not any(
             select.lstrip().startswith("SELECT thread_messages.") for select in selects
         )
-        assert not any("FROM conversations" in select for select in selects)
+        assert sum("FROM conversations" in select for select in selects) == 1
+        assert not any("FROM agent_runs" in select for select in selects)
 
 
 async def test_a_native_thread_reads_back_with_its_project_and_run_directory(

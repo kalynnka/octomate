@@ -4,7 +4,7 @@
  * "SIDEBAR: THREADS × CHANNELS" aside.
  */
 import { useEffect, useRef, useState } from 'react'
-import { Disclose } from '@/components/Fold'
+import { Disclose, Fold } from '@/components/Fold'
 import { Icon } from '@/components/Icon'
 import { display, ellipsis, label, mono } from '@/components/text'
 import { useChannels, useThreads } from '@/lib/api/hooks'
@@ -48,6 +48,7 @@ export function ThreadsSidebar() {
   ]
   const sbFold = useConsole((s) => s.sbFold)
   const chFold = useConsole((s) => s.chFold)
+  const focusId = useConsole((s) => s.channelFocusHistory.at(-1))
   const chPins = useConsole((s) => s.chPins)
   const selThreadId = useConsole((s) => s.selThreadId)
   const ntOn = useConsole((s) => s.ntOn)
@@ -62,6 +63,7 @@ export function ThreadsSidebar() {
     toggleSidebar,
     toggleChannelPin,
     focusChannel,
+    toggleChannel,
     selectThread,
     startNewThread,
     toggleControl,
@@ -71,6 +73,10 @@ export function ThreadsSidebar() {
   // this rail's scrolling and nothing else reads it.
   const [shown, setShown] = useState<Record<string, number>>({})
   const channelList = useRef<HTMLDivElement>(null)
+  const channelRail = useRef<HTMLDivElement>(null)
+  const canHoverRail = useRef(false)
+  const [railExpanded, setRailExpanded] = useState(false)
+  const sidebarFolded = sbFold && !railExpanded
   // Scrolling to the end of a channel asks for its next page, and so does the
   // row that says how many are left — a page short enough not to overflow its
   // own box would otherwise have no way to ask.
@@ -89,35 +95,63 @@ export function ThreadsSidebar() {
     if (pa >= 0 || pb >= 0) return pa >= 0 ? -1 : 1
     return channels.indexOf(a) - channels.indexOf(b)
   })
-  const unfolded = orderedCh.filter((c) => !chFold[c.id])
-  const focusId = unfolded.length === 1 ? unfolded[0].id : null
+  const threadOrder = orderedCh.flatMap((c) => threadsByCh[c.id] ?? [])
+  const currentThreadIndex = threadOrder.findIndex((t) => t.id === selThreadId || (t.key !== '' && t.key === selThreadId))
   const threadTotal = Object.values(threadsByCh).flat().length
 
   useEffect(() => {
-    if (sbFold || !focusId) return
+    const hover = window.matchMedia('(hover: hover) and (pointer: fine)')
+    const compact = window.matchMedia('(max-width: 599px), (max-height: 519px) and (max-width: 999px)')
+    const sync = () => {
+      canHoverRail.current = hover.matches && !compact.matches
+      setRailExpanded(false)
+    }
+    sync()
+    hover.addEventListener('change', sync)
+    compact.addEventListener('change', sync)
+    return () => {
+      hover.removeEventListener('change', sync)
+      compact.removeEventListener('change', sync)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (sidebarFolded || !focusId) return
     channelList.current
       ?.querySelector<HTMLElement>(`[data-channel-id="${CSS.escape(focusId)}"]`)
       ?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
-  }, [focusId, sbFold])
+  }, [focusId, sidebarFolded])
 
   return (
     <aside
       id="trk-sb-panel"
       className="trk-sb"
-      data-folded={sbFold ? '' : undefined}
+      data-folded={sidebarFolded ? '' : undefined}
       data-dragging={railDrag === 'sb' ? '' : undefined}
+      data-rail-expanded={railExpanded ? '' : undefined}
+      onPointerMove={(event) => {
+        if (event.pointerType !== 'mouse' || !canHoverRail.current) return
+        if (sbFold) {
+          setRailExpanded(true)
+          return
+        }
+        const rail = channelRail.current
+        if (rail) setRailExpanded(event.clientX < rail.getBoundingClientRect().right)
+      }}
+      onPointerLeave={() => setRailExpanded(false)}
       style={{
         width: sbFold ? 'var(--trk-rail-w, 26px)' : widths.sb ? `${widths.sb}px` : 'clamp(200px,21vw,272px)',
         flexShrink: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderRight: `1px solid ${sbFold ? 'transparent' : 'var(--line-divider)'}`,
+        borderRight: `1px solid ${sidebarFolded ? 'transparent' : 'var(--line-divider)'}`,
         backgroundColor: 'var(--card-bg)',
         minHeight: 0,
         position: 'relative',
       }}
     >
       <div
+        ref={channelRail}
         aria-hidden="true"
         style={{
           position: 'absolute',
@@ -138,7 +172,7 @@ export function ThreadsSidebar() {
           display: 'flex',
           alignItems: 'center',
           gap: 10,
-          padding: sbFold ? 0 : '0 14px',
+          padding: sidebarFolded ? 0 : '0 14px',
           position: 'relative',
           height: 'var(--trk-head-h, 44px)',
           boxSizing: 'border-box',
@@ -146,7 +180,7 @@ export function ThreadsSidebar() {
           flexShrink: 0,
         }}
       >
-        {!sbFold && (
+        {!sidebarFolded && (
           <>
             {/* The wordmark yields when the rail is squashed, so the toggle
                 stays inside the panel instead of spilling over the chat title. */}
@@ -156,7 +190,7 @@ export function ThreadsSidebar() {
                 lineHeight: 1,
                 letterSpacing: '-.01em',
                 textTransform: 'uppercase',
-                color: 'var(--fg-1)',
+                color: 'var(--color-ink)',
                 ...ellipsis,
                 minWidth: 0,
               }}
@@ -188,7 +222,7 @@ export function ThreadsSidebar() {
             </span>
           </>
         )}
-        {sbFold && (
+        {sidebarFolded && (
           <span
             onClick={toggleSidebar}
             title="Show channels"
@@ -210,7 +244,7 @@ export function ThreadsSidebar() {
           </span>
         )}
       </div>
-      {!sbFold && (
+      {!sidebarFolded && (
         <div
           aria-hidden="true"
           style={{
@@ -263,7 +297,7 @@ export function ThreadsSidebar() {
                 stColor: toneColor[t.tone],
                 agent: t.agentLabel,
                 on: selected(t),
-                pick: () => selectThread(c.id, t.id),
+                pick: () => selectThread(c.id, t.id, threadOrder.findIndex((row) => row.id === t.id) < currentThreadIndex ? 'up' : 'down'),
               })),
             ]
             return (
@@ -276,13 +310,8 @@ export function ThreadsSidebar() {
                     type="button"
                     aria-label={`Focus ${c.label}`}
                     aria-pressed={focused}
-                    onClick={() =>
-                      focusChannel(
-                        c.id,
-                        channels.map((x) => x.id),
-                      )
-                    }
-                    title={`Expand only ${c.label}`}
+                    onClick={() => focusChannel(c.id)}
+                    title={`Focus ${c.label}`}
                     className="trk-chrail hov-wash"
                     style={{
                       position: 'absolute',
@@ -295,12 +324,12 @@ export function ThreadsSidebar() {
                       overflow: 'hidden',
                       display: 'flex',
                       alignItems: 'center',
-                      gap: 7,
+                      gap: 5,
                       cursor: 'pointer',
                       flexShrink: 0,
                       height: 'var(--trk-channel-row-h, 32px)',
                       boxSizing: 'border-box',
-                      padding: 'var(--trk-rail-row-pad, 0 8px 0 2px)',
+                      padding: 'var(--trk-rail-row-pad, 0 6px 0 2px)',
                     }}
                   >
                     <span
@@ -346,10 +375,10 @@ export function ThreadsSidebar() {
                 </div>
                 <div
                   data-channel-id={c.id}
-                  onClick={() => focusChannel(c.id, channels.map((channel) => channel.id))}
+                  onClick={() => toggleChannel(c.id)}
                   className="hov-wash"
                   style={{
-                    display: sbFold ? 'none' : 'flex',
+                    display: sidebarFolded ? 'none' : 'flex',
                     gridColumn: 2,
                     alignItems: 'center',
                     gap: 7,
@@ -367,9 +396,11 @@ export function ThreadsSidebar() {
                   />
                   <span style={{ ...label(10, '.16em'), color: c.brand }}>{c.label}</span>
                   <span style={{ flex: 1, borderTop: '1px solid var(--line-color)' }} />
-                  <span style={{ ...mono(8), color: 'var(--fg-3)' }}>
-                    {folded ? `${ths.length} thr` : c.sub}
-                  </span>
+                  {!railExpanded && (
+                    <span style={{ ...mono(8), color: 'var(--fg-3)' }}>
+                      {folded ? `${ths.length} thr` : c.sub}
+                    </span>
+                  )}
                   <span
                     onClick={(e) => {
                       e.stopPropagation()
@@ -390,8 +421,9 @@ export function ThreadsSidebar() {
                     <Icon name="pin" size={10} />
                   </span>
                 </div>
-                {!sbFold && !folded && (
-                  <div style={{ gridColumn: 2, minWidth: 0 }}>
+                {!sidebarFolded && (
+                  <div data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
+                    <Fold open={!folded}>
                     {c.id === 'trunkline' && (
                       <span
                         onClick={(e) => {
@@ -401,11 +433,9 @@ export function ThreadsSidebar() {
                         title="New trunkline thread"
                         className="hov-accent-border-wash"
                         style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                          gap: 5,
-                          margin: '3px 14px 3px 30px',
+                          display: 'grid',
+                          placeItems: 'center',
+                          margin: '3px 14px',
                           height: 20,
                           boxSizing: 'border-box',
                           border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
@@ -414,7 +444,7 @@ export function ThreadsSidebar() {
                           cursor: 'pointer',
                         }}
                       >
-                        + new thread
+                        <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
                       </span>
                     )}
                     {/* Each channel scrolls under its own header, so a channel with
@@ -434,7 +464,7 @@ export function ThreadsSidebar() {
                         key={t.id}
                         onClick={t.pick}
                         className="hov-wash"
-                        style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px 7px 30px)', cursor: 'pointer' }}
+                        style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
                       >
                         {t.on && (
                           <>
@@ -470,7 +500,7 @@ export function ThreadsSidebar() {
                               flexShrink: 0,
                             }}
                           />
-                          <span style={{ fontSize: 12, color: 'var(--fg-1)', ...ellipsis, flex: 1 }}>
+                          <span style={{ fontSize: 12, color: 'var(--trk-thread-title-fg)', ...ellipsis, flex: 1 }}>
                             {t.title}
                           </span>
                         </div>
@@ -497,12 +527,13 @@ export function ThreadsSidebar() {
                       <div
                         onClick={() => reveal(c.id, rows.length)}
                         className="hov-wash"
-                        style={{ padding: '6px 14px 8px 30px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
+                        style={{ padding: '6px 14px 8px', ...label(7.5, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}
                       >
                         ↓ {rows.length - (shown[c.id] ?? THREAD_PAGE)} more
                       </div>
                     )}
                     </div>
+                    </Fold>
                   </div>
                 )}
               </div>
@@ -514,11 +545,11 @@ export function ThreadsSidebar() {
           flexShrink: 0,
           borderTop: '1px solid var(--line-divider)',
           borderBottom: '1px solid var(--info)',
-          height: 30,
+          height: 'var(--trk-control-h, 30px)',
           boxSizing: 'border-box',
           padding: '0 16px',
           display: 'flex',
-          visibility: sbFold ? 'hidden' : undefined,
+          visibility: sidebarFolded ? 'hidden' : undefined,
           marginLeft: 'var(--trk-rail-w, 26px)',
           alignItems: 'center',
           gap: 8,
@@ -552,11 +583,14 @@ export function ThreadsSidebar() {
           bottom: 0,
           left: 0,
           width: 'var(--trk-rail-w, 26px)',
-          height: 30,
+          height: 'var(--trk-control-h, 30px)',
           display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
+          justifyContent: 'flex-start',
+          gap: 7,
           padding: 0,
+          overflow: 'hidden',
+          boxSizing: 'border-box',
           border: 0,
           borderTop: '1px solid var(--line-divider)',
           borderBottom: '1px solid var(--info)',
@@ -565,7 +599,10 @@ export function ThreadsSidebar() {
           cursor: 'pointer',
         }}
       >
-        <Icon name="gear" size={13} />
+        <span style={{ width: 'var(--trk-rail-base-w, 26px)', flexShrink: 0, display: 'inline-flex', justifyContent: 'center' }}>
+          <Icon name="gear" size={13} />
+        </span>
+        <span className="trk-control-label" aria-hidden="true" style={label(9, '.12em')}>Control</span>
       </button>
       {!sbFold && (
         <span

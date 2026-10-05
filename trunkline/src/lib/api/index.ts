@@ -2,7 +2,7 @@
  * The console's data source — live against /api/trunkline, no mock
  * stand-ins. An unreachable relay surfaces as an error state (empty ledger,
  * `relay offline` in the status bar). Surfaces whose endpoints do not exist
- * yet (control, status, teleport targets) render their empty states; see
+ * yet (control, status) render their empty states; see
  * README.md's gap list.
  */
 import {

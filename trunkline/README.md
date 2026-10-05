@@ -218,8 +218,9 @@ feeler resolve (the old items 2, 3, 6, 7). Still missing:
 14. **Dossier review** — file artifacts with revisions and line comments
     (review panel): no backend concept yet; closest seam is conversation
     artifacts + a `plan.apply_edits`-style tool contract.
-15. **Relay verbs** — `POST /api/threads/{id}/teleport` and relay/send to
-    another channel (reflex verbs exist in-process; not exposed over HTTP).
+15. **Gateway destinations** — Teleport and Summon are wired through the chat
+    header. Incoming Trunkline crossings and destination visibility still need
+    work; see the [Trunkline guide](../docs/usage/channels/trunkline.md).
 16. **Auth + CORS** — invited local accounts use HttpOnly
     sessions and private thread access, and the console signs in through them
     (see Accounts above). The console and API share an origin; cross-origin
