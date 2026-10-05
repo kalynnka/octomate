@@ -21,6 +21,7 @@ from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
 )
@@ -205,3 +206,46 @@ async def test_a_teleport_beside_another_deferral_is_refused() -> None:
                 metadata=deferral.metadata,
             )
         )
+
+
+@pytest.mark.parametrize("streamed", [True, False])
+async def test_a_live_run_pauses_on_its_batch_without_suspending(
+    streamed: bool,
+) -> None:
+    address = _key()
+    question = DeferredQuestion(
+        tool_name="ask_questions",
+        tool_call_id="c1",
+        args={"question": "What should I clarify?"},
+    )
+    batch = FakePresentedBatch(questions=[question])
+    channel = FakeChannelTentacle()
+    suspender = ReflexSuspender(
+        channel=channel,
+        action_manager=cast(
+            DeferredActionManager, FakeActionManager(presented_batch=batch)
+        ),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="claude",
+        run_name="react",
+        source_address=address,
+        target_address=address,
+        target_mode="main",
+        decision=None,
+        thread_id=uuid7(),
+        emit_on_stream=streamed,
+    )
+
+    paused, event = await suspender.pause(_requests())
+
+    assert paused is batch
+    # The run stays live, so nothing records it as ended suspended.
+    assert suspender.suspended_batch_id is None
+    if streamed:
+        # The run's own stream presents it; the channel is not touched.
+        assert event == ActionBatchEvent.from_batch(cast(DeferredActionBatch, batch))
+        assert channel.sent == []
+    else:
+        # Nothing draws the run, so the channel shows the cards now.
+        assert event is None
+        assert "What should I clarify?" in channel.sent[0][2][0]["text"]

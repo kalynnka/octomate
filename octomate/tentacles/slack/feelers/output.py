@@ -664,11 +664,7 @@ class SlackTimelineFeeler(TimelineFeeler):
         await state.set_status(STATUS_THINKING)
         try:
             yield state
-        except asyncio.CancelledError:
-            await state.settle_subagents("cancelled")
-            raise
         finally:
-            await state.settle_subagents("failed")
             await state.complete_pending()
             await state.finish_text()
             state.finish_plan()

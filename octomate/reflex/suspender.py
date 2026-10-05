@@ -12,6 +12,7 @@ from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
     ResponseTargetMode,
@@ -74,6 +75,7 @@ class ReflexSuspender:
     persisted as a batch and presented on the channel. React builds it with the
     run's context; Inkling reaches it through `ResolveDeferred`, a runtime a tool
     result cannot suspend through the `deferred_suspender` its run was handed.
+    A runtime that asks a human mid-run pauses here instead, and stays live.
     """
 
     channel: ChannelTentacle
@@ -108,43 +110,50 @@ class ReflexSuspender:
             source_address=str(self.source_address),
             emit_on_stream=self.emit_on_stream,
         ) as span:
-            if self.thread_id is None:
-                raise ValueError("deferred review requires a thread_id")
-            conversation = await self.conversation_manager.ensure(
-                self.thread_id,
-                agent_tentacle_id=self.agent_tentacle_id,
-            )
-            if self.emit_on_stream:
-                # On-stream round-trip: persist the batch and hand it back as one
-                # event for the consumer to render + mark as a unit.
-                batch = await self.action_manager.create_batch(
-                    conversation=conversation,
-                    agent_tentacle_id=self.agent_tentacle_id,
-                    run_name=self.run_name,
-                    source_address=self.source_address,
-                    target_address=self.target_address,
-                    target_mode=self.target_mode,
-                    decision=self.decision,
-                    requests=requests,
-                )
-                self.suspended_batch_id = batch.id
-                span.set_attribute("batch_id", str(batch.id))
-                return ActionBatchEvent(
-                    batch_id=str(batch.id),
-                    questions=list(batch.questions),
-                    approvals=list(batch.approvals),
-                )
-
-            batch = await self.channel.feelers.present_actions(
-                action_manager=self.action_manager,
-                conversation=conversation,
-                agent_tentacle_id=self.agent_tentacle_id,
-                run_name=self.run_name,
-                source_address=self.source_address,
-                target_address=self.target_address,
-                target_mode=self.target_mode,
-                decision=self.decision,
-                requests=requests,
-            )
+            batch = await self.persist(requests)
             self.suspended_batch_id = batch.id
             span.set_attribute("batch_id", str(batch.id))
+            return await self.present(batch)
+
+    async def pause(
+        self, requests: DeferredToolRequests
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+        with reflex_logfire.span(
+            "pause_for_review",
+            run_name=self.run_name,
+            agent_id=self.agent_tentacle_id,
+            target_address=str(self.target_address),
+            emit_on_stream=self.emit_on_stream,
+        ) as span:
+            batch = await self.persist(requests)
+            span.set_attribute("batch_id", str(batch.id))
+            return batch, await self.present(batch)
+
+    async def persist(self, requests: DeferredToolRequests) -> DeferredActionBatch:
+        if self.thread_id is None:
+            raise ValueError("deferred review requires a thread_id")
+        conversation = await self.conversation_manager.ensure(
+            self.thread_id,
+            agent_tentacle_id=self.agent_tentacle_id,
+        )
+        return await self.action_manager.create_batch(
+            conversation=conversation,
+            agent_tentacle_id=self.agent_tentacle_id,
+            run_name=self.run_name,
+            source_address=self.source_address,
+            target_address=self.target_address,
+            target_mode=self.target_mode,
+            decision=self.decision,
+            requests=requests,
+        )
+
+    async def present(self, batch: DeferredActionBatch) -> ActionBatchEvent | None:
+        """The batch's event for the run's stream to present, or None once the
+        channel presented it here because the run is not streamed."""
+        event = ActionBatchEvent.from_batch(batch)
+        if self.emit_on_stream:
+            return event
+        await self.channel.feelers.present_actions(
+            self.target_address, event, action_manager=self.action_manager
+        )
+        return None

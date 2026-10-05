@@ -39,7 +39,7 @@ from claude_agent_sdk import (
     ToolPermissionContext,
     fork_session,
 )
-from claude_agent_sdk.types import SystemPromptPreset
+from claude_agent_sdk.types import Message, SystemPromptPreset
 from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from octomate_protocol.gateway import GatewayTool, gateway_tool
@@ -81,7 +81,8 @@ from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
@@ -545,37 +546,27 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     async def _await_human(
         self,
-        *,
-        conversation: Conversation,
-        conversation_address: ChannelAddress,
-        run_name: str | None,
         requests: DeferredToolRequests,
+        *,
+        suspender: DeferredSuspender | None,
+        interjections: Interjections[Message],
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        """Present a deferred batch as approval/question cards through the channel,
-        then park a future until the human response arrives via
-        `try_resolve_live_deferred`. The Claude session stays open in-process while
-        this awaits, so the answer is not durable across an Octomate restart.
+        """Pause the run on a human through the graph's suspender, putting the
+        batch on this run's stream when that is what presents it, then park a
+        future until the human response arrives via `try_resolve_live_deferred`.
+        The Claude session stays open in-process while this awaits, so the answer
+        is not durable across an Octomate restart.
 
         Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
         batch is marked expired and the caller denies the pending tool so the live
         run unblocks."""
-        channel = self.octomate.channels.get(conversation_address.channel_tentacle_id)
-        if channel is None:
+        if suspender is None:
             raise RuntimeError(
-                f"no channel {conversation_address.channel_tentacle_id!r} to "
-                f"present a Claude approval/question"
+                "a Claude approval mid-run needs a suspender to pause on"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=conversation,
-            agent_tentacle_id=self.id,
-            run_name=run_name,
-            source_address=conversation_address,
-            target_address=conversation_address,
-            target_mode="sub" if conversation_address.channel_thread_id else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch, event = await suspender.pause(requests)
+        if event is not None:
+            interjections.interject(event)
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
@@ -738,6 +729,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             user_prompt = self.resumed_prompt(deferred_tool_results)
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
+        interjections = Interjections[Message]()
         # Tools the user already granted "allow for session" on this conversation
         # auto-approve without a card; new grants extend the set and persist.
         session_allowed: set[str] = set(conversation.allowed_tools)
@@ -790,10 +782,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ]
             )
             batch, response = await self._await_human(
-                conversation=conversation,
-                conversation_address=conversation_address,
-                run_name=run_name,
-                requests=requests,
+                requests, suspender=deferred_suspender, interjections=interjections
             )
             # `can_use_tool` fires per tool call, so we built the batch with a
             # single approval — this is that one action.
@@ -859,10 +848,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ]
             )
             batch, response = await self._await_human(
-                conversation=conversation,
-                conversation_address=conversation_address,
-                run_name=run_name,
-                requests=requests,
+                requests, suspender=deferred_suspender, interjections=interjections
             )
             answered = (
                 [
@@ -1033,7 +1019,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         await previous.interrupt()
                 await client.query(prompt_text)
                 interrupted = False
-                async for message in client.receive_response():
+                async for message in interjections.around(client.receive_response()):
+                    if isinstance(message, ActionBatchEvent):
+                        # A batch the run paused on, for whoever draws the run.
+                        yield message
+                        continue
                     for event in accumulator.consume(message):
                         yield event
                     if (

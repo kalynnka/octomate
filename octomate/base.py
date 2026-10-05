@@ -311,20 +311,23 @@ class Octomate(FastAPI):
                         future.set_result(signal)
                     span.set_attribute("resolved_live", agent.id)
                     return
-            with sqlalchemy_materia():
+            state = ReflexState()
+            deps = ReflexDeps(
+                workspaces=self.workspaces,
+                agents=self.agents,
+                channels=self.channels,
+                conversation_manager=self.conversations,
+                thread_manager=self.thread_manager,
+                action_manager=self.deferred_actions,
+                gateway=self.gateway,
+            )
+            try:
                 return await reflex_graph.run(
-                    inputs=Awake(signal=signal),
-                    state=ReflexState(),
-                    deps=ReflexDeps(
-                        workspaces=self.workspaces,
-                        agents=self.agents,
-                        channels=self.channels,
-                        conversation_manager=self.conversations,
-                        thread_manager=self.thread_manager,
-                        action_manager=self.deferred_actions,
-                        gateway=self.gateway,
-                    ),
+                    inputs=Awake(signal=signal), state=state, deps=deps
                 )
+            except Exception as error:
+                await deps.report(state, error)
+                raise
 
     def kick_soon(self, signal: AwakeSignal) -> None:
         """`kick` as its own task, for a caller that must answer now — a served

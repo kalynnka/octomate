@@ -71,6 +71,7 @@ from openai_codex.generated.v2_all import (
     TurnStatus,
     UserInput,
 )
+from openai_codex.models import Notification
 from pydantic import SecretStr, TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
@@ -97,7 +98,8 @@ from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
 from octomate.managers.auth import AuthManager
@@ -317,10 +319,11 @@ class CodexBridgeContext:
 
     loop: asyncio.AbstractEventLoop
     conversation: Conversation
-    conversation_address: ChannelAddress
-    run_name: str | None
     session_allowed: set[str]
-    # Captured per turn: SDK transport threads have no channel sink or run context.
+    # What a request pauses the turn on, and how its batch reaches the turn's stream.
+    suspender: DeferredSuspender | None
+    interjections: Interjections[Notification]
+    # Captured per turn: SDK transport threads have no run context.
     task_context: Context = field(default_factory=copy_context)
 
 
@@ -1019,28 +1022,13 @@ class CodexTentacle(AgentTentacle[str, None]):
         context: CodexBridgeContext,
         requests: DeferredToolRequests,
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        channel = self.octomate.channels.get(
-            context.conversation_address.channel_tentacle_id
-        )
-        if channel is None:
+        if context.suspender is None:
             raise RuntimeError(
-                "no channel "
-                f"{context.conversation_address.channel_tentacle_id!r} to present "
-                "a Codex approval/question"
+                "a Codex approval mid-turn needs a suspender to pause on"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=context.conversation,
-            agent_tentacle_id=self.id,
-            run_name=context.run_name,
-            source_address=context.conversation_address,
-            target_address=context.conversation_address,
-            target_mode="sub"
-            if context.conversation_address.channel_thread_id
-            else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch, event = await context.suspender.pause(requests)
+        if event is not None:
+            context.interjections.interject(event)
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
@@ -1728,12 +1716,13 @@ class CodexTentacle(AgentTentacle[str, None]):
                 pooled.model_name = sdk_model
             codex_thread_id = codex_thread.id
             await resources.enter_async_context(self.driving(codex_thread_id))
+            interjections = Interjections[Notification]()
             self.bridge_contexts[conversation.id] = CodexBridgeContext(
                 loop=asyncio.get_running_loop(),
                 conversation=conversation,
-                conversation_address=conversation_address,
-                run_name=run_name,
                 session_allowed=set(conversation.allowed_tools),
+                suspender=deferred_suspender,
+                interjections=interjections,
             )
             resources.callback(self.bridge_contexts.pop, conversation.id, None)
             turn = await self.turn_codex_thread(
@@ -1751,7 +1740,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
             interrupted = False
-            async for notification in turn.stream():
+            async for notification in interjections.around(turn.stream()):
+                if isinstance(notification, ActionBatchEvent):
+                    # A batch the turn paused on, for whoever draws the run.
+                    yield notification
+                    continue
                 for event in accumulator.consume(notification):
                     yield event
                 if (

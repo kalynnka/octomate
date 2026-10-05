@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import GatewayEvent
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     ReflexDeps,
@@ -87,7 +88,9 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             thread_strategy=channel.thread_strategy,
             mode="main",
         )
-        state.moved_by = "scheme"
+        await ctx.deps.announce(
+            state, origin.address, GatewayEvent(action="scheme", destination=dm_address)
+        )
         state.decision = SummonDecision(
             action="summon",
             agent_id=resolved.agent,

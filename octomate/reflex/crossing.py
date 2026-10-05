@@ -6,6 +6,7 @@ import logging
 
 from pydantic_graph import GraphRunContext
 
+from octomate.capabilities.harness.events import GatewayEvent
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
@@ -55,6 +56,12 @@ async def open_crossing(
             agent_tentacle_id=agent_tentacle_id,
             platform_message_id=opened.channel_thread_id,
         )
+        # The thread hangs from its opener there, which is the move's line.
+        await ctx.deps.announce(
+            ctx.state,
+            source_address,
+            GatewayEvent(action="teleport", destination=opened),
+        )
         return opened
     if profile is not None:
         if profile.channel_tentacle_id != channel.id:
@@ -82,17 +89,18 @@ async def open_crossing(
                 segments=[MarkdownSegment(data={"text": hint_text})],
             )
     origin = source_address.channel_tentacle_id
-    if origin not in ctx.deps.channels:
-        return opened
     try:
-        announced = await ctx.deps.channel(origin).feelers.markdown.present(
-            source_address, hint_text
+        announced = await ctx.deps.announce(
+            ctx.state,
+            source_address,
+            GatewayEvent(action="teleport", destination=opened, announcement=hint_text),
         )
     except Exception:
         logger.warning(
             "Channel %s failed to announce the crossing", origin, exc_info=True
         )
-    else:
+        return opened
+    if origin in ctx.deps.channels:
         await ctx.deps.record_move(
             source_address,
             hint_text,

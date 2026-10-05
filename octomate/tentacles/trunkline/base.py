@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
@@ -40,30 +39,19 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     GatewayEvent,
     LinkProfileAuthorizationEvent,
-    MessageSentEvent,
     RunErrorEvent,
     RunResultEvent,
     StreamEvents,
-    SubagentActivity,
-    SubagentActivityStatus,
-    SubagentSettledEvent,
-    SubagentStartedEvent,
     WireEvent,
     wire_event_adapter,
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
-from octomate.schemas.awakes import (
-    AwakeSignal,
-    DrivenGatewaySignal,
-    UserMessageSignal,
-)
+from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
 from octomate.schemas.segments import (
     ImageSegment,
-    MarkdownSegment,
     MessageSegment,
     TextSegment,
 )
@@ -78,23 +66,19 @@ from octomate.tentacles.channel import (
     Ink,
     ThreadStrategy,
 )
-from octomate.tentacles.feelers.deferred import ApprovalFeeler, QuestionFeeler
+from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.oauth import AuthorizationEvent, OAuthFeeler
-from octomate.tentacles.feelers.output import (
-    SubagentTimelineState,
-    TimelineState,
-)
+from octomate.tentacles.feelers.output import TimelineState
 from octomate.types.permissions import AgentPermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.deferred import DeferredActionManager
 
 logger = logging.getLogger(__name__)
 
 type RunStreamItem = StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-type TrunklineStreamItem = (
-    RunStreamItem | SubagentStartedEvent | SubagentSettledEvent | GatewayEvent
-)
+type TrunklineStreamItem = RunStreamItem | GatewayEvent | RunErrorEvent
 
 # Separator joining agent and model into the route id the console picker offers.
 ROUTE_SEP = ":"
@@ -228,124 +212,42 @@ class TrunklineTimelineState(TimelineState):
     def __init__(
         self,
         address: ChannelAddress,
-        ask_questions: QuestionFeeler,
-        approvals: ApprovalFeeler,
         sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
     ) -> None:
         self.address = address
-        self.ask_questions = ask_questions
-        self.approvals = approvals
         self.sink = sink
         self.message_id = None
         self.reply_to = None
-
-    @asynccontextmanager
-    async def open_subagent(
-        self,
-        activity: SubagentActivity,
-    ) -> AsyncGenerator[TrunklineSubagentTimelineState, None]:
-        state = TrunklineSubagentTimelineState(activity, self.sink)
-        await state.start()
-        yield state
 
     async def drive(
         self,
         stream: AsyncIterator[RunStreamItem],
     ) -> None:
         async for event in stream:
-            await self.observe_subagent_event(event)
             await send_quietly(self.sink, event)
 
 
-class TrunklineSubagentTimelineState(SubagentTimelineState):
-    """Puts one commissioned child run's lifecycle on the wire."""
-
-    def __init__(
-        self,
-        activity: SubagentActivity,
-        sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
-    ) -> None:
-        self.activity = activity
-        self.sink = sink
-        self.response = ""
-        self.settled = False
-
-    async def start(self) -> None:
-        await send_quietly(
-            self.sink,
-            SubagentStartedEvent(
-                invocation_id=self.activity.invocation_id,
-                kind=self.activity.kind,
-                name=self.activity.name,
-            ),
-        )
-
-    async def append_response(self, delta: str) -> None:
-        if self.settled or not delta:
-            return
-        self.response += delta
-
-    async def settle(
-        self,
-        status: SubagentActivityStatus,
-        detail: str | None = None,
-    ) -> None:
-        if self.settled:
-            return
-        self.settled = True
-        await send_quietly(
-            self.sink,
-            SubagentSettledEvent(
-                invocation_id=self.activity.invocation_id,
-                status=status,
-                detail=detail,
-                response=self.response,
-            ),
-        )
-
-
-class TrunklineQuestionFeeler(QuestionFeeler):
-    """Presents ask feelers as `action_batch` wire events on the active sink.
+class TrunklineFeelers(Feelers):
+    """Forwards what the graph reports outside a run to the request's sink.
 
     With no active console request (a hook-ingested agent run, a departed
-    client), the persisted batch still surfaces through the thread detail's
+    client), a persisted batch still surfaces through the thread detail's
     `pending` list on the next load."""
 
     async def present(
+        self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent
+    ) -> IMMessageID | None:
+        await send_quietly(current_sink.get(), event)
+        return None
+
+    async def present_actions(
         self,
         address: ChannelAddress,
-        actions: list[DeferredQuestion],
-    ) -> dict[uuid.UUID, IMMessageID | None]:
-        sink = current_sink.get()
-        if sink is not None and actions:
-            await send_quietly(
-                sink,
-                ActionBatchEvent(
-                    batch_id=str(actions[0].batch_id),
-                    questions=actions,
-                ),
-            )
-        return {action.id: None for action in actions}
-
-
-class TrunklineApprovalFeeler(ApprovalFeeler):
-    """Approval twin of `TrunklineQuestionFeeler`."""
-
-    async def present(
-        self,
-        address: ChannelAddress,
-        actions: list[DeferredApproval],
-    ) -> dict[uuid.UUID, IMMessageID | None]:
-        sink = current_sink.get()
-        if sink is not None and actions:
-            await send_quietly(
-                sink,
-                ActionBatchEvent(
-                    batch_id=str(actions[0].batch_id),
-                    approvals=actions,
-                ),
-            )
-        return {action.id: None for action in actions}
+        event: ActionBatchEvent,
+        *,
+        action_manager: DeferredActionManager,
+    ) -> None:
+        await send_quietly(current_sink.get(), event)
 
 
 class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
@@ -365,42 +267,14 @@ class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
         return uuid7().hex
 
 
-class TrunklineMarkdownFeeler:
-    """Mirror notices to a watching request; callers persist them in the ledger."""
-
-    async def present(self, address: ChannelAddress, markdown: str) -> None:
-        await send_quietly(
-            current_sink.get(),
-            MessageSentEvent(
-                segments=[MarkdownSegment(data={"text": markdown})], destination=address
-            ),
-        )
-
-
 class TrunklineTimelineFeeler:
     """Opens a per-run timeline that streams into the active request's sink."""
-
-    def __init__(
-        self, *, ask_questions: QuestionFeeler, approvals: ApprovalFeeler
-    ) -> None:
-        self.ask_questions = ask_questions
-        self.approvals = approvals
 
     @asynccontextmanager
     async def open(
         self, address: ChannelAddress
     ) -> AsyncGenerator[TrunklineTimelineState, None]:
-        sink = current_sink.get()
-        state = TrunklineTimelineState(
-            address, self.ask_questions, self.approvals, sink
-        )
-        try:
-            yield state
-        except asyncio.CancelledError:
-            await state.settle_subagents("cancelled")
-            raise
-        finally:
-            await state.settle_subagents("failed")
+        yield TrunklineTimelineState(address, current_sink.get())
 
 
 def to_wire(item: TrunklineStreamItem) -> WireEvent | None:
@@ -449,15 +323,15 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             chromo=TrunklineChromo(),
             config=config,
         )
-        # Deferred actions reach the console as wire events, not markdown —
-        # claude/codex `_await_human` presents through these directly.
-        self.feelers.ask_questions = TrunklineQuestionFeeler()
-        self.feelers.approvals = TrunklineApprovalFeeler()
-        self.feelers.oauth = TrunklineOAuthFeeler(self.ink)
-        self.feelers.markdown = TrunklineMarkdownFeeler()
-        self.feelers.timeline = TrunklineTimelineFeeler(
-            ask_questions=self.feelers.ask_questions,
+        # Everything reaches the console as the events the graph and the run
+        # emit; the markdown and card feelers have no transport here.
+        self.feelers = TrunklineFeelers(
+            markdown=self.feelers.markdown,
+            timeline=TrunklineTimelineFeeler(),
+            segments=self.feelers.segments,
             approvals=self.feelers.approvals,
+            ask_questions=self.feelers.ask_questions,
+            oauth=TrunklineOAuthFeeler(self.ink),
         )
         # Kicks outlive their request on client disconnect; hold them so the
         # event loop keeps them alive to completion.
@@ -604,8 +478,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
 
     def stream_kick(self, signal: AwakeSignal) -> StreamingResponse:
         """Run the kick in a free task with this request's sink active and
-        encode the run stream it forwards as an SSE response. A turn a spell
-        carried into another thread ends with where it landed.
+        encode what its feelers forward as an SSE response.
 
         The task is deliberately not tied to the response: a client that
         disconnects mid-run just stops watching — the run finishes and records
@@ -615,37 +488,14 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         cannot corrupt one from another task.
         """
         send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](128)
-        captured: list[Exception] = []
 
         async def pump() -> None:
             token = current_sink.set(send)
             try:
-                result = await self.octomate.kick(signal)
-                if isinstance(signal, DrivenGatewaySignal):
-                    if result is None or result.target.address is None:
-                        raise ValueError("The operation did not reach a destination.")
-                    await send_quietly(
-                        send,
-                        GatewayEvent(
-                            action=signal.decision.action,
-                            destination=result.target.address,
-                        ),
-                    )
-                elif (
-                    result is not None
-                    and result.moved_by is not None
-                    and result.target.address is not None
-                ):
-                    await send_quietly(
-                        send,
-                        GatewayEvent(
-                            action=result.moved_by,
-                            destination=result.target.address,
-                        ),
-                    )
+                await self.octomate.kick(signal)
             except Exception as exc:
+                # The graph already reported it on this stream.
                 logger.error("Trunkline kick failed", exc_info=exc)
-                captured.append(exc)
             finally:
                 current_sink.reset(token)
                 await send.aclose()
@@ -664,8 +514,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                     wire_event = to_wire(item)
                     if wire_event is not None:
                         yield frame(wire_event)
-                for error in captured:
-                    yield frame(RunErrorEvent(message=str(error)))
 
         return StreamingResponse(
             events(), media_type="text/event-stream", headers=SSE_HEADERS

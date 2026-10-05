@@ -89,6 +89,10 @@ chat-room kick ran in a sub-thread), restores the user's profile so the resumed 
 keeps the same capabilities and prompt prefix, and re-enters `React` with the
 batch's answers as tool results and no new prompt.
 
+The graph reports each move, and each turn that fails, to the chat it concerns and
+to the console when the operation came from there. Channels only present what it
+reports.
+
 ## Suspending and resuming
 
 A run ends suspended when its output is a set of deferred tool requests the run
@@ -104,9 +108,10 @@ The batch is a row. When the cards are answered, possibly after a restart, the
 channel kicks the graph with the batch id, `ResumeDeferred` rebuilds the state from
 the row, and `React` resumes the agent's conversation. Inkling resumes through the
 graph with the answers as tool results; a harness that takes no tool result back
-is given the answers as its next prompt. An agent that parked a live process
-instead, as the harness bridges do, is answered in place if the process is still
-there, and the graph path is the fallback.
+is given the answers as its next prompt. An agent that parks a live process
+instead, as the harness bridges do, pauses on the suspender rather than ending, and
+is answered in place if the process is still there; the graph path is the
+fallback.
 
 ## The inner graph
 

@@ -331,6 +331,7 @@ export interface RunResultEvent {
 export interface RunErrorEvent {
   event_kind: 'run_error'
   message: string
+  trace_id: string
 }
 
 /** What a channel adds to an address to show it. `inside` marks a place to
@@ -359,6 +360,8 @@ export interface GatewayEvent {
   event_kind: 'gateway'
   action: 'teleport' | 'summon' | 'scheme'
   destination: ChannelAddress
+  /** The line the move leaves where the conversation was, if any. */
+  announcement: string | null
 }
 
 export type WireEvent =

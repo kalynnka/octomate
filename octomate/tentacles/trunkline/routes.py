@@ -24,6 +24,20 @@ asks for the messages; the rest want the row.
 Directives create or continue threads on the trunkline channel itself. Directives,
 batch responses and thread operations stream native wire events over SSE.
 
+Thread operations act on a thread of any channel the user can access.
+`GET threads/{id}/operations` answers a `ThreadOperations`, which the console reads
+when its operation controls open. `GET threads/{id}/channels/{channel}/addresses`
+lists one level of a connected channel's destinations as `ChannelAddress` rows
+whose `metadata` carries a `name`: a row with `metadata.inside` is a place to open,
+by passing that value back as `?inside=`, and `metadata.barred` says why a thread
+cannot land in a row. A channel that cannot be browsed, has no connected agent or
+is not linked to the user answers 409. A listed address is a suggestion, validated
+again when Teleport submits it. `POST threads/{id}/teleport` takes a
+`TeleportBody` and `POST threads/{id}/summon` a `SummonBody`. Both refuse a thread
+with a turn running or approvals or questions pending, and stream the turn: a
+`gateway` event when the conversation moves, a `run_started` custom event opening
+each run, and a `run_error` when the turn fails.
+
 Where the work happened — a thread's project and a run's directory — is read
 here and nowhere written: a thread's project is frozen when its row is written,
 and both are learned from the session that ran, so no endpoint takes either.
@@ -127,6 +141,11 @@ class DirectiveBody(BaseModel):
 
 
 class TeleportBody(TypedDict):
+    """A teleport asked from the console. `new_thread` is true unless sent; the
+    console sends none, so Teleport opens a thread at the destination picked. A
+    `prompt` is the user's next message in the Trunkline thread the move lands
+    in, and any other destination refuses it."""
+
     destination: ChannelAddress
     new_thread: NotRequired[bool]
     hint: Annotated[str, Field(min_length=1, max_length=1_000)]
@@ -135,6 +154,10 @@ class TeleportBody(TypedDict):
 
 
 class SummonBody(TypedDict):
+    """A summon asked from the console: the agent and model that take the
+    conversation over where it is, the brief they start from, and the hint
+    recorded with the handoff."""
+
     agent_id: str
     model: str
     brief: Annotated[str, Field(min_length=1, max_length=8_000)]
@@ -302,7 +325,7 @@ def build_trunkline_router(
             )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
-        return channel.stream_kick(session.thread_operation())
+        return channel.stream_kick(session.thread_operation(channel.id))
 
     @router.post("/threads/{thread_id}/summon")
     async def summon_thread(
@@ -320,7 +343,7 @@ def build_trunkline_router(
             )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
-        return channel.stream_kick(session.thread_operation())
+        return channel.stream_kick(session.thread_operation(channel.id))
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:

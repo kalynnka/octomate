@@ -315,7 +315,6 @@ class ChannelTentacle(
     @channel_logfire.instrument("ChannelTentacle {self.id} ingest")
     async def ingest(self, raw: RawT) -> None:
         """Inbound pipeline: decode, enrich sender, resolve media, dispatch."""
-        address: ChannelAddress | None = None
         try:
             event = await self.chromo.sip(raw)
             if event is None:
@@ -391,28 +390,14 @@ class ChannelTentacle(
                 )
             )
         except Exception:
-            # The active `ingest` span carries the full error; hand the user its
-            # trace id so they can quote it and an operator can pull the detail
-            # (e.g. a provider auth failure) from tracing.
+            # The active `ingest` span carries the full error; the graph already
+            # told the user a failed turn's trace id.
             trace_id = format(
                 trace.get_current_span().get_span_context().trace_id, "032x"
             )
             logger.exception(
                 "Channel %s: error in ingest [trace_id=%s]", self.id, trace_id
             )
-            if address is not None:
-                try:
-                    await self.feelers.markdown.present(
-                        address,
-                        "Something went wrong while handling your message. "
-                        f"Reference id for tracing the issue: `{trace_id}`.",
-                    )
-                except Exception:
-                    logger.warning(
-                        "Channel %s: failed to deliver error notice",
-                        self.id,
-                        exc_info=True,
-                    )
 
     async def open_dm(
         self, user_id: str, opener: str | None = None

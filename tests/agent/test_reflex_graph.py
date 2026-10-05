@@ -23,7 +23,12 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent, RunStartedEvent
+from octomate.capabilities.harness.events import (
+    GatewayEvent,
+    MessageSentEvent,
+    RunErrorEvent,
+    RunStartedEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.mirrors import MirrorsConfig
@@ -889,8 +894,10 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     assert not isinstance(result, DeferredResult)
     assert im.sub_threads == []
     assert second.turns[0].address == address
-    # Taken over where it was, so nothing carried it anywhere.
-    assert result.moved_by is None
+    # Taken over where it was: the summon names this same thread.
+    assert im.presented == [
+        (address, GatewayEvent(action="summon", destination=address))
+    ]
 
 
 async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
@@ -1062,7 +1069,12 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
     )
 
     assert not isinstance(result, DeferredResult)
-    assert result.moved_by == "scheme"
+    [(where, scheme)] = im.presented
+    assert where == address
+    assert isinstance(scheme, GatewayEvent)
+    assert scheme.action == "scheme"
+    assert scheme.destination.chat_type == "dm"
+    assert scheme.announcement is None
     assert im.opened_dms == ["alice"]
     # The DM's own owner picked it up, with the brief as its prompt.
     assert second.turns[0].prompt == "Finish the migration write-up."
@@ -1209,7 +1221,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
     assert not isinstance(result, DeferredResult)
     assert im.opened_dms == ["alice"]
     assert result.target.address == address
-    assert result.moved_by is None
+    assert im.presented == []
     assert second.turns == []
 
 
@@ -1328,7 +1340,14 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         return
 
     assert not isinstance(result, DeferredResult)
-    assert result.moved_by == "teleport"
+    # The move is announced where it left, with the line it leaves there.
+    [(where, moved)] = im.presented
+    assert where == address
+    assert isinstance(moved, GatewayEvent)
+    assert moved.action == "teleport"
+    assert moved.destination == result.target.address
+    assert moved.announcement
+    assert far.presented == []
     # Their direct messages there, then a sub-thread inside them — and the agent
     # resumed against the fork in it.
     assert far.opened_dms == ["ou_alice"]
@@ -1494,9 +1513,12 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral(
     )
 
     assert not isinstance(result, DeferredResult)
-    assert result.moved_by == "teleport"
     assert result.target.address is not None
     assert result.target.address.channel_thread_id == "hint-thread"
+    # The thread hangs from its opener in the chat, which is the move's line.
+    assert im.presented == [
+        (address, GatewayEvent(action="teleport", destination=result.target.address))
+    ]
     if not resume:
         # Landed, and waiting there for the next message, its tree saved as a
         # turn's end would.
@@ -2418,3 +2440,53 @@ async def test_fork_follows_its_conversation_without_handoff() -> None:
     assert entry.streams == []
     assert threads.handoffs == []
     assert thread.handoffs == []
+
+
+async def test_a_move_reaches_the_channel_it_was_operated_from() -> None:
+    im = _channel()
+    console = FakeChannelTentacle("console")
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": im, "console": console},
+        agent=FakeAgent(id="other"),
+    )
+    address = _key()
+    moved = GatewayEvent(action="summon", destination=address)
+
+    await deps.announce(ReflexState(operated_from="console"), address, moved)
+    await deps.announce(ReflexState(), address, moved)
+
+    # Where it happened hears it each time; the console only when operated from it.
+    assert im.presented == [(address, moved), (address, moved)]
+    assert console.presented == [(address, moved)]
+
+
+async def test_a_failed_turn_is_reported_where_it_came_from() -> None:
+    im = _channel()
+    console = FakeChannelTentacle("console")
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": im, "console": console},
+        agent=FakeAgent(id="other"),
+    )
+    address = _key()
+    source = _source_target(address)
+
+    await deps.report(ReflexState(source_target=source), RuntimeError("here"))
+    await deps.report(
+        ReflexState(source_target=source, operated_from="console"),
+        RuntimeError("from the console"),
+    )
+    # Failed before it knew its source: nobody to tell.
+    await deps.report(ReflexState(), RuntimeError("nowhere"))
+
+    assert [
+        (where, event.message)
+        for where, event in im.presented
+        if isinstance(event, RunErrorEvent)
+    ] == [(address, "here")]
+    assert [
+        (where, event.message)
+        for where, event in console.presented
+        if isinstance(event, RunErrorEvent)
+    ] == [(address, "from the console")]

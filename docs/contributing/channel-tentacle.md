@@ -199,6 +199,9 @@ after `super().__init__`, keeping the defaults you do not replace.
   Refuse a press on a batch that is no longer pending.
 - **OAuth.** Subclass `OAuthFeeler` and implement `send`; the base decides the
   private address.
+- **Graph reports.** Present the events you are handed and never build one.
+  Override `Feelers.present` only to draw a move or a failed turn as something
+  other than a message.
 
 ## 7. Tests
 

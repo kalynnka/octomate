@@ -822,8 +822,9 @@ class OctomateSession:
         self.thread_id = thread.id
         self.conversation_address = thread.key.address(profile.channel_user_id)
 
-    def thread_operation(self) -> DrivenGatewaySignal:
-        """Package a validated user action for the graph's existing-thread entry."""
+    def thread_operation(self, operated_from: str) -> DrivenGatewaySignal:
+        """Package a validated user action for the graph's existing-thread entry,
+        operated from the channel `operated_from`."""
         if (
             self.thread_id is None
             or self.conversation_address is None
@@ -839,6 +840,7 @@ class OctomateSession:
             agent_id=self.current_agent_id,
             user_profile=self.user_profile,
             decision=self.decision,
+            operated_from=operated_from,
         )
 
     def native_handoff(self) -> NativeGatewaySignal:

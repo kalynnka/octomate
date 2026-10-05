@@ -49,6 +49,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         if isinstance(self.signal, DrivenGatewaySignal):
             signal = self.signal
+            ctx.state.operated_from = signal.operated_from
             return await self.thread_operation(
                 ctx,
                 signal.thread_id,
@@ -148,19 +149,20 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     ) -> Summon | Teleport:
         """Enter an existing thread its owner acts on: the console's operation on
         any thread, or a native session's teleport of its own."""
-        thread = await ctx.deps.thread_manager.get(
-            thread_ref, with_messages=False, user_id=sender.user_id
-        )
-        if thread is None or thread.active_agent_tentacle_id != agent_id:
-            raise ValueError("The source thread changed; reload its operations.")
         origin = ResponseTarget(
             channel_id=source.channel_tentacle_id,
             address=source,
             mode="sub" if source.channel_thread_id else "main",
         )
+        # Set first, so a refusal below is still reported.
+        ctx.state.source_target = origin
+        thread = await ctx.deps.thread_manager.get(
+            thread_ref, with_messages=False, user_id=sender.user_id
+        )
+        if thread is None or thread.active_agent_tentacle_id != agent_id:
+            raise ValueError("The source thread changed; reload its operations.")
         ctx.state.thread = thread
         ctx.state.user_profile = sender
-        ctx.state.source_target = origin
         ctx.state.target = origin
         if isinstance(decision, TeleportDecision):
             agent = ctx.deps.agent(decision.agent_id)

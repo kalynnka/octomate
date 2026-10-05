@@ -7,17 +7,20 @@ without importing its siblings.
 
 from __future__ import annotations
 
+import logging
 import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import Any, TypeVar, overload
 
+from opentelemetry import trace
 from pydantic_ai import AgentRunResult
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode
 
+from octomate.capabilities.harness.events import GatewayEvent, RunErrorEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
@@ -31,7 +34,6 @@ from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
-    GatewayAction,
     ResponseTargetMode,
     RunName,
     SummonDecision,
@@ -43,6 +45,9 @@ from octomate.tentacles.channel import (
     ChannelTentacle,
     ThreadStrategy,
 )
+from octomate.tentacles.feelers.output import IMMessageID
+
+logger = logging.getLogger(__name__)
 
 # Inside the marking, where an editor puts its own: the tag says this is not the
 # ask, and the sentence says why — an agent that answers the recap replies to what
@@ -133,8 +138,6 @@ class ReflexResult:
     decision: SummonDecision | None
     target: ResponseTarget
     result: AgentRunResult[ChannelOutput] | None = None
-    # The spell that carried the turn into another thread, if one did.
-    moved_by: GatewayAction | None = None
 
 
 @dataclass
@@ -149,8 +152,6 @@ class DeferredResult:
     run_name: str
     result: AgentRunResult[Any]
     batch_id: uuid.UUID | None = None
-    # The spell that carried the turn into another thread, if one did.
-    moved_by: GatewayAction | None = None
 
 
 type ReflexGraphResult = ReflexResult | DeferredResult
@@ -184,8 +185,9 @@ class ReflexState:
     handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
-    # The spell that carried this turn into another thread, once one has.
-    moved_by: GatewayAction | None = None
+    # The channel an operation on another channel's thread was performed in, which
+    # hears how the turn goes; None when the turn came from the source's channel.
+    operated_from: str | None = None
 
 
 @dataclass
@@ -342,6 +344,39 @@ class ReflexDeps:
             )
             parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
         return "\n\n".join(parts)
+
+    async def announce(
+        self, state: ReflexState, address: ChannelAddress, event: GatewayEvent
+    ) -> IMMessageID | None:
+        """Present a move where the conversation was, and in the channel it was
+        operated from when that is another. Answers the platform id of the line it
+        left."""
+        operated_from = state.operated_from
+        if operated_from is not None and operated_from != address.channel_tentacle_id:
+            await self.channel(operated_from).feelers.present(address, event)
+        # A native session's pseudo-channel has no feelers.
+        channel = self.channels.get(address.channel_tentacle_id)
+        return await channel.feelers.present(address, event) if channel else None
+
+    async def report(self, state: ReflexState, error: Exception) -> None:
+        """Tell the channel the turn came from, or the one it was operated from,
+        that it failed. A turn that failed before it knew its source has nobody to
+        tell."""
+        source = state.source_target.address if state.source_target else None
+        if source is None:
+            return
+        channel = self.channels.get(state.operated_from or source.channel_tentacle_id)
+        if channel is None:
+            return
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        try:
+            await channel.feelers.present(
+                source, RunErrorEvent(message=str(error), trace_id=trace_id)
+            )
+        except Exception:
+            logger.warning(
+                "Channel %s could not report a failed turn", channel.id, exc_info=True
+            )
 
     async def record_move(
         self,

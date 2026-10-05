@@ -32,7 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterable, Callable, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Annotated, cast
 
@@ -45,7 +45,9 @@ from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
+    FunctionToolCallEvent,
     FunctionToolResultEvent,
+    RetryPromptPart,
     ToolReturn,
     ToolReturnPart,
 )
@@ -53,7 +55,12 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.harness.events import (
+    MessageSentEvent,
+    SubagentActivityStatus,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
+)
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import MessageSegment
@@ -259,6 +266,83 @@ reply run concurrently.
 Continue an accomplice's work by `name`: it remembers everything it did. Use it to
 refine or extend that work instead of commissioning a new accomplice.
 """
+
+
+@dataclass
+class Accomplices:
+    """The accomplices one stretch of a run called and has not heard back from."""
+
+    working: list[str] = field(default_factory=list)
+
+    async def watch(
+        self, stream: AsyncIterable[AgentStreamEvent]
+    ) -> AsyncIterator[AgentStreamEvent]:
+        """`stream` with each accomplice's start before its call and its finish
+        before its result. One left unanswered finishes with the stretch: cancelled
+        with it, or failed."""
+        try:
+            async for event in stream:
+                lifecycle = self.observe(event)
+                if lifecycle is not None:
+                    # One dynamic-boundary cast: pydantic-ai types the stream as
+                    # AgentStreamEvent, consumers match the concrete octomate event.
+                    yield cast(AgentStreamEvent, lifecycle)
+                yield event
+        except (Exception, asyncio.CancelledError) as error:
+            cancelled = isinstance(error, asyncio.CancelledError)
+            for settled in self.abandon("cancelled" if cancelled else "failed"):
+                yield settled
+            raise
+        for settled in self.abandon("failed"):
+            yield settled
+
+    def observe(
+        self, event: AgentStreamEvent
+    ) -> SubagentStartedEvent | SubagentSettledEvent | None:
+        if isinstance(event, FunctionToolResultEvent):
+            part = event.part
+            if part.tool_call_id not in self.working:
+                return None
+            self.working.remove(part.tool_call_id)
+            if isinstance(part, RetryPromptPart):
+                return SubagentSettledEvent(
+                    invocation_id=part.tool_call_id,
+                    status="failed",
+                    response=part.model_response(),
+                )
+            return SubagentSettledEvent(
+                invocation_id=part.tool_call_id,
+                status="completed" if part.outcome == "success" else "failed",
+                response=part.model_response_str(),
+            )
+        if not isinstance(event, FunctionToolCallEvent) or event.part.tool_name not in {
+            GatewayTool.COMMISSION,
+            GatewayTool.WHISPER,
+        }:
+            return None
+        name = event.part.args_as_dict().get("name")
+        if not isinstance(name, str) or not name:
+            # The spell refuses a nameless call, so no accomplice starts.
+            return None
+        self.working.append(event.part.tool_call_id)
+        return SubagentStartedEvent(
+            invocation_id=event.part.tool_call_id,
+            kind="commission"
+            if event.part.tool_name == GatewayTool.COMMISSION
+            else "whisper",
+            name=name,
+        )
+
+    def abandon(self, status: SubagentActivityStatus) -> list[AgentStreamEvent]:
+        settled = [
+            cast(
+                AgentStreamEvent,
+                SubagentSettledEvent(invocation_id=invocation_id, status=status),
+            )
+            for invocation_id in self.working
+        ]
+        self.working.clear()
+        return settled
 
 
 @dataclass
@@ -723,8 +807,9 @@ class GatewayCapability(AbstractCapability[None]):
         stream: AsyncIterable[AgentStreamEvent],
     ) -> AsyncIterable[AgentStreamEvent]:
         """Put each `send`'s stashed `MessageSentEvent` on the run stream,
-        where the consumer rendering this run delivers it."""
-        async for event in stream:
+        where the consumer rendering this run delivers it, and each accomplice's
+        start and finish around its call."""
+        async for event in Accomplices().watch(stream):
             yield event
             if (
                 isinstance(event, FunctionToolResultEvent)

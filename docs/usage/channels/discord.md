@@ -74,7 +74,7 @@ cannot start in is listed with the reason, such as a private channel the bot was
 not added to, and cannot be picked. Listing servers checks your membership in
 each server the bot is in, and happens only when the Discord level is opened. It
 is served by the
-[thread operation API](trunkline.md#thread-operation-api).
+[trunkline's HTTP API](../../api/tentacles/trunkline.md).
 
 Teleport can target a known text or forum channel directly with a connected channel ID
 and the text-channel ID in the address's `chat_id`, including from a private conversation on another platform.

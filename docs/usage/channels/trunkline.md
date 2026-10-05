@@ -113,69 +113,27 @@ cannot hold an isolated new thread. Slack and Lark list your DM and the channels
 or groups you and the bot are both in. NapCat is listed but
 disabled: QQ has no threads, so nothing can land there.
 
-### Thread operation API
+### When Teleport and Summon are available
 
-The backend exposes `GET /api/trunkline/threads/{id}/operations` with eligible
-Teleport destination addresses and agent/model `routes` keyed by connected channel
-ID, plus reasons when unavailable. Teleport's routes are the ones that keep the
-conversation's own agent, so a channel with none cannot take it. Summon hands the
-conversation over where it is: its `here` is this conversation's address and its
-`routes` the other agents this channel runs. `source` is the conversation's own address, whose `shared` says
-whether anyone besides you can read it, and `barred` names each connected channel
-nothing can land in, with why.
-The header uses this response to enable its choices and refreshes it when you
-open the action controls; an operation is unavailable only when its `reason` is
-set. An empty list of suggestions sets none by itself, since the destination
-browser can still find a place. Teleport's reason is set when the source agent is
-not connected or cannot fork its session, when the conversation is shared and its
-chat can start no sub-thread, or when no connected channel runs an agent that can
-continue the history. Whether a thread from another channel is shared is read
-from its address by that channel: a Slack assistant pane, a thread in a Slack DM
-a Lark one-to-one topic and a Discord private thread are private and can
-teleport, while a public Discord thread and a thread in a Slack channel or Lark
-group are shared and cannot.
-Summon's reason is set for a native session, a group's main channel, or a
-channel that runs no other agent.
+Teleport is unavailable when the conversation's agent is not connected or cannot
+fork its session, when the conversation is shared and its chat can start no
+sub-thread, or when no connected channel runs an agent that can continue it. A
+Slack assistant pane, a thread in a Slack DM, a Lark one-to-one topic and a Discord
+private thread are private and can teleport; a public Discord thread and a thread
+in a Slack channel or Lark group are shared and cannot. A shared thread's full
+history is never carried to another channel.
 
-`GET /api/trunkline/threads/{id}/channels/{channel}/addresses` lists one level of
-a connected channel's destinations, fetched when that level is opened. Each row
-is a `ChannelAddress` whose `metadata` carries its `name`. A row with
-`metadata.inside` is a place to open: pass that value as `?inside=` to list what
-it holds. A row without it is an address a thread can land in, unless
-`metadata.barred` says why it cannot. Discord lists servers, then the channels
-you can see in one. A channel that cannot be browsed, has no connected agent, or
-is not linked to your account answers 409 with the reason. A listed address is a
-suggestion: it is validated again when Teleport submits it. The
-destination browser calls it once per level opened.
+Summon is unavailable for a native session, a group's main channel, or a channel
+that runs no other agent. It hands over only the brief.
 
-`POST /api/trunkline/threads/{id}/teleport` accepts a `ChannelAddress` as
-`destination`, a `new_thread` flag (true by default), an opening hint and an
-optional `prompt`, which runs in the Trunkline thread it lands in, on the same
-stream; another destination refuses it. The thread it lands in is about the
-source's project, when the source has one.
-The console sends no `new_thread`: Teleport opens a thread at the destination
-picked. `POST /api/trunkline/threads/{id}/summon` takes an agent, model, brief (up
-to 8,000 characters) and hint, and hands the conversation over in place. Both
-require access to the source thread and
-refuse active gateway turns or pending approvals/questions. They stream native
-run events, ending with `gateway` and the destination address; execution
-failures appear as `run_error` events. Every run opens with a `custom` event
-named `run_started`, carrying the address of the thread it runs in. A message's stream, and the stream of
-an answered approval or question, also end with a `gateway` event when the agent
-moved the conversation to another thread during the turn; its `action` names the
-spell, `teleport` or `scheme`.
+A native Codex or Claude Code session teleports with its latest fully uploaded
+turn, keeping its model and permissions. Native DeepSeek sessions, and driven
+agents that cannot fork their session, cannot teleport yet. The thread a move
+lands in shows up in your thread list and is about the same project as the one it
+left.
 
-Native Codex and Claude Code teleport imports the latest fully uploaded completed
-turn through the runtime's transcript fork, preserving its model and permissions.
-It uses the first compatible agent of the same runtime in the selected
-destination's route order. Native DeepSeek and driven harnesses without
-independent session forking remain unavailable. The API refuses to export a
-shared thread's full history across channels. Summon transfers only the supplied
-brief.
-
-The destination's existing opening message is recorded with the requesting
-user's identity so the new thread appears in their list. A native session's
-import notice provides this attribution instead. No additional arrival hint is sent.
+The console's HTTP API, its request bodies and the events it streams are in the
+[API reference](../../api/tentacles/trunkline.md).
 
 ## The console surface
 

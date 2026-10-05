@@ -68,6 +68,7 @@ from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
@@ -116,6 +117,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# What a driven turn reads, in order: the session's frames, and a batch it paused on.
+type TurnFrame = (
+    SessionEventFrame | SessionAssistantFrame | StreamErrorFrame | ActionBatchEvent
+)
+
+
 @dataclass
 class DeepseekBridgeContext:
     """The driven turn a dsh approval or question is answered for.
@@ -125,10 +132,12 @@ class DeepseekBridgeContext:
     """
 
     conversation: Conversation
-    conversation_address: ChannelAddress
-    run_name: str | None
     session_allowed: set[str]
     interactive: bool
+    # What a request pauses the turn on, and the turn's own frames, where its
+    # batch joins the stream.
+    suspender: DeferredSuspender | None
+    frames: asyncio.Queue[TurnFrame]
 
 
 @dataclass
@@ -166,9 +175,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     mux_socket: ClientConnection | None = field(default=None, init=False, repr=False)
     mux_task: asyncio.Task[None] | None = field(default=None, init=False, repr=False)
     closing: bool = field(default=False, init=False)
-    subscribers: dict[
-        str, asyncio.Queue[SessionEventFrame | SessionAssistantFrame | StreamErrorFrame]
-    ] = field(default_factory=dict, init=False)
+    subscribers: dict[str, asyncio.Queue[TurnFrame]] = field(
+        default_factory=dict, init=False
+    )
     bridge_contexts: dict[str, DeepseekBridgeContext] = field(
         default_factory=dict, init=False
     )
@@ -724,28 +733,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         context: DeepseekBridgeContext,
         requests: DeferredToolRequests,
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        channel = self.octomate.channels.get(
-            context.conversation_address.channel_tentacle_id
-        )
-        if channel is None:
-            raise RuntimeError(
-                "no channel "
-                f"{context.conversation_address.channel_tentacle_id!r} to present "
-                "a dsh approval/question"
-            )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=context.conversation,
-            agent_tentacle_id=self.id,
-            run_name=context.run_name,
-            source_address=context.conversation_address,
-            target_address=context.conversation_address,
-            target_mode="sub"
-            if context.conversation_address.channel_thread_id
-            else "main",
-            decision=None,
-            requests=requests,
-        )
+        if context.suspender is None:
+            raise RuntimeError("a dsh approval mid-turn needs a suspender to pause on")
+        batch, event = await context.suspender.pause(requests)
+        if event is not None:
+            context.frames.put_nowait(event)
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
@@ -819,6 +811,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         deepseek_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
@@ -967,16 +960,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
                     # Subscribe before prompting, so the turn's first frames cannot
                     # slip between the prompt and the queue.
-                    queue: asyncio.Queue[
-                        SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
-                    ] = asyncio.Queue()
+                    queue: asyncio.Queue[TurnFrame] = asyncio.Queue()
                     self.subscribers[session_id] = queue
                     self.bridge_contexts[session_id] = DeepseekBridgeContext(
                         conversation=conversation,
-                        conversation_address=conversation_address,
-                        run_name=run_name,
                         session_allowed=set(conversation.allowed_tools),
                         interactive=interactive,
+                        suspender=deferred_suspender,
+                        frames=queue,
                     )
                     prompted = False
                     socket = self.mux_socket
@@ -1005,6 +996,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         prompted = True
                         while not accumulator.turn_ended:
                             frame = await queue.get()
+                            if isinstance(frame, ActionBatchEvent):
+                                # A batch the turn paused on, for whoever draws the run.
+                                yield frame
+                                continue
                             if isinstance(frame, StreamErrorFrame):
                                 accumulator.turn_error = f"dsh event stream failed mid-turn: {frame.error.message}"
                                 break
@@ -1204,6 +1199,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
+                deferred_suspender=deferred_suspender,
             )
         ):
             if isinstance(event, AgentRunResultEvent):
@@ -1319,6 +1315,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     interactive=interactive,
                     instructions=instructions,
                     capabilities=capabilities,
+                    deferred_suspender=deferred_suspender,
                 )
             )
         )

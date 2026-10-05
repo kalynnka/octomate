@@ -36,7 +36,7 @@ const routes: ApiAgentRoute[] = [
   { agent_id: 'claude', model: 'haiku', claim: { ability: 'Quick answers', efforts: [], default_effort: null } },
 ]
 const request: GatewayRequest = { action: 'teleport', body: { destination: room, hint: 'Continue here' } }
-const gateway: GatewayEvent = { event_kind: 'gateway', action: 'teleport', destination: {
+const gateway: GatewayEvent = { event_kind: 'gateway', action: 'teleport', announcement: 'Continue here', destination: {
   channel_tentacle_id: 'lark', chat_type: 'thread', chat_id: 'account', channel_thread_id: 'platform-id', user_id: 'owner', shared: false,
 } }
 const result: WireEvent = { event_kind: 'run_result', output: 'Arrived', usage: { requests: 1, tool_calls: 0, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } }
@@ -80,7 +80,7 @@ for (const action of ['teleport', 'summon'] as const) {
     const payload: GatewayRequest = action === 'teleport' ? request : { action, body: {
       agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Handing over', effort: 'high',
     } }
-    const fetch = mock.method(globalThis, 'fetch', async () => sse(result, { ...gateway, action }))
+    const fetch = mock.method(globalThis, 'fetch', async () => sse({ ...gateway, action }, result))
     const events: WireEvent[] = []
     assert.deepEqual(await streamGateway('source/id', payload, (event) => events.push(event)), { ...gateway, action })
     assert.deepEqual(events, [result])
@@ -160,20 +160,30 @@ test('HTTP refusals preserve their reason and are not retried', async () => {
 })
 
 test('a failed or incomplete stream cannot report a successful gateway action', async () => {
-  const fetch = mock.method(globalThis, 'fetch', async () => sse(result, gateway, { event_kind: 'run_error', message: 'Landing failed' }))
+  const fetch = mock.method(globalThis, 'fetch', async () => sse(gateway, { event_kind: 'run_error', message: 'Landing failed', trace_id: 'abc' }))
   await assert.rejects(streamGateway('source', request, () => {}), /Landing failed/)
   fetch.mock.mockImplementation(async () => sse(result))
   await assert.rejects(streamGateway('source', request, () => {}), /without confirming a destination/)
+  // Another spell's move does not confirm this one.
+  fetch.mock.mockImplementation(async () => sse({ ...gateway, action: 'scheme' }, result))
+  await assert.rejects(streamGateway('source', request, () => {}), /without confirming a destination/)
+})
+
+test('a move the agent makes after the operation is where it ends', async () => {
+  const onward: GatewayEvent = { ...gateway, action: 'scheme', announcement: null, destination: { ...gateway.destination, chat_type: 'dm', channel_thread_id: null } }
+  mock.method(globalThis, 'fetch', async () => sse(gateway, result, onward))
+  assert.deepEqual(await streamGateway('source', request, () => {}), onward)
 })
 
 const landedAt: ChannelAddress = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: 'landed-key', shared: false }
 const started: WireEvent = { event_kind: 'custom', name: 'run_started', address: landedAt }
-const refusedRun: WireEvent = { event_kind: 'run_error', message: 'The model refused.' }
+const refusedRun: WireEvent = { event_kind: 'run_error', message: 'The model refused.', trace_id: 'abc' }
+const moved: GatewayEvent = { ...gateway, destination: landedAt }
 
 test('a run started where the move landed carries its own failure', async () => {
-  mock.method(globalThis, 'fetch', async () => sse(started, refusedRun))
+  mock.method(globalThis, 'fetch', async () => sse(moved, started, refusedRun))
   const events: WireEvent[] = []
-  assert.equal(await streamGateway('source', request, (event) => events.push(event)), undefined)
+  assert.deepEqual(await streamGateway('source', request, (event) => events.push(event)), moved)
   assert.deepEqual(events, [started, refusedRun])
 })
 
@@ -190,7 +200,7 @@ async function followMove(...events: WireEvent[]) {
 }
 
 test('a run starting where the move landed opens that thread at once and streams there', async () => {
-  const { selected, state } = await followMove(started, result, { ...gateway, destination: landedAt })
+  const { selected, state } = await followMove(moved, started, result)
   assert.deepEqual(selected, [['trunkline', 'landed-id']])
   assert.ok(state.live.some((item) => item.kind === 'stream' && item.text === 'Arrived'))
   assert.equal(state.running, false)
@@ -198,7 +208,7 @@ test('a run starting where the move landed opens that thread at once and streams
 })
 
 test('a run that fails after the move shows its failure where it landed', async () => {
-  const { selected, state } = await followMove(started, refusedRun)
+  const { selected, state } = await followMove(moved, started, refusedRun)
   assert.deepEqual(selected, [['trunkline', 'landed-id']])
   assert.ok(state.live.some((item) => item.kind === 'notice' && item.text.includes('The model refused.')))
   assert.deepEqual(state.notices, [])
@@ -206,7 +216,7 @@ test('a run that fails after the move shows its failure where it landed', async 
 
 test('successful arrival selects the thread matching the complete channel address', async () => {
   const wrong = { ...destination, id: 'wrong', chat_id: 'other-account' }
-  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(result, gateway) : Response.json([wrong, destination]))
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(gateway, result) : Response.json([wrong, destination]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
   useConsole.getState().actions.setGatewayMode({ threadId: 'source', action: 'teleport' })
   await useConsole.getState().actions.gateway('source', request)
@@ -219,7 +229,7 @@ test('arrival does not navigate away from a different thread selected during the
   mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => {
     if (String(url).endsWith('/teleport')) {
       useConsole.setState({ selThreadId: 'another' })
-      return sse(result, gateway)
+      return sse(gateway, result)
     }
     return Response.json([destination])
   })
@@ -243,7 +253,7 @@ test('a turn the agent moved opens where it landed, and one that stayed opens no
 })
 
 test('missing destination visibility is reported in the message panel', async () => {
-  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(result, gateway) : Response.json([]))
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(gateway, result) : Response.json([]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
   await useConsole.getState().actions.gateway('source', request)
   assert.equal(select.mock.callCount(), 0)
@@ -251,7 +261,7 @@ test('missing destination visibility is reported in the message panel', async ()
 })
 
 test('an error after a run result still appears in the message panel', async () => {
-  mock.method(globalThis, 'fetch', async () => sse(result, { event_kind: 'run_error', message: 'The destination could not create a thread.' }))
+  mock.method(globalThis, 'fetch', async () => sse(result, { event_kind: 'run_error', message: 'The destination could not create a thread.', trace_id: 'abc' }))
   await useConsole.getState().actions.gateway('source', request)
   assert.ok(useConsole.getState().notices.some((one) => one.kind === 'notice' && one.text.includes('could not create a thread')))
 })

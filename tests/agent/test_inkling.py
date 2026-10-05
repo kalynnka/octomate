@@ -45,7 +45,11 @@ from octomate.capabilities.harness.react import (
 from octomate.capabilities.todos import TodoCapability
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import DeferredActionCollection, DeferredApproval
+from octomate.schemas.deferred import (
+    DeferredActionBatch,
+    DeferredActionCollection,
+    DeferredApproval,
+)
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.triage import TELEPORT_DEFER_KIND
 from octomate.tentacles.inkling import (
@@ -90,6 +94,11 @@ class StubSuspender:
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
+
+    async def pause(
+        self, requests: DeferredToolRequests
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+        raise AssertionError("an Inkling run suspends; it never pauses live")
 
 
 @dataclass

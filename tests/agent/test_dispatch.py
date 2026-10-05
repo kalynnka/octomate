@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
 from octomate.capabilities.harness.agent import Agent
+from octomate.capabilities.harness.events import RunErrorEvent
 from octomate.config import (
     ChannelConfig,
     ChannelStreamConfig,
@@ -353,6 +354,11 @@ async def test_teleport_on_main_only_channel_refuses_the_move() -> None:
     with pytest.raises(ValueError, match="nothing was teleported"):
         await octomate.kick(UserMessageSignal([_event(text="do it")]))
 
+    # The graph tells the chat the turn failed; the channel only shows it.
+    [(where, failed)] = channel.presented
+    assert where == _key()
+    assert isinstance(failed, RunErrorEvent)
+    assert "nothing was teleported" in failed.message
     assert channel.sub_threads == []
     assert entry.turns[-1].address == _key()
     assert len(entry.turns) == 1

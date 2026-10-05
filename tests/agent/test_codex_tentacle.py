@@ -53,6 +53,9 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.capabilities.harness.deferred import Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
@@ -74,7 +77,6 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
-from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
@@ -394,28 +396,6 @@ class ApprovalFakeTurn(FakeTurn):
 
 
 @dataclass
-class FakeFeelers:
-    batch: FakePresentedBatch
-    requests: list[object] = field(default_factory=list)
-    presented: asyncio.Event = field(default_factory=asyncio.Event)
-
-    async def present_actions(
-        self, *, requests: object, **_: object
-    ) -> FakePresentedBatch:
-        self.requests.append(requests)
-        self.presented.set()
-        return self.batch
-
-
-def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
-    """The `im` channel the tentacle presents approvals and questions through,
-    its feelers recording what was asked."""
-    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
-    channel.feelers = cast(Feelers, feelers)
-    return channel
-
-
-@dataclass
 class RecordingDeferredActions:
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
     marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
@@ -569,19 +549,21 @@ def _tentacle(
 
 
 def codex_bridge_context(
-    conversation: FakeConversation,
+    conversation: FakeConversation, suspender: RecordingSuspender
 ) -> codex_base.CodexBridgeContext:
     return codex_base.CodexBridgeContext(
         loop=asyncio.get_running_loop(),
         conversation=cast(codex_base.Conversation, conversation),
-        conversation_address=KEY,
-        run_name="react",
         session_allowed=set(conversation.allowed_tools),
+        suspender=suspender,
+        interjections=Interjections[Notification](),
     )
 
 
-async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uuid.UUID:
-    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
+async def wait_for_pending(
+    tentacle: CodexTentacle, suspender: RecordingSuspender
+) -> uuid.UUID:
+    await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
     return next(iter(tentacle.pending))
 
 
@@ -996,12 +978,11 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     octomate = Octomate(
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -1010,26 +991,30 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     )
     octomate.connect(tentacle)
 
-    async def drain() -> None:
+    async def drain() -> list[ReactStreamEvent[str]]:
         async with tentacle.run_stream_events(
             "run tests",
             conversation_address=KEY,
             thread_id=_THREAD,
+            deferred_suspender=suspender,
         ) as stream:
-            async for _event in stream:
-                pass
+            return [event async for event in stream]
 
     async with tentacle:
         task = asyncio.ensure_future(drain())
-        batch_id = await wait_for_pending(tentacle, feelers)
+        batch_id = await wait_for_pending(tentacle, suspender)
         await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
             )
         )
-        await task
+        events = await task
 
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
+    # The batch rides the turn's own stream, for whoever draws the run to present.
+    assert [
+        event.batch_id for event in events if isinstance(event, ActionBatchEvent)
+    ] == [str(suspender.batch.id)]
     assert deferred_actions.resolved
     assert FakeCodex.approval_responses == [{"decision": "accept"}]
 
@@ -1040,12 +1025,11 @@ async def test_question_requests_bridge_to_cards() -> None:
         tool_call_id="ask-1",
         args={"question": "Which branch?"},
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(questions=[question]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(questions=[question]))
     deferred_actions = RecordingDeferredActions()
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -1053,7 +1037,7 @@ async def test_question_requests_bridge_to_cards() -> None:
         config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -1068,7 +1052,7 @@ async def test_question_requests_bridge_to_cards() -> None:
             },
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -1077,7 +1061,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     )
     response = await task
 
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
     assert deferred_actions.resolved
     assert response == {
         "action": "accept",
@@ -1096,18 +1080,17 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
         tool_call_id="mcp-1",
         args=ApprovalRequest(tool_name="codex_mcp_octomate_driven"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     octomate = Octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex", octomate, config=CodexConfig(permission_mode="user_review")
     )
     octomate.connect(tentacle)
     tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
-        FakeConversation(thread_id=_THREAD)
+        FakeConversation(thread_id=_THREAD), suspender
     )
 
     task = asyncio.create_task(
@@ -1129,7 +1112,7 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
             },
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: approved}
@@ -1137,7 +1120,7 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
     )
     response = await task
 
-    [presented] = feelers.requests
+    [presented] = suspender.paused
     assert isinstance(presented, DeferredToolRequests)
     assert presented.calls == []
     [call] = presented.approvals
@@ -1156,13 +1139,12 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -1170,7 +1152,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -1180,7 +1162,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -1201,7 +1183,9 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         ),
     )
     octomate.connect(timeout_tentacle)
-    timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
+        conversation, suspender
+    )
     timeout_task = asyncio.create_task(
         asyncio.to_thread(
             timeout_tentacle.handle_sdk_request,
@@ -1223,14 +1207,13 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     conversation = FakeConversation(thread_id=_THREAD)
     conversations = FakeConversationManager()
     octomate = Octomate(
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -1238,7 +1221,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -1248,7 +1231,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -1269,7 +1252,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     assert response == {"decision": "accept"}
     assert second_response == {"decision": "accept"}
     assert conversation.allowed_tools == ["codex_command_execution"]
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
 
 
 @pytest.mark.parametrize(

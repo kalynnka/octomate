@@ -73,6 +73,8 @@ class DrivenGatewaySignal:
     agent_id: str
     user_profile: UserProfile
     source: ChannelAddress
+    # The channel the operation was performed in, which hears how it goes.
+    operated_from: str
 
 
 type AwakeSignal = (

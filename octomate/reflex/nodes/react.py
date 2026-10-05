@@ -239,14 +239,13 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                                 yield event
 
                     try:
-                        async with target_channel.feelers.timeline.open(
-                            target_address
-                        ) as timeline_state:
-                            with target_channel.feelers.driving(
-                                target_address, timeline_state
-                            ):
-                                async with aclosing(stream_events()) as events:
-                                    await timeline_state.drive(events)
+                        async with (
+                            target_channel.feelers.timeline.open(
+                                target_address
+                            ) as timeline_state,
+                            aclosing(stream_events()) as events,
+                        ):
+                            await timeline_state.drive(events)
                     except AgentRunError:
                         # A model/provider failure (e.g. invalid Bedrock credentials)
                         # surfaces here from the run stream itself, not the render. It
@@ -412,7 +411,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                             run_name=state.run_name,
                             result=run_result,
                             batch_id=suspender.suspended_batch_id,
-                            moved_by=state.moved_by,
                         )
                     )
 
@@ -476,7 +474,6 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         decision=decision,
                         target=target,
                         result=run_result,
-                        moved_by=state.moved_by,
                     )
                 )
 

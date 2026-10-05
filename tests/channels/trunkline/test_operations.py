@@ -261,13 +261,16 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         for line in response.text.splitlines()
         if line.startswith("data: ")
     ]
-    # The run there is announced before it streams, so the console can follow it.
+    # The move, then the run where it landed, so the console can follow it there.
     assert [event["event_kind"] for event in events] == [
-        "message_sent",  # the move, announced where it left
+        "gateway",
         "custom",
         "run_result",
-        "gateway",
     ]
+    moved = events[0]
+    assert moved["action"] == "teleport"
+    assert moved["announcement"] == "Continuing this conversation here."
+    assert moved["destination"]["channel_thread_id"] == landed.channel_thread_id
     assert events[1]["name"] == "run_started"
     assert events[1]["address"]["channel_thread_id"] == landed.channel_thread_id
 

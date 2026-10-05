@@ -47,7 +47,6 @@ from pydantic_ai.messages import (
     TextPartDelta,
     ThinkingPart,
     ThinkingPartDelta,
-    ToolCallPart,
     ToolReturnPart,
 )
 from pydantic_ai.tools import DeferredToolRequests
@@ -63,6 +62,8 @@ from octomate.capabilities.harness.events import (
     StreamEvents,
     SubagentActivity,
     SubagentActivityStatus,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -626,105 +627,53 @@ class TimelineState:
         """Ignore child activity when this timeline has no streaming renderer."""
         yield SubagentTimelineState()
 
-    async def observe_subagent_part(
-        self,
-        part: ToolCallPart | ToolReturnPart | RetryPromptPart,
-    ) -> None:
-        if isinstance(part, ToolCallPart):
-            if part.tool_name not in {GatewayTool.COMMISSION, GatewayTool.WHISPER}:
-                return
-            args = part.args_as_dict()
-            name = args.get("name")
-            if not isinstance(name, str) or not name:
-                logger.warning(
-                    "Subagent tool %s has no display name; skipping its timeline",
-                    part.tool_call_id,
-                )
-                return
-            activity = SubagentActivity(
-                invocation_id=part.tool_call_id,
-                kind="commission"
-                if part.tool_name == GatewayTool.COMMISSION
-                else "whisper",
-                name=name,
+    async def start_subagent(self, event: SubagentStartedEvent) -> None:
+        """Open an accomplice's own timeline; a renderer that fails is logged and
+        never interrupts the parent's stream."""
+        context = self.open_subagent(
+            SubagentActivity(
+                invocation_id=event.invocation_id, kind=event.kind, name=event.name
             )
-            context = self.open_subagent(activity)
-            try:
-                state = await context.__aenter__()
-            except Exception:
-                logger.warning(
-                    "Subagent timeline %s failed to open",
-                    part.tool_call_id,
-                    exc_info=True,
-                )
-                return
-            if self.subagent_timelines is None:
-                self.subagent_timelines = {}
-            previous = self.subagent_timelines.pop(part.tool_call_id, None)
-            if previous is not None:
-                await self.settle_subagent(previous, "failed")
-            self.subagent_timelines[part.tool_call_id] = OpenSubagentTimeline(
-                context=context,
-                state=state,
+        )
+        try:
+            state = await context.__aenter__()
+        except Exception:
+            logger.warning(
+                "Subagent timeline %s failed to open",
+                event.invocation_id,
+                exc_info=True,
             )
             return
+        if self.subagent_timelines is None:
+            self.subagent_timelines = {}
+        self.subagent_timelines[event.invocation_id] = OpenSubagentTimeline(
+            context=context,
+            state=state,
+        )
 
+    async def finish_subagent(self, event: SubagentSettledEvent) -> None:
         if self.subagent_timelines is None:
             return
-        timeline = self.subagent_timelines.pop(part.tool_call_id, None)
+        timeline = self.subagent_timelines.pop(event.invocation_id, None)
         if timeline is None:
             return
-        response = tool_result_text(part)
-        if response:
+        if event.response:
             try:
-                await timeline.state.append_response(response)
+                await timeline.state.append_response(event.response)
             except Exception:
                 logger.warning(
                     "Subagent timeline %s failed to render its response",
-                    part.tool_call_id,
+                    event.invocation_id,
                     exc_info=True,
                 )
-        status: SubagentActivityStatus = "completed"
-        if isinstance(part, RetryPromptPart) or (
-            isinstance(part, ToolReturnPart) and part.outcome != "success"
-        ):
-            status = "failed"
-        await self.settle_subagent(timeline, status)
-
-    async def observe_subagent_event(
-        self,
-        event: StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput],
-    ) -> None:
-        if isinstance(event, FunctionToolCallEvent | FunctionToolResultEvent):
-            try:
-                await self.observe_subagent_part(event.part)
-            except Exception:
-                logger.warning(
-                    "Subagent timeline failed to consume event",
-                    exc_info=True,
-                )
-
-    async def settle_subagent(
-        self,
-        timeline: OpenSubagentTimeline,
-        status: SubagentActivityStatus,
-    ) -> None:
         try:
-            await timeline.state.settle(status)
+            await timeline.state.settle(event.status, event.detail)
         except Exception:
             logger.warning("Subagent timeline failed to settle", exc_info=True)
         try:
             await timeline.context.__aexit__(None, None, None)
         except Exception:
             logger.warning("Subagent timeline failed to close", exc_info=True)
-
-    async def settle_subagents(self, status: SubagentActivityStatus) -> None:
-        if self.subagent_timelines is None:
-            return
-        timelines = list(self.subagent_timelines.values())
-        self.subagent_timelines.clear()
-        for timeline in timelines:
-            await self.settle_subagent(timeline, status)
 
     async def drive(
         self,
@@ -742,7 +691,11 @@ class TimelineState:
         answered = False
         final_output: ChannelOutput = None
         async for event in stream:
-            await self.observe_subagent_event(event)
+            # Ahead of the render-failure skip: an accomplice's surface still settles.
+            if isinstance(event, SubagentStartedEvent):
+                await self.start_subagent(event)
+            elif isinstance(event, SubagentSettledEvent):
+                await self.finish_subagent(event)
             if failed:
                 continue  # keep draining the stream even after a render failure
             try:
@@ -847,8 +800,8 @@ class TimelineState:
             await self.answer_delta(str(final_output))
 
     async def present_actions(self, event: ActionBatchEvent) -> None:
-        """Render a deferred-action batch as a unit, then record each presented
-        action's platform message id."""
+        """Render a deferred-action batch as a unit, record each presented
+        action's platform message id, then settle the surface."""
         if event.questions:
             message_ids = await self.ask_questions.present(
                 self.address,
@@ -864,13 +817,22 @@ class TimelineState:
                 await self.deferred_actions.mark_action_presented(
                     action.id, message_ids.get(action.id)
                 )
+        # The cards are the load-bearing part and are already up; the settle is a
+        # UI hint, and a render hiccup must not fail the presentation.
+        try:
+            await self.actions_presented()
+        except Exception:
+            logger.warning(
+                "Channel %s: timeline failed to settle after presenting actions",
+                self.address.channel_tentacle_id,
+                exc_info=True,
+            )
 
     async def actions_presented(self) -> None:
-        """A deferred-action batch was just presented into this timeline's
-        thread from *outside* its stream — an agent's in-process bridge parking
-        its live run on a human. Nothing will flow until the answer, so a
-        surface with live status should settle it and say so; the base renders
-        no status, so there is nothing to settle."""
+        """A deferred-action batch was just presented in this timeline's thread,
+        and the run is parked on a human. Nothing will flow until the answer, so a
+        surface with live status should settle it and say so; the base renders no
+        status, so there is nothing to settle."""
 
     async def begin_entry(self) -> None:
         """A new timeline entry is opening: if answer content streamed since
@@ -1210,9 +1172,5 @@ class DefaultTimelineFeeler[RawT, MessageT](TimelineFeeler):
         )
         try:
             yield state
-        except asyncio.CancelledError:
-            await state.settle_subagents("cancelled")
-            raise
         finally:
-            await state.settle_subagents("failed")
             await state.send_parts(todo_block=True)

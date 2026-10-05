@@ -30,7 +30,8 @@ from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.config import ChannelConfig
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
@@ -50,17 +51,15 @@ from octomate.tentacles.deepseek.wire import (
     MuxFrame,
     QuestionRequestedFrame,
     RpcReceipt,
-    SessionAssistantFrame,
     SessionEventFrame,
     StreamErrorFrame,
 )
-from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject, JsonValue
-from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakePresentedBatch,
+    RecordingSuspender,
     a_thread,
 )
 
@@ -301,28 +300,6 @@ def calls_of(method: str) -> list[JsonValue]:
 
 
 @dataclass
-class FakeFeelers:
-    batch: FakePresentedBatch
-    requests: list[object] = field(default_factory=list)
-    presented: asyncio.Event = field(default_factory=asyncio.Event)
-
-    async def present_actions(
-        self, *, requests: object, **_: object
-    ) -> FakePresentedBatch:
-        self.requests.append(requests)
-        self.presented.set()
-        return self.batch
-
-
-def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
-    """The `im` channel the tentacle presents approvals and questions through,
-    its feelers recording what was asked."""
-    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
-    channel.feelers = cast(Feelers, feelers)
-    return channel
-
-
-@dataclass
 class RecordingDeferredActions:
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
     marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
@@ -359,33 +336,34 @@ def _tentacle(
 
 
 def bridge_context(
-    conversation: FakeConversation, *, interactive: bool = True
+    conversation: FakeConversation,
+    suspender: RecordingSuspender,
+    *,
+    interactive: bool = True,
 ) -> deepseek_base.DeepseekBridgeContext:
     return deepseek_base.DeepseekBridgeContext(
         conversation=cast(deepseek_base.Conversation, conversation),
-        conversation_address=KEY,
-        run_name="react",
         session_allowed=set(conversation.allowed_tools),
         interactive=interactive,
+        suspender=suspender,
+        frames=asyncio.Queue(),
     )
 
 
 async def wait_for_pending(
-    tentacle: DeepseekTentacle, feelers: FakeFeelers
+    tentacle: DeepseekTentacle, suspender: RecordingSuspender
 ) -> uuid.UUID:
-    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
+    await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
     return next(iter(tentacle.pending))
 
 
 def interaction_octomate(
-    feelers: FakeFeelers,
     deferred_actions: RecordingDeferredActions,
     conversations: FakeConversationManager | None = None,
 ) -> Octomate:
     return Octomate(
         conversations=conversations or FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
 
 
@@ -1005,27 +983,41 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
         tool_call_id="ap-1",
         args=ApprovalRequest(tool_name="bash"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     conversations = FakeConversationManager()
-    octomate = interaction_octomate(feelers, deferred_actions, conversations)
+    octomate = interaction_octomate(deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
     octomate.connect(tentacle)
 
+    async def drain() -> list[ReactStreamEvent[str]]:
+        async with tentacle.run_stream_events(
+            "dangerous",
+            conversation_address=KEY,
+            thread_id=_THREAD,
+            deferred_suspender=suspender,
+        ) as stream:
+            return [event async for event in stream]
+
     async with tentacle:
-        run = asyncio.ensure_future(
-            tentacle.run("dangerous", conversation_address=KEY, thread_id=_THREAD)
-        )
-        batch_id = await wait_for_pending(tentacle, feelers)
+        run = asyncio.ensure_future(drain())
+        batch_id = await wait_for_pending(tentacle, suspender)
         await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
             )
         )
-        result = await run
+        events = await run
 
+    [result] = [
+        event.result for event in events if isinstance(event, AgentRunResultEvent)
+    ]
     assert result.output == "released"
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
+    # The batch rides the turn's own stream, for whoever draws the run to present.
+    assert [
+        event.batch_id for event in events if isinstance(event, ActionBatchEvent)
+    ] == [str(suspender.batch.id)]
     [(rpc_id, response)] = FakeDeepseekApi.responds
     assert rpc_id == "rpc-2"
     assert isinstance(response, OkResult)
@@ -1037,16 +1029,16 @@ async def test_a_declined_approval_answers_rejected() -> None:
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
-    octomate = interaction_octomate(feelers, deferred_actions)
+    octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
     tentacle.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     conversation = FakeConversation(thread_id=_THREAD)
-    tentacle.bridge_contexts["sess-1"] = bridge_context(conversation)
+    tentacle.bridge_contexts["sess-1"] = bridge_context(conversation, suspender)
     frame = ApprovalRequestedFrame(
         type="approval/requested",
         session_id="sess-1",
@@ -1055,7 +1047,7 @@ async def test_a_declined_approval_answers_rejected() -> None:
     )
 
     task = asyncio.create_task(tentacle.answer_interaction("rpc-9", frame))
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
     )
@@ -1072,9 +1064,9 @@ async def test_an_expired_approval_answers_cancelled() -> None:
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
-    octomate = interaction_octomate(feelers, deferred_actions)
+    octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(
         FakeConversationManager(),
         config=DeepseekConfig(approval_timeout=0.01),
@@ -1085,7 +1077,7 @@ async def test_an_expired_approval_answers_cancelled() -> None:
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
-        FakeConversation(thread_id=_THREAD)
+        FakeConversation(thread_id=_THREAD), suspender
     )
     frame = ApprovalRequestedFrame(
         type="approval/requested",
@@ -1108,17 +1100,17 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
     deferred_actions = RecordingDeferredActions()
     conversations = FakeConversationManager()
-    octomate = interaction_octomate(feelers, deferred_actions, conversations)
+    octomate = interaction_octomate(deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
     octomate.connect(tentacle)
     tentacle.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     conversation = FakeConversation(thread_id=_THREAD)
-    tentacle.bridge_contexts["sess-1"] = bridge_context(conversation)
+    tentacle.bridge_contexts["sess-1"] = bridge_context(conversation, suspender)
     frame = ApprovalRequestedFrame(
         type="approval/requested",
         session_id="sess-1",
@@ -1127,7 +1119,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     )
 
     task = asyncio.create_task(tentacle.answer_interaction("rpc-1", frame))
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
@@ -1143,7 +1135,7 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     await tentacle.answer_interaction("rpc-2", second)
 
     assert conversation.allowed_tools == ["bash"]
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
     outcomes = [
         response.value
         for _rpc, response in FakeDeepseekApi.responds
@@ -1154,15 +1146,16 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
 
 async def test_a_non_interactive_run_declines_without_a_card() -> None:
     FakeDeepseekApi.reset()
-    feelers = FakeFeelers(batch=FakePresentedBatch())
-    octomate = interaction_octomate(feelers, RecordingDeferredActions())
+    suspender = RecordingSuspender()
+    deferred_actions = RecordingDeferredActions()
+    octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
     tentacle.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
-        FakeConversation(thread_id=_THREAD), interactive=False
+        FakeConversation(thread_id=_THREAD), suspender, interactive=False
     )
 
     await tentacle.answer_interaction(
@@ -1175,7 +1168,7 @@ async def test_a_non_interactive_run_declines_without_a_card() -> None:
         ),
     )
 
-    assert not feelers.requests
+    assert not suspender.paused
     [(_rpc, response)] = FakeDeepseekApi.responds
     assert isinstance(response, OkResult)
     assert response.value == "rejected"
@@ -1216,16 +1209,16 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
         position=1,
         args={"question": "Anything else?"},
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(questions=[first, second]))
+    suspender = RecordingSuspender(batch=FakePresentedBatch(questions=[first, second]))
     deferred_actions = RecordingDeferredActions()
-    octomate = interaction_octomate(feelers, deferred_actions)
+    octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
     tentacle.client = cast(
         DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
     )
     tentacle.bridge_contexts["sess-1"] = bridge_context(
-        FakeConversation(thread_id=_THREAD)
+        FakeConversation(thread_id=_THREAD), suspender
     )
     frame = QuestionRequestedFrame.model_validate(
         {
@@ -1243,7 +1236,7 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
     )
 
     task = asyncio.create_task(tentacle.answer_interaction("rpc-9", frame))
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -1576,9 +1569,7 @@ async def test_rejected_interaction_reply_fails_its_run(
     tentacle = _tentacle(FakeConversationManager())
     api = FakeDeepseekApi(HttpUrl("http://t"), None)
     tentacle.client = cast(DeepseekApiClient, api)
-    queue: asyncio.Queue[
-        SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
-    ] = asyncio.Queue()
+    queue: asyncio.Queue[deepseek_base.TurnFrame] = asyncio.Queue()
     tentacle.subscribers["sess-1"] = queue
 
     async def refuse(event_id: str, result: RpcResult | None) -> RpcReceipt:

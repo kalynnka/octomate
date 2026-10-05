@@ -36,6 +36,8 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
     ResultSegmentEvent,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -600,7 +602,8 @@ def mid_run_notice(
 
 def subagent_run() -> ChannelScript:
     """Two parallel commissions from a real DeepSeek Flash Inkling capture, condensed
-    to stable tool events and de-identified for live channel replay."""
+    to stable tool events and de-identified for live channel replay, with the
+    accomplice lifecycle the gateway capability puts around them."""
     timeline_report = (
         "1. **Append-Only** — Once an event is added, it cannot be modified, "
         "deleted, or reordered.\n"
@@ -653,6 +656,11 @@ def subagent_run() -> ChannelScript:
             )
         ),
         *narration("I found the route and am starting both reviews in parallel."),
+        SubagentStartedEvent(
+            invocation_id="call_commission_timeline",
+            kind="commission",
+            name="timeline-contract",
+        ),
         FunctionToolCallEvent(
             ToolCallPart(
                 tool_name="commission",
@@ -664,6 +672,11 @@ def subagent_run() -> ChannelScript:
                 },
                 tool_call_id="call_commission_timeline",
             )
+        ),
+        SubagentStartedEvent(
+            invocation_id="call_commission_failures",
+            kind="commission",
+            name="failure-review",
         ),
         FunctionToolCallEvent(
             ToolCallPart(
@@ -677,12 +690,22 @@ def subagent_run() -> ChannelScript:
                 tool_call_id="call_commission_failures",
             )
         ),
+        SubagentSettledEvent(
+            invocation_id="call_commission_timeline",
+            status="completed",
+            response=timeline_report,
+        ),
         FunctionToolResultEvent(
             ToolReturnPart(
                 tool_name="commission",
                 content=timeline_report,
                 tool_call_id="call_commission_timeline",
             )
+        ),
+        SubagentSettledEvent(
+            invocation_id="call_commission_failures",
+            status="completed",
+            response=failure_report,
         ),
         FunctionToolResultEvent(
             ToolReturnPart(

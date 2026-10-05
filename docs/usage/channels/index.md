@@ -88,8 +88,8 @@ your-channel-profiles).
 | Profile linking | From chat, or Slack OAuth | From chat | From chat, or Discord OAuth | From chat | Not needed |
 
 Subagents get a timeline of their own on Slack, Lark and Discord. Every channel
-posts a one-line error with a trace id when handling a message fails, and ignores a
-message the platform delivers twice.
+posts a one-line error with a trace id when a turn fails, and ignores a message the
+platform delivers twice.
 
 The [threads page](../threads.md) explains what each platform's chats and threads
 become inside Octomate, and where a reply lands.

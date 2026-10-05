@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -310,11 +309,7 @@ class DiscordTimelineFeeler(TimelineFeeler):
             )
             try:
                 yield state
-            except asyncio.CancelledError:
-                await state.settle_subagents("cancelled")
-                raise
             finally:
-                await state.settle_subagents("failed")
                 await state.finish()
 
 

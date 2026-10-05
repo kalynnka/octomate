@@ -87,7 +87,6 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             # for the same agent so follow-ups continue there, and resume against
             # the fork. The runtime prepares its destination handle after the
             # destination workspace is ready.
-            state.moved_by = "teleport"
             if state.thread.kind == "native_thread":
                 source_agent_id = state.thread.active_agent_tentacle_id
                 if (
@@ -246,11 +245,7 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             await state.handoff.land(ctx.deps, state.thread, state.decision)
             state.handoff = None
         await ctx.deps.workspaces.save(state.thread)
-        return End(
-            ReflexResult(
-                decision=state.decision, target=state.target, moved_by=state.moved_by
-            )
-        )
+        return End(ReflexResult(decision=state.decision, target=state.target))
 
     async def bind(
         self,

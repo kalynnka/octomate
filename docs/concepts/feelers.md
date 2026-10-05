@@ -32,6 +32,9 @@ that accumulates and sends one message at the end, plain-text approval and quest
 cards, a plain-text OAuth message. Slack, Lark and Discord replace nearly all of
 them.
 
+Feelers present events and build none. What a channel shows comes from the run's
+stream, or from what the graph reports outside a run: a move, or a failed turn.
+
 The OAuth feeler's `present` is concrete on the base class and resolves the private
 address itself, redirecting a request made on a shared surface to the person's DM
 and raising when the platform has nowhere private. A subclass fills in `send` and
@@ -60,16 +63,17 @@ never gets to pick where it sends.
    a tool call, a todo, never a tool result) calls `begin_entry` first, which
    rotates the surface once if a notice streamed in between. That is what lets a
    mid-run message land between two tool cards instead of inside one.
-6. **Subagents.** A commission opens a child timeline keyed by its tool call; its
-   result appends the response and settles it.
+6. **Subagents.** The run reports each accomplice's start and finish, and the
+   timeline draws it as a child timeline of its own.
 
 Tools the timeline never draws: `ask_questions`, `send`, `commission`, `whisper`,
 `teleport` and the output tool. They are plumbing, not work.
 
 ## Cards and how they come back
 
-Presenting a batch creates it, presents approvals then questions, and records each
-card's platform message id against its action, so the card and the row stay linked.
+The suspender creates the batch and hands it to the channel as one event.
+Presenting it shows approvals then questions and records each card's platform
+message id against its action, so the card and the row stay linked.
 Answering is per channel, and two designs coexist:
 
 - **Slack and Lark** carry the batch's state in the button payload: ids, the

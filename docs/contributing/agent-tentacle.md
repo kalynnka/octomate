@@ -86,9 +86,9 @@ share:
    one; Claude does it in process, Codex over HTTP with a temporary token.
 4. Translate the runtime's events into `StreamEvents` as they arrive, and persist
    the run's messages through `record_agent_run` when it ends.
-5. Raise approvals and questions through the channel's `present_actions`, wait up
-   to `approval_timeout`, and answer the runtime. Mark the batch expired on
-   timeout so the run can finish.
+5. Pause on approvals and questions through the run's suspender, and put the
+   batch it hands back on the run's own stream. Wait up to `approval_timeout` and
+   answer the runtime; mark the batch expired on timeout so the run can finish.
 6. If the gateway recorded a teleport mid-run, interrupt the runtime and end the
    turn through the suspender with the teleport's deferral.
 

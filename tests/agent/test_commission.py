@@ -8,21 +8,33 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
 from octomate_protocol.gateway import GatewayTool
-from pydantic_ai import RunContext
+from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
+    Accomplices,
     GatewayCapability,
+)
+from octomate.capabilities.harness.events import (
+    SubagentSettledEvent,
+    SubagentStartedEvent,
 )
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
@@ -315,3 +327,94 @@ async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
 
     gate, _, _, _ = await _gate()
     assert GatewayTool.COMMISSION in gate.get_instructions()
+
+
+async def _watched(
+    events: list[FunctionToolCallEvent | FunctionToolResultEvent],
+) -> list[AgentStreamEvent]:
+    async def stream() -> AsyncIterator[AgentStreamEvent]:
+        for event in events:
+            yield event
+
+    return [event async for event in Accomplices().watch(stream())]
+
+
+def _call(
+    tool_call_id: str, tool: str = "commission", **args: str
+) -> FunctionToolCallEvent:
+    return FunctionToolCallEvent(
+        ToolCallPart(tool_name=tool, args=args, tool_call_id=tool_call_id)
+    )
+
+
+async def test_an_accomplice_starts_before_its_call_and_settles_before_its_result() -> (
+    None
+):
+    first = _call("call-a", name="audit")
+    second = _call("call-b", tool="whisper", name="tests")
+    done = FunctionToolResultEvent(
+        ToolReturnPart(
+            tool_name="whisper", content="test report", tool_call_id="call-b"
+        )
+    )
+
+    watched = await _watched([first, second, done])
+
+    assert watched == [
+        SubagentStartedEvent(invocation_id="call-a", kind="commission", name="audit"),
+        first,
+        SubagentStartedEvent(invocation_id="call-b", kind="whisper", name="tests"),
+        second,
+        SubagentSettledEvent(
+            invocation_id="call-b", status="completed", response="test report"
+        ),
+        done,
+        # Never answered in this stretch of the run, so it finishes with it.
+        SubagentSettledEvent(invocation_id="call-a", status="failed"),
+    ]
+
+
+async def test_a_refused_accomplice_settles_failed_and_a_nameless_one_never_starts() -> (
+    None
+):
+    timeout = _call("call-timeout", name="timeout")
+    retry = FunctionToolResultEvent(
+        RetryPromptPart(
+            tool_name="commission",
+            content="The accomplice exceeded its timeout.",
+            tool_call_id="call-timeout",
+        )
+    )
+    nameless = _call("call-nameless", brief="no name")
+
+    watched = await _watched([timeout, retry, nameless])
+
+    [started, _, settled, _, _] = watched
+    assert isinstance(started, SubagentStartedEvent)
+    assert isinstance(settled, SubagentSettledEvent)
+    assert settled.status == "failed"
+    assert settled.response.startswith("The accomplice exceeded its timeout.")
+
+
+async def test_an_accomplice_left_running_settles_as_cancelled_with_the_run() -> None:
+    waiting = asyncio.Event()
+    received: list[AgentStreamEvent] = []
+
+    async def stream() -> AsyncIterator[AgentStreamEvent]:
+        yield _call("call-a", name="cancelled")
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def consume() -> None:
+        async for event in Accomplices().watch(stream()):
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert received[-1] == SubagentSettledEvent(
+        invocation_id="call-a", status="cancelled"
+    )
