@@ -122,11 +122,17 @@ export interface AskOption {
   desc: string
 }
 
+/** A question's answer: the text typed or the one option picked, or a
+ *  multi-select question's picks. */
+export type AskAnswer = string | string[]
+
 /** One question of a batch, and its answer once the batch is answered. */
 export interface AskQuestion {
   body: string
   options: AskOption[]
-  answer?: string
+  /** several options may be picked together */
+  multiSelect: boolean
+  answer?: AskAnswer
   /** live deferred-action id; present when the card answers a real batch */
   actionId?: string
 }

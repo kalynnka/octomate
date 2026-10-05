@@ -27,6 +27,7 @@ from pydantic import HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
+from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -1253,6 +1254,60 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
             {"id": "q2", "selected": [], "custom": "ship it"},
         ],
     }
+
+
+async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
+    FakeDeepseekApi.reset()
+    question = DeferredQuestion(
+        tool_name="deepseek_user_input",
+        tool_call_id="ask-1",
+        position=0,
+        args={"question": "Which checks?", "multi_select": True},
+    )
+    suspender = RecordingSuspender(batch=FakePresentedBatch(questions=[question]))
+    octomate = interaction_octomate(RecordingDeferredActions())
+    tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
+    octomate.connect(tentacle)
+    tentacle.client = cast(
+        DeepseekApiClient, FakeDeepseekApi(HttpUrl("http://t"), None)
+    )
+    tentacle.bridge_contexts["sess-1"] = bridge_context(
+        FakeConversation(thread_id=_THREAD), suspender
+    )
+    frame = QuestionRequestedFrame.model_validate(
+        {
+            "type": "question/requested",
+            "sessionId": "sess-1",
+            "questions": [
+                {
+                    "id": "q1",
+                    "question": "Which checks?",
+                    "options": [
+                        {"label": "lint"},
+                        {"label": "types"},
+                        {"label": "tests"},
+                    ],
+                    "multiSelect": True,
+                },
+            ],
+        }
+    )
+
+    task = asyncio.create_task(tentacle.answer_interaction("rpc-9", frame))
+    batch_id = await wait_for_pending(tentacle, suspender)
+    await octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, answers={question.id: ["lint", "tests"]}
+        )
+    )
+    await task
+
+    [paused] = suspender.paused
+    [asked] = cast(DeferredToolRequests, paused).calls[0].args_as_dict()["questions"]
+    assert asked["multi_select"] is True
+    [(_rpc, response)] = FakeDeepseekApi.responds
+    assert isinstance(response, OkResult)
+    assert response.value == {"answers": [{"id": "q1", "selected": ["lint", "tests"]}]}
 
 
 async def test_starts_its_own_runtime_beside_native_dsh(

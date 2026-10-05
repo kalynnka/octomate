@@ -55,8 +55,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   provider's cache. Hand off explicitly instead.
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions.
-- **Answer approvals and questions**, for any channel's thread. A batch already
-  resolved is refused rather than resumed twice.
+- **Answer approvals and questions**, for any channel's thread. A batch's
+  questions are one card with a page per question, sent together. A batch
+  already resolved is refused rather than resumed twice.
 - **Switch a conversation's permission mode** among the agent's modes.
 - **Teleport or Summon** from the chat header's split button. Use its arrow to
   choose an action, ordered Teleport, Summon. The button selects the first

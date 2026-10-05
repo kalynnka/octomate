@@ -4,7 +4,8 @@
  * uid) so the timeline can jump to them.
  */
 import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import type { AgentBlock, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
+import { answerText } from '@/lib/api/fold'
+import type { AgentBlock, AskAnswer, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { Brackets } from '@/components/Brackets'
@@ -731,24 +732,26 @@ const ASK_BODY_CLAMP = 46
 function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' }>; cardMax: string; i?: number }) {
   const { answerAsk } = useConsole((s) => s.actions)
   const single = item.questions.length === 1
-  const lead = single ? item.questions[0].body : ''
+  // A lone single-choice question answers on its first pick; anything else is submitted.
+  const immediate = single && !item.questions[0].multiSelect
+  // One question at a time: a batch pages through its questions.
+  const [page, setPage] = useState(0)
+  const q = item.questions[page]
   const bodyRef = useRef<HTMLDivElement>(null)
   const [bodyLong, setBodyLong] = useState(false)
   const [bodyMore, setBodyMore] = useState(false)
   useLayoutEffect(() => {
     const el = bodyRef.current
     if (el) setBodyLong(el.scrollHeight > ASK_BODY_CLAMP + 4)
-  }, [lead])
-  // `question:option` of the open option row, and the question whose "Other" is open.
-  const [rowOpen, setRowOpen] = useState('')
-  const [otherOpen, setOtherOpen] = useState(-1)
+  }, [q.body])
+  const [otherOpen, setOtherOpen] = useState(false)
   const [otherText, setOtherText] = useState<string[]>([])
-  const [picked, setPicked] = useState<(string | undefined)[]>([])
+  const [picked, setPicked] = useState<(AskAnswer | undefined)[]>([])
   const [ansOpen, setAnsOpen] = useState(false)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
 
   if (item.state === 'answered') {
-    const answers = item.questions.map((q) => q.answer ?? '')
+    const answers = item.questions.map((q) => (q.answer === undefined ? '' : answerText(q.answer)))
     return (
       <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
         {!ansOpen ? (
@@ -794,31 +797,54 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
     )
   }
 
-  // One question is answered at once; several are sent together, so the run resumes once.
-  const pick = (qi: number, answer: string, via: string) => {
-    if (single) {
+  const turn = (to: number) => {
+    setPage(to)
+    setOtherOpen(false)
+    setBodyMore(false)
+  }
+  const setAnswer = (answer: AskAnswer | undefined) =>
+    setPicked((current) => {
+      const next = [...current]
+      next[page] = answer
+      return next
+    })
+  // A pick answers this question and moves on; the batch is sent together, once.
+  const pick = (answer: string, via: string) => {
+    if (immediate) {
       answerAsk(item.uid, [answer], via)
       return
     }
-    setPicked((current) => {
-      const next = [...current]
-      next[qi] = answer
-      return next
-    })
-    setRowOpen('')
-    setOtherOpen(-1)
+    setAnswer(answer)
+    if (page < item.questions.length - 1) turn(page + 1)
+    else setOtherOpen(false)
   }
-  const answered = item.questions.filter((_, qi) => picked[qi] !== undefined).length
-  const complete = answered === item.questions.length
+  // A multi-select question's picks, in the order its options are listed.
+  const toggle = (option: string) => {
+    const current = picked[page]
+    const on = Array.isArray(current) ? current : []
+    const picks = q.options
+      .map((o) => o.label)
+      .filter((l) => (l === option ? !on.includes(l) : on.includes(l)))
+    setAnswer(picks.length ? picks : undefined)
+    setOtherOpen(false)
+  }
+  const answeredCount = item.questions.filter((_, qi) => picked[qi] !== undefined).length
+  const complete = answeredCount === item.questions.length
   const submit = () => {
     if (complete) {
-      answerAsk(item.uid, item.questions.map((_, qi) => picked[qi] ?? ''), `answered ${item.questions.length} questions`)
+      answerAsk(item.uid, item.questions.map((_, qi) => picked[qi] ?? ''), single ? 'picked several options' : `answered ${item.questions.length} questions`)
     }
   }
-  const sendOther = (qi: number) => {
-    const t = (otherText[qi] ?? '').trim()
-    if (t) pick(qi, t, `free-text answer · ${t.length} chars`)
+  const sendOther = () => {
+    const t = (otherText[page] ?? '').trim()
+    if (t) pick(t, `free-text answer · ${t.length} chars`)
   }
+  const answer = picked[page]
+  // A typed answer is marked on the "Other" row, as a pick is on its option.
+  const typed = typeof answer === 'string' && !q.options.some((o) => o.label === answer)
+  const navLink = (enabled: boolean): CSSProperties => ({
+    ...label(8.5, '.12em'), color: enabled ? 'var(--fg-2)' : 'var(--fg-3)', cursor: enabled ? 'pointer' : 'default', opacity: enabled ? 1 : 0.45, whiteSpace: 'nowrap',
+  })
 
   return (
     <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
@@ -832,151 +858,151 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               {item.tool} · waiting · {operator}
             </span>
           </div>
-          {single && (
-            <>
-              <div
-                ref={bodyRef}
-                style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP, marginTop: 6 }}
-              >
-                <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)' }}>{lead}</p>
-                {bodyLong && !bodyMore && (
-                  <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
-                )}
-              </div>
-              {bodyLong && (
-                <div style={{ display: 'flex', marginTop: 2 }}>
-                  <span style={{ flex: 1 }} />
-                  <span onClick={() => setBodyMore((v) => !v)} className="hov-accent" style={{ ...label(8, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}>
-                    {bodyMore ? '▾ show less' : '▸ show all'}
-                  </span>
-                </div>
-              )}
-            </>
-          )}
         </div>
-        {item.questions.map((q, qi) => (
-          <div key={qi} style={{ marginTop: single ? 9 : 12, borderTop: '1px solid var(--line-divider)' }}>
-            {!single && (
-              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '9px 15px 8px 16px', borderBottom: '1px solid var(--line-divider)' }}>
-                <span style={{ ...mono(8, 700), color: 'var(--fg-3)', flexShrink: 0 }}>{qi + 1}/{item.questions.length}</span>
-                <span style={{ flex: 1, minWidth: 0, ...serif(13), lineHeight: 1.6, color: 'var(--fg-2)' }}>{q.body}</span>
-                {picked[qi] !== undefined && (
-                  <span style={{ ...label(8, '.12em'), color: 'var(--color-sage)', flexShrink: 0, maxWidth: '40%', ...ellipsis }}>✓ {picked[qi]}</span>
-                )}
-              </div>
-            )}
-            {q.options.map((o, idx) => {
-              const key = `${qi}:${idx}`
-              const openRow = rowOpen === key
-              const chosen = picked[qi] === o.label
-              return (
-                <div
-                  key={o.label}
-                  onClick={() => {
-                    setRowOpen(openRow ? '' : key)
-                    setOtherOpen(-1)
-                  }}
-                  className="hov-wash"
-                  style={{ borderBottom: '1px solid var(--line-divider)', background: openRow ? 'var(--hover)' : 'transparent', cursor: 'pointer' }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px' }}>
-                    <span style={{ ...mono(8, 700), color: chosen ? 'var(--color-accent)' : 'var(--fg-2)', border: `1px solid ${chosen ? 'var(--color-accent)' : 'var(--line-divider)'}`, padding: '1px 5px', flexShrink: 0 }}>{idx + 1}</span>
-                    <span style={{ fontSize: 12.5, color: 'var(--fg-1)', flexShrink: 0 }}>{o.label}</span>
-                    <span style={{ flex: 1, minWidth: 0, ...mono(8), ...ghost3, ...ellipsis }}>{o.sum}</span>
-                    <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{openRow ? '▾' : '▸'}</span>
-                  </div>
-                  {openRow && (
-                    <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
-                      <p style={{ margin: '0 0 0 25px', ...serif(12), lineHeight: 1.65, color: 'var(--fg-2)' }}>{o.desc}</p>
-                      <div style={{ display: 'flex', marginTop: 8 }}>
-                        <span style={{ width: 25 }} />
-                        <span
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            pick(qi, o.label, `picked option ${idx + 1}`)
-                          }}
-                          className="hov-panel"
-                          style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}
-                        >
-                          Choose {idx + 1}
-                        </span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-            <div style={{ borderBottom: '1px solid var(--line-divider)' }}>
-              <div
-                onClick={() => {
-                  setOtherOpen(otherOpen === qi ? -1 : qi)
-                  setRowOpen('')
-                }}
-                className="hov-wash"
-                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px', cursor: 'pointer' }}
-              >
-                <span style={{ ...mono(8, 700), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '1px 5px', flexShrink: 0 }}>0</span>
-                <span style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--fg-3)' }}>Other — type instructions…</span>
-                <span style={{ flex: 1 }} />
-                <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{otherOpen === qi ? '▾' : '▸'}</span>
-              </div>
-              {otherOpen === qi && (
-                <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
-                  <textarea
-                    rows={2}
-                    placeholder={single ? 'type your instruction — it sends as the answer' : 'type your instruction — it becomes this answer'}
-                    value={otherText[qi] ?? ''}
-                    onChange={(e) => {
-                      const text = e.target.value
-                      setOtherText((current) => {
-                        const next = [...current]
-                        next[qi] = text
-                        return next
-                      })
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault()
-                        sendOther(qi)
-                      }
-                      if (e.key === 'Escape') setOtherOpen(-1)
-                    }}
-                    style={{
-                      boxSizing: 'border-box',
-                      width: '100%',
-                      border: '1px solid var(--line-divider)',
-                      background: 'var(--surface-sunken)',
-                      padding: '8px 10px',
-                      ...serif(13),
-                      lineHeight: 1.6,
-                      color: 'var(--fg-1)',
-                      resize: 'none',
-                      outline: 'none',
-                    }}
-                  />
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                    <span style={{ ...microMeta, color: 'var(--fg-3)' }}>{single ? '↩ send' : '↩ use'} · esc back to options</span>
-                    <span style={{ flex: 1 }} />
-                    <span onClick={() => sendOther(qi)} className="hov-panel" style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}>
-                      {single ? 'Send' : 'Use'}
-                    </span>
-                  </div>
-                </div>
+        {/* The current question, apart from the card's title when the batch has several. */}
+        <div
+          style={single
+            ? { padding: '0 15px 0 16px' }
+            : { marginTop: 10, padding: '9px 15px 0 16px', borderTop: '1px solid var(--line-divider)' }}
+        >
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: single ? 6 : 0 }}>
+            {!single && <span style={{ ...mono(8, 700), color: 'var(--fg-3)', flexShrink: 0 }}>{page + 1}/{item.questions.length}</span>}
+            <div
+              ref={bodyRef}
+              style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP }}
+            >
+              <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: single ? 'var(--fg-2)' : 'var(--fg-1)' }}>{q.body}</p>
+              {bodyLong && !bodyMore && (
+                <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
               )}
             </div>
           </div>
-        ))}
+          {bodyLong && (
+            <div style={{ display: 'flex', marginTop: 2 }}>
+              <span style={{ flex: 1 }} />
+              <span onClick={() => setBodyMore((v) => !v)} className="hov-accent" style={{ ...label(8, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}>
+                {bodyMore ? '▾ show less' : '▸ show all'}
+              </span>
+            </div>
+          )}
+        </div>
+        <div style={{ marginTop: 9, borderTop: '1px solid var(--line-divider)' }}>
+          {q.options.map((o, idx) => {
+            const chosen = Array.isArray(answer) ? answer.includes(o.label) : answer === o.label
+            return (
+              <div
+                key={o.label}
+                aria-pressed={chosen}
+                // One click: a single-select option is the answer, a multi-select one toggles.
+                onClick={() => (q.multiSelect ? toggle(o.label) : pick(o.label, `picked option ${idx + 1}`))}
+                className="hov-wash"
+                style={{ borderBottom: '1px solid var(--line-divider)', cursor: 'pointer' }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px' }}>
+                  <span style={{ ...mono(8, 700), color: chosen ? 'var(--color-accent)' : 'var(--fg-2)', border: `1px solid ${chosen ? 'var(--color-accent)' : 'var(--line-divider)'}`, padding: '1px 5px', flexShrink: 0 }}>{q.multiSelect && chosen ? '✓' : idx + 1}</span>
+                  <span style={{ fontSize: 12.5, color: 'var(--fg-1)', flexShrink: 0 }}>{o.label}</span>
+                  <span style={{ flex: 1, minWidth: 0, ...mono(8), ...ghost3, ...ellipsis }}>{o.sum}</span>
+                </div>
+              </div>
+            )
+          })}
+          <div style={{ borderBottom: '1px solid var(--line-divider)' }}>
+            <div
+              onClick={() => setOtherOpen((v) => !v)}
+              className="hov-wash"
+              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px', cursor: 'pointer' }}
+            >
+              <span style={{ ...mono(8, 700), color: typed ? 'var(--color-accent)' : 'var(--fg-2)', border: `1px solid ${typed ? 'var(--color-accent)' : 'var(--line-divider)'}`, padding: '1px 5px', flexShrink: 0 }}>0</span>
+              {typed ? (
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--fg-1)', ...ellipsis }}>{answer}</span>
+              ) : (
+                <span style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--fg-3)' }}>Other — type instructions…</span>
+              )}
+              <span style={{ flex: 1 }} />
+              <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{otherOpen ? '▾' : '▸'}</span>
+            </div>
+            {otherOpen && (
+              <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
+                <textarea
+                  rows={2}
+                  placeholder={immediate ? 'type your instruction — it sends as the answer' : 'type your instruction — it becomes this answer'}
+                  value={otherText[page] ?? ''}
+                  onChange={(e) => {
+                    const text = e.target.value
+                    setOtherText((current) => {
+                      const next = [...current]
+                      next[page] = text
+                      return next
+                    })
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault()
+                      sendOther()
+                    }
+                    if (e.key === 'Escape') setOtherOpen(false)
+                  }}
+                  style={{
+                    boxSizing: 'border-box',
+                    width: '100%',
+                    border: '1px solid var(--line-divider)',
+                    background: 'var(--surface-sunken)',
+                    padding: '8px 10px',
+                    ...serif(13),
+                    lineHeight: 1.6,
+                    color: 'var(--fg-1)',
+                    resize: 'none',
+                    outline: 'none',
+                  }}
+                />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                  <span style={{ ...microMeta, color: 'var(--fg-3)' }}>{immediate ? '↩ send' : '↩ use'} · esc back to options</span>
+                  <span style={{ flex: 1 }} />
+                  <span onClick={sendOther} className="hov-panel" style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}>
+                    {immediate ? 'Send' : 'Use'}
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 10px 16px' }}>
-          <span style={{ ...microMeta, color: 'var(--fg-3)' }}>{item.meta}</span>
+          <span style={{ ...microMeta, color: 'var(--fg-3)', minWidth: 0, ...ellipsis }}>{item.meta}</span>
           <span style={{ flex: 1 }} />
           {!single && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, flexShrink: 0 }}>
+              <span onClick={() => page > 0 && turn(page - 1)} aria-disabled={page === 0} className={page > 0 ? 'hov-accent' : undefined} style={navLink(page > 0)}>
+                ‹ prev
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {item.questions.map((_, qi) => (
+                  <button
+                    key={qi}
+                    type="button"
+                    aria-label={`Question ${qi + 1}${picked[qi] !== undefined ? ', answered' : ''}`}
+                    aria-current={qi === page ? 'step' : undefined}
+                    onClick={() => turn(qi)}
+                    style={{
+                      width: 7, height: 7, padding: 0, borderRadius: 0, cursor: 'pointer',
+                      border: `1px solid ${qi === page ? 'var(--color-accent)' : 'var(--line-divider)'}`,
+                      background: picked[qi] !== undefined ? 'var(--color-sage)' : 'transparent',
+                    }}
+                  />
+                ))}
+              </span>
+              <span onClick={() => page < item.questions.length - 1 && turn(page + 1)} aria-disabled={page === item.questions.length - 1} className={page < item.questions.length - 1 ? 'hov-accent' : undefined} style={navLink(page < item.questions.length - 1)}>
+                next ›
+              </span>
+            </span>
+          )}
+          {!immediate && (
             <span
               onClick={submit}
               aria-disabled={!complete}
               className={complete ? 'hov-panel' : undefined}
-              style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: complete ? 'pointer' : 'not-allowed', opacity: complete ? 1 : 0.45, whiteSpace: 'nowrap' }}
+              style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: complete ? 'pointer' : 'not-allowed', opacity: complete ? 1 : 0.45, whiteSpace: 'nowrap', flexShrink: 0 }}
             >
-              Submit {answered}/{item.questions.length}
+              Submit {answeredCount}/{item.questions.length}
             </span>
           )}
         </div>

@@ -254,6 +254,8 @@ export interface WireQuestionArgs {
   question: string
   choices?: string[] | null
   hint?: string
+  /** several choices may be picked, and the answer lists the picks */
+  multi_select?: boolean
 }
 
 export interface WireApprovalArgs {
@@ -680,7 +682,8 @@ export interface DirectiveBody {
 }
 
 export interface BatchResponseBody {
-  answers?: Record<string, string>
+  /** a question's text, or a multi-select question's picks */
+  answers?: Record<string, string | string[]>
   approvals?: Record<string, boolean>
   allow_session?: boolean
 }

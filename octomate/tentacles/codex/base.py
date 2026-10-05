@@ -1152,7 +1152,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 answer = response.answers.get(action.id)
                 if answer:
                     question_id = request["questions"][action.position]["id"]
-                    answers[question_id] = {"answers": [answer]}
+                    answers[question_id] = {
+                        "answers": [answer] if isinstance(answer, str) else [*answer]
+                    }
         return {"answers": answers}
 
     async def answer_sdk_approval_request(
@@ -1262,7 +1264,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             for action in sorted(batch.questions)
             if response.answers.get(action.id)
         ]
-        answer = "\n".join(str(item) for item in answers if item)
+        answer = "\n".join(
+            item if isinstance(item, str) else ", ".join(item)
+            for item in answers
+            if item
+        )
         if not answer:
             return {"action": "decline", "message": "The user did not answer."}
         content_key = self.question_content_key(args)

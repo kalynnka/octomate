@@ -45,10 +45,14 @@ from octomate.types.json import JsonObject
 
 # Max suggested choices a question may carry — octomate keeps question cards to a
 # small, consistent set. It bounds what the inkling ask tool may suggest, and
-# bridged agents whose native tool offers more (Claude's `AskUserQuestion` allows
-# up to 4) are truncated to fit. Channels render each choice as a button; the user
-# can always answer with free text, so this is guidance, not a hard UI limit.
-MAX_QUESTION_CHOICES = 3
+# bridged agents whose native tool offers more are truncated to fit. Channels render
+# each choice as a button, five to a Discord row; the user can always answer with
+# free text, so this is guidance, not a hard UI limit.
+MAX_QUESTION_CHOICES = 5
+
+# One question's answer: the text typed or the one choice picked, or the choices
+# picked on a multi-select question.
+type QuestionAnswer = str | list[str]
 
 
 class QuestionRequest(TypedDict):
@@ -68,6 +72,15 @@ class QuestionRequest(TypedDict):
         ]
     ]
     hint: NotRequired[str]
+    multi_select: NotRequired[
+        Annotated[
+            bool,
+            Field(
+                description="Whether several choices may be picked together, in "
+                "which case the answer lists the picks."
+            ),
+        ]
+    ]
 
 
 class ApprovalRequest(BaseModel):
@@ -107,7 +120,7 @@ type DeferredActionPayload = DeferredQuestionPayload | DeferredApprovalPayload
 type DeferredActionCollectionInput = (
     DeferredToolRequests | list[DeferredActionPayload | JsonObject]
 )
-type DeferredQuestionResult = str | None
+type DeferredQuestionResult = QuestionAnswer | None
 type DeferredApprovalResult = bool | None
 
 
@@ -274,7 +287,7 @@ class DeferredActionBatch(BaseTransmuter):
                 results.metadata[action.tool_call_id] = action.metadata
         for tool_call_id, actions in question_actions.items():
             results.calls[tool_call_id] = [
-                "" if action.result is None else str(action.result)
+                "" if action.result is None else action.result
                 for action in sorted(actions)
             ]
         return results

@@ -39,6 +39,7 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     GatewayEvent,
     LinkProfileAuthorizationEvent,
+    MessageSentEvent,
     RunErrorEvent,
     RunResultEvent,
     StreamEvents,
@@ -250,6 +251,21 @@ class TrunklineFeelers(Feelers):
         await send_quietly(current_sink.get(), event)
 
 
+class TrunklineSegmentsFeeler:
+    """A `send` delivered to a console thread: shown on the request watching it,
+    if any. The sender records it in the thread's ledger, which is what the console
+    reads back, so there is no platform message to point at."""
+
+    async def present(
+        self, address: ChannelAddress, segments: list[MessageSegment]
+    ) -> IMMessageID | None:
+        await send_quietly(
+            current_sink.get(),
+            MessageSentEvent(segments=segments, destination=address),
+        )
+        return None
+
+
 class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
     """Deliver provider authorizations to the active private browser stream."""
 
@@ -324,11 +340,12 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             config=config,
         )
         # Everything reaches the console as the events the graph and the run
-        # emit; the markdown and card feelers have no transport here.
+        # emit, and a `send` as its message; the markdown and card feelers have
+        # no transport here.
         self.feelers = TrunklineFeelers(
             markdown=self.feelers.markdown,
             timeline=TrunklineTimelineFeeler(),
-            segments=self.feelers.segments,
+            segments=TrunklineSegmentsFeeler(),
             approvals=self.feelers.approvals,
             ask_questions=self.feelers.ask_questions,
             oauth=TrunklineOAuthFeeler(self.ink),

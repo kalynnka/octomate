@@ -4,6 +4,7 @@ import { goLedgerTarget, syncRails, useConsole } from '@/state/console'
 import { useRailDrag } from '@/lib/useRailDrag'
 import { chipLabel, ellipsis, label, microSection, mono, serif } from '@/components/text'
 import { Disclose, Fold } from '@/components/Fold'
+import { answerText } from '@/lib/api/fold'
 import type {
   LedgerItem,
   SessionInfo,
@@ -151,7 +152,7 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
         resolved: item.state === 'answered',
         sub:
           item.state === 'answered'
-            ? `answered — ${item.questions.map((q) => q.answer ?? '').join(' · ')}`
+            ? `answered — ${item.questions.map((q) => (q.answer === undefined ? '' : answerText(q.answer))).join(' · ')}`
             : `ask feeler · ${item.questions.length === 1 ? `${item.questions[0].options.length} options` : `${item.questions.length} questions`} · waiting`,
         t: item.resolvedT ?? '',
         tgt,

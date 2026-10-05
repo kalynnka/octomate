@@ -13,14 +13,18 @@ from dataclasses import asdict
 from inspect import cleandoc
 from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
 from octomate_protocol.gateway import gateway_tool
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.history import HistoryCapability
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
@@ -39,6 +43,8 @@ from octomate.schemas.triage import (
     TeleportDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.tentacles.trunkline import TrunklineTentacle
+from octomate.tentacles.trunkline.base import TrunklineStreamItem, current_sink
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
@@ -321,6 +327,50 @@ async def test_send_here_delivers_immediately_to_the_conversation() -> None:
     [outbound] = threads.outbounds
     assert outbound.agent_tentacle_id == "inkling"
     assert outbound.segments == [MarkdownSegment(data={"text": "halfway there"})]
+
+
+async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> None:
+    """A send is a message, not part of the run: on the console it shows on the
+    stream watching the thread, and the ledger row is what a reload reads."""
+    console = TrunklineTentacle(
+        "trunkline", Octomate(), config=TrunklineChannelConfig(agents=["inkling"])
+    )
+    console.self_profile = await console.ink.inspect()
+    threads = FakeThreadManager()
+    session = OctomateSession(
+        channel_routes={"trunkline": []},
+        current_agent_id="claude",
+        channels={"trunkline": console},
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id="alice",
+            user_id="alice",
+            channel_thread_id="t-1",
+        ),
+    )
+    server = octomate_mcp(
+        fixed_session(session),
+        threads,
+        manager=McpManager(users=threads.users, cipher=None),
+    )
+    send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](10)
+    token = current_sink.set(send)
+    try:
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "gateway_send",
+                {"segments": [{"type": "markdown", "data": {"text": "halfway"}}]},
+            )
+    finally:
+        current_sink.reset(token)
+
+    assert result.data == "sent"
+    shown = receive.receive_nowait()
+    assert isinstance(shown, MessageSentEvent)
+    assert shown.segments == [MarkdownSegment(data={"text": "halfway"})]
+    [outbound] = threads.outbounds
+    assert outbound.segments == shown.segments
 
 
 async def test_send_to_dm_opens_it_and_lands_there() -> None:

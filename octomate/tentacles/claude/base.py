@@ -839,6 +839,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                                     ][:MAX_QUESTION_CHOICES]
                                     or None,
                                     hint=str(item.get("header", "")),
+                                    multi_select=bool(item.get("multiSelect", False)),
                                 )
                                 for item in asked
                             ]
@@ -852,9 +853,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             answered = (
                 [
-                    f"{question.args['question']}: {response.answers[question.id]}"
+                    f"{question.args['question']}: "
+                    + (answer if isinstance(answer, str) else ", ".join(answer))
                     for question in sorted(batch.questions)
-                    if response.answers.get(question.id)
+                    if (answer := response.answers.get(question.id))
                 ]
                 if response is not None
                 else []

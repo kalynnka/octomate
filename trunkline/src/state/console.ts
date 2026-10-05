@@ -7,6 +7,7 @@
  */
 import { create } from 'zustand'
 import type {
+  AskAnswer,
   DocLine,
   LedgerItem,
   QueueChip,
@@ -197,7 +198,7 @@ export interface ConsoleActions {
   setGatewayMode(mode: ConsoleState['gatewayMode']): void
   vsOpen(): void
   resolveApproval(uid: string, verdict: 'approved' | 'dismissed'): void
-  answerAsk(uid: string, answers: string[], via: string): void
+  answerAsk(uid: string, answers: AskAnswer[], via: string): void
   reviewTabs(): string[]
   togglePv(): void
   openFile(name: string): void
@@ -461,7 +462,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const runLive = async (
     from: string,
     request: (onEvent: (event: WireEvent) => void) => Promise<void>,
-    quietClose = 'stream closed without a result',
+    // What a stream that sent nothing back says; null says nothing.
+    quietClose: string | null = 'stream closed without a result',
   ) => {
     openRuns++
     // The thread the run streams into, until a run starts in another.
@@ -530,12 +532,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         feed(event)
       })
       await following
-      fold.abort(
-        received === 0
-          ? quietClose
-          : 'stream closed without a result — the run continues on the relay',
-        received === 0 ? 'info' : 'warning',
-      )
+      const closing = received === 0
+        ? quietClose
+        : 'stream closed without a result — the run continues on the relay'
+      if (closing !== null) fold.abort(closing, received === 0 ? 'info' : 'warning')
       if (landing && alive()) {
         const landed = await landedThread(selId, landing)
         if (landed && landed.id !== selId && alive()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
@@ -571,14 +571,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     void runLive(selId, (onEvent) => streamDirective(sendKey, { text }, onEvent))
   }
 
-  /** Resolve a deferred batch and stream the resumed run into the ledger. */
+  /** Resolve a deferred batch and stream the resumed run into the ledger. An
+   *  answer to a run still going streams nothing back; its card says it was sent. */
   const resolveLive = (batchId: string, body: BatchResponseBody) => {
     set({ running: true })
-    void runLive(
-      get().selThreadId,
-      (onEvent) => resolveBatch(batchId, body, onEvent),
-      'answer recorded — the resumed run reports on its home channel',
-    )
+    void runLive(get().selThreadId, (onEvent) => resolveBatch(batchId, body, onEvent), null)
   }
 
   const actions: ConsoleActions = {
@@ -886,7 +883,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         })
       }
     },
-    answerAsk(uid: string, answers: string[], via: string) {
+    answerAsk(uid: string, answers: AskAnswer[], via: string) {
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )

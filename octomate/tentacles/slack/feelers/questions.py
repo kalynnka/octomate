@@ -8,7 +8,7 @@ from uuid import UUID
 from pydantic import JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredQuestion
+from octomate.schemas.deferred import MAX_QUESTION_CHOICES, DeferredQuestion
 from octomate.telemetry import slack_logfire
 from octomate.tentacles.feelers.deferred import QuestionFeeler, question_text
 from octomate.tentacles.feelers.output import IMMessageID
@@ -24,7 +24,6 @@ if TYPE_CHECKING:
     from octomate.tentacles.slack.ink import SlackInk
 
 
-MAX_QUESTION_CHOICES = 3
 QUESTION_STATE_FIELDS = {
     "id",
     "batch_id",

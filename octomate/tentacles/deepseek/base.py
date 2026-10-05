@@ -694,6 +694,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 request["choices"] = choices
             if item.detail:
                 request["hint"] = item.detail
+            if item.multi_select:
+                request["multi_select"] = True
             questions.append(request)
         requests = DeferredToolRequests(
             calls=[
@@ -712,15 +714,18 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         # Batch questions carry their position in the call's list, so sorting
         # them realigns each with the dsh item it was built from. An answer
-        # matching an option label is echoed pristine into `selected` — dsh
-        # matches answers by label — anything else is `custom` text, and no
-        # answer is an answered-but-empty item, which dsh accepts as a skip.
+        # matching an option label, and a multi-select question's picks, are echoed
+        # pristine into `selected` — dsh matches answers by label — while anything
+        # else is `custom` text, and no answer is an answered-but-empty item, which
+        # dsh accepts as a skip.
         answers: list[JsonValue] = []
         for item, action in zip(frame.questions, sorted(batch.questions), strict=False):
             answer = response.answers.get(action.id)
             labels = {option.label for option in (item.options or [])}
             payload: JsonObject = {"id": item.id, "selected": []}
-            if answer and answer in labels:
+            if isinstance(answer, list):
+                payload["selected"] = [*answer]
+            elif answer and answer in labels:
                 payload["selected"] = [answer]
             elif answer:
                 payload["custom"] = answer

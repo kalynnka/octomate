@@ -142,7 +142,7 @@ def test_deferred_questions_sort_by_position() -> None:
     assert second > first
 
 
-def test_deferred_question_choices_are_limited_to_three() -> None:
+def test_deferred_question_choices_are_limited_to_five() -> None:
     with pytest.raises(ValidationError):
         DeferredQuestion(
             tool_name="ask_questions",
@@ -153,6 +153,8 @@ def test_deferred_question_choices_are_limited_to_three() -> None:
                     "Coral Reef",
                     "Kelp Forest",
                     "Open Ocean",
+                    "Twilight Zone",
+                    "Abyssal Plain",
                     "Deep Sea Trench",
                 ],
             },
@@ -183,6 +185,23 @@ async def test_resolve_batch_applies_answers_and_approvals(
     results = resolved.build_results()
     assert results.calls["call_question"] == ["tonight"]
     assert results.approvals["call_approval"] is True
+
+
+async def test_a_multi_select_answer_is_kept_as_its_picks(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    created = await _create_batch()
+    question = next(iter(created.questions))
+
+    resolved = await DeferredActionManager().resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=created.id, answers={question.id: ["tonight", "tomorrow"]}
+        )
+    )
+
+    # Stored and handed back as a list, never as text to split again.
+    assert [action.result for action in resolved.questions] == [["tonight", "tomorrow"]]
+    assert resolved.build_results().calls["call_question"] == [["tonight", "tomorrow"]]
 
 
 async def test_mark_batch_sets_status_and_completed_at(

@@ -7,6 +7,7 @@ from functools import cached_property
 from pydantic import BaseModel, Field
 
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.deferred import QuestionAnswer
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.triage import SchemeDecision, SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -38,7 +39,7 @@ class UserMessageSignal:
 class DeferredActionBatchResponse(BaseModel):
     batch_id: uuid.UUID
     responder_id: str = ""
-    answers: dict[uuid.UUID, str] = Field(default_factory=dict)
+    answers: dict[uuid.UUID, QuestionAnswer] = Field(default_factory=dict)
     approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
     allow_session: bool = False
 

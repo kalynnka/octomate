@@ -89,6 +89,7 @@ class ScriptedClaudeClient:
     # Option labels the AskUserQuestion hook is fed; overridden to exercise
     # truncation when a question offers more than the choice cap.
     question_option_labels: ClassVar[list[str]] = ["A", "B"]
+    question_multi_select: ClassVar[bool] = False
 
     def __init__(
         self, options: ClaudeAgentOptions | None = None, transport: object = None
@@ -150,6 +151,7 @@ class ScriptedClaudeClient:
                                     {"label": label, "description": ""}
                                     for label in self.question_option_labels
                                 ],
+                                "multiSelect": self.question_multi_select,
                             }
                         ]
                     }
@@ -435,11 +437,11 @@ async def test_ask_user_question_hook_feeds_answer_back(
     assert "Pick one" in reason
 
 
-async def test_ask_user_question_truncates_choices_to_cap(
+async def test_ask_user_question_keeps_every_option_under_the_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Claude's AskUserQuestion may offer up to 4 options; octomate caps a question's
-    # choices, so the card presents (no validation crash) with only the cap kept.
+    # Claude's AskUserQuestion offers up to 4 options, all within octomate's cap, so
+    # the card presents every one of them.
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
     monkeypatch.setattr(
@@ -449,7 +451,7 @@ async def test_ask_user_question_truncates_choices_to_cap(
         tool_name="AskUserQuestion",
         tool_call_id="q1",
         position=0,
-        args={"question": "Pick one", "choices": ["A", "B", "C"], "hint": ""},
+        args={"question": "Pick one", "choices": ["A", "B", "C", "D"], "hint": ""},
     )
     tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
 
@@ -463,8 +465,40 @@ async def test_ask_user_question_truncates_choices_to_cap(
     [presented] = suspender.paused
     args = cast(DeferredToolRequests, presented).calls[0].args_as_dict()
     choices = args["questions"][0]["choices"]
-    assert choices == ["A", "B", "C"]
-    assert len(choices) == MAX_QUESTION_CHOICES
+    assert choices == ["A", "B", "C", "D"]
+    assert len(choices) <= MAX_QUESTION_CHOICES
+
+
+async def test_ask_user_question_keeps_a_multi_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
+    monkeypatch.setattr(ScriptedClaudeClient, "question_multi_select", True)
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A", "B"], "multi_select": True},
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, answers={question.id: ["A", "B"]}
+        )
+    )
+    await task
+
+    [presented] = suspender.paused
+    [asked] = cast(DeferredToolRequests, presented).calls[0].args_as_dict()["questions"]
+    assert asked["multi_select"] is True
+    reason = cast(dict[str, dict[str, str]], ScriptedClaudeClient.decisions[0])[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
+    assert reason == "Pick one: A, B"
 
 
 async def test_kick_routes_response_to_live_waiter() -> None:

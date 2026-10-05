@@ -79,7 +79,7 @@ from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import DeferredActionBatch
+from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread, ThreadMessage
@@ -197,7 +197,7 @@ class BatchResponseBody(BaseModel):
     allowed for the rest of the session.
     """
 
-    answers: dict[uuid.UUID, str] = Field(default_factory=dict)
+    answers: dict[uuid.UUID, QuestionAnswer] = Field(default_factory=dict)
     approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
     allow_session: bool = False
 
