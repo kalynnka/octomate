@@ -7,6 +7,10 @@ from typing import Annotated
 
 import tomlkit
 import typer
+from octomate_protocol.gateway import (
+    GatewayTool,
+    gateway_tool,
+)
 from tomlkit.items import Table
 
 from octomate_cli.config import CLISettings
@@ -56,11 +60,11 @@ def mcp_install(
 ) -> None:
     """Point native Codex sessions at the served MCP server.
 
-    Writes the `mcp_servers.octomate` table — the server's URL, the bearer, and
-    the runtime attribution header — preserving the operator's comments and every
-    other table. The credential is embedded, as it is for the other runtimes;
-    rotating means re-running install. Driven sessions disable inherited MCP
-    servers and supply their caller's connection separately.
+    Writes the `mcp_servers.octomate` table — the server's URL, the bearer,
+    the runtime attribution header, and teleport's approval requirement — preserving
+    the operator's comments and every other table. The credential is embedded;
+    rotating means re-running install. Driven sessions disable inherited MCP servers
+    and supply their caller's connection separately.
     """
     target = octomate_url(url)
     secret = octomate_secret()
@@ -78,6 +82,7 @@ def mcp_install(
     headers["Authorization"] = f"Bearer {secret}"
     headers[CLIENT_HEADER] = CODEX_NATIVE_CLIENT
     entry["http_headers"] = headers
+    entry["tools"] = {gateway_tool(GatewayTool.TELEPORT): {"approval_mode": "prompt"}}
     servers[OCTOMATE_SERVER_KEY] = entry
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(tomlkit.dumps(document))

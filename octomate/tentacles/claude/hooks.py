@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
+from octomate.types.json import JsonObject
+
 # Which events the pipe registers, the route paths, and the hook timeout are the
 # client-side contract, and live with the installer that writes them: `octomate_cli.tentacles.claude`.
 
@@ -40,3 +42,8 @@ class ClaudeHookInput(BaseModel):
     # transcript's filename (`agent-<agent_id>.jsonl`).
     agent_id: str | None = None
     agent_type: str | None = None
+    # The call a `PreToolUse` is about: only the gateway's teleport is registered,
+    # and its input comes back with the session stamped in, the one thing a native
+    # call cannot say for itself.
+    tool_name: str | None = None
+    tool_input: JsonObject | None = None

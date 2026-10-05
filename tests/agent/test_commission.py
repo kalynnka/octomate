@@ -7,28 +7,38 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import cast
 
 import pytest
+from octomate_protocol.gateway import GatewayTool
 from pydantic import UUID7
-from pydantic_ai import RunContext
+from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.exceptions import ModelRetry
-from pydantic_ai.messages import ToolCallPart
+from pydantic_ai.messages import (
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import (
     ACCOMPLICE_INSTRUCTION,
+    Accomplices,
     GatewayCapability,
+)
+from octomate.capabilities.harness.events import (
+    SubagentSettledEvent,
+    SubagentStartedEvent,
 )
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.runs import AgentRun
 from octomate.schemas.triage import (
-    COMMISSION_TOOL_NAME,
-    WHISPER_TOOL_NAME,
     AgentRoute,
     Claim,
 )
@@ -109,7 +119,7 @@ async def test_commission_runs_the_accomplice_and_returns_its_report() -> None:
     claude = cast(FakeAgent, agents["claude"])
     claude.reception_output = "audit: three findings"
 
-    report = await _tool(gate, COMMISSION_TOOL_NAME)(
+    report = await _tool(gate, GatewayTool.COMMISSION)(
         ctx,
         name="repo-audit",
         agent_id="claude",
@@ -140,7 +150,7 @@ async def test_an_accomplice_carries_no_gate_and_is_told_it_has_no_user() -> Non
     # it it is an accomplice with no user.
     gate, agents, _, ctx = await _gate()
     claude = cast(FakeAgent, agents["claude"])
-    await _tool(gate, COMMISSION_TOOL_NAME)(
+    await _tool(gate, GatewayTool.COMMISSION)(
         ctx, name="hand", agent_id="claude", model="opus", brief="Work."
     )
 
@@ -152,12 +162,14 @@ async def test_an_accomplice_carries_no_gate_and_is_told_it_has_no_user() -> Non
 
 async def test_commissioning_a_live_name_again_is_refused() -> None:
     gate, _, conversations, ctx = await _gate()
-    commission = _tool(gate, COMMISSION_TOOL_NAME)
+    commission = _tool(gate, GatewayTool.COMMISSION)
     await commission(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Go."
     )
-    child = conversations.store[(THREAD, "claude", "repo-audit")]
-    child.runs.append(AgentRun(id="run-child", conversation_id=child.id))
+    child = await conversations.ensure(
+        THREAD, agent_tentacle_id="claude", subagent_id="repo-audit"
+    )
+    await conversations.record_agent_run(child, str(uuid7()), [])
 
     with pytest.raises(ModelRetry, match="already at work"):
         await commission(
@@ -168,12 +180,12 @@ async def test_commissioning_a_live_name_again_is_refused() -> None:
 async def test_whisper_continues_the_same_accomplice_in_a_later_parent_turn() -> None:
     gate, agents, conversations, ctx = await _gate()
     claude = cast(FakeAgent, agents["claude"])
-    await _tool(gate, COMMISSION_TOOL_NAME)(
+    await _tool(gate, GatewayTool.COMMISSION)(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
     )
 
     parent = conversations.store[(THREAD, "inkling", "")]
-    report = await _tool(gate, WHISPER_TOOL_NAME)(
+    report = await _tool(gate, GatewayTool.WHISPER)(
         _ctx(parent.id, run_id="run-parent-2", tool_call_id="call-2"),
         name="repo-audit",
         message="Now fix finding two.",
@@ -193,17 +205,17 @@ async def test_whisper_continues_the_same_accomplice_in_a_later_parent_turn() ->
 
 async def test_whisper_with_an_unknown_name_lists_the_live_accomplices() -> None:
     gate, _, _, ctx = await _gate()
-    await _tool(gate, COMMISSION_TOOL_NAME)(
+    await _tool(gate, GatewayTool.COMMISSION)(
         ctx, name="repo-audit", agent_id="claude", model="opus", brief="Audit."
     )
 
     with pytest.raises(ModelRetry, match="repo-audit"):
-        await _tool(gate, WHISPER_TOOL_NAME)(ctx, name="wrong-name", message="hello?")
+        await _tool(gate, GatewayTool.WHISPER)(ctx, name="wrong-name", message="hello?")
 
 
 async def test_commission_refuses_self_bad_routes_and_unclaimed_effort() -> None:
     gate, _, _, ctx = await _gate()
-    commission = _tool(gate, COMMISSION_TOOL_NAME)
+    commission = _tool(gate, GatewayTool.COMMISSION)
 
     with pytest.raises(ModelRetry, match="Cannot commission yourself"):
         await commission(ctx, name="me", agent_id="inkling", model="opus", brief="Hi.")
@@ -234,7 +246,7 @@ async def test_a_deferring_accomplice_fails_loudly_instead_of_parking() -> None:
     )
 
     with pytest.raises(ModelRetry, match="has no user"):
-        await _tool(gate, COMMISSION_TOOL_NAME)(
+        await _tool(gate, GatewayTool.COMMISSION)(
             ctx, name="asker", agent_id="claude", model="opus", brief="Go."
         )
 
@@ -259,7 +271,7 @@ async def test_an_overrunning_accomplice_fails_the_tool_not_the_turn() -> None:
     gate, _, _, ctx = await _gate(agents=agents, commission_timeout=0.05)
 
     with pytest.raises(ModelRetry, match="exceeded"):
-        await _tool(gate, COMMISSION_TOOL_NAME)(
+        await _tool(gate, GatewayTool.COMMISSION)(
             ctx, name="slow", agent_id="claude", model="opus", brief="Take ages."
         )
 
@@ -274,7 +286,7 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
     }
     gate, _, conversations, _ = await _gate(agents=agents)
     parent_id = conversations.store[(THREAD, "inkling", "")].id
-    commission = _tool(gate, COMMISSION_TOOL_NAME)
+    commission = _tool(gate, GatewayTool.COMMISSION)
 
     started = time.monotonic()
     reports = await asyncio.gather(
@@ -309,9 +321,100 @@ async def test_a_gate_without_commission_deps_offers_no_commission() -> None:
         )
     )
     assert bare.toolset is not None
-    assert COMMISSION_TOOL_NAME not in bare.toolset.tools
+    assert GatewayTool.COMMISSION not in bare.toolset.tools
     assert not bare.commissioning
-    assert COMMISSION_TOOL_NAME not in bare.get_instructions()
+    assert GatewayTool.COMMISSION not in bare.get_instructions()
 
     gate, _, _, _ = await _gate()
-    assert COMMISSION_TOOL_NAME in gate.get_instructions()
+    assert GatewayTool.COMMISSION in gate.get_instructions()
+
+
+async def _watched(
+    events: list[FunctionToolCallEvent | FunctionToolResultEvent],
+) -> list[AgentStreamEvent]:
+    async def stream() -> AsyncIterator[AgentStreamEvent]:
+        for event in events:
+            yield event
+
+    return [event async for event in Accomplices().watch(stream())]
+
+
+def _call(
+    tool_call_id: str, tool: str = "commission", **args: str
+) -> FunctionToolCallEvent:
+    return FunctionToolCallEvent(
+        ToolCallPart(tool_name=tool, args=args, tool_call_id=tool_call_id)
+    )
+
+
+async def test_an_accomplice_starts_before_its_call_and_settles_before_its_result() -> (
+    None
+):
+    first = _call("call-a", name="audit")
+    second = _call("call-b", tool="whisper", name="tests")
+    done = FunctionToolResultEvent(
+        ToolReturnPart(
+            tool_name="whisper", content="test report", tool_call_id="call-b"
+        )
+    )
+
+    watched = await _watched([first, second, done])
+
+    assert watched == [
+        SubagentStartedEvent(invocation_id="call-a", kind="commission", name="audit"),
+        first,
+        SubagentStartedEvent(invocation_id="call-b", kind="whisper", name="tests"),
+        second,
+        SubagentSettledEvent(
+            invocation_id="call-b", status="completed", response="test report"
+        ),
+        done,
+        # Never answered in this stretch of the run, so it finishes with it.
+        SubagentSettledEvent(invocation_id="call-a", status="failed"),
+    ]
+
+
+async def test_a_refused_accomplice_settles_failed_and_a_nameless_one_never_starts() -> (
+    None
+):
+    timeout = _call("call-timeout", name="timeout")
+    retry = FunctionToolResultEvent(
+        RetryPromptPart(
+            tool_name="commission",
+            content="The accomplice exceeded its timeout.",
+            tool_call_id="call-timeout",
+        )
+    )
+    nameless = _call("call-nameless", brief="no name")
+
+    watched = await _watched([timeout, retry, nameless])
+
+    [started, _, settled, _, _] = watched
+    assert isinstance(started, SubagentStartedEvent)
+    assert isinstance(settled, SubagentSettledEvent)
+    assert settled.status == "failed"
+    assert settled.response.startswith("The accomplice exceeded its timeout.")
+
+
+async def test_an_accomplice_left_running_settles_as_cancelled_with_the_run() -> None:
+    waiting = asyncio.Event()
+    received: list[AgentStreamEvent] = []
+
+    async def stream() -> AsyncIterator[AgentStreamEvent]:
+        yield _call("call-a", name="cancelled")
+        waiting.set()
+        await asyncio.Event().wait()
+
+    async def consume() -> None:
+        async for event in Accomplices().watch(stream()):
+            received.append(event)
+
+    task = asyncio.create_task(consume())
+    await waiting.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert received[-1] == SubagentSettledEvent(
+        invocation_id="call-a", status="cancelled"
+    )

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import cast
 
+import pytest
 from pydantic_ai.messages import ToolCallPart
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
@@ -20,10 +21,15 @@ from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import (
+    TELEPORT_DEFER_KIND,
+    SummonDecision,
+    TeleportDecision,
+)
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,
@@ -139,3 +145,140 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
     assert event.batch_id == str(batch.id)
     assert event.questions == [question]
     assert event.approvals == [approval]
+
+
+@pytest.mark.parametrize("surface", ["dm", "group", "thread"])
+async def test_a_teleport_goes_to_the_graph_with_its_validated_destination(
+    surface: str,
+) -> None:
+    destination = ChannelAddress(
+        channel_tentacle_id="far",
+        chat_type="dm"
+        if surface == "dm"
+        else "group"
+        if surface == "group"
+        else "thread",
+        chat_id="" if surface == "dm" else "parent",
+        user_id="alice",
+        shared=surface == "group",
+    )
+    decision = TeleportDecision(
+        agent_id="inkling", hint="Continue", destination=destination
+    )
+    action_manager = FakeActionManager()
+    suspender = ReflexSuspender(
+        channel=FakeChannelTentacle(),
+        action_manager=cast(DeferredActionManager, action_manager),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+        thread_id=uuid7(),
+    )
+
+    assert await suspender.suspend(decision.deferral("move")) is None
+
+    assert suspender.teleport is not None
+    assert suspender.teleport.destination == destination
+    assert suspender.teleport.tool_call_id == "move"
+    assert suspender.suspended_batch_id is None
+    assert action_manager.create_calls == []
+
+
+async def test_a_teleport_deferral_without_a_destination_is_refused() -> None:
+    """The gateway resolves an omitted destination to the current conversation before
+    the decision exists, so a deferral naming none is a wiring bug, not "here"."""
+    nowhere = DeferredToolRequests(
+        calls=[ToolCallPart(tool_name="teleport", args={}, tool_call_id="move")],
+        metadata={"move": {"kind": TELEPORT_DEFER_KIND, "hint": "Continue"}},
+    )
+    suspender = ReflexSuspender(
+        channel=FakeChannelTentacle(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+        thread_id=uuid7(),
+    )
+
+    with pytest.raises(ValueError, match="names no destination"):
+        await suspender.suspend(nowhere)
+
+
+async def test_a_teleport_beside_another_deferral_is_refused() -> None:
+    deferral = TeleportDecision(
+        agent_id="inkling", hint="Continue", destination=_key()
+    ).deferral("move")
+    suspender = ReflexSuspender(
+        channel=FakeChannelTentacle(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+        thread_id=uuid7(),
+    )
+
+    with pytest.raises(RuntimeError, match="beside other calls"):
+        await suspender.suspend(
+            DeferredToolRequests(
+                calls=[*_requests().calls, *deferral.calls],
+                metadata=deferral.metadata,
+            )
+        )
+
+
+@pytest.mark.parametrize("streamed", [True, False])
+async def test_a_live_run_pauses_on_its_batch_without_suspending(
+    streamed: bool,
+) -> None:
+    address = _key()
+    question = DeferredQuestion(
+        tool_name="ask_questions",
+        tool_call_id="c1",
+        args={"question": "What should I clarify?"},
+    )
+    batch = FakePresentedBatch(questions=[question])
+    channel = FakeChannelTentacle()
+    suspender = ReflexSuspender(
+        channel=channel,
+        action_manager=cast(
+            DeferredActionManager, FakeActionManager(presented_batch=batch)
+        ),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="claude",
+        run_name="react",
+        source_address=address,
+        target_address=address,
+        target_mode="main",
+        decision=None,
+        thread_id=uuid7(),
+        emit_on_stream=streamed,
+    )
+
+    batch_id = uuid7()
+    paused, event = await suspender.pause(_requests(), batch_id=batch_id)
+
+    assert paused is batch
+    # The batch is the one the caller already waits on, and its reply is live.
+    assert (paused.id, paused.response_mode) == (batch_id, "live")
+    # The run stays live, so nothing records it as ended suspended.
+    assert suspender.suspended_batch_id is None
+    if streamed:
+        # The run's own stream presents it; the channel is not touched.
+        assert event == ActionBatchEvent.from_batch(cast(DeferredActionBatch, batch))
+        assert channel.sent == []
+    else:
+        # Nothing draws the run, so the channel shows the cards now.
+        assert event is None
+        assert "What should I clarify?" in channel.sent[0][2][0]["text"]

@@ -56,7 +56,7 @@ For Windows, we recommend [Docker Compose](docker.md#windows).
 - You can sign in to the console, issue a token, and see a native session arrive.
 - An unauthenticated request to `/hooks/...` and `/octomate/mcp` gets a 401.
 - A channel receives one message, runs the entry agent, and returns a reply.
-- A read-only MCP call, `gateway_scry` with `reveal: "routes"`, works as your account.
+- A read-only MCP call, `gateway_inspect` with `reveal: "routes"`, works as your account.
 - Restarting the service keeps configuration and stored history.
 
 [Configuration](configuration.md) explains the directory layout and the difference

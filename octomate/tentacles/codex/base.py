@@ -9,15 +9,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
+import os
 import time
 from collections import OrderedDict
 from collections.abc import AsyncGenerator, Callable, Generator, Sequence
 from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -33,16 +35,18 @@ import anyio
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
+from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
-    StreamFinalize,
     StreamHello,
+    StreamSnapshotCursor,
     StreamWelcome,
     client_message_adapter,
 )
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle
+from openai_codex._approval_mode import _approval_mode_settings
 from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.async_client import AsyncCodexClient
@@ -59,12 +63,14 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     TextUserInput,
+    ThreadForkParams,
     ThreadResumeParams,
     ThreadStartParams,
     TurnStartParams,
     TurnStatus,
     UserInput,
 )
+from openai_codex.models import Notification
 from pydantic import UUID7, SecretStr, TypeAdapter, ValidationError
 from pydantic_ai import (
     AgentCapability,
@@ -91,7 +97,8 @@ from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
 from octomate.managers.auth import AuthManager
@@ -108,10 +115,13 @@ from octomate.schemas.deferred import (
     DeferredActionBatch,
     QuestionRequest,
 )
+from octomate.schemas.files import Jsonl
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
+from octomate.streaming.files import FileTransferError, FileTransferSlot
 from octomate.telemetry import (
     agent_input_message_attributes,
     codex_logfire,
@@ -127,6 +137,7 @@ from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
 from octomate.tentacles.codex.telemetry import TracedCodexClient
+from octomate.tentacles.codex.transcript import RolloutLine, rollout_line_adapter
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -141,7 +152,8 @@ logger = logging.getLogger(__name__)
 # The public openai_codex API can't express two things the `user` approval bridge
 # needs: an approval-handler callback on the async client, and the
 # `approvals_reviewer=user` option. The human bridge uses the SDK's raw thread/turn
-# params and sandbox conversions; automatic review uses its public API.
+# params and sandbox conversions. Raw start/resume responses also report the model
+# selected by the runtime, which the public thread handle omits.
 
 
 # How a driven turn's Codex process is told to reach Octomate's MCP server: the
@@ -169,6 +181,7 @@ class PooledCodexClient:
     # The live SDK thread handle for this Octomate thread; created on first turn and
     # reused so later turns continue the same Codex thread on the warm process.
     thread: AsyncThread | None = None
+    model_name: str | None = None  # Runtime model, updated by explicit turn selections.
     last_used: float = 0.0
     # Active runs holding this client; a client with `in_use > 0` is never evicted.
     in_use: int = 0
@@ -305,10 +318,11 @@ class CodexBridgeContext:
 
     loop: asyncio.AbstractEventLoop
     conversation: Conversation
-    conversation_address: ChannelAddress
-    run_name: str | None
     session_allowed: set[str]
-    # Captured per turn: SDK transport threads have no channel sink or run context.
+    # What a request pauses the turn on, and how its batch reaches the turn's stream.
+    suspender: DeferredSuspender | None
+    interjections: Interjections[Notification]
+    # Captured per turn: SDK transport threads have no run context.
     task_context: Context = field(default_factory=copy_context)
 
 
@@ -501,7 +515,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         resume offsets, then feed each framed line through the tailer's assembly.
         Codex turns close on their own `task_complete`/`turn_aborted` lines, so
         nothing commits at the boundary either way — `eof` and a drop alike just
-        return the registry slot, and the next connect re-streams from byte 0. A
+        return the registry slot. The stored prefix rebuilds the tailer on the
+        server; the client resumes after it and uploads only appended bytes. A
         `Stop` on the hook pipe reaches here as the state's `stop_event`
         (`stop_turn`, once the stopped turn is durable or its wait ran out); the
         relay sends `finalize`, whose drain re-reads the client's files to EOF —
@@ -534,12 +549,29 @@ class CodexTentacle(AgentTentacle[str, None]):
             hello.session_id,
             hello.client_version or "unversioned",
         )
-        await websocket.send_text(StreamWelcome(offsets=offsets).model_dump_json())
+        conversation = state.conversation
+        assert conversation is not None
+        slot = FileTransferSlot(
+            websocket=websocket,
+            persist=(
+                partial(
+                    self.octomate.conversations.store_transcript,
+                    conversation=conversation,
+                    files=self.octomate.files,
+                    owner_id=sender.user_id,
+                )
+                if sender.user_id is not None
+                else None
+            ),
+            filename=Path(hello.transcript_path).name,
+            content_type="application/jsonl",
+            offset=offsets.get(SESSION_FILE, 0),
+        )
 
         async def relay_finalize() -> None:
             await state.stop_event.wait()
             try:
-                await websocket.send_text(StreamFinalize().model_dump_json())
+                await slot.finalize()
             except Exception:
                 # The socket died first; the drain this asked for cannot happen, and
                 # the next connect re-streams what it would have shipped.
@@ -547,17 +579,39 @@ class CodexTentacle(AgentTentacle[str, None]):
                     "session %s: finalize relay lost its socket", hello.session_id
                 )
 
-        relay = asyncio.create_task(relay_finalize())
-        # Per-file contiguity: each line must start where the last one ended, so a
-        # dropped frame surfaces as a close (4000 — the client reconnects and re-asks)
-        # instead of a silently mis-assembled turn.
-        expected_offsets = dict(offsets)
+        relay: asyncio.Task[None] | None = None
         clean = False
         try:
-            while True:
-                message = client_message_adapter.validate_json(
-                    await websocket.receive_text()
+            if conversation.transcript_file_id is not None:
+                if sender.user_id is None:
+                    raise FileTransferError("Stored transcripts require an owner")
+                slot.prefix = await self.octomate.files.read(
+                    conversation.transcript_file_id, owner_id=sender.user_id
                 )
+            for raw in slot.prefix.split(b"\n")[:-1]:
+                end = slot.offset + len(raw) + 1
+                await self.session_tailer.feed_remote(
+                    state, None, raw.decode("utf-8", errors="replace"), slot.offset, end
+                )
+                slot.offset = end
+            slot.stored_offset = len(slot.prefix)
+            offsets[SESSION_FILE] = slot.offset
+            await websocket.send_text(
+                StreamWelcome(
+                    offsets=offsets,
+                    transcript=StreamSnapshotCursor(
+                        offset=len(slot.prefix),
+                        sha256=hashlib.sha256(slot.prefix).hexdigest(),
+                    )
+                    if slot.persist is not None
+                    else None,
+                ).model_dump_json()
+            )
+            relay = asyncio.create_task(relay_finalize())
+            # Each line must begin where the preceding line ended.
+            expected_offsets = dict(offsets)
+            while True:
+                message = await slot.receive()
                 if isinstance(message, StreamEof):
                     clean = True
                     return
@@ -579,8 +633,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 )
         except WebSocketDisconnect:
             pass
-        except ValidationError:
-            await websocket.close(code=1008, reason="unparseable stream message")
+        except (ValidationError, FileTransferError, FileNotFoundError):
+            await websocket.close(code=1008, reason="invalid stream message")
         except Exception:
             logger.exception(
                 "session %s: remote tail errored; its open turns are left for the "
@@ -588,9 +642,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 hello.session_id,
             )
         finally:
-            relay.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await relay
+            if relay is not None:
+                relay.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await relay
+            await slot.close()
             self.session_tailer.detach_remote(state)
             if clean:
                 with contextlib.suppress(Exception):
@@ -600,6 +656,182 @@ class CodexTentacle(AgentTentacle[str, None]):
     def default_model(self) -> None:
         # Omission lets Codex resolve settings and an existing thread's selection.
         return None
+
+    async def fork_session(
+        self,
+        conversation: Conversation,
+        *,
+        cwd: Path,
+        last_turn_id: str | None = None,
+    ) -> str:
+        """Copy Codex's stored history into an independent, durable thread."""
+        if not conversation.external_id:
+            raise ValueError("Cannot fork a Codex conversation without a session id")
+        runtime = replace(
+            self.config.runtime,
+            config_overrides=(
+                *self.config.runtime.config_overrides,
+                *DRIVEN_CONFIG_OVERRIDES,
+            ),
+        )
+        async with AsyncCodex(config=runtime) as client:
+            config = await self.thread_config(client, str(cwd), None)
+            forked = await client._client.thread_fork(
+                conversation.external_id,
+                ThreadForkParams(
+                    thread_id=conversation.external_id,
+                    cwd=str(cwd),
+                    config=config,
+                    ephemeral=False,
+                    last_turn_id=last_turn_id,
+                ),
+            )
+        if forked.thread.id == conversation.external_id:
+            raise ValueError("Codex fork returned the source thread id")
+        return forked.thread.id
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: UUID7
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """Read uploaded history and select its latest fully uploaded terminal turn."""
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only root native Codex sessions can be forked here")
+        if source.transcript_file_id is None or source.external_id is None:
+            raise ValueError("Native Codex history has not been uploaded")
+        data = await self.octomate.files.read(
+            source.transcript_file_id, owner_id=owner_id
+        )
+        end = 0
+        completed_run: ExternalAgentRun | None = None
+        for run in source.runs:
+            if (
+                not isinstance(run, ExternalAgentRun)
+                or run.native_session_id != source.external_id
+                or run.end_offset is None
+                or not end < run.end_offset <= len(data)
+            ):
+                continue
+            offset = run.end_offset
+            if data[offset - 1 : offset] != b"\n":
+                raise ValueError("Turn offset must end at a transcript line boundary")
+            start = data.rfind(b"\n", 0, offset - 1) + 1
+            closing = rollout_line_adapter.validate_json(data[start:offset])
+            if (
+                closing.type == "event_msg"
+                and closing.payload.get("type") in {"task_complete", "turn_aborted"}
+                and closing.payload.get("turn_id") == run.id
+            ):
+                end = offset
+                completed_run = run
+        if completed_run is None:
+            raise ValueError("No completed Codex turn has been fully uploaded")
+        if completed_run.permission_mode is None:
+            raise ValueError(
+                "The completed Codex turn has no supported permission preset"
+            )
+        # Uploads may stop inside the next record; Codex selects the turn boundary.
+        data = data[: data.rfind(b"\n") + 1]
+        self.import_metadata(data, external_id=source.external_id)
+        return data, completed_run
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: UUID7,
+        cwd: Path,
+    ) -> Conversation:
+        """Import an owner's completed native history and fork it into an empty target."""
+        conversations = self.octomate.conversations
+        async with conversations.lock(target.key):
+            source = await conversations.get(source.id)
+            target = await conversations.get(target.id)
+            if source.agent_tentacle_id != CODEX_NATIVE_ID:
+                raise ValueError("Transcript imports require a native Codex source")
+            if target.agent_tentacle_id != self.id or source.id == target.id:
+                raise ValueError("Transcript imports require a separate Codex target")
+            if target.messages or target.external_id or target.transcript_file_id:
+                raise ValueError("Transcript imports require an empty target")
+            if source.transcript_file_id is None or source.external_id is None:
+                raise ValueError("Native Codex history has not been uploaded")
+            data, completed_run = await self.read_fork_transcript(
+                source, owner_id=owner_id
+            )
+            assert completed_run.end_offset is not None
+            async with (
+                self.octomate.files.partial_copy(
+                    source.transcript_file_id,
+                    end=completed_run.end_offset,
+                    owner_id=owner_id,
+                    media_type="application/jsonl",
+                ) as snapshot,
+                self.import_transcript(
+                    data, external_id=source.external_id, owner_id=owner_id
+                ) as imported_id,
+            ):
+                imported_source = Conversation(
+                    thread_id=source.thread_id,
+                    agent_tentacle_id=self.id,
+                    external_id=imported_id,
+                )
+                external_id = await self.fork_session(
+                    imported_source, cwd=cwd, last_turn_id=completed_run.id
+                )
+                await conversations.fork(
+                    source,
+                    target,
+                    external_id=external_id,
+                    transcript=Jsonl.model_validate(snapshot),
+                    model_name=completed_run.model_name,
+                    permission_mode=completed_run.permission_mode,
+                )
+            return await conversations.get(target.id)
+
+    @staticmethod
+    def import_metadata(data: bytes, *, external_id: str) -> RolloutLine:
+        """Require a complete snapshot with its own matching session metadata."""
+        if not data.endswith(b"\n"):
+            raise ValueError("Completed turn must end at a transcript line boundary")
+        opening = data.split(b"\n", 1)[0]
+        metadata = rollout_line_adapter.validate_json(opening)
+        if metadata.type != "session_meta" or metadata.payload.get("id") != external_id:
+            raise ValueError("Transcript metadata does not match the source session")
+        if metadata.payload.get("history_base") is not None:
+            raise ValueError(
+                "This transcript requires ancestor files before it can be imported"
+            )
+        return metadata
+
+    @contextlib.asynccontextmanager
+    async def import_transcript(
+        self, data: bytes, *, external_id: str, owner_id: UUID7
+    ) -> AsyncGenerator[str]:
+        """Keep a private Codex import on success; remove it if the fork fails."""
+        metadata = self.import_metadata(data, external_id=external_id)
+        _, remainder = data.split(b"\n", 1)
+        # Distinct imports of A must not compete for A's ID in Codex's rollout index.
+        imported_id = str(uuid7())
+        metadata.payload["id"] = imported_id
+        metadata.payload["session_id"] = imported_id
+        imported = metadata.model_dump_json().encode() + b"\n" + remainder
+        name = f"rollout-{metadata.timestamp:%Y-%m-%dT%H-%M-%S}-{imported_id}.jsonl"
+        home = await anyio.Path(
+            (self.config.runtime.env or {}).get("CODEX_HOME")
+            or os.environ.get("CODEX_HOME")
+            or Path.home() / ".codex"
+        ).expanduser()
+        path = await (home / "sessions" / "users" / owner_id.hex / name).absolute()
+        await path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        handle = await path.open("xb")
+        try:
+            async with handle:
+                await handle.write(imported)
+            await path.chmod(0o600)
+            yield imported_id
+        except BaseException:
+            await path.unlink(missing_ok=True)
+            raise
 
     async def discover_models(self) -> None:
         runtime = replace(
@@ -619,6 +851,10 @@ class CodexTentacle(AgentTentacle[str, None]):
                 response_model=ConfigReadResponse,
             )
             provider = settings.config.model_provider or "openai"
+            # What a turn without an effort runs at: ours, then Codex's own setting.
+            configured_effort = (
+                self.config.effort or settings.config.model_reasoning_effort
+            )
             cursor: str | None = None
             while True:
                 page = await client.request(
@@ -635,13 +871,18 @@ class CodexTentacle(AgentTentacle[str, None]):
                         option.reasoning_effort.value
                         for option in model.supported_reasoning_efforts
                     }
+                    efforts: tuple[ThinkingEffort, ...] = tuple(
+                        effort for effort in ThinkingEfforts if effort in supported
+                    )
+                    default = ReasoningEffort(
+                        configured_effort or model.default_reasoning_effort
+                    ).value
                     models[key] = model.model
                     claims[key] = Claim(
                         model.description
                         or (configured.ability if configured else model.display_name),
-                        tuple(
-                            effort for effort in ThinkingEfforts if effort in supported
-                        ),
+                        efforts,
+                        next((effort for effort in efforts if effort == default), None),
                     )
                 cursor = page.next_cursor
                 if cursor is None:
@@ -740,6 +981,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             "url": str(url),
             "bearer_token_env_var": MCP_TOKEN_ENV,
             "env_http_headers": {CONVERSATION_HEADER: MCP_CONVERSATION_ENV},
+            # Teleport always takes Codex's approval route, so the preset decides.
+            "tools": {gateway_tool(GatewayTool.TELEPORT): {"approval_mode": "prompt"}},
         }
         return {"mcp_servers": servers}
 
@@ -776,36 +1019,20 @@ class CodexTentacle(AgentTentacle[str, None]):
         context: CodexBridgeContext,
         requests: DeferredToolRequests,
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        channel = self.octomate.channels.get(
-            context.conversation_address.channel_tentacle_id
-        )
-        if channel is None:
+        if context.suspender is None:
             raise RuntimeError(
-                "no channel "
-                f"{context.conversation_address.channel_tentacle_id!r} to present "
-                "a Codex approval/question"
+                "a Codex approval mid-turn needs a suspender to pause on"
             )
+        # Waiting before the cards go up, so a quick answer cannot miss it.
         batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
         self.pendings[batch_id] = future
         try:
-            batch = await channel.feelers.present_actions(
-                response_mode="live",
-                batch_id=batch_id,
-                action_manager=self.octomate.deferred_actions,
-                conversation=context.conversation,
-                agent_tentacle_id=self.id,
-                run_name=context.run_name,
-                source_address=context.conversation_address,
-                target_address=context.conversation_address,
-                target_mode="sub"
-                if context.conversation_address.channel_thread_id
-                else "main",
-                decision=None,
-                requests=requests,
-            )
+            batch, event = await context.suspender.pause(requests, batch_id=batch_id)
+            if event is not None:
+                context.interjections.interject(event)
             try:
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
@@ -854,6 +1081,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                 return future.result()
             except Exception as exc:
                 return self.deny_sdk_request(str(exc))
+        if self.is_mcp_tool_approval(method, params):
+            future = context.task_context.copy().run(
+                asyncio.run_coroutine_threadsafe,
+                self.answer_sdk_mcp_tool_approval(context=context, params=params or {}),
+                context.loop,
+            )
+            try:
+                return future.result()
+            except Exception as exc:
+                return {"action": "decline", "message": str(exc)}
         if self.is_question_request(method):
             future = context.task_context.copy().run(
                 asyncio.run_coroutine_threadsafe,
@@ -915,7 +1152,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 answer = response.answers.get(action.id)
                 if answer:
                     question_id = request["questions"][action.position]["id"]
-                    answers[question_id] = {"answers": [answer]}
+                    answers[question_id] = {
+                        "answers": [answer] if isinstance(answer, str) else [*answer]
+                    }
         return {"answers": answers}
 
     async def answer_sdk_approval_request(
@@ -964,6 +1203,36 @@ class CodexTentacle(AgentTentacle[str, None]):
             f"The user declined permission to run {tool_name}."
         )
 
+    async def answer_sdk_mcp_tool_approval(
+        self, *, context: CodexBridgeContext, params: JsonObject
+    ) -> JsonObject:
+        """Codex asking to run an MCP tool, as an approve-or-decline card in Codex's
+        own words, which are the only place it names the tool, showing the
+        arguments the call would run with."""
+        server = str(params.get("serverName") or "mcp")
+        tool_call_id = self.sdk_request_id("mcpServer/elicitation/request", params)
+        message = params.get("message")
+        meta = params.get("_meta")
+        arguments = meta.get("tool_params") if isinstance(meta, dict) else None
+        requests = DeferredToolRequests(
+            approvals=[
+                ToolCallPart(
+                    tool_name=f"codex_mcp_{server}",
+                    args=arguments if isinstance(arguments, dict) else {},
+                    tool_call_id=tool_call_id,
+                    provider_name=CODEX_PROVIDER_NAME,
+                )
+            ],
+            metadata={tool_call_id: {"description": message}}
+            if isinstance(message, str)
+            else {},
+        )
+        batch, response = await self._await_human(context=context, requests=requests)
+        action = next(iter(batch.approvals))
+        if response is not None and response.approvals.get(action.id, False):
+            return {"action": "accept", "content": {}}
+        return {"action": "decline"}
+
     async def answer_sdk_question_request(
         self,
         *,
@@ -995,7 +1264,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             for action in sorted(batch.questions)
             if response.answers.get(action.id)
         ]
-        answer = "\n".join(str(item) for item in answers if item)
+        answer = "\n".join(
+            item if isinstance(item, str) else ", ".join(item)
+            for item in answers
+            if item
+        )
         if not answer:
             return {"action": "decline", "message": "The user did not answer."}
         content_key = self.question_content_key(args)
@@ -1037,6 +1310,18 @@ class CodexTentacle(AgentTentacle[str, None]):
         return tool_name in context.session_allowed
 
     @staticmethod
+    def is_mcp_tool_approval(method: str, params: JsonObject | None) -> bool:
+        """Codex's approval prompt for an MCP tool call, which it sends as an
+        elicitation marked with the kind of approval it is."""
+        if method != "mcpServer/elicitation/request" or params is None:
+            return False
+        meta = params.get("_meta")
+        return (
+            isinstance(meta, dict)
+            and meta.get("codex_approval_kind") == "mcp_tool_call"
+        )
+
+    @staticmethod
     def is_question_request(method: str) -> bool:
         lowered = method.lower()
         return "elicitation" in lowered or "question" in lowered
@@ -1075,26 +1360,20 @@ class CodexTentacle(AgentTentacle[str, None]):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
-        if approval_mode is not None:
-            return await client.thread_start(
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=ephemeral,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
+    ) -> tuple[AsyncThread, str]:
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
-        # `user` reviewer has no public thread_start knob; go through the raw params.
+        )
         await client._ensure_initialized()
         started = await client._client.thread_start(
             ThreadStartParams(
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
+                approval_policy=approval_policy,
+                approvals_reviewer=reviewer,
                 base_instructions=base_instructions,
                 config=config,
                 cwd=cwd,
@@ -1106,7 +1385,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 sandbox=_sandbox_mode(sandbox),
             )
         )
-        return AsyncThread(client, started.thread.id)
+        return AsyncThread(client, started.thread.id), started.model
 
     async def resume_codex_thread(
         self,
@@ -1122,27 +1401,22 @@ class CodexTentacle(AgentTentacle[str, None]):
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
-        if approval_mode is not None:
-            return await client.thread_resume(
-                thread_id,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
+    ) -> tuple[AsyncThread, str]:
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
+        )
         await client._ensure_initialized()
         resumed = await client._client.thread_resume(
             thread_id,
             ThreadResumeParams(
                 thread_id=thread_id,
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
+                approval_policy=approval_policy,
+                approvals_reviewer=reviewer,
                 base_instructions=base_instructions,
                 config=config,
                 cwd=cwd,
@@ -1153,7 +1427,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 sandbox=_sandbox_mode(sandbox),
             ),
         )
-        return AsyncThread(client, resumed.thread.id)
+        return AsyncThread(client, resumed.thread.id), resumed.model
 
     async def turn_codex_thread(
         self,
@@ -1185,7 +1459,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         # The public SDK cannot reset an auto reviewer back to the user.
         inputs = [UserInput(root=TextUserInput(type="text", text=prompt))]
-        turn = await client._client.turn_start(
+        turn, subscription = await client._client._start_turn(
             thread.id,
             prompt,
             params=TurnStartParams(
@@ -1201,8 +1475,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 personality=personality,
                 summary=summary,
             ),
+            for_handle=True,
         )
-        return AsyncTurnHandle(client, thread.id, turn.turn.id)
+        return AsyncTurnHandle(
+            client, thread.id, turn.turn.id, _subscription=subscription
+        )
 
     @contextlib.contextmanager
     def track_turn(
@@ -1403,7 +1680,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             pooled = await self.pool.acquire(conversation.id, user_id=user_id)
             resources.push_async_callback(self.pool.release, conversation.id)
             codex_thread = pooled.thread
-            if codex_thread is None:
+            if codex_thread is None or codex_thread.id != conversation.external_id:
                 # SDK startup can wait on network I/O. Enter after acquiring
                 # the lease so it cannot hold up other conversations' clients.
                 await pooled.client.__aenter__()
@@ -1413,7 +1690,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     pooled.api_key.token if pooled.api_key is not None else None,
                 )
                 if conversation.external_id:
-                    codex_thread = await self.resume_codex_thread(
+                    codex_thread, pooled.model_name = await self.resume_codex_thread(
                         pooled.client,
                         thread_id=conversation.external_id,
                         approval_mode=approval_mode,
@@ -1427,7 +1704,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         sandbox=sandbox,
                     )
                 else:
-                    codex_thread = await self.start_codex_thread(
+                    codex_thread, pooled.model_name = await self.start_codex_thread(
                         pooled.client,
                         approval_mode=approval_mode,
                         base_instructions=self.config.base_instructions,
@@ -1441,14 +1718,17 @@ class CodexTentacle(AgentTentacle[str, None]):
                         sandbox=sandbox,
                     )
                 pooled.thread = codex_thread
+            elif sdk_model is not None:
+                pooled.model_name = sdk_model
             codex_thread_id = codex_thread.id
             await resources.enter_async_context(self.driving(codex_thread_id))
+            interjections = Interjections[Notification]()
             self.bridge_contexts[conversation.id] = CodexBridgeContext(
                 loop=asyncio.get_running_loop(),
                 conversation=conversation,
-                conversation_address=conversation_address,
-                run_name=run_name,
                 session_allowed=set(conversation.allowed_tools),
+                suspender=deferred_suspender,
+                interjections=interjections,
             )
             resources.callback(self.bridge_contexts.pop, conversation.id, None)
             turn = await self.turn_codex_thread(
@@ -1465,8 +1745,16 @@ class CodexTentacle(AgentTentacle[str, None]):
                 summary=summary,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
+            # Closed with the turn's other resources, so its reader never outlives it.
+            notifications = await resources.enter_async_context(
+                contextlib.aclosing(interjections.around(turn.stream()))
+            )
             interrupted = False
-            async for notification in turn.stream():
+            async for notification in notifications:
+                if isinstance(notification, ActionBatchEvent):
+                    # A batch the turn paused on, for whoever draws the run.
+                    yield notification
+                    continue
                 for event in accumulator.consume(notification):
                     yield event
                 if (
@@ -1478,6 +1766,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     interrupted = True
                     await turn.interrupt()
             await self.sync_session_name(conversation, codex_thread)
+            model_name = pooled.model_name
 
         run_id = str(uuid7())
         recorded_run = await self.octomate.conversations.record_agent_run(
@@ -1485,6 +1774,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             run_id=run_id,
             messages=accumulator.messages,
             name=run_name,
+            model_name=model_name,
+            permission_mode=permission_mode,
             cwd=Path(run_cwd),
             external_id=accumulator.thread_id or codex_thread_id,
             native_id=CODEX_NATIVE_ID,

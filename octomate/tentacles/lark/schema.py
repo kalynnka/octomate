@@ -44,14 +44,11 @@ class LarkQuestionActionValue(TypedDict):
     action: NonEmptyStr
     batch_id: UUID7
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
-    page: int
-    answers: dict[UUID7, str]
-    choice: NotRequired[str]
 
 
-class LarkQuestionFormValue(TypedDict, total=False):
-    answer: str | None
-    choice: str | None
+# A submitted question form: each question's inputs, named by its index —
+# `answer_0` typed, `choice_0` picked, `picks_0` for a multi-select question.
+type LarkQuestionFormValue = dict[str, str | list[str] | None]
 
 
 @dataclass(frozen=True)
@@ -164,6 +161,20 @@ class LarkInput(TypedDict):
 
 
 @with_config(ConfigDict(extra="allow"))
+class LarkSelectOption(TypedDict):
+    text: LarkCardText
+    value: str
+
+
+@with_config(ConfigDict(extra="allow"))
+class LarkSelect(TypedDict):
+    tag: Literal["select_static", "multi_select_static"]
+    name: str
+    options: list[LarkSelectOption]
+    placeholder: NotRequired[LarkCardText]
+
+
+@with_config(ConfigDict(extra="allow"))
 class LarkForm(TypedDict):
     tag: Literal["form"]
     name: str
@@ -196,6 +207,7 @@ type LarkCardElement = Annotated[
     | LarkButton
     | LarkActionRow
     | LarkInput
+    | LarkSelect
     | LarkForm
     | LarkColumn
     | LarkColumnSet

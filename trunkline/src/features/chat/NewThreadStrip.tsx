@@ -92,6 +92,8 @@ export function NewThreadStrip() {
         </span>
         {open && (
           <span
+            className="lt-menu"
+            data-open=""
             style={{
               position: 'absolute',
               top: 'calc(100% + 6px)',

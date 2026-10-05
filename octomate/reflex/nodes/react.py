@@ -16,7 +16,11 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent, StreamEvents
+from octomate.capabilities.harness.events import (
+    MessageSentEvent,
+    RunStartedEvent,
+    StreamEvents,
+)
 from octomate.reflex.state import (
     DeferredResult,
     PendingHandoff,
@@ -49,7 +53,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
         """React, and leave the turn's workspace in the mirror however it ends.
 
         In a `finally` because a turn that raised still did whatever it did on
@@ -72,7 +76,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def react(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -106,34 +110,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:
-            target_conversation = await ctx.deps.conversation_manager.ensure(
-                state.thread.id,
-                agent_tentacle_id=agent.id,
-                with_history=False,
-            )
-            # A handoff pins who owns the chat, so it is read and written there: a
-            # chat room's sub-thread is new every kick and would forget the owner.
-            chat = await ctx.deps.thread_manager.surface(state.thread)
-            latest_handoff = chat.latest_handoff
-            target_model = model
-            if (
-                latest_handoff is None
-                or latest_handoff.to_agent_tentacle_id != agent.id
-                or latest_handoff.to_model != target_model
-            ):
-                await ctx.deps.thread_manager.record_handoff(
-                    chat,
-                    source_agent_tentacle_id=claim.source_agent_tentacle_id,
-                    to_agent_tentacle_id=agent.id,
-                    to_model=target_model,
-                    reason=decision.reason,
-                    hint=decision.hint,
-                    brief=decision.summon,
-                    source_conversation_id=claim.source_conversation_id,
-                    target_conversation_id=target_conversation.id,
-                    source_run_id=claim.source_run_id,
-                    source_model_message_id=claim.source_model_message_id,
-                )
+            await claim.land(ctx.deps, state.thread, decision)
             state.handoff = None
         target_channel = ctx.deps.channel(target)
         state.summon_routes = [
@@ -202,6 +179,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     async def stream_events() -> AsyncGenerator[
                         StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
                     ]:
+                        # Where the run reports, for a consumer that asked elsewhere.
+                        yield RunStartedEvent(address=target_address)
                         async with agent.run_stream_events(
                             user_prompt,
                             conversation_address=target_address,
@@ -260,14 +239,13 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                                 yield event
 
                     try:
-                        async with target_channel.feelers.timeline.open(
-                            target_address
-                        ) as timeline_state:
-                            async with target_channel.feelers.driving(
-                                target_address, timeline_state
-                            ):
-                                async with aclosing(stream_events()) as events:
-                                    await timeline_state.drive(events)
+                        async with (
+                            target_channel.feelers.timeline.open(
+                                target_address
+                            ) as timeline_state,
+                            aclosing(stream_events()) as events,
+                        ):
+                            await timeline_state.drive(events)
                     except AgentRunError:
                         # A model/provider failure (e.g. invalid Bedrock credentials)
                         # surfaces here from the run stream itself, not the render. It
@@ -410,20 +388,18 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 if (
                     octomate_session is not None
-                    and octomate_session.dispelling
+                    and octomate_session.dismissing
                     and state.thread is not None
                 ):
                     # The agent said this thread's work is done: its tree goes now
                     # that the run is out of it, saved first and kept if that failed.
-                    result = await ctx.deps.workspaces.dispel(state.thread)
+                    result = await ctx.deps.workspaces.dismiss(state.thread)
                     span.set_attribute(
-                        "react.dispelled",
+                        "react.dismissed",
                         result,
                     )
                 if isinstance(output, DeferredToolRequests):
-                    # `teleport` is resolved by the graph (fork + resume), not a human. The
-                    # suspender classified it by its declared metadata kind and stashed it,
-                    # so route on the typed request instead of re-scanning tool names.
+                    # The suspender handed a `teleport` back for the graph to perform.
                     if suspender.teleport is not None:
                         return Teleport(
                             request=suspender.teleport, origin=target, agent_id=agent.id
@@ -491,7 +467,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         agent_id=gateway_decision.agent_id,
                         reason=gateway_decision.reason,
                     )
-                    return Handoff()
+                    return Summon()
 
                 return End(
                     ReflexResult(
@@ -506,8 +482,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 # hints, and pydantic-graph resolves those hints against this module's globals when
 # the graph is built — so `if TYPE_CHECKING` is not enough, the names must really be
 # here. Importing them at the top would deadlock the cycle (react would be half-built
-# when handoff asked for it), so the cycle is closed here instead, after `React`
+# when summon asked for it), so the cycle is closed here instead, after `React`
 # exists. `nodes/__init__` imports this module first to keep that order.
-from octomate.reflex.nodes.handoff import Handoff  # noqa: E402
 from octomate.reflex.nodes.scheme import Scheme  # noqa: E402
+from octomate.reflex.nodes.summon import Summon  # noqa: E402
 from octomate.reflex.nodes.teleport import Teleport  # noqa: E402

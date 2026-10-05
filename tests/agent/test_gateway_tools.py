@@ -9,35 +9,42 @@ They speak to it in memory, which is how a driven Claude run reaches it too.
 from __future__ import annotations
 
 import json
+from dataclasses import asdict
 from inspect import cleandoc
+from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 from fastmcp import Client, FastMCP
 from fastmcp.exceptions import ToolError
+from octomate_protocol.gateway import gateway_tool
 from sqlalchemy.ext.asyncio import AsyncEngine
 
+from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability, gateway_instructions
-from octomate.capabilities.history import HISTORY_TOOLS, HistoryCapability
+from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.history import HistoryCapability
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
-from octomate.mcp.gateway import GATEWAY_SPELLS, TELEPORT_RECORDED
-from octomate.mcp.server import gateway_tool, history_tool, octomate_mcp
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.mcp.gateway import NATIVE_TELEPORT_STARTED, TELEPORT_RECORDED
+from octomate.mcp.server import octomate_mcp
+from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
-    CrossingLanding,
     SchemeDecision,
     SummonDecision,
     TeleportDecision,
-    ThreadLanding,
 )
 from octomate.schemas.user import UserProfile
+from octomate.tentacles.trunkline import TrunklineTentacle
+from octomate.tentacles.trunkline.base import TrunklineStreamItem, current_sink
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
@@ -52,16 +59,18 @@ CLAUDE_ROUTE = AgentRoute(
 SUMMON_ARGUMENTS = {
     "agent_id": "claude",
     "model": "opus",
-    "destination": {"kind": "thread"},
     "hint": "Working on it",
     "reason": "needs coding",
     "summon": "Please investigate the failing test.",
 }
 
 
-def a_turn() -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadManager]:
-    """The gateway as a driven runtime mounts it for one turn on a group main: every
-    call against one fixed session, delivering through the fakes handed back."""
+def a_turn(
+    *, in_thread: bool = False
+) -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadManager]:
+    """The gateway as a driven runtime mounts it for one turn on a group main, or in a
+    thread of it — the shared surface a summon can take over: every call against one
+    fixed session, delivering through the fakes handed back."""
     channel = FakeChannelTentacle()
     threads = FakeThreadManager()
     session = OctomateSession(
@@ -70,9 +79,10 @@ def a_turn() -> tuple[FastMCP, OctomateSession, FakeChannelTentacle, FakeThreadM
         channels={"im": channel},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="group",
+            chat_type="thread" if in_thread else "group",
             chat_id="room",
             user_id="alice",
+            channel_thread_id="t-1" if in_thread else None,
             shared=True,
         ),
     )
@@ -91,13 +101,13 @@ async def a_native_call(
     OctomateSession,
     FakeChannelTentacle,
     FakeThreadManager,
-    list[GatewayHandoffSignal],
+    list[NativeGatewaySignal],
 ]:
     """The gateway as the served endpoint builds it for one native call: no
     thread, no address, the session speaking for the registered user the
     verified bearer named — `linked` is whether that user has a real account
     on `im` for a destination to light up."""
-    kicks: list[GatewayHandoffSignal] = []
+    kicks: list[NativeGatewaySignal] = []
     await a_user("luhui", profiles={"im": "alice"} if linked else {})
     users = UserManager()
     channel = FakeChannelTentacle()
@@ -122,7 +132,7 @@ async def a_native_call(
 async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     # The accomplice spells are deliberately absent: external runtimes bring
     # their own subagent systems.
-    server, _session, _channel, _threads = a_turn()
+    server, session, _channel, _threads = a_turn()
 
     tools = [
         tool
@@ -131,32 +141,32 @@ async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
     ]
 
     assert [tool.name for tool in tools] == [
-        "gateway_scry",
+        "gateway_inspect",
         "gateway_summon",
         "gateway_teleport",
         "gateway_scheme",
         "gateway_send",
-        "gateway_dispel",
+        "gateway_dismiss",
         "history_search",
         "history_read_before",
         "history_read_after",
     ]
-    # What an adapter pre-allows is this same list, named statically.
-    assert [
-        *map(gateway_tool, GATEWAY_SPELLS),
-        *map(history_tool, HISTORY_TOOLS),
-    ] == [tool.name for tool in tools]
+    assert "gateway_dispel" not in {tool.name for tool in tools}
+    capability = GatewayCapability(session=session)
+    assert capability.toolset is not None
+    assert "dismiss" in capability.toolset.tools
+    assert "dispel" not in capability.toolset.tools
 
 
 async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
     server, _session, _channel, _threads = a_turn()
     contracts = {
-        "gateway_scry": GatewayCapability.scry,
+        "gateway_inspect": GatewayCapability.inspect,
         "gateway_summon": GatewayCapability.summon,
         "gateway_teleport": GatewayCapability.teleport,
         "gateway_scheme": GatewayCapability.scheme,
         "gateway_send": GatewayCapability.send,
-        "gateway_dispel": GatewayCapability.dispel,
+        "gateway_dismiss": GatewayCapability.dismiss,
         "history_search": HistoryCapability.search_thread_history,
         "history_read_after": HistoryCapability.read_thread_history_after,
     }
@@ -168,7 +178,7 @@ async def test_descriptions_are_the_inkling_contracts_verbatim() -> None:
         assert doc is not None
         assert tools[name].description == cleandoc(doc)
     # And the contract is the model-facing one, not a paraphrase.
-    assert "copied exactly from a `scry` route" in (
+    assert "copied exactly from an `inspect` route" in (
         tools["gateway_summon"].description or ""
     )
     assert "do NOT repeat it in your final reply" in (
@@ -184,12 +194,34 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert "### Writing a brief" in inkling
 
     mcp = gateway_instructions(gateway_tool)
-    for name in ("scry", "summon", "teleport", "scheme", "send", "dispel"):
+    for name in ("inspect", "summon", "teleport", "scheme", "send", "dismiss"):
         assert f"`gateway_{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp
     # The other runtimes bring their own handoff skills.
     assert "Writing a brief" not in mcp
+
+    for instructions in (inkling, mcp):
+        for argument in (
+            "ChannelAddress",
+            "destination=null",
+            "new_thread=true",
+            "new_thread=false",
+            "channel_thread_id=null",
+            'kind="here"',
+            'kind="dm"',
+        ):
+            assert f"`{argument}`" in instructions
+        assert "discovery is optional" in instructions
+        assert "known address directly" in instructions
+        for obsolete in (
+            "`destination`: `here`",
+            "`destination` is `thread`",
+            '`destination="here"`',
+            "`parent` chat ID",
+            "Only from a group",
+        ):
+            assert obsolete not in instructions
 
 
 async def test_schemas_carry_no_runtime_state() -> None:
@@ -206,17 +238,16 @@ async def test_schemas_carry_no_runtime_state() -> None:
 
 
 async def test_summon_records_the_decision_it_validated() -> None:
-    server, session, _channel, _threads = a_turn()
+    server, session, _channel, _threads = a_turn(in_thread=True)
 
     async with Client(server) as client:
         result = await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
-    assert result.data == "Summoning claude (opus) → thread."
+    assert result.data == "Summoning claude (opus) to take over here."
     assert session.decision == SummonDecision(
         action="summon",
         agent_id="claude",
         model="opus",
-        destination=ThreadLanding(),
         effort=None,
         hint="Working on it",
         reason="needs coding",
@@ -225,7 +256,7 @@ async def test_summon_records_the_decision_it_validated() -> None:
 
 
 async def test_a_refusal_reaches_the_caller_as_the_same_sentence() -> None:
-    server, session, _channel, _threads = a_turn()
+    server, session, _channel, _threads = a_turn(in_thread=True)
 
     async with Client(server) as client:
         with pytest.raises(ToolError) as refusal:
@@ -243,12 +274,11 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
     server, session, _channel, _threads = a_turn()
 
     async with Client(server) as client:
-        # The bad destination kind is the input under test: the server validates
+        # The bad effort level is the input under test: the server validates
         # against the tool's own schema before any policy is consulted.
-        with pytest.raises(ToolError, match="destination"):
+        with pytest.raises(ToolError, match="effort"):
             await client.call_tool(
-                "gateway_summon",
-                {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}},
+                "gateway_summon", {**SUMMON_ARGUMENTS, "effort": "everything"}
             )
 
     assert session.decision is None
@@ -273,13 +303,14 @@ async def test_teleport_records_and_tells_the_runtime_to_wrap_up() -> None:
 
     async with Client(server) as client:
         result = await client.call_tool(
-            "gateway_teleport", {"hint": "carrying on in a thread"}
+            "gateway_teleport", {"hint": "carrying on in a thread", "resume": True}
         )
 
     assert result.data == TELEPORT_RECORDED
     assert isinstance(session.decision, TeleportDecision)
     assert session.decision.hint == "carrying on in a thread"
-    assert session.decision.crossing is None
+    assert session.decision.resume
+    assert session.decision.destination == session.conversation_address
 
 
 async def test_send_here_delivers_immediately_to_the_conversation() -> None:
@@ -296,6 +327,50 @@ async def test_send_here_delivers_immediately_to_the_conversation() -> None:
     [outbound] = threads.outbounds
     assert outbound.agent_tentacle_id == "inkling"
     assert outbound.segments == [MarkdownSegment(data={"text": "halfway there"})]
+
+
+async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> None:
+    """A send is a message, not part of the run: on the console it shows on the
+    stream watching the thread, and the ledger row is what a reload reads."""
+    console = TrunklineTentacle(
+        "trunkline", Octomate(), config=TrunklineChannelConfig(agents=["inkling"])
+    )
+    console.self_profile = await console.ink.inspect()
+    threads = FakeThreadManager()
+    session = OctomateSession(
+        channel_routes={"trunkline": []},
+        current_agent_id="claude",
+        channels={"trunkline": console},
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="trunkline",
+            chat_type="thread",
+            chat_id="alice",
+            user_id="alice",
+            channel_thread_id="t-1",
+        ),
+    )
+    server = octomate_mcp(
+        fixed_session(session),
+        threads,
+        manager=McpManager(users=threads.users, cipher=None),
+    )
+    send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](10)
+    token = current_sink.set(send)
+    try:
+        async with Client(server) as client:
+            result = await client.call_tool(
+                "gateway_send",
+                {"segments": [{"type": "markdown", "data": {"text": "halfway"}}]},
+            )
+    finally:
+        current_sink.reset(token)
+
+    assert result.data == "sent"
+    shown = receive.receive_nowait()
+    assert isinstance(shown, MessageSentEvent)
+    assert shown.segments == [MarkdownSegment(data={"text": "halfway"})]
+    [outbound] = threads.outbounds
+    assert outbound.segments == shown.segments
 
 
 async def test_send_to_dm_opens_it_and_lands_there() -> None:
@@ -316,29 +391,28 @@ async def test_send_to_dm_opens_it_and_lands_there() -> None:
     assert outbound.direction == "outbound"
 
 
-async def test_a_native_session_scries_only_crossings(
+async def test_a_native_session_inspects_only_crossings(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    server, session, _channel, _threads, _kicks = await a_native_call()
+    server, _session, _channel, _threads, _kicks = await a_native_call()
 
     async with Client(server) as client:
-        routes = await client.call_tool("gateway_scry", {"reveal": "routes"})
-        places = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+        routes = await client.call_tool("gateway_inspect", {"reveal": "routes"})
+        places = await client.call_tool("gateway_inspect", {"reveal": "destinations"})
 
     # No conversation of its own: nothing to route to here, and neither built-in
     # landing exists — everywhere it can go is the linked account's crossing.
     assert routes.data == "- (none)"
-    assert "their direct messages on" in places.data
-    assert await session.summon_handles() == ["im"]
+    assert json.loads(places.data) == [asdict(ChannelAddress("im", "dm", "", "alice"))]
 
 
-async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
+async def test_a_native_session_with_no_linked_accounts_inspects_nowhere(
     in_memory_engine: AsyncEngine,
 ) -> None:
     server, session, _channel, _threads, kicks = await a_native_call(linked=False)
 
     async with Client(server) as client:
-        result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+        result = await client.call_tool("gateway_inspect", {"reveal": "destinations"})
         with pytest.raises(ToolError) as refusal:
             await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
@@ -346,8 +420,8 @@ async def test_a_native_session_with_no_linked_accounts_scries_nowhere(
     # account anywhere a destination could light up.
     assert session.user_profile is not None
     assert result.data == "- (none)"
-    # The truthful dead end: no linked account, so nowhere left to land.
-    assert "`summon` has nowhere left to land, so answer it." in str(refusal.value)
+    # And a native session has nothing here to hand over, whoever is linked.
+    assert "teleport it into a thread first" in str(refusal.value)
     assert kicks == []
 
 
@@ -361,9 +435,51 @@ async def test_a_native_teleport_is_refused_honestly(
             await client.call_tool("gateway_teleport", {"hint": "moving over"})
 
     assert str(refusal.value).startswith(
-        "This session lives in your terminal — Octomate cannot relocate it."
+        "Native teleport requires an uploaded thread; use Trunkline to select it."
     )
     assert kicks == []
+
+
+@pytest.mark.parametrize("named_by", ["argument", "meta"])
+async def test_a_native_teleport_moves_the_session_it_names(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch, named_by: str
+) -> None:
+    """A native call names its own session — Claude Code through the argument
+    Octomate's hook stamps in, Codex in every call's `_meta` — and the move goes
+    ahead from that session's thread."""
+    server, session, _channel, _threads, kicks = await a_native_call()
+    thread = ChannelAddress(CLAUDE_NATIVE_ID, "thread", "sess-1", "native")
+    decision = TeleportDecision(
+        agent_id="claude", hint="moving over", destination=thread
+    )
+    attach = AsyncMock(
+        side_effect=lambda _: setattr(session, "conversation_address", thread)
+    )
+    monkeypatch.setattr(session, "attach_native_thread", attach)
+    monkeypatch.setattr(
+        session,
+        "teleport",
+        AsyncMock(side_effect=lambda **_: setattr(session, "decision", decision)),
+    )
+
+    async with Client(server) as client:
+        result = await client.call_tool(
+            "gateway_teleport",
+            {"hint": "moving over"}
+            | ({"session_id": "sess-1"} if named_by == "argument" else {}),
+            meta={"threadId": "sess-1"} if named_by == "meta" else None,
+        )
+
+    attach.assert_awaited_once_with("sess-1")
+    assert kicks == [
+        NativeGatewaySignal(
+            decision=decision,
+            agent_id=CLAUDE_NATIVE_ID,
+            user_profile=session.user_profile,
+            source=thread,
+        )
+    ]
+    assert result.data == NATIVE_TELEPORT_STARTED
 
 
 async def test_a_native_send_here_is_refused(
@@ -380,7 +496,7 @@ async def test_a_native_send_here_is_refused(
 
     assert str(refusal.value) == (
         "This session has no conversation of its own to land a send on — "
-        'name a destination from `scry` (`reveal="destinations"`).'
+        'use a destination with kind="dm" and an explicit connected channel ID.'
     )
     assert threads.outbounds == []
 
@@ -416,7 +532,7 @@ async def test_a_native_send_delivers_to_a_crossing(
             "gateway_send",
             {
                 "segments": [{"type": "markdown", "data": {"text": "for you"}}],
-                "destination": {"kind": "channel", "channel": "im"},
+                "destination": {"kind": "dm", "channel": "im"},
             },
         )
 
@@ -428,30 +544,19 @@ async def test_a_native_send_delivers_to_a_crossing(
     assert kicks == []
 
 
-async def test_a_native_summon_kicks_its_handoff_at_once(
+async def test_a_native_summon_is_refused_and_kicks_nothing(
     in_memory_engine: AsyncEngine,
 ) -> None:
+    """A summon takes the conversation over where it is; a native session has no
+    conversation here to take over, so it teleports into a thread first."""
     server, session, _channel, _threads, kicks = await a_native_call()
 
     async with Client(server) as client:
-        result = await client.call_tool(
-            "gateway_summon",
-            {**SUMMON_ARGUMENTS, "destination": {"kind": "channel", "channel": "im"}},
-        )
+        with pytest.raises(ToolError, match="teleport it into a thread first"):
+            await client.call_tool("gateway_summon", SUMMON_ARGUMENTS)
 
-    assert result.data == "Summoning claude (opus) → im."
-    [signal] = kicks
-    assert signal.agent_id == CLAUDE_NATIVE_ID
-    assert signal.user_profile is session.user_profile
-    assert signal.source is not None
-    assert signal.source.channel_tentacle_id == CLAUDE_NATIVE_ID
-    assert isinstance(signal.decision, SummonDecision)
-    assert signal.decision.summon == "Please investigate the failing test."
-    assert signal.decision.destination == CrossingLanding(
-        address=ChannelAddress(
-            channel_tentacle_id="im", chat_type="dm", chat_id="", user_id="alice"
-        )
-    )
+    assert session.decision is None
+    assert kicks == []
 
 
 async def test_a_native_scheme_kicks_its_handoff_at_once(
@@ -465,7 +570,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
             {
                 "hint": "carrying on with you directly",
                 "brief": "The operator asked for a summary.",
-                "destination": {"kind": "channel", "channel": "im"},
+                "destination": {"kind": "dm", "channel": "im"},
             },
         )
 

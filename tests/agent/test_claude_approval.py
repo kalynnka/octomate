@@ -34,7 +34,8 @@ from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.config import ChannelConfig
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import ClaudeCodeConfig
 from octomate.managers.deferred import DeferredActionManager
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -47,13 +48,11 @@ from octomate.schemas.deferred import (
 )
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
-from octomate.tentacles.feelers.base import Feelers
-from octomate.types.deferred import DeferredResponseMode
-from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
     FakePresentedBatch,
+    RecordingSuspender,
 )
 
 KEY = ChannelAddress(
@@ -62,37 +61,6 @@ KEY = ChannelAddress(
 
 HOOK_SECRET = SecretStr("test-hook-secret")
 _THREAD = uuid7()
-
-
-@dataclass
-class FakeFeelers:
-    batch: FakePresentedBatch
-    requests: list[object] = field(default_factory=list)
-    presented: asyncio.Event = field(default_factory=asyncio.Event)
-
-    async def present_actions(
-        self,
-        *,
-        requests: DeferredToolRequests,
-        batch_id: UUID7,
-        agent_tentacle_id: str,
-        response_mode: DeferredResponseMode,
-        **_: object,
-    ) -> FakePresentedBatch:
-        self.batch.id = batch_id
-        self.batch.agent_tentacle_id = agent_tentacle_id
-        self.batch.response_mode = response_mode
-        self.requests.append(requests)
-        self.presented.set()
-        return self.batch
-
-
-def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
-    """The `im` channel the tentacle presents approvals and questions through,
-    its feelers recording what was asked."""
-    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
-    channel.feelers = cast(Feelers, feelers)
-    return channel
 
 
 @dataclass
@@ -126,6 +94,7 @@ class ScriptedClaudeClient:
     # Option labels the AskUserQuestion hook is fed; overridden to exercise
     # truncation when a question offers more than the choice cap.
     question_option_labels: ClassVar[list[str]] = ["A", "B"]
+    question_multi_select: ClassVar[bool] = False
 
     def __init__(
         self, options: ClaudeAgentOptions | None = None, transport: object = None
@@ -187,6 +156,7 @@ class ScriptedClaudeClient:
                                     {"label": label, "description": ""}
                                     for label in self.question_option_labels
                                 ],
+                                "multiSelect": self.question_multi_select,
                             }
                         ]
                     }
@@ -211,16 +181,15 @@ def _build(
     *,
     config: ClaudeCodeConfig | None = None,
     conversation: FakeConversation | None = None,
-) -> tuple[ClaudeCodeTentacle, RecordingDeferredActions, FakeFeelers]:
-    feelers = FakeFeelers(batch=batch)
-    dam = RecordingDeferredActions(batch=feelers.batch)
+) -> tuple[ClaudeCodeTentacle, RecordingDeferredActions, RecordingSuspender]:
+    suspender = RecordingSuspender(agent_tentacle_id="claude", batch=batch)
+    dam = RecordingDeferredActions(batch=suspender.batch)
     conversations = FakeConversationManager()
     if conversation is not None:
         conversations.store[(_THREAD, "claude", "")] = conversation
     octomate = Octomate(
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, dam),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = ClaudeCodeTentacle(
         "claude",
@@ -228,7 +197,7 @@ def _build(
         config=config or ClaudeCodeConfig(),
     )
     octomate.connect(tentacle)
-    return tentacle, dam, feelers
+    return tentacle, dam, suspender
 
 
 def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
@@ -236,18 +205,23 @@ def _conversation(tentacle: ClaudeCodeTentacle) -> FakeConversation:
     return convs.store[(_THREAD, "claude", "")]
 
 
-async def _drain(tentacle: ClaudeCodeTentacle) -> None:
+async def _drain(
+    tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
+) -> list[ReactStreamEvent[str]]:
     async with tentacle.run_stream_events(
-        "do it", conversation_address=KEY, thread_id=_THREAD, run_name="react"
+        "do it",
+        conversation_address=KEY,
+        thread_id=_THREAD,
+        run_name="react",
+        deferred_suspender=suspender,
     ) as stream:
-        async for _event in stream:
-            pass
+        return [event async for event in stream]
 
 
 async def _wait_for_pending(
-    tentacle: ClaudeCodeTentacle, feelers: FakeFeelers
+    tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
 ) -> UUID7:
-    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
+    await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
     return next(iter(tentacle.pendings))
 
 
@@ -259,16 +233,20 @@ async def test_approval_allow_lets_the_tool_run(
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
     )
-    tentacle, dam, feelers = _build(FakePresentedBatch(approvals=[approval]))
+    tentacle, dam, suspender = _build(FakePresentedBatch(approvals=[approval]))
 
-    task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle, feelers)
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: True})
     )
-    await task
+    events = await task
 
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
+    # The batch rides the run's own stream, for whoever draws the run to present.
+    assert [
+        event.batch_id for event in events if isinstance(event, ActionBatchEvent)
+    ] == [str(suspender.batch.id)]
     assert dam.resolved  # the batch was persisted on resolution
     assert isinstance(ScriptedClaudeClient.decisions[0], PermissionResultAllow)
 
@@ -281,10 +259,10 @@ async def test_approval_deny_feeds_reason_back(
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
     )
-    tentacle, _dam, feelers = _build(FakePresentedBatch(approvals=[approval]))
+    tentacle, _dam, suspender = _build(FakePresentedBatch(approvals=[approval]))
 
-    task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle, feelers)
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, approvals={approval.id: False})
     )
@@ -303,10 +281,10 @@ async def test_allow_session_suppresses_repeat_prompts(
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
     )
-    tentacle, _dam, feelers = _build(FakePresentedBatch(approvals=[approval]))
+    tentacle, _dam, suspender = _build(FakePresentedBatch(approvals=[approval]))
 
-    task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle, feelers)
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id, approvals={approval.id: True}, allow_session=True
@@ -316,7 +294,7 @@ async def test_allow_session_suppresses_repeat_prompts(
 
     # The first Bash call raised a card; the second was auto-approved for the
     # session, so only one batch was ever presented.
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
     assert len(ScriptedClaudeClient.decisions) == 2
     assert all(
         isinstance(d, PermissionResultAllow) for d in ScriptedClaudeClient.decisions
@@ -331,12 +309,12 @@ async def test_persisted_allowed_tool_skips_the_card(
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     seeded = FakeConversation(allowed_tools=["Bash"])
-    tentacle, _dam, feelers = _build(FakePresentedBatch(), conversation=seeded)
+    tentacle, _dam, suspender = _build(FakePresentedBatch(), conversation=seeded)
 
-    await _drain(tentacle)
+    await _drain(tentacle, suspender)
 
     # Bash was pre-granted for the conversation, so no card was presented.
-    assert feelers.requests == []
+    assert suspender.paused == []
     assert isinstance(ScriptedClaudeClient.decisions[0], PermissionResultAllow)
 
 
@@ -352,12 +330,12 @@ async def test_permission_mode_drives_the_sdk(
         position=0,
         args={"question": "Pick one", "choices": ["A"], "hint": "choose"},
     )
-    tentacle, _dam, feelers = _build(
+    tentacle, _dam, suspender = _build(
         FakePresentedBatch(questions=[question]), conversation=seeded
     )
 
-    task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle, feelers)
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
     )
@@ -394,7 +372,7 @@ async def test_the_conversations_posture_reaches_the_sdk(
 ) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
-    tentacle, _dam, feelers = _build(
+    tentacle, _dam, suspender = _build(
         FakePresentedBatch(),
         config=ClaudeCodeConfig(permission_mode=configured),  # pyright: ignore[reportArgumentType]
         # Pre-granted so the scripted gated call needs no card; the posture is what
@@ -405,9 +383,9 @@ async def test_the_conversations_posture_reaches_the_sdk(
         ),
     )
 
-    await _drain(tentacle)
+    await _drain(tentacle, suspender)
 
-    assert feelers.requests == []
+    assert suspender.paused == []
     options = ScriptedClaudeClient.last_options
     assert options is not None
     assert options.permission_mode == expected
@@ -421,13 +399,13 @@ async def test_approval_timeout_denies_and_expires(
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
     )
-    tentacle, _dam, _feelers = _build(
+    tentacle, _dam, suspender = _build(
         FakePresentedBatch(approvals=[approval]),
         config=ClaudeCodeConfig(approval_timeout=0.01),
     )
 
     # No one ever answers; the wait times out and the tool is denied.
-    await _drain(tentacle)
+    await _drain(tentacle, suspender)
 
     decision = ScriptedClaudeClient.decisions[0]
     assert isinstance(decision, PermissionResultDeny)
@@ -446,16 +424,16 @@ async def test_ask_user_question_hook_feeds_answer_back(
         position=0,
         args={"question": "Pick one", "choices": ["A", "B"], "hint": "choose"},
     )
-    tentacle, _dam, feelers = _build(FakePresentedBatch(questions=[question]))
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
 
-    task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle, feelers)
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
     )
     await task
 
-    assert feelers.requests  # a question batch was presented
+    assert suspender.paused  # a question batch was presented
     output = ScriptedClaudeClient.decisions[0]
     reason = cast(dict[str, dict[str, str]], output)["hookSpecificOutput"][
         "permissionDecisionReason"
@@ -464,11 +442,11 @@ async def test_ask_user_question_hook_feeds_answer_back(
     assert "Pick one" in reason
 
 
-async def test_ask_user_question_truncates_choices_to_cap(
+async def test_ask_user_question_keeps_every_option_under_the_cap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Claude's AskUserQuestion may offer up to 4 options; octomate caps a question's
-    # choices, so the card presents (no validation crash) with only the cap kept.
+    # Claude's AskUserQuestion offers up to 4 options, all within octomate's cap, so
+    # the card presents every one of them.
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
     monkeypatch.setattr(
@@ -478,30 +456,62 @@ async def test_ask_user_question_truncates_choices_to_cap(
         tool_name="AskUserQuestion",
         tool_call_id="q1",
         position=0,
-        args={"question": "Pick one", "choices": ["A", "B", "C"], "hint": ""},
+        args={"question": "Pick one", "choices": ["A", "B", "C", "D"], "hint": ""},
     )
-    tentacle, _dam, feelers = _build(FakePresentedBatch(questions=[question]))
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
 
-    task = asyncio.ensure_future(_drain(tentacle))
-    batch_id = await _wait_for_pending(tentacle, feelers)
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
     await tentacle.octomate.kick(
         DeferredActionBatchResponse(batch_id=batch_id, answers={question.id: "A"})
     )
     await task
 
-    [presented] = feelers.requests
+    [presented] = suspender.paused
     args = cast(DeferredToolRequests, presented).calls[0].args_as_dict()
     choices = args["questions"][0]["choices"]
-    assert choices == ["A", "B", "C"]
-    assert len(choices) == MAX_QUESTION_CHOICES
+    assert choices == ["A", "B", "C", "D"]
+    assert len(choices) <= MAX_QUESTION_CHOICES
+
+
+async def test_ask_user_question_keeps_a_multi_select(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
+    monkeypatch.setattr(ScriptedClaudeClient, "question_multi_select", True)
+    question = DeferredQuestion(
+        tool_name="AskUserQuestion",
+        tool_call_id="q1",
+        position=0,
+        args={"question": "Pick one", "choices": ["A", "B"], "multi_select": True},
+    )
+    tentacle, _dam, suspender = _build(FakePresentedBatch(questions=[question]))
+
+    task = asyncio.ensure_future(_drain(tentacle, suspender))
+    batch_id = await _wait_for_pending(tentacle, suspender)
+    await tentacle.octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, answers={question.id: ["A", "B"]}
+        )
+    )
+    await task
+
+    [presented] = suspender.paused
+    [asked] = cast(DeferredToolRequests, presented).calls[0].args_as_dict()["questions"]
+    assert asked["multi_select"] is True
+    reason = cast(dict[str, dict[str, str]], ScriptedClaudeClient.decisions[0])[
+        "hookSpecificOutput"
+    ]["permissionDecisionReason"]
+    assert reason == "Pick one: A, B"
 
 
 async def test_kick_routes_response_to_live_waiter() -> None:
-    tentacle, _dam, _feelers = _build(FakePresentedBatch())
+    tentacle, _dam, suspender = _build(FakePresentedBatch())
 
-    batch_id = _feelers.batch.id
-    _feelers.batch.response_mode = "live"
-    _feelers.batch.agent_tentacle_id = tentacle.id
+    batch_id = suspender.batch.id
+    suspender.batch.response_mode = "live"
+    suspender.batch.agent_tentacle_id = tentacle.id
     future: asyncio.Future[DeferredActionBatchResponse] = (
         asyncio.get_running_loop().create_future()
     )

@@ -155,5 +155,6 @@ def test_transport_events() -> None:
     assert settled["event_kind"] == "subagent_settled"
     assert settled["response"] == "ok"
 
-    error = decode(RunErrorEvent(message="boom"))
+    error = decode(RunErrorEvent(message="boom", trace_id="abc123"))
     assert error["event_kind"] == "run_error"
+    assert error["trace_id"] == "abc123"

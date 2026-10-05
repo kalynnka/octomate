@@ -44,9 +44,10 @@ Unanswered requests usually expire after an hour, unless the operator has change
 the timeout. The pending tool call is denied; return to the conversation and tell
 the agent whether to try again or take a different approach.
 
-After a server restart, Claude Code, Codex and DeepSeek Harness may need a fresh
-message to continue interrupted work. Inkling can resume its saved questions and
-approvals. Check the result before repeating an action that might already have
+A server restart expires the requests Claude Code, Codex and DeepSeek Harness were
+waiting on, since nothing is left to receive the answer, so a late answer is
+refused. Those agents may need a fresh message to continue interrupted work.
+Inkling can resume its saved questions and approvals. Check the result before repeating an action that might already have
 completed.
 
 ## Change how often the agent asks

@@ -13,6 +13,9 @@
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
+      // Stop sends SIGINT so the server shuts its tentacles and their children
+      // down; the default is a SIGKILL nothing can clean up after.
+      "onTerminate": "KeyboardInterrupt",
       "justMyCode": false
     },
     {
@@ -28,6 +31,9 @@
       "cwd": "${workspaceFolder}",
       "envFile": "${workspaceFolder}/.env",
       "console": "integratedTerminal",
+      // Stop sends SIGINT so the server shuts its tentacles and their children
+      // down; the default is a SIGKILL nothing can clean up after.
+      "onTerminate": "KeyboardInterrupt",
       "justMyCode": false
     },
     {

@@ -37,6 +37,32 @@ async def _thread() -> UUID7:
     return await a_thread()
 
 
+@pytest.mark.parametrize(
+    ("model_name", "permission_mode"),
+    [("selected-model", "auto_review"), (None, None)],
+)
+async def test_record_agent_run_persists_only_explicit_settings(
+    model_name: str | None, permission_mode: str | None
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="codex")
+    conversation = await manager.set_permission_mode(conversation, "full_access")
+    run = await manager.record_agent_run(
+        conversation,
+        run_id=str(uuid7()),
+        messages=[
+            RawModelResponse(parts=[TextPart("done")], model_name="message-model")
+        ],
+        model_name=model_name,
+        permission_mode=permission_mode,
+    )
+    assert run is not None
+    stored = await manager.get(conversation.id)
+    assert stored.runs[-1].model_name == model_name
+    assert stored.runs[-1].permission_mode == permission_mode
+    assert stored.permission_mode == "full_access"
+
+
 async def test_ensure_is_idempotent() -> None:
     service = ConversationManager()
     a = await service.ensure(await _thread(), agent_tentacle_id="inkling")
@@ -858,6 +884,38 @@ async def test_fork_leaves_the_external_handle_by_default() -> None:
     assert (
         await cold.ensure(target_thread, agent_tentacle_id="claude")
     ).external_id is None
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_fork_attaches_an_independent_runtime_without_changing_source(
+    empty: bool,
+) -> None:
+    service, _, _, source, target = await _carry_pair("fork-id")
+    if empty:
+        source = await service.ensure(
+            await a_thread("empty-fork-source"), agent_tentacle_id="codex"
+        )
+        await service.set_external_id(source, "sess-1")
+
+    run = await service.fork(source, target, external_id="sess-fork")
+
+    assert (run is None) == empty
+    assert source.external_id == "sess-1"
+    assert target.external_id == "sess-fork"
+    assert (await service.get(source.id)).external_id == "sess-1"
+    assert (await service.get(target.id)).external_id == "sess-fork"
+
+
+async def test_fork_rejects_reusing_the_source_runtime_id() -> None:
+    service, _, _, source, target = await _carry_pair("duplicate-id")
+
+    with pytest.raises(ValueError, match="new external id"):
+        await service.fork(source, target, external_id=source.external_id)
+
+    assert (await service.get(source.id)).external_id == "sess-1"
+    unchanged = await service.get(target.id)
+    assert unchanged.external_id is None
+    assert list(unchanged.messages) == []
 
 
 async def test_fork_carries_the_handle_even_with_nothing_to_copy() -> None:

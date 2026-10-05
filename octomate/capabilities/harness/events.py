@@ -17,17 +17,20 @@ One stream, with these event families:
 - **Action batch** (`ActionBatchEvent`) — a persisted batch of deferred actions
   (questions + approvals) presented as one unit; the run suspends until the user
   replies. `batch_id` correlates the reply through the deferred-action machinery.
+- **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
+  accomplice's run opening and finishing around its `commission` or `whisper` call.
+- **Graph events** (`RunStartedEvent`) — Pydantic AI `CustomEvent`s the reflex
+  graph puts on the stream it drives, about the run rather than inside it.
 
-Display and action events are emitted by capabilities (a capability bundles a tool
-+ instructions + `wrap_run_event_stream`); the output events are emitted by
-`Agent.stream_events` (see octomate/capabilities/harness/agent.py).
+Display, action and subagent events are emitted by capabilities (a capability
+bundles a tool + instructions + `wrap_run_event_stream`) or the suspender; the
+output events are emitted by `Agent.stream_events` (see
+octomate/capabilities/harness/agent.py).
 
-A second, consumer-emitted family lives here too: the wire forms
-(`SubagentStartedEvent`/`SubagentSettledEvent`, `RunResultEvent`,
-`RunErrorEvent`). They are not run-stream members — they carry the subagent
-timeline callbacks and the run result/failure in a serializable shape, for any
-channel that mirrors its timeline onto a wire instead of holding platform
-state.
+The reflex graph also reports outside any run (`GatewayEvent`, `RunErrorEvent`),
+handing each to a channel's `Feelers.present`. Channels present every event and
+build none; the one consumer-made form is `RunResultEvent`, the wire shape of a
+run result.
 
 The run-stream union itself stays generic (`FinalResult[OutputT]`), so it has
 no single serialized form — but the wire family is concrete, so `WireEvent` and
@@ -41,36 +44,28 @@ from dataclasses import dataclass
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
-from pydantic_ai import AgentStreamEvent
+from pydantic_ai import AgentStreamEvent, CustomEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.deferred import (
+    DeferredActionBatch,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
+from octomate.schemas.triage import GatewayAction
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
 
 
-@dataclass(frozen=True)
-class SubagentActivity:
-    """One commissioned child run rendered on its own channel timeline."""
-
-    invocation_id: str
-    kind: SubagentActivityKind
-    name: str
-
-
 class SubagentStartedEvent(BaseModel):
-    """The event form of `SubagentActivity`: a commissioned child run opened
-    its own timeline.
-
-    Not a run-stream member — subagent lifecycle reaches channels through the
-    timeline callbacks (`TimelineState.open_subagent`); a channel that mirrors
-    its timeline onto a wire emits these instead of holding platform state."""
+    """An accomplice's run opened, named by the call that started it; a channel
+    draws it on a timeline of its own."""
 
     event_kind: Literal["subagent_started"] = "subagent_started"
     invocation_id: str
@@ -88,6 +83,14 @@ class SubagentSettledEvent(BaseModel):
     response: str = ""
 
 
+@dataclass(kw_only=True)
+class RunStartedEvent(CustomEvent):
+    """A run's first event, from the graph: the thread it reports into — another
+    than the one asked about when a move carried the turn there."""
+
+    address: ChannelAddress
+
+
 class RunResultEvent(BaseModel):
     """The serializable projection of `AgentRunResultEvent`, whose payload
     drags the run's private graph state and cannot go on a wire. Carries the
@@ -101,11 +104,28 @@ class RunResultEvent(BaseModel):
 
 
 class RunErrorEvent(BaseModel):
-    """A run that failed before producing a result, so a wire consumer can
-    render the failure instead of watching its stream drop."""
+    """A turn the graph could not finish, reported to the channel it came from, or
+    to the one it was operated from."""
 
     event_kind: Literal["run_error"] = "run_error"
     message: str
+    trace_id: str = Field(description="The trace holding the failure's detail.")
+
+
+class GatewayEvent(BaseModel):
+    """A spell carried the conversation: the console's own operation, or one the
+    agent cast itself mid-turn."""
+
+    event_kind: Literal["gateway"] = "gateway"
+    action: GatewayAction
+    destination: ChannelAddress = Field(
+        description="Where the conversation is now; a summon's own thread."
+    )
+    announcement: str | None = Field(
+        default=None,
+        description="The line the move leaves where the conversation was, or None "
+        "when it leaves none there.",
+    )
 
 
 @dataclass
@@ -198,7 +218,7 @@ class MessageSentEvent(DisplayEvent):
     destination: ChannelAddress | None = Field(
         default=None,
         description="None for this conversation. Otherwise the address the gate "
-        "already resolved from the handle the model named, so the consumer delivers "
+        "already resolved from the target the model named, so the consumer delivers "
         "without re-deciding anything and a refused destination never reaches one.",
     )
 
@@ -272,6 +292,14 @@ class ActionBatchEvent(BaseModel):
     questions: list[DeferredQuestion] = Field(default_factory=list)
     approvals: list[DeferredApproval] = Field(default_factory=list)
 
+    @classmethod
+    def from_batch(cls, batch: DeferredActionBatch) -> ActionBatchEvent:
+        return cls(
+            batch_id=str(batch.id),
+            questions=list(batch.questions),
+            approvals=list(batch.approvals),
+        )
+
 
 # The stream a consumer matches on, generic over the run's output type.
 type StreamEvents[OutputT] = (
@@ -283,11 +311,12 @@ type StreamEvents[OutputT] = (
     | MessageSentEvent
     | OAuthAuthorizationEvent
     | ActionBatchEvent
+    | SubagentStartedEvent
+    | SubagentSettledEvent
 )
 
-# The run stream as a wire consumer sees it: `StreamEvents` with the generic /
-# unserializable members replaced by their wire forms (`FinalResult` dropped for
-# `RunResultEvent`, the subagent timeline callbacks as events), every member
+# The run stream as a wire consumer sees it: `StreamEvents` with `FinalResult`
+# dropped for `RunResultEvent`, plus the graph's own reports, every member
 # discriminated by `event_kind`.
 type WireEvent = (
     AgentStreamEvent
@@ -302,6 +331,7 @@ type WireEvent = (
     | SubagentSettledEvent
     | RunResultEvent
     | RunErrorEvent
+    | GatewayEvent
 )
 
 # Serialization-only: wire consumers never validate events back in, so the

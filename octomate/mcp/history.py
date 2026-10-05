@@ -70,6 +70,7 @@ def mount_history(
     @mcp.tool(
         name=HISTORY_TOOL_NAMES["search_thread_history"],
         description=capability_contract(HistoryCapability.search_thread_history),
+        annotations={"readOnlyHint": True},
     )
     async def search_thread_history(
         query: str,
@@ -96,6 +97,7 @@ def mount_history(
     @mcp.tool(
         name=HISTORY_TOOL_NAMES["read_thread_history_before"],
         description=capability_contract(HistoryCapability.read_thread_history_before),
+        annotations={"readOnlyHint": True},
     )
     async def read_thread_history_before(
         message_id: str, limit: int = 10, session: OctomateSession = octomate_session
@@ -117,6 +119,7 @@ def mount_history(
     @mcp.tool(
         name=HISTORY_TOOL_NAMES["read_thread_history_after"],
         description=capability_contract(HistoryCapability.read_thread_history_after),
+        annotations={"readOnlyHint": True},
     )
     async def read_thread_history_after(
         message_id: str, limit: int = 10, session: OctomateSession = octomate_session

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator, Callable
@@ -11,8 +10,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from octomate.capabilities.harness.events import (
-    SubagentActivity,
     SubagentActivityStatus,
+    SubagentStartedEvent,
 )
 from octomate.config import ChannelStreamConfig
 from octomate.schemas.conversation import ChannelAddress
@@ -83,7 +82,7 @@ class DiscordTimelineState(TimelineState):
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[DiscordSubagentTimelineState]:
         state = DiscordSubagentTimelineState(
             ink=self.ink,
@@ -312,11 +311,7 @@ class DiscordTimelineFeeler(TimelineFeeler):
             )
             try:
                 yield state
-            except asyncio.CancelledError:
-                await state.settle_subagents("cancelled")
-                raise
             finally:
-                await state.settle_subagents("failed")
                 await state.finish()
 
 
@@ -327,7 +322,7 @@ class DiscordSubagentTimelineState(SubagentTimelineState):
 
     ink: DiscordInk
     chromo: DiscordChromo
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     chat_id: str
     chat_type: str
     channel_thread_id: str
