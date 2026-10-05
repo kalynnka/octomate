@@ -19,9 +19,10 @@ import types
 from dataclasses import dataclass
 from io import TextIOBase
 from pathlib import Path
-from typing import Literal, TypeAlias, cast
+from typing import Literal, cast
 from uuid import uuid4
 
+import anyio
 from octomate_protocol.gateway import GatewayTool
 from pydantic_ai import AgentCapability, AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.messages import (
@@ -51,6 +52,7 @@ from octomate.config import OctomateConfig, SlackChannelConfig
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.agents.inkling import InklingConfig
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.gateway import OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.providers import ProviderRegistry
 from octomate.schemas.base import sqlalchemy_materia
@@ -108,10 +110,8 @@ QUESTIONS_PROMPT = (
 )
 DEFAULT_OUTPUT_DIR = Path("tests/src/events")
 DEFAULT_IMAGE = Path("tests/src/images/usagi.jpg")
-RawCapturedEvent: TypeAlias = AgentStreamEvent | AgentRunResultEvent[InklingOutput]
-Expectation: TypeAlias = Literal[
-    "plain_text", "segments_with_image", "private", "questions"
-]
+type RawCapturedEvent = AgentStreamEvent | AgentRunResultEvent[InklingOutput]
+type Expectation = Literal["plain_text", "segments_with_image", "private", "questions"]
 
 
 @dataclass(frozen=True)
@@ -250,7 +250,7 @@ async def capture(
             conversation_manager=conversations,
         )
 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    await anyio.Path(output_dir).mkdir(parents=True, exist_ok=True)
     case_counts: dict[str, int] = {}
     with sqlalchemy_materia():
         for case in cases:
@@ -310,16 +310,20 @@ async def capture_case(
     if case.private and dm_channel is not None:
         capabilities.append(
             GatewayCapability(
-                routes=[
-                    AgentRoute(
-                        agent_id="claude",
-                        model=subagent_model,
-                        claim=Claim(ability="coding work in a real repository"),
-                    )
-                ],
-                current_agent_id="inkling",
-                channels={dm_channel.id: dm_channel},
-                conversation_address=address,
+                session=OctomateSession(
+                    channel_routes={
+                        address.channel_tentacle_id: [
+                            AgentRoute(
+                                agent_id="claude",
+                                model=subagent_model,
+                                claim=Claim(ability="coding work in a real repository"),
+                            )
+                        ]
+                    },
+                    current_agent_id="inkling",
+                    channels={dm_channel.id: dm_channel},
+                    conversation_address=address,
+                )
             )
         )
     if case.subagents:
@@ -328,18 +332,24 @@ async def capture_case(
         agents: dict[str, AgentTentacle] = {accomplice.id: accomplice}
         capabilities.append(
             GatewayCapability(
-                routes=[
-                    AgentRoute(
-                        agent_id=accomplice.id,
-                        model=subagent_model,
-                        claim=Claim(ability="independent analysis for capture tests"),
-                    )
-                ],
-                current_agent_id="inkling",
-                agents=agents,
+                session=OctomateSession(
+                    channel_routes={
+                        address.channel_tentacle_id: [
+                            AgentRoute(
+                                agent_id=accomplice.id,
+                                model=subagent_model,
+                                claim=Claim(
+                                    ability="independent analysis for capture tests"
+                                ),
+                            )
+                        ]
+                    },
+                    current_agent_id="inkling",
+                    agents=agents,
+                    thread_id=thread.id,
+                    conversation_address=address,
+                ),
                 conversations=conversations,
-                thread_id=thread.id,
-                conversation_address=address,
             )
         )
     commission_calls = 0
