@@ -122,6 +122,15 @@ export interface AskOption {
   desc: string
 }
 
+/** One question of a batch, and its answer once the batch is answered. */
+export interface AskQuestion {
+  body: string
+  options: AskOption[]
+  answer?: string
+  /** live deferred-action id; present when the card answers a real batch */
+  actionId?: string
+}
+
 export type LedgerItem =
   | { kind: 'divider'; uid: string; label: string }
   | { kind: 'system'; uid: string; text: string }
@@ -175,19 +184,17 @@ export type LedgerItem =
       kind: 'ask'
       uid: string
       title: string
-      body: string
-      options: AskOption[]
+      /** one batch's questions, in order; answered and sent together */
+      questions: AskQuestion[]
       /** the tool that asked */
       tool: string
       /** e.g. "ask_human · answer resumes the run" */
       meta: string
       state: 'waiting' | 'answered'
-      answer?: string
       via?: string
       resolvedT?: string
-      /** live deferred-action ids; present when the card answers a real batch */
+      /** live deferred-action batch; present when the card answers a real batch */
       batchId?: string
-      actionId?: string
     }
   | {
       kind: 'oauth'

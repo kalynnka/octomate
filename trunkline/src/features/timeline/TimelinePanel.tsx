@@ -151,8 +151,8 @@ function eventOf(item: LedgerItem, operator: string, agent?: string): Omit<TlEve
         resolved: item.state === 'answered',
         sub:
           item.state === 'answered'
-            ? `answered — ${item.answer ?? ''}`
-            : `ask feeler · ${item.options.length} options · waiting`,
+            ? `answered — ${item.questions.map((q) => q.answer ?? '').join(' · ')}`
+            : `ask feeler · ${item.questions.length === 1 ? `${item.questions[0].options.length} options` : `${item.questions.length} questions`} · waiting`,
         t: item.resolvedT ?? '',
         tgt,
       }

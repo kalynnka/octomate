@@ -381,7 +381,8 @@ def build_trunkline_router(
         postures: dict[str, AgentPostures] = {}
         for agent_id, agent in octomate.agents.items():
             configured = agent.default_permission_mode
-            if configured is None:
+            # An agent that failed to start has no catalog, only its configuration.
+            if configured is None or not agent.permission_modes:
                 continue
             agent.check_permission_mode(configured)
             postures[agent_id] = AgentPostures(

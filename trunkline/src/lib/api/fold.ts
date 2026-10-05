@@ -29,21 +29,26 @@ export function batchFeelers(
   approvals: WireDeferredApproval[],
 ): LedgerItemDraft[] {
   const items: LedgerItemDraft[] = []
-  for (const q of questions) {
+  // A batch's questions are one card: answered together, they resume the run once.
+  const ordered = [...questions].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  if (ordered.length > 0) {
+    const tool = ordered[0].tool_name
     items.push({
       kind: 'ask',
-      title: 'Question',
-      body: q.args.question,
-      options: (q.args.choices ?? []).map((choice) => ({
-        label: choice,
-        sum: choice,
-        desc: '',
+      title: ordered.length === 1 ? 'Question' : `Questions · ${ordered.length}`,
+      questions: ordered.map((q) => ({
+        body: q.args.question,
+        options: (q.args.choices ?? []).map((choice) => ({
+          label: choice,
+          sum: choice,
+          desc: '',
+        })),
+        actionId: q.id,
       })),
-      tool: q.tool_name,
-      meta: `${q.tool_name} · answer resumes the run`,
+      tool,
+      meta: `${tool} · ${ordered.length === 1 ? 'answer resumes' : 'submitting every answer resumes'} the run`,
       state: 'waiting',
       batchId,
-      actionId: q.id,
     })
   }
   for (const a of approvals) {

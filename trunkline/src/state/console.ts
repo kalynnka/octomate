@@ -197,7 +197,7 @@ export interface ConsoleActions {
   setGatewayMode(mode: ConsoleState['gatewayMode']): void
   vsOpen(): void
   resolveApproval(uid: string, verdict: 'approved' | 'dismissed'): void
-  answerAsk(uid: string, answer: string, via: string): void
+  answerAsk(uid: string, answers: string[], via: string): void
   reviewTabs(): string[]
   togglePv(): void
   openFile(name: string): void
@@ -886,22 +886,28 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         })
       }
     },
-    answerAsk(uid: string, answer: string, via: string) {
+    answerAsk(uid: string, answers: string[], via: string) {
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
       if (card?.kind !== 'ask' || card.state !== 'waiting') return
       const t = nowClock().slice(0, 5)
+      const questions = card.questions.map((q, index) => ({ ...q, answer: answers[index] }))
       const mark = (it: LedgerItem): LedgerItem =>
         it.uid === uid && it.kind === 'ask'
-          ? { ...it, state: 'answered' as const, answer, via, resolvedT: t }
+          ? { ...it, state: 'answered' as const, questions, via, resolvedT: t }
           : it
       set((s) => ({
         detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(mark) },
         live: s.live.map(mark),
       }))
-      if (card.batchId && card.actionId) {
-        resolveLive(card.batchId, { answers: { [card.actionId]: answer } })
+      // The whole batch in one response, so the run resumes once.
+      if (card.batchId) {
+        resolveLive(card.batchId, {
+          answers: Object.fromEntries(
+            questions.flatMap((q) => (q.actionId ? [[q.actionId, q.answer ?? '']] : [])),
+          ),
+        })
       }
     },
 

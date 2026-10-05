@@ -4,7 +4,7 @@
  * uid) so the timeline can jump to them.
  */
 import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import type { AgentBlock, AskOption, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
+import type { AgentBlock, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { Brackets } from '@/components/Brackets'
@@ -730,20 +730,25 @@ const ASK_BODY_CLAMP = 46
 
 function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' }>; cardMax: string; i?: number }) {
   const { answerAsk } = useConsole((s) => s.actions)
+  const single = item.questions.length === 1
+  const lead = single ? item.questions[0].body : ''
   const bodyRef = useRef<HTMLDivElement>(null)
   const [bodyLong, setBodyLong] = useState(false)
   const [bodyMore, setBodyMore] = useState(false)
   useLayoutEffect(() => {
     const el = bodyRef.current
     if (el) setBodyLong(el.scrollHeight > ASK_BODY_CLAMP + 4)
-  }, [item.body])
-  const [rowOpen, setRowOpen] = useState(0)
-  const [otherOpen, setOtherOpen] = useState(false)
-  const [otherText, setOtherText] = useState('')
+  }, [lead])
+  // `question:option` of the open option row, and the question whose "Other" is open.
+  const [rowOpen, setRowOpen] = useState('')
+  const [otherOpen, setOtherOpen] = useState(-1)
+  const [otherText, setOtherText] = useState<string[]>([])
+  const [picked, setPicked] = useState<(string | undefined)[]>([])
   const [ansOpen, setAnsOpen] = useState(false)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
 
   if (item.state === 'answered') {
+    const answers = item.questions.map((q) => q.answer ?? '')
     return (
       <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
         {!ansOpen ? (
@@ -762,7 +767,9 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
             }}
           >
             <span style={{ ...label(9, '.12em'), color: 'var(--color-sage)', flexShrink: 0 }}>✓ answered · {operator}</span>
-            <span style={{ flex: 1, minWidth: 0, ...serif(12.5), fontStyle: 'italic', color: 'var(--fg-1)', ...ellipsis }}>“{item.answer}”</span>
+            <span style={{ flex: 1, minWidth: 0, ...serif(12.5), fontStyle: 'italic', color: 'var(--fg-1)', ...ellipsis }}>
+              {answers.map((answer) => `“${answer}”`).join(' · ')}
+            </span>
             <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>▸</span>
             <span style={{ ...mono(8), ...ghost3, flexShrink: 0 }}>{item.resolvedT}</span>
           </div>
@@ -774,7 +781,12 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               <span style={{ ...mono(10), ...ghost3 }}>▾</span>
               <span style={{ ...mono(8), ...ghost3 }}>{item.resolvedT}</span>
             </div>
-            <p style={{ margin: '6px 0 0', ...serif(13), lineHeight: 1.7, fontStyle: 'italic', color: 'var(--fg-1)' }}>“{item.answer}”</p>
+            {item.questions.map((q, qi) => (
+              <div key={qi} style={{ marginTop: 6 }}>
+                {!single && <div style={{ ...serif(12), lineHeight: 1.6, color: 'var(--fg-3)' }}>{q.body}</div>}
+                <p style={{ margin: single ? '6px 0 0' : '2px 0 0', ...serif(13), lineHeight: 1.7, fontStyle: 'italic', color: 'var(--fg-1)' }}>“{answers[qi]}”</p>
+              </div>
+            ))}
             <div style={{ marginTop: 8, ...microMeta, color: 'var(--fg-3)' }}>{item.via}</div>
           </div>
         )}
@@ -782,11 +794,30 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
     )
   }
 
-  const chooseOption = (o: AskOption, idx: number) => answerAsk(item.uid, o.label, `picked option ${idx + 1}`)
-  const sendOther = () => {
-    const t = otherText.trim()
-    if (!t) return
-    answerAsk(item.uid, t, `free-text answer · ${t.length} chars`)
+  // One question is answered at once; several are sent together, so the run resumes once.
+  const pick = (qi: number, answer: string, via: string) => {
+    if (single) {
+      answerAsk(item.uid, [answer], via)
+      return
+    }
+    setPicked((current) => {
+      const next = [...current]
+      next[qi] = answer
+      return next
+    })
+    setRowOpen('')
+    setOtherOpen(-1)
+  }
+  const answered = item.questions.filter((_, qi) => picked[qi] !== undefined).length
+  const complete = answered === item.questions.length
+  const submit = () => {
+    if (complete) {
+      answerAsk(item.uid, item.questions.map((_, qi) => picked[qi] ?? ''), `answered ${item.questions.length} questions`)
+    }
+  }
+  const sendOther = (qi: number) => {
+    const t = (otherText[qi] ?? '').trim()
+    if (t) pick(qi, t, `free-text answer · ${t.length} chars`)
   }
 
   return (
@@ -801,117 +832,154 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               {item.tool} · waiting · {operator}
             </span>
           </div>
-          <div
-            ref={bodyRef}
-            style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP, marginTop: 6 }}
-          >
-            <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)' }}>{item.body}</p>
-            {bodyLong && !bodyMore && (
-              <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
-            )}
-          </div>
-          {bodyLong && (
-            <div style={{ display: 'flex', marginTop: 2 }}>
-              <span style={{ flex: 1 }} />
-              <span onClick={() => setBodyMore((v) => !v)} className="hov-accent" style={{ ...label(8, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}>
-                {bodyMore ? '▾ show less' : '▸ show all'}
-              </span>
-            </div>
-          )}
-        </div>
-        <div style={{ marginTop: 9, borderTop: '1px solid var(--line-divider)' }}>
-          {item.options.map((o, idx) => {
-            const openRow = rowOpen === idx + 1
-            return (
+          {single && (
+            <>
               <div
-                key={o.label}
-                onClick={() => {
-                  setRowOpen(openRow ? 0 : idx + 1)
-                  setOtherOpen(false)
-                }}
-                className="hov-wash"
-                style={{ borderBottom: '1px solid var(--line-divider)', background: openRow ? 'var(--hover)' : 'transparent', cursor: 'pointer' }}
+                ref={bodyRef}
+                style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP, marginTop: 6 }}
               >
-                <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px' }}>
-                  <span style={{ ...mono(8, 700), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '1px 5px', flexShrink: 0 }}>{idx + 1}</span>
-                  <span style={{ fontSize: 12.5, color: 'var(--fg-1)', flexShrink: 0 }}>{o.label}</span>
-                  <span style={{ flex: 1, minWidth: 0, ...mono(8), ...ghost3, ...ellipsis }}>{o.sum}</span>
-                  <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{openRow ? '▾' : '▸'}</span>
-                </div>
-                {openRow && (
-                  <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
-                    <p style={{ margin: '0 0 0 25px', ...serif(12), lineHeight: 1.65, color: 'var(--fg-2)' }}>{o.desc}</p>
-                    <div style={{ display: 'flex', marginTop: 8 }}>
-                      <span style={{ width: 25 }} />
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          chooseOption(o, idx)
-                        }}
-                        className="hov-panel"
-                        style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}
-                      >
-                        Choose {idx + 1}
-                      </span>
-                    </div>
-                  </div>
+                <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)' }}>{lead}</p>
+                {bodyLong && !bodyMore && (
+                  <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
                 )}
               </div>
-            )
-          })}
-          <div style={{ borderBottom: '1px solid var(--line-divider)' }}>
-            <div
-              onClick={() => {
-                setOtherOpen((v) => !v)
-                setRowOpen(0)
-              }}
-              className="hov-wash"
-              style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px', cursor: 'pointer' }}
-            >
-              <span style={{ ...mono(8, 700), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '1px 5px', flexShrink: 0 }}>0</span>
-              <span style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--fg-3)' }}>Other — type instructions…</span>
-              <span style={{ flex: 1 }} />
-              <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{otherOpen ? '▾' : '▸'}</span>
-            </div>
-            {otherOpen && (
-              <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
-                <textarea
-                  rows={2}
-                  placeholder="type your instruction — it sends as the answer"
-                  value={otherText}
-                  onChange={(e) => setOtherText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter' && !e.shiftKey) {
-                      e.preventDefault()
-                      sendOther()
-                    }
-                    if (e.key === 'Escape') setOtherOpen(false)
-                  }}
-                  style={{
-                    boxSizing: 'border-box',
-                    width: '100%',
-                    border: '1px solid var(--line-divider)',
-                    background: 'var(--surface-sunken)',
-                    padding: '8px 10px',
-                    ...serif(13),
-                    lineHeight: 1.6,
-                    color: 'var(--fg-1)',
-                    resize: 'none',
-                    outline: 'none',
-                  }}
-                />
-                <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                  <span style={{ ...microMeta, color: 'var(--fg-3)' }}>↩ send · esc back to options</span>
+              {bodyLong && (
+                <div style={{ display: 'flex', marginTop: 2 }}>
                   <span style={{ flex: 1 }} />
-                  <span onClick={sendOther} className="hov-panel" style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}>
-                    Send
+                  <span onClick={() => setBodyMore((v) => !v)} className="hov-accent" style={{ ...label(8, '.14em'), color: 'var(--fg-3)', cursor: 'pointer' }}>
+                    {bodyMore ? '▾ show less' : '▸ show all'}
                   </span>
                 </div>
+              )}
+            </>
+          )}
+        </div>
+        {item.questions.map((q, qi) => (
+          <div key={qi} style={{ marginTop: single ? 9 : 12, borderTop: '1px solid var(--line-divider)' }}>
+            {!single && (
+              <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '9px 15px 8px 16px', borderBottom: '1px solid var(--line-divider)' }}>
+                <span style={{ ...mono(8, 700), color: 'var(--fg-3)', flexShrink: 0 }}>{qi + 1}/{item.questions.length}</span>
+                <span style={{ flex: 1, minWidth: 0, ...serif(13), lineHeight: 1.6, color: 'var(--fg-2)' }}>{q.body}</span>
+                {picked[qi] !== undefined && (
+                  <span style={{ ...label(8, '.12em'), color: 'var(--color-sage)', flexShrink: 0, maxWidth: '40%', ...ellipsis }}>✓ {picked[qi]}</span>
+                )}
               </div>
             )}
+            {q.options.map((o, idx) => {
+              const key = `${qi}:${idx}`
+              const openRow = rowOpen === key
+              const chosen = picked[qi] === o.label
+              return (
+                <div
+                  key={o.label}
+                  onClick={() => {
+                    setRowOpen(openRow ? '' : key)
+                    setOtherOpen(-1)
+                  }}
+                  className="hov-wash"
+                  style={{ borderBottom: '1px solid var(--line-divider)', background: openRow ? 'var(--hover)' : 'transparent', cursor: 'pointer' }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px' }}>
+                    <span style={{ ...mono(8, 700), color: chosen ? 'var(--color-accent)' : 'var(--fg-2)', border: `1px solid ${chosen ? 'var(--color-accent)' : 'var(--line-divider)'}`, padding: '1px 5px', flexShrink: 0 }}>{idx + 1}</span>
+                    <span style={{ fontSize: 12.5, color: 'var(--fg-1)', flexShrink: 0 }}>{o.label}</span>
+                    <span style={{ flex: 1, minWidth: 0, ...mono(8), ...ghost3, ...ellipsis }}>{o.sum}</span>
+                    <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{openRow ? '▾' : '▸'}</span>
+                  </div>
+                  {openRow && (
+                    <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
+                      <p style={{ margin: '0 0 0 25px', ...serif(12), lineHeight: 1.65, color: 'var(--fg-2)' }}>{o.desc}</p>
+                      <div style={{ display: 'flex', marginTop: 8 }}>
+                        <span style={{ width: 25 }} />
+                        <span
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            pick(qi, o.label, `picked option ${idx + 1}`)
+                          }}
+                          className="hov-panel"
+                          style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}
+                        >
+                          Choose {idx + 1}
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )
+            })}
+            <div style={{ borderBottom: '1px solid var(--line-divider)' }}>
+              <div
+                onClick={() => {
+                  setOtherOpen(otherOpen === qi ? -1 : qi)
+                  setRowOpen('')
+                }}
+                className="hov-wash"
+                style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px', cursor: 'pointer' }}
+              >
+                <span style={{ ...mono(8, 700), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '1px 5px', flexShrink: 0 }}>0</span>
+                <span style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--fg-3)' }}>Other — type instructions…</span>
+                <span style={{ flex: 1 }} />
+                <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{otherOpen === qi ? '▾' : '▸'}</span>
+              </div>
+              {otherOpen === qi && (
+                <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
+                  <textarea
+                    rows={2}
+                    placeholder={single ? 'type your instruction — it sends as the answer' : 'type your instruction — it becomes this answer'}
+                    value={otherText[qi] ?? ''}
+                    onChange={(e) => {
+                      const text = e.target.value
+                      setOtherText((current) => {
+                        const next = [...current]
+                        next[qi] = text
+                        return next
+                      })
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault()
+                        sendOther(qi)
+                      }
+                      if (e.key === 'Escape') setOtherOpen(-1)
+                    }}
+                    style={{
+                      boxSizing: 'border-box',
+                      width: '100%',
+                      border: '1px solid var(--line-divider)',
+                      background: 'var(--surface-sunken)',
+                      padding: '8px 10px',
+                      ...serif(13),
+                      lineHeight: 1.6,
+                      color: 'var(--fg-1)',
+                      resize: 'none',
+                      outline: 'none',
+                    }}
+                  />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
+                    <span style={{ ...microMeta, color: 'var(--fg-3)' }}>{single ? '↩ send' : '↩ use'} · esc back to options</span>
+                    <span style={{ flex: 1 }} />
+                    <span onClick={() => sendOther(qi)} className="hov-panel" style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}>
+                      {single ? 'Send' : 'Use'}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </div>
           </div>
+        ))}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 10px 16px' }}>
+          <span style={{ ...microMeta, color: 'var(--fg-3)' }}>{item.meta}</span>
+          <span style={{ flex: 1 }} />
+          {!single && (
+            <span
+              onClick={submit}
+              aria-disabled={!complete}
+              className={complete ? 'hov-panel' : undefined}
+              style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: complete ? 'pointer' : 'not-allowed', opacity: complete ? 1 : 0.45, whiteSpace: 'nowrap' }}
+            >
+              Submit {answered}/{item.questions.length}
+            </span>
+          )}
         </div>
-        <div style={{ padding: '8px 15px 10px 16px', ...microMeta, color: 'var(--fg-3)' }}>{item.meta}</div>
       </div>
     </div>
   )

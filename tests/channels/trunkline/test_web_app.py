@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.capabilities.harness.agent import Agent
+from octomate.config.agents import DeepseekConfig
 from octomate.config.agents.common import Claim
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
@@ -33,6 +34,7 @@ from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling.base import InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
@@ -531,6 +533,28 @@ async def test_the_permission_modes_endpoint_lists_each_agents_own_in_order(
             "default": "default",
         }
     }
+
+
+async def test_an_agent_that_did_not_start_leaves_the_others_listed(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """DeepSeek learns its modes from the harness at start; one that failed to start
+    has none to offer, and must not take every other agent's switcher down with it."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    octomate.connect(DeepseekTentacle("deepseek", octomate, config=DeepseekConfig()))
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        response = await client.get("/api/trunkline/permissions")
+
+    assert response.status_code == 200
+    assert list(response.json()) == ["inkling"]
 
 
 async def test_the_configured_default_is_what_the_endpoint_reports(
