@@ -25,7 +25,11 @@ from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
 )
-from octomate.schemas.triage import SummonDecision, TeleportDecision
+from octomate.schemas.triage import (
+    TELEPORT_DEFER_KIND,
+    SummonDecision,
+    TeleportDecision,
+)
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import (
     FakeActionManager,
@@ -184,8 +188,34 @@ async def test_a_teleport_goes_to_the_graph_with_its_validated_destination(
     assert action_manager.create_calls == []
 
 
+async def test_a_teleport_deferral_without_a_destination_is_refused() -> None:
+    """The gateway resolves an omitted destination to the current conversation before
+    the decision exists, so a deferral naming none is a wiring bug, not "here"."""
+    nowhere = DeferredToolRequests(
+        calls=[ToolCallPart(tool_name="teleport", args={}, tool_call_id="move")],
+        metadata={"move": {"kind": TELEPORT_DEFER_KIND, "hint": "Continue"}},
+    )
+    suspender = ReflexSuspender(
+        channel=FakeChannelTentacle(),
+        action_manager=cast(DeferredActionManager, FakeActionManager()),
+        conversation_manager=FakeConversationManager(),
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+        thread_id=uuid7(),
+    )
+
+    with pytest.raises(ValueError, match="names no destination"):
+        await suspender.suspend(nowhere)
+
+
 async def test_a_teleport_beside_another_deferral_is_refused() -> None:
-    deferral = TeleportDecision(agent_id="inkling", hint="Continue").deferral("move")
+    deferral = TeleportDecision(
+        agent_id="inkling", hint="Continue", destination=_key()
+    ).deferral("move")
     suspender = ReflexSuspender(
         channel=FakeChannelTentacle(),
         action_manager=cast(DeferredActionManager, FakeActionManager()),

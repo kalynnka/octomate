@@ -54,9 +54,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         new_target = origin
         if self.request.new_thread:
-            destination = self.request.destination or origin_address
             opened = await open_crossing(
-                ctx, destination, origin_address, hint, self.agent_id
+                ctx, self.request.destination, origin_address, hint, self.agent_id
             )
             if opened is not None:
                 channel = ctx.deps.channel(opened.channel_tentacle_id)

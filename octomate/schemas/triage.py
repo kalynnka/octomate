@@ -137,9 +137,10 @@ class TeleportDecision(BaseModel):
         description="The driven agent selected to resume the history at the destination."
     )
     hint: str = Field(description="The short, user-facing thread-starter message.")
-    destination: ChannelAddress | None = Field(
-        default=None,
-        description="The address to use; None means the current conversation.",
+    destination: ChannelAddress = Field(
+        description="Where the move goes: the chat a new thread opens in, or this "
+        "conversation when the move only binds it to a project. A spell that names "
+        "none means the current conversation, resolved before the decision exists."
     )
     new_thread: bool = Field(
         default=True,
@@ -172,9 +173,7 @@ class TeleportDecision(BaseModel):
         return {
             "kind": TELEPORT_DEFER_KIND,
             "hint": self.hint,
-            "destination": asdict(self.destination)
-            if self.destination is not None
-            else None,
+            "destination": asdict(self.destination),
             "new_thread": self.new_thread,
             "project": self.project or "",
             "ref": self.ref or "",
@@ -190,9 +189,7 @@ class TeleportDecision(BaseModel):
                     tool_name=GatewayTool.TELEPORT,
                     args={
                         "hint": self.hint,
-                        "destination": asdict(self.destination)
-                        if self.destination is not None
-                        else None,
+                        "destination": asdict(self.destination),
                         "new_thread": self.new_thread,
                         "project": self.project,
                         "ref": self.ref,

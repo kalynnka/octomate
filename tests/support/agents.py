@@ -82,6 +82,7 @@ ScriptedOutput = str | DeferredToolRequests
 
 def _teleport_requests(
     hint: str,
+    here: ChannelAddress,
     destination: str = "thread",
     project: str | None = None,
     *,
@@ -93,7 +94,7 @@ def _teleport_requests(
 
     `destination` is the handle a model would name, and the metadata is what the gate
     puts there once it has resolved one: a crossing carries the far channel and the
-    account on it, and `thread` carries neither."""
+    account on it, and `thread` or `here` the current conversation."""
     crossing = destination not in ("thread", "here")
     return DeferredToolRequests(
         calls=[
@@ -114,9 +115,9 @@ def _teleport_requests(
                         chat_id="",
                         user_id="ou_alice",
                     )
-                )
-                if crossing
-                else None,
+                    if crossing
+                    else here
+                ),
                 "new_thread": destination != "here",
                 "project": project or "",
                 "ref": "",
@@ -316,6 +317,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         if self.reception_teleport is not None and deferred_tool_results is None:
             output: FakeRunOutput = _teleport_requests(
                 self.reception_teleport,
+                conversation_address,
                 self.reception_teleport_destination,
                 self.reception_teleport_project,
                 resume=self.reception_teleport_resume,
@@ -455,6 +457,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         if self.reception_teleport is not None and deferred_tool_results is None:
             output = _teleport_requests(
                 self.reception_teleport,
+                conversation_address,
                 self.reception_teleport_destination,
                 self.reception_teleport_project,
                 resume=self.reception_teleport_resume,

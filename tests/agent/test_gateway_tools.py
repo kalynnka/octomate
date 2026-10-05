@@ -449,7 +449,9 @@ async def test_a_native_teleport_moves_the_session_it_names(
     ahead from that session's thread."""
     server, session, _channel, _threads, kicks = await a_native_call()
     thread = ChannelAddress(CLAUDE_NATIVE_ID, "thread", "sess-1", "native")
-    decision = TeleportDecision(agent_id="claude", hint="moving over")
+    decision = TeleportDecision(
+        agent_id="claude", hint="moving over", destination=thread
+    )
     attach = AsyncMock(
         side_effect=lambda _: setattr(session, "conversation_address", thread)
     )

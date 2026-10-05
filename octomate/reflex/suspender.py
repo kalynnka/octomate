@@ -34,8 +34,8 @@ class TeleportRequest:
     hint: str
     # The deferred call to resolve into the resumed run.
     tool_call_id: str | None
-    # None uses the run's current address as the parent.
-    destination: ChannelAddress | None = None
+    # Where the move goes: the chat a new thread opens in, or this conversation.
+    destination: ChannelAddress
     new_thread: bool = True
     # The project the thread landed in is bound to, and the ref its workspace starts
     # from; None carries the conversation only.
@@ -54,6 +54,8 @@ class TeleportRequest:
             if meta.get("kind") != TELEPORT_DEFER_KIND:
                 continue
             destination = meta.get("destination")
+            if not destination:
+                raise ValueError("a teleport deferral names no destination")
             return cls(
                 tool_call_id=call.tool_call_id,
                 hint=str(meta.get("hint") or ""),
@@ -62,7 +64,7 @@ class TeleportRequest:
                 ref=str(meta.get("ref") or "") or None,
                 resume=bool(meta.get("resume", False)),
                 # The address validates itself, being a pydantic dataclass.
-                destination=ChannelAddress(**destination) if destination else None,
+                destination=ChannelAddress(**destination),
             )
         return None
 

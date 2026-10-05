@@ -153,10 +153,12 @@ async def test_a_teleport_into_a_project_validates_it_and_records_the_move(
         hint="into inky", new_thread=False, project="inky"
     )
 
+    here = harness.session.conversation_address
+    assert here is not None
     assert decision == TeleportDecision(
         agent_id="inkling",
         hint="into inky",
-        destination=harness.session.conversation_address,
+        destination=here,
         new_thread=False,
         project="inky",
     )
