@@ -1,4 +1,8 @@
-"""Authenticated command discovery and execution for browser clients."""
+"""Authenticated command discovery and execution for browser clients.
+
+CommandStreamEvent combines ordinary run wire events with command delivery outcomes
+for this API's SSE responses.
+"""
 
 import asyncio
 import uuid
@@ -15,8 +19,7 @@ from starlette.types import Receive, Scope, Send
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
 from octomate.capabilities.harness.events import (
-    CommandOutcomeEvent,
-    CommandStreamEvent,
+    WireEvent,
     wire_event_adapter,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
@@ -36,6 +39,7 @@ from octomate.schemas.commands import (
     CommandContext,
     CommandError,
     CommandInvocation,
+    CommandOutcomeEvent,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress
@@ -48,6 +52,8 @@ from octomate.tentacles.trunkline.base import (
     current_sink,
     to_wire,
 )
+
+type CommandStreamEvent = WireEvent | CommandOutcomeEvent
 
 command_router = APIRouter(
     prefix="/api/commands",

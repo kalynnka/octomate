@@ -36,14 +36,12 @@ from octomate.auth import current_user
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
-    CommandOutcomeEvent,
-    CommandStreamEvent,
     MessageSentEvent,
     RunResultEvent,
     RunStartedEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.commands import command_context, discover_commands
+from octomate.commands import CommandStreamEvent, command_context, discover_commands
 from octomate.config.auth import AuthConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
@@ -56,6 +54,7 @@ from octomate.schemas.commands import (
     CommandDescriptor,
     CommandError,
     CommandInvocation,
+    CommandOutcomeEvent,
     CommandResult,
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation

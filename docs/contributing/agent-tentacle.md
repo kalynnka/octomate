@@ -140,8 +140,10 @@ resolves the descriptor from a fresh catalog. Browser attachments are not suppor
 yet; a nonempty `attachments` field is rejected before dispatch.
 
 Execution responses use `text/event-stream`. Each SSE `data` field is a JSON
-`CommandStreamEvent`, identified by `event_kind`. Each completed delivery ends with
-one `CommandOutcomeEvent` with `event_kind="command_outcome"` and the `CommandOutcome`
+[CommandStreamEvent][octomate.commands.CommandStreamEvent], identified by `event_kind`.
+Each completed delivery ends with one
+[CommandOutcomeEvent][octomate.schemas.commands.CommandOutcomeEvent]
+with `event_kind="command_outcome"` and the `CommandOutcome`
 in its `outcome` field, after runtime cleanup and receipt persistence succeed.
 For Trunkline, direct and replayed feedback, refusals and agent activity use the
 channel's existing wire events before that terminal event. Clients render those

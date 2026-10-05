@@ -36,7 +36,6 @@ The run-stream union itself stays generic (`FinalResult[OutputT]`), so it has
 no single serialized form — but the wire family is concrete, so `WireEvent` and
 its `wire_event_adapter` live here too: the run stream as a wire consumer sees
 it, with the generic/unserializable members replaced by their wire forms.
-`CommandStreamEvent` adds a terminal `CommandOutcomeEvent` for the command API.
 """
 
 from __future__ import annotations
@@ -50,7 +49,6 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.auth import LinkProfileAuthorization
-from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
@@ -127,17 +125,6 @@ class GatewayEvent(BaseModel):
         default=None,
         description="The line the move leaves where the conversation was, or None "
         "when it leaves none there.",
-    )
-
-
-class CommandOutcomeEvent(BaseModel):
-    """The terminal command result, refusal or saved delivery outcome."""
-
-    event_kind: Literal["command_outcome"] = Field(
-        default="command_outcome", description="Identifies a terminal command outcome."
-    )
-    outcome: CommandOutcome = Field(
-        description="Direct or replayed outcome, or completion after stream cleanup and persistence."
     )
 
 
@@ -361,8 +348,6 @@ type WireEvent = (
     | RunErrorEvent
     | GatewayEvent
 )
-
-type CommandStreamEvent = WireEvent | CommandOutcomeEvent
 
 # Serialization-only: wire consumers never validate events back in, so the
 # union needs no validation discriminator (the OAuth pair could not carry one

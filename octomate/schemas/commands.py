@@ -196,3 +196,14 @@ class CommandError(BaseModel):
 
 
 CommandOutcome = Annotated[CommandResult | CommandError, Field(discriminator="status")]
+
+
+class CommandOutcomeEvent(BaseModel):
+    """The terminal command result, refusal or saved delivery outcome."""
+
+    event_kind: Literal["command_outcome"] = Field(
+        default="command_outcome", description="Identifies a terminal command outcome."
+    )
+    outcome: CommandOutcome = Field(
+        description="Direct or replayed outcome, or completion after stream cleanup and persistence."
+    )
