@@ -268,6 +268,23 @@ async def test_resolve_batch_applies_answers_and_approvals(
     assert results.approvals["call_approval"] is True
 
 
+async def test_a_restart_expires_live_requests_and_keeps_suspended_ones(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = DeferredActionManager()
+    waiting = await _create_batch("live")
+    answered = await _create_batch("live")
+    await manager.mark_batch(answered.id, "resolved")
+    suspended = await _create_batch("resume")
+
+    await manager.expire_live()
+
+    assert (await manager.get_batch(waiting.id)).status == "expired"
+    assert (await manager.get_batch(answered.id)).status == "resolved"
+    # A suspended run's batch resumes through the graph, which outlives a restart.
+    assert (await manager.get_batch(suspended.id)).status == "pending"
+
+
 async def test_a_multi_select_answer_is_kept_as_its_picks(
     in_memory_engine: AsyncEngine,
 ) -> None:

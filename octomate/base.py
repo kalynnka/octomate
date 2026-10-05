@@ -356,6 +356,9 @@ class Octomate(FastAPI):
             # setting: probed here so the log says which mechanism this host
             # got, once, before anything asks for a workspace.
             await self.workspaces.detect()
+            # A live request's waiter died with the last process, so a reply to
+            # one still pending would be lost: it is refused as expired instead.
+            await self.deferred_actions.expire_live()
             async with (
                 # Starlette runs no lifespan for a mounted app, and the MCP
                 # transport's task group lives in that lifespan; the endpoint
