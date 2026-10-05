@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.1.0](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.3...octomate-protocol-v0.1.0) (2026-10-05)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gateway:** carry conversations across channels ([#115](https://github.com/kalynnka/octomate/issues/115))
+
+### Features
+
+* **gateway:** carry conversations across channels ([#115](https://github.com/kalynnka/octomate/issues/115)) ([1d48b5e](https://github.com/kalynnka/octomate/commit/1d48b5ed6108959cf7bf1bea8849e539571ac9d1))
+
 ## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.2...octomate-protocol-v0.0.3) (2026-09-23)
 
 
