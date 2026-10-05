@@ -625,7 +625,7 @@ export function AccountPanel({ profiles, profilesError }: { profiles: ApiUserPro
               >
                 <Brackets />
                 <div className="trk-account-masthead">
-                  <span style={{ ...display(15), letterSpacing: '-.02em' }}>Octomate<span style={{ color: 'var(--color-accent)' }}>.</span></span>
+                  <span style={{ ...display(15), letterSpacing: '-.02em', color: 'var(--color-ink)' }}>Octomate<span style={{ color: 'var(--color-accent)' }}>.</span></span>
                   <span style={{ ...label(8), color: 'var(--fg-3)' }}>{channel ? 'Channel identity' : 'Personal account'}</span>
                 </div>
                 <header className="trk-account-identity">

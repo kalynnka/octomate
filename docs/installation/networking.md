@@ -109,7 +109,7 @@ the provider accepts the redirect. Slack's channel block has its own
 2. Repeat the [anonymous checks](server.md#run-and-verify) against that origin.
 3. Configure a client with the final URL and reinstall its MCP entry.
 4. Send a native prompt and watch the whole answer reach Trunkline.
-5. Call `gateway_scry` over MCP, then exercise one OAuth callback if configured.
+5. Call `gateway_inspect` over MCP, then exercise one OAuth callback if configured.
 
 If HTTP works but answers stop, look at WebSocket forwarding and stream timeouts
 before reinstalling anything.

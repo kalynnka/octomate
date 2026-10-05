@@ -225,6 +225,18 @@ async def test_plan_run_uses_the_existing_command_entry_once(
         }
     )
     native = turn_events("The actual plan")
+    message = native[2]
+    assert isinstance(message, dict)
+    message["data"] = {
+        "message": {
+            "content": [{"type": "text", "text": "The actual plan"}],
+            "source": {
+                "kind": "model",
+                "provider": "deepseek-official",
+                "model": "deepseek-v4-flash",
+            },
+        }
+    }
     native.insert(
         1,
         {
@@ -249,6 +261,8 @@ async def test_plan_run_uses_the_existing_command_entry_once(
     runs = await stored.runs
     assert len(runs) == 1
     assert runs[0].native_turn_id == "sess-1:1"
+    assert runs[0].model_name == "deepseek-v4-flash"
+    assert runs[0].permission_mode == signal.context.permission_mode
     messages = await runs[0].messages
     assert len(messages) == 2
     contents = str([message.message_text for message in messages])

@@ -2,7 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncGenerator
-from dataclasses import replace
+from dataclasses import asdict, replace
 from unittest.mock import AsyncMock
 
 import anyio
@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.harness.events import MessageSentEvent, RunStartedEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.channels import TrunklineChannelConfig
@@ -43,7 +43,6 @@ from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
     AgentRouteKey,
-    HereLanding,
     SummonDecision,
 )
 from octomate.schemas.user import UserProfile
@@ -310,7 +309,14 @@ async def test_command_teleport_before_first_event_continues_the_agent_run(
     channel.config.stream = ChannelStreamConfig(enabled=stream)
     requests = DeferredToolRequests(
         calls=[ToolCallPart(tool_name="teleport", args={}, tool_call_id="move")],
-        metadata={"move": {"kind": TELEPORT_DEFER_KIND, "here": True}},
+        metadata={
+            "move": {
+                "kind": TELEPORT_DEFER_KIND,
+                "destination": asdict(signal.context.address),
+                "new_thread": False,
+                "resume": True,
+            }
+        },
     )
 
     async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
@@ -357,7 +363,6 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
         session.decision = SummonDecision(
             agent_id=other.id,
             model="opus",
-            destination=HereLanding(),
             reason="Continue with another agent",
             hint="Handing over",
             summon="Continue this review",
@@ -546,9 +551,12 @@ async def test_command_graph_can_deliver_to_trunklines_existing_request_sink(
             current_sink.reset(token)
         await send.aclose()
         received = [event async for event in receive]
-    assert len(received) == 1
+    assert len(received) == (2 if model_run else 1)
+    if model_run:
+        assert isinstance(received[0], RunStartedEvent)
+        assert received[0].address == address
     assert isinstance(
-        received[0], AgentRunResultEvent if model_run else MessageSentEvent
+        received[-1], AgentRunResultEvent if model_run else MessageSentEvent
     )
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions

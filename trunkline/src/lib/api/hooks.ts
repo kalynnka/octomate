@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchApiKeys, fetchProfileAuthorizations } from './auth'
+import { fetchAddresses, fetchThreadOperations } from './client'
 import { api } from './index'
 
 export const useChannels = () =>
@@ -53,3 +54,25 @@ export const useMcpServers = () =>
 
 export const useMcpTentacles = () =>
   useQuery({ queryKey: ['mcp-tentacles'], queryFn: api.mcpTentacles, staleTime: 60_000 })
+
+/** What Teleport and Summon can do from one thread. The header keeps it fresh;
+ *  the composer reads the same entry with `enabled` off. */
+export const useThreadOperations = (threadId: string, enabled: boolean) =>
+  useQuery({
+    queryKey: ['thread-operations', threadId],
+    queryFn: () => fetchThreadOperations(threadId),
+    enabled,
+    retry: false,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  })
+
+/** One level of a channel's destinations, fetched when that level is opened. */
+export const useAddresses = (threadId: string, channelId: string | undefined, inside: string | undefined) =>
+  useQuery({
+    queryKey: ['thread-addresses', threadId, channelId, inside ?? null],
+    queryFn: () => fetchAddresses(threadId, channelId!, inside),
+    enabled: channelId !== undefined,
+    retry: false,
+    staleTime: 60_000,
+  })

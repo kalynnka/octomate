@@ -145,6 +145,7 @@ nav:
           - Base: api/tentacles/base.md
           - Native session hooks: api/tentacles/hooks.md
           - Feelers: api/tentacles/feelers.md
+          - Trunkline: api/tentacles/trunkline.md
       - Reflex graph:
           - api/reflex.md
           - Graph, state and dependencies: api/reflex/graph.md

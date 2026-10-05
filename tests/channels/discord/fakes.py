@@ -58,16 +58,33 @@ def a_text_channel(
     return channel
 
 
+def a_forum_channel(
+    channel_id: int = 406,
+    *,
+    guild: discord.Guild | None = None,
+) -> discord.ForumChannel:
+    channel = discord.ForumChannel.__new__(discord.ForumChannel)
+    channel.id = channel_id
+    channel._type = discord.ChannelType.forum.value
+    channel.guild = guild or a_guild()
+    return channel
+
+
 def a_thread(
     thread_id: int = 500,
     *,
     parent_id: int = 400,
     guild: discord.Guild | None = None,
+    private: bool = False,
 ) -> discord.Thread:
     channel = discord.Thread.__new__(discord.Thread)
     channel.id = thread_id
     channel.parent_id = parent_id
-    channel._type = discord.ChannelType.public_thread
+    channel._type = (
+        discord.ChannelType.private_thread
+        if private
+        else discord.ChannelType.public_thread
+    )
     channel.guild = guild or a_guild()
     return channel
 

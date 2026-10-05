@@ -32,6 +32,9 @@ class Claim:
     # knob. Defaults to the full scale, so a route whose provider takes less
     # (DeepSeek has no `minimal`) must say so.
     efforts: tuple[ThinkingEffort, ...] = ThinkingEfforts
+    # The level a run gets when its caller names none; None when the runtime
+    # decides and does not say which.
+    default_effort: ThinkingEffort | None = None
 
     def __str__(self) -> str:
         return f"[effort {'/'.join(self.efforts) or 'default'}] {self.ability}"

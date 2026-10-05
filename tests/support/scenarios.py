@@ -12,8 +12,10 @@ from __future__ import annotations
 import json
 import uuid
 from collections.abc import AsyncGenerator, Sequence
+from pathlib import Path
 
 import anyio
+from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
@@ -36,6 +38,8 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
     ResultSegmentEvent,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
     TodoDeletedEvent,
@@ -45,6 +49,7 @@ from octomate.capabilities.harness.events import (
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.schemas.deferred import (
     ApprovalRequest,
+    DeferredActionCollection,
     DeferredApproval,
     DeferredQuestion,
 )
@@ -62,7 +67,10 @@ from octomate.types.json import JsonObject
 
 ChannelScript = list[ReactStreamEvent[ChannelOutput]]
 
-SCENARIO_CONVERSATION_ID = uuid.UUID(int=0x0C70)
+SCENARIO_CONVERSATION_ID = uuid.UUID("00000000-0000-7000-8000-000000000c70")
+RECORDED_QUESTIONS = (
+    Path(__file__).parent.parent / "src" / "events" / "inkling_questions.jsonl"
+)
 
 
 async def play(
@@ -304,6 +312,19 @@ def batch_requests() -> DeferredToolRequests:
             ToolCallPart(tool_name="deploy", args={}, tool_call_id="call_deploy_1")
         ],
     )
+
+
+def recorded_questions(batch_id: uuid.UUID) -> list[DeferredQuestion]:
+    """The questions a real Inkling run asked, recorded by
+    `scripts/capture_inkling_events.py --questions`: a multi-select question,
+    then a single pick."""
+    *_, last = RECORDED_QUESTIONS.read_text().splitlines()
+    result = TypeAdapter(AgentRunResultEvent[DeferredToolRequests]).validate_json(last)
+    return [
+        action.model_copy(update={"batch_id": batch_id})
+        for action in DeferredActionCollection.validate_python(result.result.output)
+        if isinstance(action, DeferredQuestion)
+    ]
 
 
 def action_batch(
@@ -600,7 +621,8 @@ def mid_run_notice(
 
 def subagent_run() -> ChannelScript:
     """Two parallel commissions from a real DeepSeek Flash Inkling capture, condensed
-    to stable tool events and de-identified for live channel replay."""
+    to stable tool events and de-identified for live channel replay, with the
+    accomplice lifecycle the gateway capability puts around them."""
     timeline_report = (
         "1. **Append-Only** — Once an event is added, it cannot be modified, "
         "deleted, or reordered.\n"
@@ -634,14 +656,14 @@ def subagent_run() -> ChannelScript:
         ),
         FunctionToolCallEvent(
             ToolCallPart(
-                tool_name="scry",
+                tool_name="inspect",
                 args={"reveal": "routes"},
-                tool_call_id="call_scry_subagents",
+                tool_call_id="call_inspect_subagents",
             )
         ),
         FunctionToolResultEvent(
             ToolReturnPart(
-                tool_name="scry",
+                tool_name="inspect",
                 content=[
                     {
                         "agent_id": "capture-accomplice",
@@ -649,10 +671,15 @@ def subagent_run() -> ChannelScript:
                         "claim": {"ability": "independent analysis for capture tests"},
                     }
                 ],
-                tool_call_id="call_scry_subagents",
+                tool_call_id="call_inspect_subagents",
             )
         ),
         *narration("I found the route and am starting both reviews in parallel."),
+        SubagentStartedEvent(
+            invocation_id="call_commission_timeline",
+            kind="commission",
+            name="timeline-contract",
+        ),
         FunctionToolCallEvent(
             ToolCallPart(
                 tool_name="commission",
@@ -664,6 +691,11 @@ def subagent_run() -> ChannelScript:
                 },
                 tool_call_id="call_commission_timeline",
             )
+        ),
+        SubagentStartedEvent(
+            invocation_id="call_commission_failures",
+            kind="commission",
+            name="failure-review",
         ),
         FunctionToolCallEvent(
             ToolCallPart(
@@ -677,12 +709,22 @@ def subagent_run() -> ChannelScript:
                 tool_call_id="call_commission_failures",
             )
         ),
+        SubagentSettledEvent(
+            invocation_id="call_commission_timeline",
+            status="completed",
+            response=timeline_report,
+        ),
         FunctionToolResultEvent(
             ToolReturnPart(
                 tool_name="commission",
                 content=timeline_report,
                 tool_call_id="call_commission_timeline",
             )
+        ),
+        SubagentSettledEvent(
+            invocation_id="call_commission_failures",
+            status="completed",
+            response=failure_report,
         ),
         FunctionToolResultEvent(
             ToolReturnPart(

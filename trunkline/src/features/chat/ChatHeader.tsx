@@ -1,27 +1,58 @@
-import { awaitingEndpoint } from '@/lib/api'
-import type { SurfaceInfo } from '@/lib/api/types'
+import { useId, useRef, useState } from 'react'
 import { useConsole } from '@/state/console'
-import { useThreads } from '@/lib/api/hooks'
+import { useThreadOperations, useThreads } from '@/lib/api/hooks'
+import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
-import { ellipsis, label, mono, statusNote } from '@/components/text'
+import { ellipsis, label, mono } from '@/components/text'
+
+const operations = {
+  teleport: { label: 'Teleport', description: 'Carry this chat to another destination with the same agent and history.' },
+  summon: { label: 'Summon', description: 'Let another agent take over from a prepared brief.' },
+}
+type Operation = keyof typeof operations
+const operationOrder: Operation[] = ['teleport', 'summon']
 
 export function ChatHeader() {
   const selThreadId = useConsole((s) => s.selThreadId)
+  const selChannel = useConsole((s) => s.selChannel)
   const detail = useConsole((s) => s.detail)
   const ntOn = useConsole((s) => s.ntOn)
   const ntTitle = useConsole((s) => s.ntTitle)
-  const surface = useConsole((s) => s.surface)
-  const teleOpen = useConsole((s) => s.teleOpen)
-  const teleporting = useConsole((s) => s.teleporting)
+  const pending = useConsole((s) => s.gatewayPending)
+  const running = useConsole((s) => s.running)
   const traceOn = useConsole((s) => s.traceOn) ?? true
   const theme = useConsole((s) => s.theme)
   const sysDark = useConsole((s) => s.sysDark)
-  const { toggleTeleMenu, teleport, toggleTheme, toggleTrace } = useConsole((s) => s.actions)
-  const surfaces = awaitingEndpoint<SurfaceInfo[]>()
+  const gatewayMode = useConsole((s) => s.gatewayMode)
+  const { toggleTheme, toggleTrace, setGatewayMode } = useConsole((s) => s.actions)
+  const eligibility = useThreadOperations(selThreadId, Boolean(selThreadId && detail && !ntOn && !running && !pending))
+  // The op the composer is expanded for, when it was opened on this thread.
+  const expanded = !ntOn && gatewayMode?.threadId === selThreadId ? gatewayMode.action : null
+  const expand = (action: Operation) => {
+    void eligibility.refetch()
+    setGatewayMode({ threadId: selThreadId, action })
+  }
   const { data: threads } = useThreads()
-
+  const [choice, setChoice] = useState<Operation | null>(null)
+  const [menu, setMenu] = useState<{ threadId: string; kind: 'operations' } | null>(null)
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menuId = useId()
+  const openMenu = menu?.threadId === selThreadId ? menu.kind : null
+  const busyReason = pending ? `Wait for ${pending.action} to finish.` : running ? 'Wait for the current run to finish.' : undefined
+  const threadReason = ntOn || !detail ? 'Open an existing thread first.' : undefined
+  const loadingReason = eligibility.isError ? eligibility.error.message : !eligibility.data ? 'Checking available destinations…' : undefined
+  const unavailable: Record<Operation, string | undefined> = {
+    // The relay's reason is the whole answer: an empty suggestion list leaves
+    // an in-place Summon, or a destination found by browsing, still open.
+    teleport: threadReason ?? loadingReason ?? eligibility.data?.teleport.reason ?? undefined,
+    summon: threadReason ?? loadingReason ?? eligibility.data?.summon.reason ?? undefined,
+  }
+  const operation = choice && !unavailable[choice]
+    ? choice
+    : operationOrder.find((value) => !unavailable[value]) ?? 'teleport'
+  const selected = operations[operation]
+  const disabledReason = busyReason ?? unavailable[operation]
   const isDark = theme === 'dark' || (theme === 'auto' && sysDark)
-  const cur = surfaces?.find((s) => s.id === surface) ?? surfaces?.[0]
   const title = ntOn
     ? ntTitle || 'untitled — new thread'
     : (Object.values(threads ?? {})
@@ -71,109 +102,140 @@ export function ChatHeader() {
         <span style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, maxWidth: '100%', ...ellipsis }}>{title}</span>
         <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0 }}>{detail?.key ?? selThreadId}</span>
       </span>
-      {cur && (
-        <span
-          title="Current surface"
-          className="trk-head-chip"
+      <span
+        className="trk-head-chip"
+        title="Current surface"
+        style={{
+          ...label(8.5, '.1em'), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '0 7px',
+          height: 'var(--trk-btn, 22px)', boxSizing: 'border-box', display: 'inline-flex', alignItems: 'center',
+          whiteSpace: 'nowrap', flexShrink: 0,
+        }}
+      >
+        {channelMeta(selChannel).label}
+      </span>
+      <span
+        onKeyDown={(event) => {
+          if (event.key === 'Escape' && openMenu) {
+            event.stopPropagation()
+            setMenu(null)
+            trigger.current?.focus()
+          }
+        }}
+        onBlur={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget)) setMenu(null)
+        }}
+        style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}
+      >
+        {openMenu && (
+          <span onClick={() => setMenu(null)} style={{ position: 'fixed', inset: 0, zIndex: 59 }} />
+        )}
+        <button
+          type="button"
+          aria-disabled={Boolean(disabledReason)}
+          aria-description={disabledReason}
+          aria-pressed={expanded === operation}
+          title={disabledReason ?? (expanded === operation ? 'Back to chat' : undefined)}
+          onClick={() => {
+            if (disabledReason) return
+            setMenu(null)
+            if (expanded === operation) setGatewayMode(null)
+            else expand(operation)
+          }}
+          className={disabledReason ? undefined : 'hov-teal-ghost'}
           style={{
-            ...label(8.5, '.1em'),
-            color: cur.brand,
-            border: `1px solid ${cur.brand}`,
-            padding: '0 7px',
-            height: 22,
-            boxSizing: 'border-box',
-            display: 'inline-flex',
-            alignItems: 'center',
-            whiteSpace: 'nowrap',
-            flexShrink: 0,
+            display: 'inline-flex', alignItems: 'center', gap: 6,
+            flexShrink: 0, justifyContent: 'center', whiteSpace: 'nowrap',
+            ...label(8.5, '.1em'), color: 'var(--trk-on-fill)',
+            background: 'var(--color-teal)', border: '1px solid var(--color-teal)',
+            padding: '0 9px', height: 'var(--trk-btn, 22px)', boxSizing: 'border-box',
+            cursor: disabledReason ? 'not-allowed' : 'pointer',
+            position: 'relative', zIndex: 60,
           }}
         >
-          {cur.label}
-        </span>
-      )}
-      <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
-        <span
-          onClick={toggleTeleMenu}
+          <span key={operation} className="trk-operation-label">
+            <Icon name={operation === 'teleport' ? 'arrowRightLeft' : 'wandSparkles'} size={12} style={{ flexShrink: 0 }} />
+            {pending?.threadId === selThreadId ? (
+              <span aria-label={pending.action === 'teleport' ? 'Teleporting' : 'Summoning'}>
+                {pending.action === 'teleport' ? 'Moving' : 'Summon'}<span className="lt-fork-dots" aria-hidden="true"><span>.</span><span>.</span><span>.</span></span>
+              </span>
+            ) : selected.label}
+          </span>
+        </button>
+        <button
+          ref={trigger}
+          type="button"
+          disabled={Boolean(pending)}
+          aria-label="Choose thread operation"
+          aria-expanded={openMenu === 'operations'}
+          aria-controls={openMenu === 'operations' ? menuId : undefined}
+          onClick={() => {
+            if (!running && !ntOn && detail) void eligibility.refetch()
+            setMenu(openMenu === 'operations' ? null : { threadId: selThreadId, kind: 'operations' })
+          }}
           className="hov-teal-ghost"
           style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: 6,
-            ...label(8.5, '.1em'),
-            color: 'var(--trk-on-fill)',
-            background: 'var(--color-teal)',
-            border: '1px solid var(--color-teal)',
-            padding: '0 8px',
-            height: 'var(--trk-btn, 22px)',
-            boxSizing: 'border-box',
-            cursor: 'pointer',
+            ...label(8, '.1em'), color: 'var(--trk-on-fill)',
+            background: 'var(--color-teal)', border: '1px solid var(--color-teal)',
+            width: 20, marginLeft: 2, flexShrink: 0, padding: 0,
+            height: 'var(--trk-btn, 22px)', boxSizing: 'border-box', cursor: 'pointer',
+            position: 'relative', zIndex: 60,
           }}
         >
-          ⇄ Teleport
-        </span>
-        {teleporting && (
-          <span
+          ▾
+        </button>
+        {openMenu === 'operations' && (
+          <div
+            id={menuId}
+            role="group"
+            aria-label="Thread operations"
+            className="lt-menu"
+            data-open=""
             style={{
-              position: 'absolute',
-              right: 0,
-              top: 'calc(100% + 6px)',
-              whiteSpace: 'nowrap',
-              ...label(9, '.14em'),
-              color: 'var(--color-teal)',
-              animation: 'trkPulse 1s infinite',
-              zIndex: 50,
+              position: 'absolute', right: 0, top: 'calc(100% + 6px)',
+              width: 340, maxWidth: 'calc(100vw - 32px)',
+              background: 'var(--surface-raised)', border: '1px solid var(--line-divider)',
+              boxShadow: 'var(--shadow-card)', zIndex: 60,
             }}
           >
-            ⇄ teleporting — packing pointer card…
-          </span>
-        )}
-        <div
-          className="lt-menu"
-          data-open={teleOpen ? '' : undefined}
-          style={{
-            position: 'absolute',
-            right: 0,
-            top: 'calc(100% + 6px)',
-            width: 264,
-            background: 'var(--surface-raised)',
-            border: '1px solid var(--color-ink)',
-            boxShadow: 'var(--shadow-card)',
-            zIndex: 60,
-          }}
-        >
-          <div style={{ padding: '8px 12px', borderBottom: '1px solid var(--line-divider)', ...statusNote, color: 'var(--fg-3)' }}>
-            Continue this thread in…
-          </div>
-          {(surfaces ?? []).length === 0 && (
-            <div style={{ padding: '10px 12px', ...mono(9), color: 'var(--fg-3)', lineHeight: 1.6 }}>
-              no other surface is wired yet
-            </div>
-          )}
-          {(surfaces ?? []).map((sf) => {
-            const here = sf.id === surface
-            return (
-              <div
-                key={sf.id}
-                onClick={() => cur && teleport(sf.id, sf.label, cur.label)}
-                className="hov-wash"
-                style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '9px 12px', cursor: 'pointer', borderBottom: '1px solid var(--line-color)' }}
+            {operationOrder.map((value) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={operation === value}
+                aria-disabled={Boolean(unavailable[value])}
+                title={unavailable[value]}
+                onClick={() => {
+                  if (unavailable[value]) return
+                  setChoice(value)
+                  setMenu(null)
+                  // Picking an op goes straight to the composer it fills.
+                  if (!busyReason) return expand(value)
+                  trigger.current?.focus()
+                }}
+                className={unavailable[value] ? undefined : 'hov-wash'}
+                style={{
+                  display: 'flex', gap: 12, width: '100%',
+                  padding: '12px 16px', textAlign: 'left', cursor: unavailable[value] ? 'not-allowed' : 'pointer',
+                  background: operation === value ? 'color-mix(in srgb, var(--color-teal) 8%, transparent)' : 'transparent',
+                  border: 0, borderBottom: '1px solid var(--line-divider)', borderRadius: 0,
+                }}
               >
-                <i style={{ width: 6, height: 6, borderRadius: 9999, background: sf.brand }} />
-                <span style={{ ...mono(10.5, 700), color: 'var(--fg-1)' }}>{sf.label}</span>
-                <span style={{ ...mono(8.5), color: 'var(--fg-3)' }}>{sf.sub}</span>
-                <span style={{ flex: 1 }} />
-                {here ? (
-                  <span style={{ ...label(8, '.14em'), color: 'var(--color-accent)' }}>● here</span>
-                ) : (
-                  <span style={{ ...mono(10), color: 'var(--color-teal)' }}>→</span>
-                )}
-              </div>
-            )
-          })}
-          <div style={{ padding: '7px 12px', ...mono(8), color: 'var(--fg-3)', letterSpacing: '.06em', lineHeight: 1.6 }}>
-            same thread · same context · pointer card left behind — or just tell the agent "continue this in…"
+                <span style={{ display: 'flex', flexDirection: 'column', gap: 5, flex: 1, minWidth: 0 }}>
+                  <span style={{ ...label(10, '.16em'), color: operation === value ? 'var(--color-teal)' : unavailable[value] ? 'var(--fg-3)' : 'var(--fg-1)' }}>
+                    {operations[value].label}
+                  </span>
+                  <span style={{ ...mono(9.5), color: unavailable[value] ? 'var(--fg-3)' : 'var(--fg-2)', lineHeight: 1.6, textWrap: 'pretty' }}>
+                    {operations[value].description}
+                  </span>
+                  {unavailable[value] && <span style={{ ...mono(8.5), color: 'var(--fg-3)', lineHeight: 1.6 }}>▸ {unavailable[value]}</span>}
+                </span>
+                <span aria-hidden="true" style={{ width: 14, flexShrink: 0, ...mono(12, 700), color: 'var(--color-teal)', paddingTop: 12 }}>
+                  {operation === value ? '✓' : ''}
+                </span>
+              </button>
+            ))}
           </div>
-        </div>
+        )}
       </span>
       {iconBtn(toggleTheme, isDark ? 'Switch to light' : 'Switch to dark', false, (
         <Icon name={isDark ? 'moon' : 'sun'} size={13} />

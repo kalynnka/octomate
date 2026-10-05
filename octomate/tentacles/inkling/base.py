@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import AsyncGenerator, Mapping, Sequence
 from contextlib import AbstractAsyncContextManager, AsyncExitStack
 from dataclasses import dataclass, field
@@ -17,6 +16,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
+from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -84,6 +84,7 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.mcp import McpManager
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +163,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
 
     agent: Agent[None, InklingOutput] = field(init=False)
+    mcp: McpManager = field(init=False)
     # Held on the tentacle, not baked into the Agent: every run decides what to
     # mount — an accomplice run gets none of them.
     capabilities: list[AgentCapability[None]] = field(init=False)
@@ -186,6 +188,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     @property
     def default_permission_mode(self) -> str | None:
         return self.permission_mode
+
+    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> None:
+        """Inkling resumes the copied Octomate history without an external session."""
+        if conversation.external_id is not None:
+            raise ValueError("Inkling conversations cannot have an external session id")
 
     description: str = (
         "General assistant for conversation, questions, writing, analysis, and "
@@ -223,7 +230,10 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
         )
+        self.mcp = octomate.mcp
+        self.workspaces = octomate.workspaces
         self.permission_mode = permission_mode
         self.request_limit = request_limit
         self.gateway = gateway
@@ -256,6 +266,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # one source of truth with the thread ledger and the rest of Octomate; an
         # explicit manager still wins.
         self.conversation_manager = conversation_manager or octomate.conversations
+        self.conversations = self.conversation_manager
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
         # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
@@ -422,16 +433,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -454,16 +465,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -485,16 +496,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -551,8 +562,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID,
-        conversation_id: uuid.UUID,
+        thread_id: UUID7,
+        conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
@@ -591,16 +602,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -622,16 +633,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -652,16 +663,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -711,16 +722,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         *,
         user_prompt: str | Sequence[UserContent] | None,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None,
+        thread_id: UUID7 | None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -774,7 +785,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities.append(
                 tentacles_capability(
                     octomate_session,
-                    manager=self.octomate.mcp,
+                    manager=self.mcp,
                 )
             )
         # The react graph carries only the thread/agent identity; each node fetches
@@ -795,7 +806,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # somewhere its file tools are rooted rather than somewhere a subprocess is
         # started, and a project's workspace has no ending for a run to scope.
         workspace = (
-            await self.octomate.workspaces.open(thread_id, project).prepare()
+            await self.workspaces.open(thread_id, project).prepare()
             if project is not None
             else None
         )
@@ -804,7 +815,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
-            thread_manager=self.octomate.threads,
+            thread_manager=self.threads,
             agent_deps=deps,
             choose_resolvers=InklingDeferrals(
                 interactive=interactive,
@@ -818,6 +829,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             # or nothing, since inkling has no configured directory to fall back to.
             cwd=workspace,
             model=model,
+            permission_mode=self.permission_mode,
             instructions=instructions,
             model_settings=model_settings,
             usage_limits=usage_limits or UsageLimits(request_limit=self.request_limit),
@@ -912,9 +924,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         await self.conversation_manager.set_name(conversation, title)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.octomate.threads.get(
-            conversation.thread_id, with_messages=False
-        )
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
         if thread is None:
             raise ValueError(f"unknown thread {conversation.thread_id}")
-        await self.octomate.threads.rename(thread, title)
+        await self.threads.rename(thread, title)

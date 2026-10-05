@@ -21,7 +21,7 @@ from octomate.dependencies import (
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager
-from octomate.managers.oauth import OAuthManager
+from octomate.managers.oauth import OAuthLockKey, OAuthManager
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
@@ -38,7 +38,7 @@ def test_manager_construction_is_independent() -> None:
 
 async def test_dependency_reuses_the_configured_manager_across_requests() -> None:
     octomate = Octomate(users=UserManager())
-    key = (uuid7(), "linear")
+    key = OAuthLockKey(uuid7(), None, "linear")
     lock = octomate.oauth.lock(key)
     assert isinstance(octomate, FastAPI)
 
@@ -73,7 +73,7 @@ def test_separate_apps_keep_their_own_configured_managers() -> None:
 
 async def test_dependency_preserves_the_lock_in_use() -> None:
     octomate = Octomate()
-    key = (uuid7(), "linear")
+    key = OAuthLockKey(uuid7(), None, "linear")
     acquired = asyncio.Event()
 
     async def contender() -> None:

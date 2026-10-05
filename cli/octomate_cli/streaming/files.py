@@ -33,6 +33,7 @@ import json
 import sys
 import tempfile
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -46,9 +47,12 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamSnapshotStart,
+    StreamSnapshotStored,
     StreamWelcome,
     server_message_adapter,
 )
+from uuid_utils.compat import uuid7
 from watchfiles import awatch
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidStatus
@@ -80,6 +84,9 @@ REFUSED = 1008
 # holder that keeps it past the window is a genuinely running tail.
 LOCK_GRACE = 15.0
 LOCK_POLL = 0.2
+
+SNAPSHOT_CHUNK_SIZE = 64 * 1024
+SNAPSHOT_ACK_TIMEOUT = 60.0
 
 try:
     CLIENT_VERSION = version("octomate-cli")
@@ -146,6 +153,10 @@ class SessionTail:
     files: dict[str, FileCursor] = field(default_factory=dict)
     last_active: float = field(default_factory=monotonic)
     spool: Path | None = None
+    stored_offset: int | None = None  # None disables transcript uploads.
+    receipts: asyncio.Queue[StreamSnapshotStored | ConnectionClosed | ValueError] = (
+        field(default_factory=asyncio.Queue)
+    )
     spooled: dict[str, Path] = field(default_factory=dict)
 
     @property
@@ -206,7 +217,53 @@ class SessionTail:
                 sent = True
         if sent:
             self.last_active = monotonic()
+        if self.stored_offset is not None:
+            await self.upload_snapshot(websocket, start=self.stored_offset)
         return sent
+
+    def snapshot(self, end: int, *, start: int = 0) -> Iterator[bytes]:
+        """Read an already streamed range without resending the stored prefix."""
+        if start < 0 or end <= start or end > self.cursor(SESSION_FILE).offset:
+            raise ValueError("Snapshot boundary must be within the streamed transcript")
+        with self.transcript_path.open("rb") as handle:
+            if start:
+                handle.seek(start - 1)
+                if handle.read(1) != b"\n":
+                    raise ValueError(
+                        "Snapshot boundary must start after a complete line"
+                    )
+            handle.seek(end - 1)
+            if handle.read(1) != b"\n":
+                raise ValueError(
+                    "Snapshot boundary must end a complete transcript line"
+                )
+            handle.seek(start)
+            remaining = end - start
+            while remaining:
+                chunk = handle.read(min(remaining, SNAPSHOT_CHUNK_SIZE))
+                if not chunk:
+                    raise ValueError("Transcript was truncated during snapshot upload")
+                remaining -= len(chunk)
+                yield chunk
+
+    async def upload_snapshot(self, websocket: ClientConnection, *, start: int) -> None:
+        """Upload only new transcript bytes and require their acknowledgment."""
+        end = self.cursor(SESSION_FILE).offset
+        if start == end:
+            return
+        if start > end:
+            raise ValueError("Transcript was truncated since its last upload")
+        request = StreamSnapshotStart(transfer_id=uuid7(), start=start, end=end)
+        await websocket.send(request.model_dump_json())
+        for chunk in self.snapshot(request.end, start=request.start):
+            await websocket.send(chunk)
+        async with asyncio.timeout(SNAPSHOT_ACK_TIMEOUT):
+            stored = await self.receipts.get()
+        if isinstance(stored, (ConnectionClosed, ValueError)):
+            raise stored
+        if stored.transfer_id != request.transfer_id:
+            raise ValueError("Expected acknowledgment for the requested snapshot")
+        self.stored_offset = end
 
 
 async def stream_session(
@@ -237,26 +294,37 @@ async def stream_session(
         tail = SessionTail(
             session_id, transcript_path, offsets=dict(welcome.offsets), spool=spool
         )
+        checkpoint = welcome.transcript
+        if checkpoint is not None:
+            digest = hashlib.sha256()
+            if checkpoint.offset:
+                for chunk in tail.snapshot(checkpoint.offset):
+                    digest.update(chunk)
+            if digest.hexdigest() != checkpoint.sha256:
+                raise ValueError("Transcript prefix differs from the stored snapshot")
+            tail.stored_offset = checkpoint.offset
 
         stop = asyncio.Event()
-        finalizing = False
+        finalized = asyncio.Event()
+        idle = False
 
         async def receive_server() -> None:
-            # The only message after welcome is finalize; a dropped socket ends the
-            # watch too, and the outer loop reconnects.
-            nonlocal finalizing
-            while True:
-                try:
-                    raw = await websocket.recv()
-                except ConnectionClosed:
-                    stop.set()
-                    return
-                if isinstance(
-                    server_message_adapter.validate_json(raw), StreamFinalize
-                ):
-                    finalizing = True
-                    stop.set()
-                    return
+            try:
+                while True:
+                    message = server_message_adapter.validate_json(
+                        await websocket.recv()
+                    )
+                    if isinstance(message, StreamFinalize):
+                        finalized.set()
+                        stop.set()
+                    elif isinstance(message, StreamSnapshotStored):
+                        tail.receipts.put_nowait(message)
+                    else:
+                        raise ValueError(f"Unexpected server message: {message.type}")
+            except (ConnectionClosed, ValueError) as error:
+                tail.receipts.put_nowait(error)
+            finally:
+                stop.set()
 
         receiver = asyncio.create_task(receive_server())
         try:
@@ -271,18 +339,17 @@ async def stream_session(
             ):
                 await tail.pump(websocket)
                 if monotonic() - tail.last_active > IDLE_TIMEOUT:
-                    finalizing = True
+                    idle = True
                     break
-            if not finalizing:
+            if not finalized.is_set() and not idle:
                 return False  # the socket dropped mid-watch: reconnect and resume
-            receiver.cancel()
             await tail.pump(websocket)  # final drain to EOF
             await websocket.send(StreamEof().model_dump_json())
             # Wait out the server's close so the eof is consumed, bounded so a
             # wedged server cannot park this process forever.
             with contextlib.suppress(ConnectionClosed, TimeoutError):
                 async with asyncio.timeout(10):
-                    await websocket.recv()
+                    await receiver
             return True
         finally:
             receiver.cancel()

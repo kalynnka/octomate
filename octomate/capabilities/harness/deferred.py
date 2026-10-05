@@ -16,16 +16,20 @@ channels.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import asyncio
+import contextlib
+from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic import UUID7
 from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.ask import ASK_DEFERR_KIND
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.deferred import DeferredActionBatch
 
 
 class DeferredResolver(Protocol):
@@ -134,8 +138,69 @@ class DeferredSuspender(Protocol):
     Returning an `ActionBatchEvent` asks the react loop to present the batch *on
     the stream* (the consumer renders it); returning `None` means the suspender
     presented it out-of-band itself.
+
+    `pause` is the same for a run that stays live while a human answers, as a
+    runtime's in-process approval does: the batch it waits on, and its event when
+    the run's own stream is what presents it. The caller names the batch, so it is
+    already waiting on that id when the cards go up and a quick reply finds it.
     """
 
     async def suspend(
         self, requests: DeferredToolRequests
     ) -> ActionBatchEvent | None: ...
+
+    async def pause(
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]: ...
+
+
+@dataclass(frozen=True)
+class Read[T]:
+    """One item of a runtime's own stream."""
+
+    item: T
+
+
+@dataclass(frozen=True)
+class Ended:
+    """A runtime's own stream is over, or failed with `error`."""
+
+    error: Exception | None = None
+
+
+class Interjections[T]:
+    """What a live run's callbacks put on its stream while it waits on the runtime:
+    the batch an approval pauses the run on, for whoever draws the run to present.
+
+    The runtime's own stream is read in a task of its own, so a batch gets through
+    while the runtime is still waiting for its answer."""
+
+    def __init__(self) -> None:
+        self.queue: asyncio.Queue[Read[T] | ActionBatchEvent | Ended] = asyncio.Queue()
+
+    def interject(self, event: ActionBatchEvent) -> None:
+        self.queue.put_nowait(event)
+
+    async def around(
+        self, source: AsyncIterable[T]
+    ) -> AsyncGenerator[T | ActionBatchEvent]:
+        """`source`'s items in order, with each interjection as it is made."""
+        reading = asyncio.create_task(self.read(source))
+        try:
+            while not isinstance(entry := await self.queue.get(), Ended):
+                yield entry.item if isinstance(entry, Read) else entry
+            if entry.error is not None:
+                raise entry.error
+        finally:
+            reading.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await reading
+
+    async def read(self, source: AsyncIterable[T]) -> None:
+        try:
+            async for item in source:
+                self.queue.put_nowait(Read(item))
+        except Exception as error:
+            self.queue.put_nowait(Ended(error))
+        else:
+            self.queue.put_nowait(Ended())

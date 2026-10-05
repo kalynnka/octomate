@@ -3,10 +3,10 @@ channel's timeline, and acts on whatever decision or deferral the run left."""
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 
+from pydantic import UUID7
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_graph import BaseNode, End, GraphRunContext
@@ -27,7 +27,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Runs the summoned agent on the target channel and acts on how the run ends:
     a reply, a spell to perform, or a deferral to park."""
 
-    resume_batch_id: uuid.UUID | None = None
+    resume_batch_id: UUID7 | None = None
     # Set by Teleport to resume the same agent where it landed, with its pending
     # call resolved — against the forked history, or in place.
     resume_results: DeferredToolResults | None = None
@@ -36,7 +36,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
         """React, and leave the turn's workspace in the mirror however it ends.
 
         In a `finally` because a turn that raised still did whatever it did on
@@ -59,7 +59,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def react(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> React | Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> React | Summon | Scheme | Teleport | End[ReflexGraphResult]:
         state = ctx.state
         decision = state.decision
         target = state.target
@@ -94,34 +94,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         thread_id = state.thread.id if state.thread else None
         claim = state.handoff
         if state.thread is not None and claim is not None:
-            target_conversation = await ctx.deps.conversation_manager.ensure(
-                state.thread.id,
-                agent_tentacle_id=agent.id,
-                with_history=False,
-            )
-            # A handoff pins who owns the chat, so it is read and written there: a
-            # chat room's sub-thread is new every kick and would forget the owner.
-            chat = await ctx.deps.thread_manager.surface(state.thread)
-            latest_handoff = chat.latest_handoff
-            target_model = model
-            if (
-                latest_handoff is None
-                or latest_handoff.to_agent_tentacle_id != agent.id
-                or latest_handoff.to_model != target_model
-            ):
-                await ctx.deps.thread_manager.record_handoff(
-                    chat,
-                    source_agent_tentacle_id=claim.source_agent_tentacle_id,
-                    to_agent_tentacle_id=agent.id,
-                    to_model=target_model,
-                    reason=decision.reason,
-                    hint=decision.hint,
-                    brief=decision.summon,
-                    source_conversation_id=claim.source_conversation_id,
-                    target_conversation_id=target_conversation.id,
-                    source_run_id=claim.source_run_id,
-                    source_model_message_id=claim.source_model_message_id,
-                )
+            await claim.land(ctx.deps, state.thread, decision)
             state.handoff = None
         runtime = ctx.deps.runtime
         session, suspender, capabilities = await runtime.resources(ctx)
@@ -208,8 +181,8 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 # hints, and pydantic-graph resolves those hints against this module's globals when
 # the graph is built — so `if TYPE_CHECKING` is not enough, the names must really be
 # here. Importing them at the top would deadlock the cycle (react would be half-built
-# when handoff asked for it), so the cycle is closed here instead, after `React`
+# when summon asked for it), so the cycle is closed here instead, after `React`
 # exists. `nodes/__init__` imports this module first to keep that order.
-from octomate.reflex.nodes.handoff import Handoff  # noqa: E402
 from octomate.reflex.nodes.scheme import Scheme  # noqa: E402
+from octomate.reflex.nodes.summon import Summon  # noqa: E402
 from octomate.reflex.nodes.teleport import Teleport  # noqa: E402

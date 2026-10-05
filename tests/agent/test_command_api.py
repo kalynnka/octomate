@@ -40,6 +40,7 @@ from octomate.capabilities.harness.events import (
     CommandStreamEvent,
     MessageSentEvent,
     RunResultEvent,
+    RunStartedEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.commands import command_context, discover_commands
@@ -816,6 +817,10 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert response.headers["x-accel-buffering"] == "no"
     assert "content-length" not in response.headers
     received = command_events(response)
+    if address.channel_tentacle_id == "trunkline":
+        started = received.pop(0)
+        assert isinstance(started, RunStartedEvent)
+        assert started.address == address
     assert len(received) == 3
     assert isinstance(received[0], MessageSentEvent)
     assert isinstance(received[1], RunResultEvent)
@@ -851,6 +856,7 @@ async def test_trunkline_command_streams_a_persisted_reflex_approval(
     app: Octomate,
     agent: ExecutingAgent,
     conversation: Conversation,
+    address: ChannelAddress,
     command_body: dict[str, JsonValue],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -876,6 +882,9 @@ async def test_trunkline_command_streams_a_persisted_reflex_approval(
             json=command_body,
         )
     received = command_events(response)
+    started = received.pop(0)
+    assert isinstance(started, RunStartedEvent)
+    assert started.address == address
     assert isinstance(received[0], ActionBatchEvent)
     assert len(received[0].approvals) == 1
     batch = await app.deferred_actions.get_batch(uuid.UUID(received[0].batch_id))

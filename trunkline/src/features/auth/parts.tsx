@@ -53,7 +53,7 @@ export function AuthPage({
         <Brackets />
         <header style={{ marginBottom: 22 }}>
           <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-            <span style={{ ...display(18), lineHeight: 1, letterSpacing: '-.02em', textTransform: 'uppercase' }}>Octomate</span>
+            <span style={{ ...display(18), lineHeight: 1, letterSpacing: '-.02em', textTransform: 'uppercase', color: 'var(--color-ink)' }}>Octomate</span>
             <span style={{ ...label(7, '.16em'), color: 'var(--fg-3)' }}>
               Trunkline / Console
             </span>

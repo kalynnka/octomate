@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import UUID7
 from sqlalchemy import ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -44,7 +44,7 @@ class AgentRun(Base, TransmuterProxiedMixin):
     kind: Mapped[str] = mapped_column(
         String, nullable=False, server_default="octomate", index=True
     )
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
+    conversation_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
@@ -55,6 +55,16 @@ class AgentRun(Base, TransmuterProxiedMixin):
         nullable=True,
         default=None,
         index=True,
+    )
+    model_name: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Model selected for this run, as reported by its runtime.",
+    )
+    permission_mode: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Permission preset used by this run; NULL when unknown or unsupported.",
     )
     cwd: Mapped[Path | None] = mapped_column(
         PathString,

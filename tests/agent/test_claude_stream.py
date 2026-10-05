@@ -254,6 +254,7 @@ def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
             conversations=octomate.conversations,
             deferred_actions=octomate.deferred_actions,
             workspaces=octomate.workspaces,
@@ -459,6 +460,7 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
                 users=tentacle.octomate.users,
                 bearers=tentacle.octomate.bearers,
                 mcp=tentacle.octomate.mcp,
+                files=tentacle.octomate.files,
             )
         )
         if other_tentacle

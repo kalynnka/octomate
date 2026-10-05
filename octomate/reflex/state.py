@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
+from opentelemetry import trace
+from pydantic import UUID7
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
@@ -21,7 +23,12 @@ from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.harness.events import (
+    GatewayEvent,
+    MessageSentEvent,
+    RunErrorEvent,
+    RunStartedEvent,
+)
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
@@ -55,9 +62,10 @@ from octomate.tentacles.channel import (
 from octomate.tentacles.feelers.output import split_reply
 
 if TYPE_CHECKING:
-    from octomate.reflex.nodes.handoff import Handoff
     from octomate.reflex.nodes.scheme import Scheme
+    from octomate.reflex.nodes.summon import Summon
     from octomate.reflex.nodes.teleport import Teleport
+from octomate.tentacles.feelers.output import IMMessageID
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +102,7 @@ class ResponseTarget:
 class PendingHandoff:
     """A handoff one node decided, as far as it is known before it lands: the source
     side. The target is what landing resolves — the decision's route, as the agent
-    is actually mounted — so React reads it there when it records the row, and
+    is actually mounted — so it is read there when the row is recorded, and
     nothing here could name it without risking a second, drifting copy.
 
     The source is who handed the conversation over, and where from as the row names
@@ -105,9 +113,41 @@ class PendingHandoff:
     session it came from; a route that pins a thread's owner names nobody."""
 
     source_agent_tentacle_id: str | None = None
-    source_conversation_id: uuid.UUID | None = None
+    source_conversation_id: UUID7 | None = None
     source_run_id: str | None = None
-    source_model_message_id: uuid.UUID | None = None
+    source_model_message_id: UUID7 | None = None
+
+    async def land(
+        self, deps: ReflexDeps, thread: Thread, decision: SummonDecision
+    ) -> None:
+        """Record this handoff on the chat `thread` belongs to, naming the agent
+        and model `decision` resolved to, unless that chat already names them."""
+        target_conversation = await deps.conversation_manager.ensure(
+            thread.id, agent_tentacle_id=decision.agent_id, with_history=False
+        )
+        # A handoff pins who owns the chat, so it is read and written there: a
+        # chat room's sub-thread is new every kick and would forget the owner.
+        chat = await deps.thread_manager.surface(thread)
+        latest = chat.latest_handoff
+        if (
+            latest is not None
+            and latest.to_agent_tentacle_id == decision.agent_id
+            and latest.to_model == decision.model
+        ):
+            return
+        await deps.thread_manager.record_handoff(
+            chat,
+            source_agent_tentacle_id=self.source_agent_tentacle_id,
+            to_agent_tentacle_id=decision.agent_id,
+            to_model=decision.model,
+            reason=decision.reason,
+            hint=decision.hint,
+            brief=decision.summon,
+            source_conversation_id=self.source_conversation_id,
+            target_conversation_id=target_conversation.id,
+            source_run_id=self.source_run_id,
+            source_model_message_id=self.source_model_message_id,
+        )
 
 
 @dataclass
@@ -131,13 +171,14 @@ class DeferredResult:
     # `RunName`, because on a re-present it is read back from the persisted batch.
     run_name: str
     result: AgentRunResult[Any]
-    batch_id: uuid.UUID | None = None
+    batch_id: UUID7 | None = None
 
 
 type ReflexGraphResult = ReflexResult | DeferredResult | CommandOutcome
 # The node a reflex graph is entered at — see `build_reflex_graph`.
 ReflexEntryT = TypeVar(
-    "ReflexEntryT", bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]"
+    "ReflexEntryT",
+    bound="BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]",
 )
 
 
@@ -158,14 +199,17 @@ class ReflexState:
     targets: dict[str, ResponseTarget] = field(default_factory=dict)
     summon_routes: list[AgentRoute] = field(default_factory=list)
     thread: Thread | None = None
-    trigger_thread_message_id: uuid.UUID | None = None
+    trigger_thread_message_id: UUID7 | None = None
     source_thread_address: ChannelAddress | None = None
-    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
+    source_thread_message_ids: list[UUID7] = field(default_factory=list)
     # The handoff the next React records when it lands, or None when it records
     # none.
     handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
+    # The channel an operation on another channel's thread was performed in, which
+    # hears how the turn goes; None when the turn came from the source's channel.
+    operated_from: str | None = None
 
 
 @dataclass
@@ -221,7 +265,7 @@ class ReflexDeps:
         agent: AgentTentacle,
         *,
         user_profile: UserProfile | None,
-        thread_id: uuid.UUID | None,
+        thread_id: UUID7 | None,
         conversation_address: ChannelAddress,
         conversation_id: uuid.UUID | None = None,
     ) -> OctomateSession | None:
@@ -280,7 +324,14 @@ class ReflexDeps:
             )
 
         agent = self.agent(agent_id)
-        return AgentModelConfig(agent=agent_id, model=agent.resolve_model(model))
+        if not agent.models:
+            raise ValueError(f"agent {agent_id!r} has no available model catalog")
+        if model is None:
+            return AgentModelConfig(agent=agent_id, model=agent.default_model)
+        served = agent.served_model(model)
+        if served is None:
+            raise ValueError(f"agent {agent_id!r} does not serve model {model!r}")
+        return AgentModelConfig(agent=agent_id, model=served)
 
     async def render_chat(
         self, messages: list[ThreadMessage], *, ceiling: int = 0
@@ -325,6 +376,39 @@ class ReflexDeps:
             )
             parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
         return "\n\n".join(parts)
+
+    async def announce(
+        self, state: ReflexState, address: ChannelAddress, event: GatewayEvent
+    ) -> IMMessageID | None:
+        """Present a move where the conversation was, and in the channel it was
+        operated from when that is another. Answers the platform id of the line it
+        left."""
+        operated_from = state.operated_from
+        if operated_from is not None and operated_from != address.channel_tentacle_id:
+            await self.channel(operated_from).feelers.present(address, event)
+        # A native session's pseudo-channel has no feelers.
+        channel = self.channels.get(address.channel_tentacle_id)
+        return await channel.feelers.present(address, event) if channel else None
+
+    async def report(self, state: ReflexState, error: Exception) -> None:
+        """Tell the channel the turn came from, or the one it was operated from,
+        that it failed. A turn that failed before it knew its source has nobody to
+        tell."""
+        source = state.source_target.address if state.source_target else None
+        if source is None:
+            return
+        channel = self.channels.get(state.operated_from or source.channel_tentacle_id)
+        if channel is None:
+            return
+        trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        try:
+            await channel.feelers.present(
+                source, RunErrorEvent(message=str(error), trace_id=trace_id)
+            )
+        except Exception:
+            logger.warning(
+                "Channel %s could not report a failed turn", channel.id, exc_info=True
+            )
 
     async def record_move(
         self,
@@ -536,6 +620,7 @@ class ReflexRuntime:
         address = suspender.target_address
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
+            yield RunStartedEvent(address=address)
             try:
                 async for event in source:
                     if isinstance(event, AgentRunResultEvent):
@@ -581,8 +666,7 @@ class ReflexRuntime:
                     await channel.feelers.segments.present(address, event.segments)
             return
         async with channel.feelers.timeline.open(address) as timeline:
-            with channel.feelers.driving(address, timeline):
-                await timeline.drive(stream)
+            await timeline.drive(stream)
 
     async def present_result(
         self,
@@ -661,11 +745,11 @@ class ReflexRuntime:
         session: OctomateSession | None,
         suspender: ReflexSuspender,
         run_result: AgentRunResult[ChannelOutput],
-    ) -> Handoff | Teleport | Scheme | End[ReflexGraphResult]:
+    ) -> Summon | Teleport | Scheme | End[ReflexGraphResult]:
         """Follow the gateway decision or deferral left by an actual agent run."""
         # These nodes import the graph types consumed by this runtime.
-        from octomate.reflex.nodes.handoff import Handoff
         from octomate.reflex.nodes.scheme import Scheme
+        from octomate.reflex.nodes.summon import Summon
         from octomate.reflex.nodes.teleport import Teleport
 
         state = ctx.state
@@ -677,12 +761,12 @@ class ReflexRuntime:
         thread_id = state.thread.id if state.thread else None
         output = run_result.output
         with reflex_logfire.span("reflex.finish", run_id=run_result.run_id) as span:
-            if session is not None and session.dispelling and state.thread is not None:
+            if session is not None and session.dismissing and state.thread is not None:
                 # The agent said this thread's work is done: its tree goes now
                 # that the run is out of it, saved first and kept if that failed.
-                result = await ctx.deps.workspaces.dispel(state.thread)
+                result = await ctx.deps.workspaces.dismiss(state.thread)
                 span.set_attribute(
-                    "react.dispelled",
+                    "react.dismissed",
                     result,
                 )
             if isinstance(output, DeferredToolRequests):
@@ -752,7 +836,7 @@ class ReflexRuntime:
                     agent_id=gateway_decision.agent_id,
                     reason=gateway_decision.reason,
                 )
-                return Handoff()
+                return Summon()
 
             return End(
                 ReflexResult(

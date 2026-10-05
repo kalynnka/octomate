@@ -3,12 +3,41 @@ import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
-import { usePermissionModes, useRoutes } from '@/lib/api/hooks'
+import { useChannels, usePermissionModes, useRoutes, useThreadOperations } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
+import { CommandPanel } from './CommandPanel'
+import { DestinationPicker } from './GatewayDestination'
+import { SummonRoute } from './GatewayRoute'
+import { completion, matching, readCommand, type Argument } from './commands'
+import { channelRows, gatewayRequest, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type EffortLevel } from './gateway'
 
 const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
+
+// What the composer becomes for each gateway op; `max` is the relay's own cap.
+const GATEWAY_MODES = {
+  teleport: {
+    title: 'Teleport',
+    description: 'carry this chat to another destination with the same agent and history',
+    placeholder: 'optional prompt — sent there as your next message…',
+    hint: '⌘↵ teleport · esc back to chat',
+    field: 'Prompt',
+    icon: 'arrowRightLeft',
+    rows: 2,
+    max: 8000,
+  },
+  summon: {
+    title: 'Summon',
+    description: 'let another agent take over from a prepared brief',
+    placeholder: 'brief for the next agent — goal, relevant context, decisions, and the next step…',
+    hint: '⌘↵ summon · ↵ newline · esc back to chat',
+    field: 'Brief',
+    icon: 'wandSparkles',
+    rows: 5,
+    max: 8000,
+  },
+} as const
 
 // Shared by the input and its caret mirror — the block cursor lands where the
 // caret is only if both wrap text with identical metrics.
@@ -81,6 +110,8 @@ function RouteSelector() {
         </span>
         {open && (
           <span
+            className="lt-menu"
+            data-open=""
             style={{
               position: 'absolute',
               bottom: 'calc(100% + 6px)',
@@ -310,6 +341,8 @@ function PermissionChip() {
           id={menuId}
           role="group"
           aria-label="Permission modes"
+          className="lt-menu"
+          data-open=""
           style={{
             position: 'fixed',
             bottom: `calc(100dvh - ${ntMenuPos.top}px + 6px)`,
@@ -399,7 +432,9 @@ export function Composer() {
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
   const ntEffort = useConsole((s) => s.ntEffort)
-  const { removeQueued } = useConsole((s) => s.actions)
+  const running = useConsole((s) => s.running)
+  const gatewayMode = useConsole((s) => s.gatewayMode)
+  const { removeQueued, setGatewayMode, gateway } = useConsole((s) => s.actions)
   const username = useAuth((s) => s.user?.username ?? 'operator')
 
   const isReview = useConsole((s) => s.pvOpen)
@@ -415,17 +450,196 @@ export function Composer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selThreadId])
 
+  // A gateway op takes the composer over: the draft already in it is Summon's
+  // brief or Teleport's prompt, and the op's controls replace the send row.
+  const mode = !ntOn && gatewayMode?.threadId === selThreadId ? gatewayMode.action : null
+  const copy = mode ? GATEWAY_MODES[mode] : null
+  // The header keeps this fresh; here it is read, and asked again by a command.
+  const eligibility = useThreadOperations(selThreadId, false)
+  const operations = eligibility.data
+  const availability = mode ? operations?.[mode] : undefined
+  const [form, patchForm, seedForm] = useGatewayForm(selThreadId, mode)
+  const modeInput = useRef<HTMLTextAreaElement>(null)
+  const draftInput = useRef<HTMLTextAreaElement>(null)
+  // Summon hands this conversation over where it is, to an agent its channel runs.
+  const summonRoutes = Object.values(operations?.summon.routes ?? {}).flat()
+  const route = pickRoute(summonRoutes, form.agent, form.model)
+  const { efforts, effort } = routeEffort(route, form.effort)
+  const request = mode && availability
+    ? gatewayRequest(mode, { text: composerText, destination: form.destination, route, effort })
+    : null
+  const blocked = !mode ? undefined
+    : running ? 'Wait for the current run to finish.'
+      : !availability ? 'Checking available destinations…'
+        : availability.reason
+          // Only a thread here can take the message after the move.
+          ?? (mode === 'teleport' && composerText.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
+            ? 'A prompt can follow a teleport only into a Trunkline thread.' : undefined)
+  const ready = Boolean(request) && !blocked
+  // What a channel that cannot carry this conversation says in the destination browser.
+  const carrierless = `does not run ${sesAgent || 'this agent'}`
+  const exposed = mode === 'teleport' && operations && !operations.source?.shared && form.destination?.address.shared
+    ? `this chat is private — everyone at ${form.destination.path.at(-1)} can read the thread it continues in`
+    : undefined
+  const submitGateway = () => {
+    if (!mode || blocked) return
+    if (!request) {
+      if (mode === 'teleport' && !form.destination) patchForm({ menu: 'destination' })
+      return
+    }
+    aui.composer.setText('')
+    void gateway(selThreadId, request)
+  }
+
+  useEffect(() => {
+    if (mode !== 'summon') return
+    const input = modeInput.current
+    input?.focus()
+    input?.setSelectionRange(input.value.length, input.value.length)
+  }, [mode])
+
+  // A line that spells a gateway op opens the command finder instead of sending.
+  const { data: channels } = useChannels()
+  const [cursor, setCursor] = useState(0)
+  const [hidden, setHidden] = useState(false)
+  const [handover, setHandover] = useState<{ agent: string; model: string | null; effort: EffortLevel } | null>(null)
+  const line = !mode && !ntOn && detail && !running && !hidden ? readCommand(composerText) : null
+  const waiting = eligibility.isError ? eligibility.error.message : 'Checking available destinations…'
+  const closed = {
+    summon: operations ? operations.summon.reason ?? undefined : waiting,
+    teleport: operations ? operations.teleport.reason ?? undefined : waiting,
+  }
+  const surfaces = channelRows(
+    channels ?? [], operations?.teleport.destinations ?? [], selChannel,
+    operations?.teleport.routes ?? {}, carrierless, operations?.barred ?? {},
+  ).filter((row) => !row.barred)
+  const surfaceValue = (row: DestinationRow) => (row.open ? `${row.key}/` : row.key)
+  const offered: Argument[] = line?.phase !== 'argument' || closed[line.command.name] ? []
+    : line.command.name === 'summon'
+      ? summonRoutes
+          .filter((one, index) => summonRoutes.findIndex((other) => other.agent_id === one.agent_id) === index)
+          .map((one) => ({ value: one.agent_id, about: one.claim.ability }))
+      : surfaces.map((row) => ({ value: surfaceValue(row), about: row.sub }))
+  const matches = line?.phase === 'argument' ? matching(line.typed, offered) : []
+  const at = Math.max(0, Math.min(cursor, (line?.phase === 'name' ? line.matches.length : matches.length) - 1))
+  // The agent under the cursor, and the model and effort picked for it so far.
+  const agent = line?.phase === 'argument' && line.command.name === 'summon' ? matches[at]?.argument.value : undefined
+  const held = handover?.agent === agent ? handover : null
+  const agentRoutes = summonRoutes.filter((one) => one.agent_id === agent)
+  const agentRoute = pickRoute(agentRoutes, agent ?? null, held?.model ?? null)
+  const agentEffort = routeEffort(agentRoute, held?.effort ?? 'auto')
+  const write = (next: string) => {
+    aui.composer.setText(next)
+    setCaretAt(next.length)
+    setCursor(0)
+  }
+  const fillCommand = (index: number) => {
+    if (line?.phase === 'name') {
+      const { command } = line.matches[index]
+      write(`/${command.name}${command.takes && ' '}`)
+    } else if (line && matches[index]) write(`/${line.command.name} ${matches[index].argument.value}`)
+  }
+  const runCommand = (index: number) => {
+    if (!line) return
+    const command = line.phase === 'name' ? line.matches[index].command : line.command
+    if (closed[command.name]) return
+    const needed = command.takes.startsWith('<')
+    if (line.phase === 'name' && needed) return fillCommand(index)
+    const picked = matches[index]?.argument
+    if (needed && !picked) return
+    write('')
+    if (command.name === 'summon') {
+      seedForm('summon', { agent: picked.value, ...(handover?.agent === picked.value ? { model: handover.model, effort: handover.effort } : {}) })
+    } else {
+      const surface = picked && surfaces.find((row) => surfaceValue(row) === picked.value)
+      seedForm('teleport', surface?.address
+        ? { destination: { address: surface.address, path: [surface.label] }, menu: null }
+        : surface?.open ? { crumbs: [surface.open] } : {})
+    }
+    void eligibility.refetch()
+    setGatewayMode({ threadId: selThreadId, action: command.name })
+  }
+
   const placeholder = ntOn
     ? 'first directive — registers the thread and boots a session on send'
     : isReview
       ? queue.length
         ? `add a directive — ${queue.length} note${queue.length > 1 ? 's' : ''} ride along`
         : 'directive — sweep lines to quote · + on a line to comment'
-      : ''
+      : 'directive… or / for commands'
+
+  const input = {
+    onFocus: syncCaret,
+    onBlur: () => setCaretAt(null),
+    onSelect: syncCaret,
+    onScroll: (e: SyntheticEvent<HTMLTextAreaElement>) => setScrollTop(e.currentTarget.scrollTop),
+    style: {
+      display: 'block',
+      width: '100%',
+      boxSizing: 'border-box',
+      border: 'none',
+      outline: 'none',
+      resize: 'none',
+      background: 'transparent',
+      ...composerType,
+      color: 'var(--fg-1)',
+      // The block in the mirror is the caret (the comp's terminal
+      // cursor); the native bar only returns if tracking is off.
+      caretColor: caretAt === null ? 'var(--color-accent)' : 'transparent',
+    },
+  } as const
 
   return (
     <div className="lt-fade-in" style={{ flexShrink: 0 }}>
-      <div style={{ borderTop: '2px solid var(--trk-bracket)' }}>
+      <div className="trk-composer-frame" style={{ borderTop: `2px solid ${mode || line ? 'var(--color-teal)' : 'var(--trk-bracket)'}` }}>
+        {line && (
+          <CommandPanel
+            line={line}
+            matches={matches}
+            offered={offered.length}
+            cursor={at}
+            closed={closed}
+            route={agent && agentRoute ? {
+              routes: agentRoutes,
+              route: agentRoute,
+              ...agentEffort,
+              onModel: (model) => setHandover({ agent, model, effort: agentEffort.effort }),
+              onEffort: (effort) => setHandover({ agent, model: agentRoute.model, effort }),
+            } : null}
+            onCursor={setCursor}
+            onRun={runCommand}
+            onDismiss={() => setHidden(true)}
+            onSettled={() => draftInput.current?.focus()}
+          />
+        )}
+        {mode && copy && (
+          <div
+            key={mode}
+            className="lt-fade-in"
+            style={{
+              display: 'flex', alignItems: 'center', gap: 9, padding: 'var(--trk-comp-head-pad, 7px 24px 6px)',
+              borderBottom: '1px solid var(--trk-vline)', color: 'var(--color-teal)',
+              background: 'color-mix(in srgb, var(--color-teal) 7%, transparent)',
+            }}
+          >
+            <Icon name={copy.icon} size={13} style={{ flexShrink: 0 }} />
+            <span style={label(9)}>{copy.title}</span>
+            <span style={{ flex: 1, minWidth: 0, ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>{copy.description}</span>
+            <button
+              type="button"
+              aria-label="Back to chat"
+              title="Back to chat (Esc)"
+              onClick={() => setGatewayMode(null)}
+              className="hov-border-line trk-gateway-close"
+              style={{
+                width: 22, height: 22, flexShrink: 0, boxSizing: 'border-box', padding: 0, cursor: 'pointer',
+                border: '1px solid transparent', borderRadius: 0, background: 'transparent', color: 'var(--fg-2)', fontSize: 13,
+              }}
+            >
+              ×
+            </button>
+          </div>
+        )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: 'var(--trk-comp-head-pad, 7px 24px 6px)', borderBottom: '1px solid var(--trk-vline)' }}>
           <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>&gt;_</span>
           <span style={{ ...mono(10.5), ...ellipsis, minWidth: 0 }}>
@@ -492,28 +706,49 @@ export function Composer() {
           )}
           <ComposerPrimitive.Root style={{ display: 'block' }}>
             <span style={{ position: 'relative', display: 'block', overflow: 'hidden' }}>
-              <ComposerPrimitive.Input
-                rows={2}
-                placeholder={placeholder}
-                onFocus={syncCaret}
-                onBlur={() => setCaretAt(null)}
-                onSelect={syncCaret}
-                onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-                style={{
-                  display: 'block',
-                  width: '100%',
-                  boxSizing: 'border-box',
-                  border: 'none',
-                  outline: 'none',
-                  resize: 'none',
-                  background: 'transparent',
-                  ...composerType,
-                  color: 'var(--fg-1)',
-                  // The block in the mirror is the caret (the comp's terminal
-                  // cursor); the native bar only returns if tracking is off.
-                  caretColor: caretAt === null ? 'var(--color-accent)' : 'transparent',
-                }}
-              />
+              {mode && copy ? (
+                <textarea
+                  ref={modeInput}
+                  // A command can open an op with its destination already picked.
+                  autoFocus={form.menu !== 'destination'}
+                  aria-label={copy.field}
+                  rows={copy.rows}
+                  maxLength={copy.max}
+                  placeholder={copy.placeholder}
+                  value={composerText}
+                  onChange={(event) => aui.composer.setText(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Escape') {
+                      event.preventDefault()
+                      setGatewayMode(null)
+                    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+                      event.preventDefault()
+                      submitGateway()
+                    }
+                  }}
+                  {...input}
+                />
+              ) : (
+                <ComposerPrimitive.Input
+                  ref={draftInput}
+                  rows={2}
+                  placeholder={placeholder}
+                  onChange={() => {
+                    setCursor(0)
+                    setHidden(false)
+                  }}
+                  onKeyDown={(event) => {
+                    if (!line || event.nativeEvent.isComposing) return
+                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') setCursor(Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))
+                    else if (event.key === 'Escape') setHidden(true)
+                    else if (event.key === 'Tab' && !event.shiftKey) fillCommand(at)
+                    else if (event.key === 'Enter' && !event.shiftKey) runCommand(at)
+                    else return
+                    event.preventDefault()
+                  }}
+                  {...input}
+                />
+              )}
               {caretAt !== null && (
                 <span
                   aria-hidden
@@ -540,18 +775,36 @@ export function Composer() {
                       animation: 'trkBlink 1.1s step-end infinite',
                     }}
                   />
+                  {line && caretAt === composerText.length && <span style={{ color: 'var(--fg-3)' }}>{completion(line, matches, at)}</span>}
                 </span>
               )}
             </span>
           </ComposerPrimitive.Root>
         </div>
-        <div className="trk-comp-hint" style={{ display: 'flex', justifyContent: 'flex-end', padding: '0 24px 5px' }}>
-          <span style={{ ...mono(8), color: 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}>
-            ↵ send · ⇧↵ newline · ⇧⇥ posture · **b** _i_ `code` ``` fence
+        <div className="trk-comp-hint" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, padding: '0 24px 5px', minWidth: 0 }}>
+          {line && (
+            <>
+              <span style={{ ...mono(10, 700), whiteSpace: 'pre', minWidth: 0, overflow: 'hidden' }}>
+                <span style={{ color: 'var(--color-accent)' }}>/{(line.phase === 'name' ? line.matches[at].command : line.command).name} </span>
+                {line.phase === 'name'
+                  ? <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>{line.matches[at].command.takes}</span>
+                  : <span style={{ color: 'var(--fg-1)' }}>{line.command.takes}</span>}
+              </span>
+              <span style={{ flex: 1 }} />
+            </>
+          )}
+          <span
+            role={copy && !blocked && exposed ? 'alert' : undefined}
+            style={{ ...mono(8), color: copy && !blocked && exposed ? 'var(--color-gold)' : 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}
+          >
+            {line ? 'runs in trunkline gateway'
+              : copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
+                : `↵ send · ⇧↵ newline · ${ntOn ? '' : '/ commands · '}⇧⇥ posture · **b** _i_ \`code\` \`\`\` fence`}
           </span>
         </div>
         <div
-          style={{ display: 'flex', alignItems: 'center', gap: 4, padding: 'var(--trk-comp-bar-pad, 3px 24px 4px 18px)', borderTop: '1px solid var(--trk-vline)' }}
+          // The gateway popovers rise from this row, so they stay inside it at any width.
+          style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4, padding: 'var(--trk-comp-bar-pad, 3px 24px 4px 18px)', borderTop: '1px solid var(--trk-vline)' }}
         >
           <span className="trk-comp-tools" style={{ display: 'contents' }}>
             <span style={{ padding: 6, display: 'inline-flex', color: 'var(--fg-3)' }}>
@@ -564,7 +817,7 @@ export function Composer() {
               <Icon name="globe" size={15} />
             </span>
             <span style={{ width: 1, height: 16, background: 'var(--trk-vline)', margin: '0 6px' }} />
-            <span style={{ ...fieldLabel, color: 'var(--color-accent)' }}>Directive</span>
+            <span style={{ ...fieldLabel, color: copy ? 'var(--color-teal)' : 'var(--color-accent)' }}>{copy?.field ?? 'Directive'}</span>
           </span>
           {queue.length > 0 && (
             <span style={{ ...mono(8, 700), color: 'var(--color-accent)', letterSpacing: '.08em', textTransform: 'uppercase', whiteSpace: 'nowrap' }}>
@@ -572,6 +825,73 @@ export function Composer() {
             </span>
           )}
           <span style={{ flex: 1 }} />
+          {mode && copy ? (
+            <span className="trk-gateway" style={{ display: 'contents' }}>
+              {mode === 'teleport' ? (
+                <span
+                  className="trk-gateway-carry"
+                  title="same agent and model travel with the chat"
+                  style={{
+                    ...label(8, '.06em'), color: 'var(--fg-3)', border: '1px solid var(--line-divider)', borderRadius: 2,
+                    height: 20, boxSizing: 'border-box', padding: '0 7px', display: 'inline-flex', alignItems: 'center',
+                    gap: 5, whiteSpace: 'nowrap', flexShrink: 0,
+                  }}
+                >
+                  <span>{sesAgent || '—'}</span>
+                  {sesModel && <><span>·</span><span>{sesModel}</span></>}
+                </span>
+              ) : (
+                <SummonRoute
+                  routes={summonRoutes}
+                  route={route}
+                  efforts={efforts}
+                  effort={effort}
+                  open={form.menu === 'route'}
+                  onOpen={(open) => patchForm({ menu: open ? 'route' : null })}
+                  onRoute={(agent, model) => patchForm({ agent, model })}
+                  onEffort={(level) => patchForm({ effort: level })}
+                />
+              )}
+              {mode === 'teleport' && availability && (
+                <>
+                  <span aria-hidden="true" className="trk-gateway-carry" style={{ fontFamily: 'var(--font-display)', fontSize: 11, color: 'var(--color-teal)', padding: '0 3px' }}>→</span>
+                  <DestinationPicker
+                    threadId={selThreadId}
+                    sourceChannel={selChannel}
+                    suggestions={availability.destinations}
+                    routes={availability.routes}
+                    unrouted={carrierless}
+                    barred={operations?.barred ?? {}}
+                    selection={form.destination}
+                    crumbs={form.crumbs}
+                    open={form.menu === 'destination'}
+                    onOpen={(open) => patchForm({ menu: open ? 'destination' : null })}
+                    onCrumbs={(crumbs) => patchForm({ crumbs })}
+                    onSelect={(destination) => {
+                      patchForm({ destination, menu: null })
+                      modeInput.current?.focus()
+                    }}
+                  />
+                </>
+              )}
+              <button
+                type="button"
+                aria-disabled={!ready}
+                title={blocked}
+                onClick={submitGateway}
+                className={ready ? 'hov-teal-ghost' : undefined}
+                style={{
+                  marginLeft: 8, flexShrink: 0, display: 'inline-flex', alignItems: 'center', ...label(8.5, '.16em'),
+                  padding: '5px 10px', border: '1px solid var(--color-teal)', borderRadius: 0, background: 'var(--color-teal)',
+                  color: 'var(--trk-on-fill)', cursor: ready ? 'pointer' : 'not-allowed', opacity: ready ? 1 : 0.45,
+                  whiteSpace: 'nowrap', transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
+                }}
+              >
+                {copy.title} ⌘↵
+              </button>
+            </span>
+          ) : (
+            <>
           <PermissionChip />
           {ntOn ? (
             <RouteSelector />
@@ -628,6 +948,8 @@ export function Composer() {
               Send ↵
             </button>
           </span>
+            </>
+          )}
         </div>
       </div>
     </div>

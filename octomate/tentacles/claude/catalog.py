@@ -30,6 +30,9 @@ class ClaudeModelInfo(BaseModel):
     model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
 
     value: str
+    # The model `value` runs; Claude Code's own names, such as `opus`, move to
+    # newer models as it updates.
+    resolved_model: str | None = None
     display_name: str
     description: str | None = None
     supports_effort: bool | None = None

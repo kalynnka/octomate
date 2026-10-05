@@ -21,38 +21,68 @@ does not know — a sub-resource of a thread that does not exist must say so
 rather than answer the empty list its query would return. Only the ledger read
 asks for the messages; the rest want the row.
 
-Directives create or continue threads on the trunkline channel itself. The two
-POST endpoints stream: a directive streams its run, and a batch response
-streams the resumed run, both as SSE of the native wire events (see `wire`).
+Directives create or continue threads on the trunkline channel itself. Directives,
+batch responses and thread operations stream native wire events over SSE.
+
+Thread operations act on a thread of any channel the user can access.
+`GET threads/{id}/operations` answers a `ThreadOperations`, which the console reads
+when its operation controls open. `GET threads/{id}/channels/{channel}/addresses`
+lists one level of a connected channel's destinations as `ChannelAddress` rows
+whose `metadata` carries a `name`: a row with `metadata.inside` is a place to open,
+by passing that value back as `?inside=`, and `metadata.barred` says why a thread
+cannot land in a row. A channel that cannot be browsed, has no connected agent or
+is not linked to the user answers 409. A listed address is a suggestion, validated
+again when Teleport submits it. `POST threads/{id}/teleport` takes a
+`TeleportBody` and `POST threads/{id}/summon` a `SummonBody`. Both refuse a thread
+with a turn running or approvals or questions pending, and stream the turn: a
+`gateway` event when the conversation moves, a `run_started` custom event opening
+each run, and a `run_error` when the turn fails.
 
 Where the work happened — a thread's project and a run's directory — is read
 here and nowhere written: a thread's project is frozen when its row is written,
 and both are learned from the session that ran, so no endpoint takes either.
 
-A conversation's approval posture is the exception, and the only write under a
-thread: it is the console's to change, mid-thread, and the conversation is what
+A conversation's approval posture is the exception: it is the console's to
+change mid-thread, and the conversation is what
 remembers it. It is switched through PATCH, or — while the thread is still being
 composed and has no row to switch — carried on the directive that creates it."""
 
-import uuid
-from typing import Annotated
+from dataclasses import replace
+from typing import Annotated, NotRequired, TypedDict
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
+from pydantic_ai.settings import ThinkingEffort
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
 from octomate.config.agents import AgentRouteModelName
-from octomate.dependencies import thread_manager
+from octomate.dependencies import (
+    application,
+    conversation_manager,
+    deferred_action_manager,
+    gateway_manager,
+    project_manager,
+    thread_manager,
+    user_manager,
+    workspace_manager,
+)
+from octomate.managers.conversation import ConversationManager
+from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.gateway import GatewayManager, GatewayRefusal, OctomateSession
+from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
+from octomate.managers.user import UserManager
+from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.conversation import Conversation
-from octomate.schemas.deferred import DeferredActionBatch
+from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
+from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
-from octomate.schemas.user import ProfileInfo, User
+from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
     RouteLockedError,
@@ -109,6 +139,31 @@ class DirectiveBody(BaseModel):
     )
 
 
+class TeleportBody(TypedDict):
+    """A teleport asked from the console. `new_thread` is true unless sent; the
+    console sends none, so Teleport opens a thread at the destination picked. A
+    `prompt` is the user's next message in the Trunkline thread the move lands
+    in, and any other destination refuses it."""
+
+    destination: ChannelAddress
+    new_thread: NotRequired[bool]
+    hint: Annotated[str, Field(min_length=1, max_length=1_000)]
+    # Sent to the Trunkline thread the move lands in, as its user's next message.
+    prompt: NotRequired[Annotated[str, Field(min_length=1, max_length=8_000)]]
+
+
+class SummonBody(TypedDict):
+    """A summon asked from the console: the agent and model that take the
+    conversation over where it is, the brief they start from, and the hint
+    recorded with the handoff."""
+
+    agent_id: str
+    model: str
+    brief: Annotated[str, Field(min_length=1, max_length=8_000)]
+    hint: Annotated[str, Field(min_length=1, max_length=1_000)]
+    effort: NotRequired[ThinkingEffort | None]
+
+
 class AgentPostures(BaseModel):
     """An agent's approval modes and default, as `GET /permissions` lists them."""
 
@@ -141,9 +196,72 @@ class BatchResponseBody(BaseModel):
     allowed for the rest of the session.
     """
 
-    answers: dict[uuid.UUID, str] = Field(default_factory=dict)
-    approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
+    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
     allow_session: bool = False
+
+
+async def accessible_thread(
+    thread_id: UUID7,
+    threads: Annotated[ThreadManager, Depends(thread_manager)],
+    user: Annotated[User, Depends(current_user)],
+) -> Thread:
+    thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
+    if thread is None:
+        raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
+    return thread
+
+
+async def thread_gateway(
+    thread: Annotated[Thread, Depends(accessible_thread)],
+    user: Annotated[User, Depends(current_user)],
+    app: Annotated[Octomate, Depends(application)],
+    gateway: Annotated[GatewayManager, Depends(gateway_manager)],
+    actions: Annotated[DeferredActionManager, Depends(deferred_action_manager)],
+    users: Annotated[UserManager, Depends(user_manager)],
+    threads: Annotated[ThreadManager, Depends(thread_manager)],
+    workspaces: Annotated[WorkspaceManager, Depends(workspace_manager)],
+) -> OctomateSession:
+    agent_id = thread.active_agent_tentacle_id
+    if agent_id is None:
+        raise HTTPException(409, "This thread has no active agent.")
+    if any(gateway.get(c.id) is not None for c in thread.conversations):
+        raise HTTPException(409, "Wait for the active turn to finish.")
+    if await actions.pending_for_thread(thread.id):
+        raise HTTPException(409, "Resolve the pending questions or approvals first.")
+    native = thread.kind == "native_thread"
+    channel = app.channels.get(thread.channel_tentacle_id)
+    if not native and (channel is None or agent_id not in app.agents):
+        raise HTTPException(409, "The source channel or agent is not connected.")
+    profile = UserProfile(user_id=user.id, channel_user_id=str(user.id), name=user.name)
+    if channel is not None and not isinstance(channel, TrunklineTentacle):
+        linked = await users.linked_profiles(profile)
+        source_profile = next(
+            (one for one in linked if one.channel_tentacle_id == channel.id), None
+        )
+        if source_profile is None:
+            raise HTTPException(403, "Link your account on the source channel first.")
+        profile = source_profile
+    else:
+        profile.channel_tentacle_id = thread.channel_tentacle_id
+    address = thread.key.address(profile.channel_user_id)
+    return OctomateSession(
+        channel_routes=gateway.available_routes(app.channels, app.agents),
+        current_agent_id=agent_id,
+        channels=app.channels,
+        agents=app.agents,
+        users=users,
+        user_profile=profile,
+        thread_id=thread.id,
+        native=native,
+        # A thread's row does not say who can read it, so its channel reads that
+        # off the address. A native session has no channel and nobody else in it.
+        conversation_address=replace(
+            address, shared=channel is not None and channel.is_shared(address)
+        ),
+        threads=threads,
+        workspaces=workspaces,
+    )
 
 
 def build_trunkline_router(
@@ -166,6 +284,66 @@ def build_trunkline_router(
         dependencies=[Depends(browser_request), Depends(current_user)],
     )
 
+    @router.get("/threads/{thread_id}/operations")
+    async def thread_operations(
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+    ) -> ThreadOperations:
+        return await session.operations
+
+    @router.get(
+        "/threads/{thread_id}/channels/{channel_id}/addresses",
+        summary="List one level of a connected channel's destinations",
+    )
+    async def list_addresses(
+        channel_id: str,
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+        inside: Annotated[str | None, Query(max_length=200)] = None,
+    ) -> list[ChannelAddress]:
+        try:
+            return await session.list_addresses(channel_id, inside)
+        except GatewayRefusal as exc:
+            raise HTTPException(409, str(exc)) from exc
+
+    @router.post("/threads/{thread_id}/teleport")
+    async def teleport_thread(
+        body: TeleportBody,
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+    ) -> StreamingResponse:
+        prompt = body.get("prompt")
+        # Only a thread here takes a message from this console.
+        if prompt is not None and body["destination"].channel_tentacle_id != channel.id:
+            raise HTTPException(
+                409, "A prompt can follow a teleport only into a Trunkline thread."
+            )
+        try:
+            await session.teleport(
+                destination=body["destination"],
+                new_thread=body.get("new_thread", True),
+                hint=body["hint"],
+                prompt=prompt,
+            )
+        except GatewayRefusal as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return channel.stream_kick(session.thread_operation(channel.id))
+
+    @router.post("/threads/{thread_id}/summon")
+    async def summon_thread(
+        body: SummonBody,
+        session: Annotated[OctomateSession, Depends(thread_gateway)],
+    ) -> StreamingResponse:
+        try:
+            await session.summon(
+                agent_id=body["agent_id"],
+                model=body["model"],
+                hint=body["hint"],
+                reason="Summon requested from Trunkline",
+                summon=body["brief"],
+                effort=body.get("effort"),
+            )
+        except GatewayRefusal as exc:
+            raise HTTPException(409, str(exc)) from exc
+        return channel.stream_kick(session.thread_operation(channel.id))
+
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:
         return JSONResponse({"ok": True})
@@ -182,10 +360,12 @@ def build_trunkline_router(
         ]
 
     @router.get("/projects")
-    async def list_projects() -> list[Project]:
+    async def list_projects(
+        projects: Annotated[ProjectManager, Depends(project_manager)],
+    ) -> list[Project]:
         """The projects a new thread can be filed under — the enabled ones, since
         a project whose root disk has lost is nowhere to work."""
-        return [project for project in octomate.projects.list() if project.enabled]
+        return [project for project in projects.list() if project.enabled]
 
     @router.get("/permissions")
     async def permission_modes() -> dict[str, AgentPostures]:
@@ -200,7 +380,8 @@ def build_trunkline_router(
         postures: dict[str, AgentPostures] = {}
         for agent_id, agent in octomate.agents.items():
             configured = agent.default_permission_mode
-            if configured is None:
+            # An agent that failed to start has no catalog, only its configuration.
+            if configured is None or not agent.permission_modes:
                 continue
             agent.check_permission_mode(configured)
             postures[agent_id] = AgentPostures(
@@ -250,15 +431,10 @@ def build_trunkline_router(
 
     @router.get("/threads/{thread_id}", response_model_exclude={"messages", "parent"})
     async def read_thread(
-        thread_id: uuid.UUID,
-        threads: Annotated[ThreadManager, Depends(thread_manager)],
-        user: Annotated[User, Depends(current_user)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
     ) -> Thread:
         """One thread and its handoffs, by row id — any channel's, not only the
         console's own."""
-        thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
-        if thread is None:
-            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
         return thread
 
     @router.get(
@@ -267,7 +443,7 @@ def build_trunkline_router(
         response_model_exclude={"__all__": {"model_messages"}},
     )
     async def thread_messages(
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         user: Annotated[User, Depends(current_user)],
     ) -> list[ThreadMessage | ThreadCommand]:
@@ -282,7 +458,8 @@ def build_trunkline_router(
         response_model_exclude={"__all__": {"messages"}},
     )
     async def thread_conversations(
-        thread: Annotated[Thread, Depends(read_thread)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
     ) -> list[Conversation]:
         """Subagent conversations included — they name their parent, so a reader
         can fold them under the run whose tool call spawned them.
@@ -292,13 +469,11 @@ def build_trunkline_router(
         a thread would otherwise watch a run's whole middle disappear. The
         conversation's own `messages` stay excluded — that relation is the same rows
         under a different parent, and one copy is enough."""
-        return await octomate.conversations.for_thread(
-            thread.id, with_run_messages=True
-        )
+        return await conversations.for_thread(thread.id, with_run_messages=True)
 
     @router.get("/threads/{thread_id}/project")
     async def thread_project(
-        thread: Annotated[Thread, Depends(read_thread)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
     ) -> Project | None:
         """The project this thread's work is in; null for a thread no project
         claims. Frozen: it is set when the thread is created, from the directory
@@ -311,12 +486,15 @@ def build_trunkline_router(
         response_model_exclude={"__all__": {"requests"}},
     )
     async def thread_batches(
-        thread: Annotated[Thread, Depends(read_thread)],
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        deferred_actions: Annotated[
+            DeferredActionManager, Depends(deferred_action_manager)
+        ],
     ) -> list[DeferredActionBatch]:
         """The waiting questions and approvals, so a reload re-renders the
         feelers a run is blocked on. `requests` stays behind: it is the agent's
         own tool-call payload, and the actions carry what a reader asks."""
-        return await octomate.deferred_actions.pending_for_thread(thread.id)
+        return await deferred_actions.pending_for_thread(thread.id)
 
     @router.post(
         "/threads/{thread_key}/messages",
@@ -352,19 +530,20 @@ def build_trunkline_router(
         response_model_exclude={"messages", "runs"},
     )
     async def set_permission_mode(
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         body: PermissionModeBody,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
         user: Annotated[User, Depends(current_user)],
     ) -> Conversation:
         """The one place a live thread's posture changes. A run reads it as it
         starts, so the switch lands on the next turn and leaves anything in flight
         alone — including a batch already waiting on a human."""
         try:
-            conversation = await octomate.conversations.get(conversation_id)
+            conversation = await conversations.get(conversation_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        await read_thread(conversation.thread_id, threads, user)
+        await accessible_thread(conversation.thread_id, threads, user)
         try:
             agent = octomate.agents.get(conversation.agent_tentacle_id)
             if agent is None:
@@ -373,7 +552,7 @@ def build_trunkline_router(
                 )
             if body.permission_mode is not None:
                 agent.check_permission_mode(body.permission_mode)
-            return await octomate.conversations.set_permission_mode(
+            return await conversations.set_permission_mode(
                 conversation, body.permission_mode
             )
         except ValueError as error:
@@ -385,17 +564,21 @@ def build_trunkline_router(
         summary="Answer a deferred-action batch and stream the resumed run",
     )
     async def resolve_batch(
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         body: BatchResponseBody,
         user: Annotated[User, Depends(current_user)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+        deferred_actions: Annotated[
+            DeferredActionManager, Depends(deferred_action_manager)
+        ],
     ) -> StreamingResponse:
         try:
-            batch = await octomate.deferred_actions.get_batch(batch_id)
+            batch = await deferred_actions.get_batch(batch_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        conversation = await octomate.conversations.get(batch.conversation_id)
-        await read_thread(conversation.thread_id, threads, user)
+        conversation = await conversations.get(batch.conversation_id)
+        await accessible_thread(conversation.thread_id, threads, user)
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")

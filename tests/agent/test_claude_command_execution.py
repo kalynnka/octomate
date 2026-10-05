@@ -102,6 +102,7 @@ async def execution(
             commands=app.commands,
             projects=app.projects,
             threads=app.threads,
+            files=app.files,
             conversations=app.conversations,
             deferred_actions=app.deferred_actions,
             workspaces=app.workspaces,

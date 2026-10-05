@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import uuid
 from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai import RunContext, RunUsage
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
@@ -24,6 +24,7 @@ from pydantic_ai.messages import ModelResponse as RawModelResponse
 from pydantic_ai.models.test import TestModel
 from sqlalchemy import text as sql_text
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.history import HistoryCapability
 from octomate.managers import ConversationManager, ThreadManager, UserManager
@@ -164,7 +165,7 @@ def _event(message_id: str, user_id: str, text: str) -> MessageEvent:
     )
 
 
-def _ctx(conversation_id: uuid.UUID) -> RunContext[Any]:
+def _ctx(conversation_id: UUID7) -> RunContext[Any]:
     return RunContext(
         deps=None,
         model=TestModel(),
@@ -299,7 +300,7 @@ async def test_the_thread_tools_read_what_the_user_spoke_in() -> None:
     await thread_manager.record_inbound(_event("m2", "bob", "wake now"))
     capability = await _bound(thread_manager, "alice")
     assert capability.toolset is not None
-    ctx = _ctx(uuid.uuid4())
+    ctx = _ctx(uuid7())
     tools = await capability.toolset.get_tools(ctx)
 
     hits = await capability.toolset.call_tool(
@@ -338,7 +339,7 @@ async def test_a_receiver_reads_every_thread_its_user_spoke_in() -> None:
             segments=[TextSegment(data={"text": "a bug of my own"})],
         )
     )
-    ctx = _ctx(uuid.uuid4())
+    ctx = _ctx(uuid7())
 
     async def search(capability: HistoryCapability) -> list[str | None]:
         assert capability.toolset is not None

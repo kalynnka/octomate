@@ -21,3 +21,9 @@ untrusted hooks, so installing them on disk is not enough.
 The MCP entry is `[mcp_servers.octomate]` in `~/.codex/config.toml`, or the file
 `--config-file` names. The installer round-trips the file with its comments intact.
 Codex lists the tools under `mcp__octomate`.
+
+The installer sets `gateway_teleport` to Codex's `prompt` approval mode, leaving
+your approval policy and reviewer unchanged. Re-run `octomate codex mcp install`
+and restart Codex to apply this to an existing installation. This configures the
+permission check. A native session's own teleport finds its history by the
+thread Codex names on every call.

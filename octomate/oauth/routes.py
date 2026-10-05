@@ -16,13 +16,13 @@ rechecked in `OAuthManager.complete_callback`.
 from __future__ import annotations
 
 import logging
-import uuid
 from html import escape
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 from mcp.client.auth.exceptions import OAuthFlowError
+from pydantic import UUID7
 
 from octomate.dependencies import oauth_manager
 from octomate.managers.oauth import OAuthManager, UnusableOAuthOperation
@@ -61,7 +61,7 @@ oauth_router = APIRouter(tags=["oauth"])
 @oauth_router.get(OAUTH_START_PATH, include_in_schema=False)
 async def start(
     connector_id: str,
-    operation_id: uuid.UUID,
+    operation_id: UUID7,
     manager: Annotated[OAuthManager, Depends(oauth_manager)],
 ) -> Response:
     try:

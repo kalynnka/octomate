@@ -88,7 +88,7 @@ def test_extension_events_share_the_event_kind_style() -> None:
     todo = decode(
         TodoCreatedEvent(
             todo=Todo(
-                conversation_id=uuid.UUID(int=0),
+                conversation_id=uuid.UUID("00000000-0000-7000-8000-000000000001"),
                 ref="T1",
                 content="write tests",
                 position=1,
@@ -155,5 +155,6 @@ def test_transport_events() -> None:
     assert settled["event_kind"] == "subagent_settled"
     assert settled["response"] == "ok"
 
-    error = decode(RunErrorEvent(message="boom"))
+    error = decode(RunErrorEvent(message="boom", trace_id="abc123"))
     assert error["event_kind"] == "run_error"
+    assert error["trace_id"] == "abc123"

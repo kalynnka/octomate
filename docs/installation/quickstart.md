@@ -96,7 +96,7 @@ Verify and report the actual results:
 - Anonymous requests to the enabled hook, console API and MCP return 401.
 - Browser sign-in survives a reload.
 - A fresh native prompt AND its answer appear in Trunkline.
-- The native agent calls gateway_scry with reveal="routes" over MCP.
+- The native agent calls gateway_inspect with reveal="routes" over MCP.
 - A new Trunkline conversation gets a driven reply from my chosen agent.
 - The service restarts and stored history remains available.
 

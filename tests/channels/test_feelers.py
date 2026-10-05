@@ -3,18 +3,14 @@ deferred feelers, `Feelers.present_actions`, stream batching, and chunking."""
 
 from __future__ import annotations
 
-import asyncio
-import uuid
-from collections.abc import AsyncIterator
 from typing import cast
 
-import pytest
+from pydantic import UUID7
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
     PartStartEvent,
-    RetryPromptPart,
     TextPart,
     TextPartDelta,
     ThinkingPart,
@@ -22,11 +18,17 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
-from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import (
+    ActionBatchEvent,
+    GatewayEvent,
+    RunErrorEvent,
+    SubagentSettledEvent,
+    SubagentStartedEvent,
+)
 from octomate.managers.deferred import DeferredActionManager
-from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
     DeferredApproval,
@@ -34,7 +36,6 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.segments import MarkdownSegment, TextSegment
-from octomate.schemas.triage import SummonDecision
 from octomate.tentacles.channel import ChannelSurfaces, Ink
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.deferred import (
@@ -57,6 +58,7 @@ from octomate.tentacles.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT
 from tests.support.channels import (
     FakeChannelTentacle,
     FakeOAuthInk,
+    FakeOctomate,
     NoopSegmentsFeeler,
     NoopTimeline,
     RecordingApprovalFeeler,
@@ -66,7 +68,7 @@ from tests.support.channels import (
     bound,
     drive,
 )
-from tests.support.managers import FakeActionManager, FakePresentedBatch
+from tests.support.managers import FakeActionManager
 from tests.support.scenarios import mid_run_notice, play
 
 
@@ -82,7 +84,7 @@ def _key(channel: str = "im") -> ChannelAddress:
 
 def _question(
     *,
-    batch_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
     position: int = 0,
     question: str = "Continue?",
     choices: list[str] | None = None,
@@ -103,7 +105,7 @@ def _question(
     )
 
 
-def _approval(*, batch_id: uuid.UUID | None = None) -> DeferredApproval:
+def _approval(*, batch_id: UUID7 | None = None) -> DeferredApproval:
     return DeferredApproval(
         id=uuid7(),
         batch_id=batch_id or uuid7(),
@@ -142,46 +144,22 @@ def test_parent_timeline_hides_subagent_tool_rows() -> None:
     assert not should_skip_plan_tool("summon")
 
 
-async def test_timeline_pairs_parallel_subagent_calls_with_their_results() -> None:
+async def test_timeline_pairs_parallel_subagents_with_their_results() -> None:
     channel = FakeChannelTentacle()
     timeline = RecordingTimeline()
     bound(timeline, channel, _key())
     events = [
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "audit", "brief": "Audit the repo."},
-                tool_call_id="call-a",
-            )
+        SubagentStartedEvent(invocation_id="call-a", kind="commission", name="audit"),
+        SubagentStartedEvent(invocation_id="call-b", kind="commission", name="tests"),
+        SubagentStartedEvent(invocation_id="call-c", kind="commission", name="docs"),
+        SubagentSettledEvent(
+            invocation_id="call-b", status="completed", response="test report"
         ),
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "tests", "brief": "Run tests."},
-                tool_call_id="call-b",
-            )
+        SubagentSettledEvent(
+            invocation_id="call-a", status="completed", response="audit report"
         ),
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "docs", "brief": "Review docs."},
-                tool_call_id="call-c",
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="commission", content="test report", tool_call_id="call-b"
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="commission", content="audit report", tool_call_id="call-a"
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="commission", content="docs report", tool_call_id="call-c"
-            )
+        SubagentSettledEvent(
+            invocation_id="call-c", status="completed", response="docs report"
         ),
     ]
 
@@ -193,47 +171,24 @@ async def test_timeline_pairs_parallel_subagent_calls_with_their_results() -> No
     assert states["call-a"].response == "audit report"
     assert states["call-b"].response == "test report"
     assert states["call-c"].response == "docs report"
-    assert len({id(state) for state in timeline.subagent_states}) == 3
     assert all(
         state.settlements == [("completed", None)] for state in timeline.subagent_states
     )
     assert all(state.closed for state in timeline.subagent_states)
-    assert "tool_start" not in timeline.names()
-    assert "tool_end" not in timeline.names()
 
 
-async def test_each_whisper_tool_call_opens_a_fresh_timeline() -> None:
+async def test_each_whisper_opens_a_fresh_timeline() -> None:
     channel = FakeChannelTentacle()
     timeline = RecordingTimeline()
     bound(timeline, channel, _key())
     events = [
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="whisper",
-                args={"name": "audit", "message": "Go deeper."},
-                tool_call_id="call-1",
-            )
+        SubagentStartedEvent(invocation_id="call-1", kind="whisper", name="audit"),
+        SubagentStartedEvent(invocation_id="call-2", kind="whisper", name="audit"),
+        SubagentSettledEvent(
+            invocation_id="call-1", status="completed", response="deep report"
         ),
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="whisper",
-                args={"name": "audit", "message": "Summarize."},
-                tool_call_id="call-2",
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="whisper",
-                content="deep report",
-                tool_call_id="call-1",
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="whisper",
-                content="summary",
-                tool_call_id="call-2",
-            )
+        SubagentSettledEvent(
+            invocation_id="call-2", status="completed", response="summary"
         ),
     ]
     async with timeline.open(_key()) as state:
@@ -248,58 +203,11 @@ async def test_each_whisper_tool_call_opens_a_fresh_timeline() -> None:
     assert second.response == "summary"
 
 
-async def test_timeline_folds_retry_and_pending_subagent_failures() -> None:
-    channel = FakeChannelTentacle()
-    timeline = RecordingTimeline()
-    bound(timeline, channel, _key())
-    events = [
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "timeout"},
-                tool_call_id="call-timeout",
-            )
-        ),
-        FunctionToolResultEvent(
-            RetryPromptPart(
-                tool_name="commission",
-                content="The accomplice exceeded its timeout.",
-                tool_call_id="call-timeout",
-            )
-        ),
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "broken"},
-                tool_call_id="call-broken",
-            )
-        ),
-    ]
-
-    async with timeline.open(_key()) as state:
-        await state.drive(play(events))
-
-    timed_out, broken = timeline.subagent_states
-    assert timed_out.response.startswith("The accomplice exceeded its timeout.")
-    assert timed_out.settlements == [("failed", None)]
-    assert broken.settlements == [("failed", None)]
-    assert timed_out.closed
-    assert broken.closed
-
-
 async def test_subagent_renderer_failures_do_not_interrupt_the_parent_stream() -> None:
     events = [
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "resilient"},
-                tool_call_id="call-a",
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="commission", content="report", tool_call_id="call-a"
-            )
+        SubagentStartedEvent(invocation_id="call-a", kind="commission", name="ok"),
+        SubagentSettledEvent(
+            invocation_id="call-a", status="completed", response="report"
         ),
     ]
     for timeline in (
@@ -312,54 +220,12 @@ async def test_subagent_renderer_failures_do_not_interrupt_the_parent_stream() -
             await state.drive(play(events))
 
 
-async def test_timeline_closes_an_unfinished_subagent_on_cancellation() -> None:
-    channel = FakeChannelTentacle()
-    timeline = RecordingTimeline()
-    bound(timeline, channel, _key())
-    waiting = asyncio.Event()
-
-    async def source() -> AsyncIterator[FunctionToolCallEvent]:
-        yield FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "cancelled"},
-                tool_call_id="call-a",
-            )
-        )
-        waiting.set()
-        await asyncio.Event().wait()
-
-    async def consume() -> None:
-        async with timeline.open(_key()) as state:
-            await state.drive(source())
-
-    task = asyncio.create_task(consume())
-    await waiting.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    [state] = timeline.subagent_states
-    assert state.settlements == [("cancelled", None)]
-    assert state.closed
-
-
 async def test_default_timeline_omits_subagent_activity() -> None:
     channel = FakeChannelTentacle()
     events = [
-        FunctionToolCallEvent(
-            ToolCallPart(
-                tool_name="commission",
-                args={"name": "audit"},
-                tool_call_id="call-a",
-            )
-        ),
-        FunctionToolResultEvent(
-            ToolReturnPart(
-                tool_name="commission",
-                content="audit report",
-                tool_call_id="call-a",
-            )
+        SubagentStartedEvent(invocation_id="call-a", kind="commission", name="audit"),
+        SubagentSettledEvent(
+            invocation_id="call-a", status="completed", response="audit report"
         ),
     ]
 
@@ -418,48 +284,16 @@ async def test_plain_text_feelers_present_approval_and_questions() -> None:
     assert "Who approves?" in sent[2][1]
 
 
-async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
+async def test_feelers_present_actions_splits_and_marks() -> None:
     approval = _approval()
     first = _question(question="First?")
     second = _question(question="Second?", position=1)
     approvals = RecordingApprovalFeeler()
     ask_questions = RecordingQuestionFeeler()
-    presented_batch = FakePresentedBatch(
-        questions=[first, second], approvals=[approval]
-    )
-    manager = FakeActionManager(presented_batch=presented_batch)
-    source_address = _key("source")
+    manager = FakeActionManager()
     target_address = _key("target")
-    decision = SummonDecision(
-        action="summon",
-        agent_id="inkling",
-        model="test",
-        reason="needs input",
-        hint="needs input",
-        summon="needs input",
-    )
-    requests = DeferredToolRequests(
-        calls=[
-            ToolCallPart(
-                tool_name="ask_questions",
-                args={"questions": [{"question": "First?"}, {"question": "Second?"}]},
-                tool_call_id="call_questions",
-            )
-        ],
-        approvals=[
-            ToolCallPart(
-                tool_name="shell",
-                args={"cmd": "git status"},
-                tool_call_id="call_approval",
-            )
-        ],
-    )
-    conversation = Conversation(
-        thread_id=uuid7(),
-        agent_tentacle_id="inkling",
-    )
 
-    batch = await Feelers(
+    await Feelers(
         markdown=RecordingMarkdownFeeler(),
         timeline=NoopTimeline(),
         segments=NoopSegmentsFeeler(),
@@ -469,21 +303,13 @@ async def test_feelers_present_actions_creates_batch_splits_and_marks() -> None:
             cast(Ink[str], FakeOAuthInk()), RecordingMarkdownFeeler()
         ),
     ).present_actions(
+        target_address,
+        ActionBatchEvent(
+            batch_id=str(uuid7()), questions=[first, second], approvals=[approval]
+        ),
         action_manager=cast(DeferredActionManager, manager),
-        conversation=conversation,
-        agent_tentacle_id="inkling",
-        run_name="react",
-        source_address=source_address,
-        target_address=target_address,
-        target_mode="sub",
-        decision=decision,
-        requests=requests,
     )
 
-    assert batch is presented_batch
-    assert manager.create_calls[0].conversation is conversation
-    assert manager.create_calls[0].source_address == source_address
-    assert manager.create_calls[0].target_address == target_address
     assert approvals.presented == [(target_address, [approval])]
     assert ask_questions.presented == [(target_address, [first, second])]
     assert manager.presented == [
@@ -518,58 +344,71 @@ def plain_feelers() -> Feelers:
     )
 
 
-async def present_one_approval(
-    feelers: Feelers, target_address: ChannelAddress
-) -> None:
-    approval = _approval()
-    manager = FakeActionManager(
-        presented_batch=FakePresentedBatch(approvals=[approval])
+async def present_one_approval(timeline: NoopTimeline) -> list[tuple[str, object]]:
+    """Drive one approval batch through `timeline`, as a live run's stream does
+    when it pauses on a human; answers what the channel's approval feeler drew."""
+    channel = FakeChannelTentacle(
+        octomate=FakeOctomate(
+            deferred_actions=cast(DeferredActionManager, FakeActionManager())
+        )
     )
-    await feelers.present_actions(
-        action_manager=cast(DeferredActionManager, manager),
-        conversation=Conversation(thread_id=uuid7(), agent_tentacle_id="deepseek"),
-        agent_tentacle_id="deepseek",
-        run_name="react",
-        source_address=target_address,
-        target_address=target_address,
-        target_mode="main",
-        decision=None,
-        requests=DeferredToolRequests(
-            approvals=[
-                ToolCallPart(tool_name="shell", args={}, tool_call_id="call_approval")
-            ]
-        ),
-    )
+    approvals = RecordingApprovalFeeler()
+    channel.feelers.approvals = approvals
+    bound(timeline, channel, _key("target"))
+    async with timeline.open(_key("target")) as state:
+        await state.drive(
+            play([ActionBatchEvent(batch_id=str(uuid7()), approvals=[_approval()])])
+        )
+    return [(str(address), actions) for address, actions in approvals.presented]
 
 
-async def test_present_actions_settles_the_live_timeline() -> None:
-    """A batch presented from an agent's in-process bridge — outside the run
-    stream — still reaches the surface rendering that thread, so its status
-    stops claiming the agent is thinking while the run parks on the human."""
-    feelers = plain_feelers()
-    target_address = _key("target")
+async def test_a_presented_batch_settles_the_timeline() -> None:
+    """A drawn batch tells the timeline once, so a surface with live status can say
+    input was requested."""
     timeline = SettlingTimeline()
 
-    with feelers.driving(target_address, timeline):
-        await present_one_approval(feelers, target_address)
-    # Nobody driving the thread: nothing to settle, and nothing raises.
-    await present_one_approval(feelers, target_address)
+    drawn = await present_one_approval(timeline)
 
+    assert len(drawn) == 1
     assert timeline.settled == 1
-    assert not feelers.live_timelines
 
 
 async def test_a_settle_hiccup_does_not_fail_the_presentation() -> None:
     # The cards are the load-bearing part; the surface settle is a UI hint,
     # and its failure must not cancel the approval riding on the batch.
+    drawn = await present_one_approval(HiccupTimeline())
+
+    assert len(drawn) == 1
+
+
+async def test_feelers_present_a_move_by_its_line_and_a_failure_by_its_trace() -> None:
     feelers = plain_feelers()
-    target_address = _key("target")
+    address = _key()
 
-    with feelers.driving(target_address, HiccupTimeline()):
-        await present_one_approval(feelers, target_address)
+    moved = await feelers.present(
+        address,
+        GatewayEvent(
+            action="teleport",
+            destination=_key("far"),
+            announcement="Continuing over there.",
+        ),
+    )
+    # A summon leaves no line where it happened.
+    silent = await feelers.present(
+        address, GatewayEvent(action="summon", destination=address)
+    )
+    await feelers.present(address, RunErrorEvent(message="boom", trace_id="abc123"))
 
-    approvals = cast(RecordingApprovalFeeler, feelers.approvals)
-    assert approvals.presented
+    assert moved == "markdown-message"
+    assert silent is None
+    assert cast(RecordingMarkdownFeeler, feelers.markdown).calls == [
+        (address, "Continuing over there."),
+        (
+            address,
+            "Something went wrong while handling your message. "
+            "Reference id for tracing the issue: `abc123`.",
+        ),
+    ]
 
 
 async def test_default_timeline_rotates_answer_messages() -> None:

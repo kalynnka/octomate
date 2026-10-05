@@ -13,6 +13,7 @@ from pydantic_ai.exceptions import AgentRunError
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.tentacles.deepseek.catalog import (
     DeepseekCommandDescriptor,
     command_descriptors_adapter,
@@ -31,6 +32,10 @@ from octomate.tentacles.deepseek.wire import (
 
 logger = logging.getLogger(__name__)
 
+type TurnFrame = (
+    SessionEventFrame | SessionAssistantFrame | StreamErrorFrame | ActionBatchEvent
+)
+
 type InteractionHandler = Callable[
     [ApprovalRequestedFrame | QuestionRequestedFrame],
     Coroutine[None, None, RpcResult | None],
@@ -45,9 +50,9 @@ class DeepseekInk:
     mux_socket: ClientConnection | None = field(default=None, init=False)
     mux_task: asyncio.Task[None] | None = field(default=None, init=False)
     closing: bool = field(default=False, init=False)
-    subscribers: dict[
-        str, asyncio.Queue[SessionEventFrame | SessionAssistantFrame | StreamErrorFrame]
-    ] = field(default_factory=dict, init=False)
+    subscribers: dict[str, asyncio.Queue[TurnFrame]] = field(
+        default_factory=dict, init=False
+    )
     interaction_tasks: dict[str, asyncio.Task[None]] = field(
         default_factory=dict, init=False
     )
@@ -98,16 +103,12 @@ class DeepseekInk:
             )
         )
 
-    async def subscribe(
-        self, session_id: str
-    ) -> asyncio.Queue[SessionEventFrame | SessionAssistantFrame | StreamErrorFrame]:
+    async def subscribe(self, session_id: str) -> asyncio.Queue[TurnFrame]:
         """Register the event queue before asking DSH to follow the session."""
         socket = self.mux_socket
         if socket is None:
             raise AgentRunError("dsh Remote socket is not connected")
-        queue: asyncio.Queue[
-            SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
-        ] = asyncio.Queue()
+        queue: asyncio.Queue[TurnFrame] = asyncio.Queue()
         self.subscribers[session_id] = queue
         try:
             await self.client.follow(socket, session_id)

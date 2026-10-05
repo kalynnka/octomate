@@ -13,11 +13,11 @@ from pydantic_graph import Graph, GraphBuilder, TypeExpression
 from octomate.reflex.nodes import (
     Awake,
     Command,
-    Handoff,
     React,
     ResumeDeferred,
     Route,
     Scheme,
+    Summon,
     Teleport,
 )
 from octomate.reflex.state import (
@@ -35,7 +35,6 @@ __all__ = [
     "Awake",
     "Command",
     "DeferredResult",
-    "Handoff",
     "React",
     "ReflexDeps",
     "ReflexEntryT",
@@ -47,6 +46,7 @@ __all__ = [
     "ResumeDeferred",
     "Route",
     "Scheme",
+    "Summon",
     "SummonDecision",
     "Teleport",
     "build_reflex_graph",
@@ -79,7 +79,7 @@ def build_reflex_graph(
         builder.node(Awake),
         builder.node(Command),
         builder.node(Route),
-        builder.node(Handoff),
+        builder.node(Summon),
         builder.node(React),
         builder.node(Scheme),
         builder.node(Teleport),

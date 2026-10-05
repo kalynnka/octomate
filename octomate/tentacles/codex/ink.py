@@ -12,7 +12,9 @@ from pathlib import Path
 
 import anyio
 from httpx import URL
+from octomate_protocol.gateway import GatewayTool, gateway_tool
 from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle, InputItem
+from openai_codex._approval_mode import _approval_mode_settings
 from openai_codex._inputs import _normalize_run_input, _to_wire_input
 from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
 from openai_codex.api import ApprovalMode, Sandbox
@@ -32,6 +34,7 @@ from openai_codex.generated.v2_all import (
     SkillsListEntry,
     SkillsListResponse,
     ThreadClosedNotification,
+    ThreadForkParams,
     ThreadResumeParams,
     ThreadStartParams,
     ThreadUnsubscribeResponse,
@@ -154,7 +157,7 @@ class CodexInk:
             raise ValueError("Codex returned skills for another workspace")
         return entry
 
-    async def models(self) -> tuple[str, list[Model]]:
+    async def models(self) -> tuple[str, list[Model], ReasoningEffort | None]:
         """Read the configured provider and all advertised, visible models."""
         settings = await self.client._client.request(
             "config/read",
@@ -176,7 +179,7 @@ class CodexInk:
                 break
         if not models:
             raise ValueError("Codex advertised no available models")
-        return provider, models
+        return provider, models, settings.config.model_reasoning_effort
 
     async def open_thread(
         self,
@@ -194,7 +197,7 @@ class CodexInk:
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
+    ) -> tuple[AsyncThread, str | None]:
         """Read native liveness and apply the calling conversation's MCP identity."""
         if not self.running:
             raise RuntimeError("Codex runtime is not running")
@@ -206,7 +209,7 @@ class CodexInk:
             # TODO: Use stable runtime authentication and resolve the current caller
             # and conversation in Octomate so thread reuse depends only on thread_id.
             if loaded and self.thread_bindings.get(thread_id) == binding:
-                return thread
+                return thread, model or metadata.thread.model
             if loaded and not isinstance(metadata.thread.status.root, IdleThreadStatus):
                 raise RuntimeError("Codex thread must be idle to change MCP identity")
             # An interrupted reconfiguration must not leave the old identity trusted.
@@ -220,7 +223,7 @@ class CodexInk:
                 )
         thread_config = await self.thread_config(cwd, mcp_bearer, conversation_id)
         if thread_id is not None:
-            thread = await self.resume_thread(
+            thread, model_name = await self.resume_thread(
                 thread_id=thread_id,
                 approval_mode=approval_mode,
                 base_instructions=base_instructions,
@@ -233,7 +236,7 @@ class CodexInk:
                 sandbox=sandbox,
             )
         else:
-            thread = await self.start_thread(
+            thread, model_name = await self.start_thread(
                 approval_mode=approval_mode,
                 base_instructions=base_instructions,
                 config=thread_config,
@@ -246,13 +249,13 @@ class CodexInk:
                 sandbox=sandbox,
             )
         self.thread_bindings[thread.id] = binding
-        return thread
+        return thread, model_name
 
     async def thread_config(
         self,
         cwd: str,
         mcp_bearer: SecretStr | None,
-        conversation_id: uuid.UUID,
+        conversation_id: uuid.UUID | None,
     ) -> JsonObject:
         settings = await self.client._client.request(
             "config/read",
@@ -278,6 +281,7 @@ class CodexInk:
                 "Authorization": f"Bearer {mcp_bearer.get_secret_value()}",
                 CONVERSATION_HEADER: str(conversation_id),
             },
+            "tools": {gateway_tool(GatewayTool.TELEPORT): {"approval_mode": "prompt"}},
         }
         return {"mcp_servers": servers}
 
@@ -294,26 +298,20 @@ class CodexInk:
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
-        if approval_mode is not None:
-            return await self.client.thread_start(
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=ephemeral,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
+    ) -> tuple[AsyncThread, str]:
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
-        # `user` reviewer has no public thread_start knob; go through the raw params.
+        )
         await self.client._ensure_initialized()
         started = await self.client._client.thread_start(
             ThreadStartParams(
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
+                approval_policy=approval_policy,
+                approvals_reviewer=reviewer,
                 base_instructions=base_instructions,
                 config=config,
                 cwd=cwd,
@@ -325,7 +323,7 @@ class CodexInk:
                 sandbox=_sandbox_mode(sandbox),
             )
         )
-        return AsyncThread(self.client, started.thread.id)
+        return AsyncThread(self.client, started.thread.id), started.model
 
     async def resume_thread(
         self,
@@ -340,29 +338,22 @@ class CodexInk:
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> AsyncThread:
-        if approval_mode is not None:
-            return await self.client.thread_resume(
-                thread_id,
-                include_turns=False,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
+    ) -> tuple[AsyncThread, str]:
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
             )
+        )
         await self.client._ensure_initialized()
         resumed = await self.client._client.thread_resume(
             thread_id,
             ThreadResumeParams(
                 thread_id=thread_id,
-                exclude_turns=True,
-                approval_policy=AskForApproval(root=AskForApprovalValue.on_request),
-                approvals_reviewer=ApprovalsReviewer.user,
+                approval_policy=approval_policy,
+                approvals_reviewer=reviewer,
                 base_instructions=base_instructions,
                 config=config,
                 cwd=cwd,
@@ -373,7 +364,26 @@ class CodexInk:
                 sandbox=_sandbox_mode(sandbox),
             ),
         )
-        return AsyncThread(self.client, resumed.thread.id)
+        return AsyncThread(self.client, resumed.thread.id), resumed.model
+
+    async def fork_thread(
+        self, thread_id: str, *, cwd: Path, last_turn_id: str | None = None
+    ) -> str:
+        """Fork stored native history without carrying the source's MCP identity."""
+        config = await self.thread_config(str(cwd), None, None)
+        forked = await self.client._client.thread_fork(
+            thread_id,
+            ThreadForkParams(
+                thread_id=thread_id,
+                cwd=str(cwd),
+                config=config,
+                ephemeral=False,
+                last_turn_id=last_turn_id,
+            ),
+        )
+        if forked.thread.id == thread_id:
+            raise ValueError("Codex fork returned the source thread id")
+        return forked.thread.id
 
     async def start_turn(
         self,
@@ -404,7 +414,7 @@ class CodexInk:
             )
         # The public SDK cannot reset an auto reviewer back to the user.
         inputs = _to_wire_input(_normalize_run_input(prompt))
-        turn = await self.client._client.turn_start(
+        turn, subscription = await self.client._client._start_turn(
             thread.id,
             inputs,
             params=TurnStartParams.model_validate(
@@ -424,8 +434,11 @@ class CodexInk:
                     "summary": summary,
                 }
             ),
+            for_handle=True,
         )
-        return AsyncTurnHandle(self.client, thread.id, turn.turn.id)
+        return AsyncTurnHandle(
+            self.client, thread.id, turn.turn.id, _subscription=subscription
+        )
 
     async def thread_name(self, thread: AsyncThread) -> str | None:
         """Read native metadata without loading the conversation history."""

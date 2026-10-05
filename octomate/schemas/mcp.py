@@ -3,7 +3,6 @@ and summaries."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Annotated, Literal, Self
 
@@ -11,6 +10,7 @@ from arcanus import BaseTransmuter
 from arcanus.base import Identity
 from mcp.types import Tool
 from pydantic import (
+    UUID7,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -112,8 +112,8 @@ class Mcp(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    user_id: uuid.UUID = Field(frozen=True, exclude=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    user_id: UUID7 = Field(frozen=True, exclude=True)
     name: str
     namespace: str = Field(frozen=True)
     url: str = Field(frozen=True)
@@ -184,7 +184,7 @@ class McpOAuthSummary(BaseModel):
 class McpServerSummary(BaseModel):
     """An installation as listed: identity, state and auth kind."""
 
-    id: uuid.UUID
+    id: UUID7
     namespace: str
     name: str
     enabled: bool

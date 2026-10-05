@@ -13,6 +13,7 @@ harness, and importing this module must not cost that.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from octomate.config.agents import (
@@ -101,16 +102,30 @@ def build_inkling(
             )
         )
 
+    models = {model.name: registry.build_model(model) for model in config.models}
+    claims = dict(config.claims)
+    for model in config.models:
+        claim = claims.get(model.name)
+        if claim is None:
+            continue
+        # The thinking level built into a model is what a run without an effort gets.
+        thinking = (models[model.name].settings or {}).get("thinking")
+        claims[model.name] = replace(
+            claim,
+            default_effort=next(
+                (effort for effort in claim.efforts if effort == thinking), None
+            ),
+        )
     return InklingTentacle(
         id,
         octomate,
-        models={model.name: registry.build_model(model) for model in config.models},
+        models=models,
         naming_model=(
             registry.build_model(config.naming_model)
             if config.naming_model is not None
             else None
         ),
-        claims=config.claims,
+        claims=claims,
         permission_mode=config.permission_mode,
         request_limit=config.request_limit,
         gateway=config.gateway,

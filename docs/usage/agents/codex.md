@@ -103,13 +103,21 @@ discovery, never from a separate client-supplied path.
 ## Approvals and questions
 
 Codex's own approval requests, command execution and file changes, and its
-elicitations become Octomate actions. A denied request tells Codex why. Choices
+elicitations become Octomate actions. A denied request tells Codex why. Its
+request to run an MCP tool becomes an approval card in Codex's own words, showing
+the arguments the call would run with: approving lets the call run, and declining
+refuses it. Octomate's tools that only read, inspecting where a conversation can
+go and reading history, say so, and Codex runs those without asking. Choices
 Codex offers, such as MCP consent prompts, are presented as they are. Under
 `auto_review` and `full_access` no request reaches the bridge at all. As with
 Claude, the wait is in process, so an answer is not durable across a restart.
 Requests are routed by native thread ID and answered asynchronously. One person's
 approval wait does not block the shared reader from delivering another
 conversation's events or answering discovery requests.
+
+The gateway's [teleport tool](../gateway.md#teleport) is configured with Codex's
+native `prompt` approval mode. It follows the selected permission policy and
+reviewer, including `auto_review`; Octomate does not add another confirmation.
 
 ## Native sessions
 
@@ -124,6 +132,12 @@ the session metadata every child is classified against; committed turns are skip
 server-side, so nothing duplicates. An aborted turn is still committed as far as it
 got. Codex has no session-end event, so a session ends by the tail's own idle
 drain.
+
+Teleporting a native session uses its latest fully uploaded completed
+or aborted turn. A session can also teleport itself: Codex names its thread on
+every MCP call, which is how the served teleport finds the session's history. Later turns stay in the source session, including any turn still
+in progress. The new conversation keeps the selected turn's model, permissions
+and an independent transcript snapshot.
 
 Resuming a driven session natively skips already recorded driven turns when their
 runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)

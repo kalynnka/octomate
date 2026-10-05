@@ -22,9 +22,10 @@ tentacles:
 ```
 
 The harness supplies the model catalog: at startup Octomate asks the CLI for its
-models and the account's provider, and keys each as `<provider>:<model>`, with
-`anthropic` for a first-party login. Descriptions and supported efforts come from
-the same call where the CLI reports them.
+models and the account's provider, and keys each as `<provider>:<model>` by the
+model it runs, such as `anthropic:claude-opus-5-5`. Descriptions and supported
+efforts come from the same call where the CLI reports them. The CLI is the one
+the Claude Agent SDK bundles, so the models on offer follow the SDK's version.
 
 ## Driven runs
 
@@ -97,11 +98,16 @@ Two bridges, both landing on the same cards:
   agent to proceed another way.
 - **Questions.** Claude's `AskUserQuestion` tool is intercepted by a hook. Since a
   hook can only allow or deny, the user's answer travels back as the reason for a
-  deny, which Claude reads as the answer. Choices are capped at three.
+  deny, which Claude reads as the answer. Choices are capped at five, and a
+  multi-select question takes several picks.
 
 The bridge parks the live SDK client while it waits, so an answer is not durable
 across an Octomate restart: restart mid-question and the run is gone, though the
 conversation resumes on the next message.
+
+The gateway's [teleport tool](../gateway.md#teleport) follows Claude's normal MCP
+permissions, including bypass mode and existing grants. Octomate relays approval
+requests through the same bridge without adding another confirmation.
 
 ## Native sessions
 
@@ -109,8 +115,18 @@ conversation resumes on the next message.
 `SubagentStart` and `SubagentStop`, and launches a tail on each prompt. The hooks
 sketch the turn live; the tail then replaces the sketch with the full run from the
 transcript, subagents included, each subagent as its own conversation under the
-same thread. A session's own title becomes the thread's name. Permission mode
-changes are observed and recorded, never set.
+same thread. A turn is recorded when the transcript shows it ended, so one that
+stopped while Octomate was down lands once the tail reconnects. A session's own
+title becomes the thread's name. Permission mode changes are observed and
+recorded, never set.
+
+The tail's bytes of the session transcript are also kept, for their owner, so the
+session can [teleport](../gateway.md#teleport): its history up to the last whole
+turn is forked into the landed thread's workspace and resumed there by this
+tentacle. A session that began streaming before this was kept has nothing to fork.
+The installer also registers a `PreToolUse` hook for the gateway's teleport alone,
+which stamps the session's id into the call so the session can teleport itself;
+re-run the installer to add it.
 
 Resuming a driven session natively skips already recorded driven turns when their
 runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)

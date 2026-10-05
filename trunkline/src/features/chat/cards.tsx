@@ -4,7 +4,8 @@
  * uid) so the timeline can jump to them.
  */
 import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
-import type { AgentBlock, AskOption, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
+import { answerText } from '@/lib/api/fold'
+import type { AgentBlock, AskAnswer, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { Brackets } from '@/components/Brackets'
@@ -89,7 +90,7 @@ function UserChips({ chips, width }: { chips: QueueChip[]; width: string }) {
 
 function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
   return (
-    <div id={`pm-${item.uid}`} style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
       <CapsLabel>{item.who} · {item.t}</CapsLabel>
       {item.chips && item.chips.length > 0 && <UserChips chips={item.chips} width="min(440px,72%)" />}
       <div
@@ -102,6 +103,7 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
           padding: '10px 15px',
           ...serif(13.5),
           color: 'var(--fg-1)',
+          whiteSpace: 'pre-wrap',
           maxWidth: '72%',
         }}
       >
@@ -166,7 +168,7 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
 
 function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string }) {
   return (
-    <div id={`pm-${item.uid}`} style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
       <CapsLabel>{item.label}</CapsLabel>
       <div style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
         {item.blocks.map((b, i) => {
@@ -273,6 +275,7 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
                 lineHeight: 1.65,
                 color: recorded ? 'var(--fg-2)' : 'var(--fg-3)',
                 fontStyle: 'italic',
+                whiteSpace: 'pre-wrap',
               }}
             >
               {recorded
@@ -728,20 +731,27 @@ const ASK_BODY_CLAMP = 46
 
 function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' }>; cardMax: string; i?: number }) {
   const { answerAsk } = useConsole((s) => s.actions)
+  const single = item.questions.length === 1
+  // A lone single-choice question answers on its first pick; anything else is submitted.
+  const immediate = single && !item.questions[0].multiSelect
+  // One question at a time: a batch pages through its questions.
+  const [page, setPage] = useState(0)
+  const q = item.questions[page]
   const bodyRef = useRef<HTMLDivElement>(null)
   const [bodyLong, setBodyLong] = useState(false)
   const [bodyMore, setBodyMore] = useState(false)
   useLayoutEffect(() => {
     const el = bodyRef.current
     if (el) setBodyLong(el.scrollHeight > ASK_BODY_CLAMP + 4)
-  }, [item.body])
-  const [rowOpen, setRowOpen] = useState(0)
+  }, [q.body])
   const [otherOpen, setOtherOpen] = useState(false)
-  const [otherText, setOtherText] = useState('')
+  const [otherText, setOtherText] = useState<string[]>([])
+  const [picked, setPicked] = useState<(AskAnswer | undefined)[]>([])
   const [ansOpen, setAnsOpen] = useState(false)
   const operator = useAuth((s) => s.user?.username ?? 'operator')
 
   if (item.state === 'answered') {
+    const answers = item.questions.map((q) => (q.answer === undefined ? '' : answerText(q.answer)))
     return (
       <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
         {!ansOpen ? (
@@ -760,7 +770,9 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
             }}
           >
             <span style={{ ...label(9, '.12em'), color: 'var(--color-sage)', flexShrink: 0 }}>✓ answered · {operator}</span>
-            <span style={{ flex: 1, minWidth: 0, ...serif(12.5), fontStyle: 'italic', color: 'var(--fg-1)', ...ellipsis }}>“{item.answer}”</span>
+            <span style={{ flex: 1, minWidth: 0, ...serif(12.5), fontStyle: 'italic', color: 'var(--fg-1)', ...ellipsis }}>
+              {answers.map((answer) => `“${answer}”`).join(' · ')}
+            </span>
             <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>▸</span>
             <span style={{ ...mono(8), ...ghost3, flexShrink: 0 }}>{item.resolvedT}</span>
           </div>
@@ -772,7 +784,12 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               <span style={{ ...mono(10), ...ghost3 }}>▾</span>
               <span style={{ ...mono(8), ...ghost3 }}>{item.resolvedT}</span>
             </div>
-            <p style={{ margin: '6px 0 0', ...serif(13), lineHeight: 1.7, fontStyle: 'italic', color: 'var(--fg-1)' }}>“{item.answer}”</p>
+            {item.questions.map((q, qi) => (
+              <div key={qi} style={{ marginTop: 6 }}>
+                {!single && <div style={{ ...serif(12), lineHeight: 1.6, color: 'var(--fg-3)' }}>{q.body}</div>}
+                <p style={{ margin: single ? '6px 0 0' : '2px 0 0', ...serif(13), lineHeight: 1.7, fontStyle: 'italic', color: 'var(--fg-1)' }}>“{answers[qi]}”</p>
+              </div>
+            ))}
             <div style={{ marginTop: 8, ...microMeta, color: 'var(--fg-3)' }}>{item.via}</div>
           </div>
         )}
@@ -780,12 +797,54 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
     )
   }
 
-  const chooseOption = (o: AskOption, idx: number) => answerAsk(item.uid, o.label, `picked option ${idx + 1}`)
-  const sendOther = () => {
-    const t = otherText.trim()
-    if (!t) return
-    answerAsk(item.uid, t, `free-text answer · ${t.length} chars`)
+  const turn = (to: number) => {
+    setPage(to)
+    setOtherOpen(false)
+    setBodyMore(false)
   }
+  const setAnswer = (answer: AskAnswer | undefined) =>
+    setPicked((current) => {
+      const next = [...current]
+      next[page] = answer
+      return next
+    })
+  // A pick answers this question and moves on; the batch is sent together, once.
+  const pick = (answer: string, via: string) => {
+    if (immediate) {
+      answerAsk(item.uid, [answer], via)
+      return
+    }
+    setAnswer(answer)
+    if (page < item.questions.length - 1) turn(page + 1)
+    else setOtherOpen(false)
+  }
+  // A multi-select question's picks, in the order its options are listed.
+  const toggle = (option: string) => {
+    const current = picked[page]
+    const on = Array.isArray(current) ? current : []
+    const picks = q.options
+      .map((o) => o.label)
+      .filter((l) => (l === option ? !on.includes(l) : on.includes(l)))
+    setAnswer(picks.length ? picks : undefined)
+    setOtherOpen(false)
+  }
+  const answeredCount = item.questions.filter((_, qi) => picked[qi] !== undefined).length
+  const complete = answeredCount === item.questions.length
+  const submit = () => {
+    if (complete) {
+      answerAsk(item.uid, item.questions.map((_, qi) => picked[qi] ?? ''), single ? 'picked several options' : `answered ${item.questions.length} questions`)
+    }
+  }
+  const sendOther = () => {
+    const t = (otherText[page] ?? '').trim()
+    if (t) pick(t, `free-text answer · ${t.length} chars`)
+  }
+  const answer = picked[page]
+  // A typed answer is marked on the "Other" row, as a pick is on its option.
+  const typed = typeof answer === 'string' && !q.options.some((o) => o.label === answer)
+  const navLink = (enabled: boolean): CSSProperties => ({
+    ...label(8.5, '.12em'), color: enabled ? 'var(--fg-2)' : 'var(--fg-3)', cursor: enabled ? 'pointer' : 'default', opacity: enabled ? 1 : 0.45, whiteSpace: 'nowrap',
+  })
 
   return (
     <div id={`pm-${item.uid}`} className="lt-entry" style={{ '--i': i ?? 0, maxWidth: cardMax } as CSSProperties}>
@@ -799,14 +858,24 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               {item.tool} · waiting · {operator}
             </span>
           </div>
-          <div
-            ref={bodyRef}
-            style={{ position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP, marginTop: 6 }}
-          >
-            <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: 'var(--fg-2)' }}>{item.body}</p>
-            {bodyLong && !bodyMore && (
-              <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
-            )}
+        </div>
+        {/* The current question, apart from the card's title when the batch has several. */}
+        <div
+          style={single
+            ? { padding: '0 15px 0 16px' }
+            : { marginTop: 10, padding: '9px 15px 0 16px', borderTop: '1px solid var(--line-divider)' }}
+        >
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, marginTop: single ? 6 : 0 }}>
+            {!single && <span style={{ ...mono(8, 700), color: 'var(--fg-3)', flexShrink: 0 }}>{page + 1}/{item.questions.length}</span>}
+            <div
+              ref={bodyRef}
+              style={{ flex: 1, minWidth: 0, position: 'relative', overflow: 'hidden', maxHeight: bodyMore || !bodyLong ? 'none' : ASK_BODY_CLAMP }}
+            >
+              <p style={{ margin: 0, ...serif(13), lineHeight: 1.7, color: single ? 'var(--fg-2)' : 'var(--fg-1)' }}>{q.body}</p>
+              {bodyLong && !bodyMore && (
+                <span style={{ position: 'absolute', left: 0, right: 0, bottom: 0, height: 20, background: 'linear-gradient(transparent, var(--card-bg))', pointerEvents: 'none' }} />
+              )}
+            </div>
           </div>
           {bodyLong && (
             <div style={{ display: 'flex', marginTop: 2 }}>
@@ -818,56 +887,37 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
           )}
         </div>
         <div style={{ marginTop: 9, borderTop: '1px solid var(--line-divider)' }}>
-          {item.options.map((o, idx) => {
-            const openRow = rowOpen === idx + 1
+          {q.options.map((o, idx) => {
+            const chosen = Array.isArray(answer) ? answer.includes(o.label) : answer === o.label
             return (
               <div
                 key={o.label}
-                onClick={() => {
-                  setRowOpen(openRow ? 0 : idx + 1)
-                  setOtherOpen(false)
-                }}
+                aria-pressed={chosen}
+                // One click: a single-select option is the answer, a multi-select one toggles.
+                onClick={() => (q.multiSelect ? toggle(o.label) : pick(o.label, `picked option ${idx + 1}`))}
                 className="hov-wash"
-                style={{ borderBottom: '1px solid var(--line-divider)', background: openRow ? 'var(--hover)' : 'transparent', cursor: 'pointer' }}
+                style={{ borderBottom: '1px solid var(--line-divider)', cursor: 'pointer' }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px' }}>
-                  <span style={{ ...mono(8, 700), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '1px 5px', flexShrink: 0 }}>{idx + 1}</span>
+                  <span style={{ ...mono(8, 700), color: chosen ? 'var(--color-accent)' : 'var(--fg-2)', border: `1px solid ${chosen ? 'var(--color-accent)' : 'var(--line-divider)'}`, padding: '1px 5px', flexShrink: 0 }}>{q.multiSelect && chosen ? '✓' : idx + 1}</span>
                   <span style={{ fontSize: 12.5, color: 'var(--fg-1)', flexShrink: 0 }}>{o.label}</span>
                   <span style={{ flex: 1, minWidth: 0, ...mono(8), ...ghost3, ...ellipsis }}>{o.sum}</span>
-                  <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{openRow ? '▾' : '▸'}</span>
                 </div>
-                {openRow && (
-                  <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
-                    <p style={{ margin: '0 0 0 25px', ...serif(12), lineHeight: 1.65, color: 'var(--fg-2)' }}>{o.desc}</p>
-                    <div style={{ display: 'flex', marginTop: 8 }}>
-                      <span style={{ width: 25 }} />
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          chooseOption(o, idx)
-                        }}
-                        className="hov-panel"
-                        style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}
-                      >
-                        Choose {idx + 1}
-                      </span>
-                    </div>
-                  </div>
-                )}
               </div>
             )
           })}
           <div style={{ borderBottom: '1px solid var(--line-divider)' }}>
             <div
-              onClick={() => {
-                setOtherOpen((v) => !v)
-                setRowOpen(0)
-              }}
+              onClick={() => setOtherOpen((v) => !v)}
               className="hov-wash"
               style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 8px 16px', cursor: 'pointer' }}
             >
-              <span style={{ ...mono(8, 700), color: 'var(--fg-2)', border: '1px solid var(--line-divider)', padding: '1px 5px', flexShrink: 0 }}>0</span>
-              <span style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--fg-3)' }}>Other — type instructions…</span>
+              <span style={{ ...mono(8, 700), color: typed ? 'var(--color-accent)' : 'var(--fg-2)', border: `1px solid ${typed ? 'var(--color-accent)' : 'var(--line-divider)'}`, padding: '1px 5px', flexShrink: 0 }}>0</span>
+              {typed ? (
+                <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, color: 'var(--fg-1)', ...ellipsis }}>{answer}</span>
+              ) : (
+                <span style={{ fontSize: 12.5, fontStyle: 'italic', color: 'var(--fg-3)' }}>Other — type instructions…</span>
+              )}
               <span style={{ flex: 1 }} />
               <span style={{ ...mono(10), ...ghost3, flexShrink: 0 }}>{otherOpen ? '▾' : '▸'}</span>
             </div>
@@ -875,9 +925,16 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
               <div className="lt-fade-in" style={{ padding: '0 15px 10px 16px' }}>
                 <textarea
                   rows={2}
-                  placeholder="type your instruction — it sends as the answer"
-                  value={otherText}
-                  onChange={(e) => setOtherText(e.target.value)}
+                  placeholder={immediate ? 'type your instruction — it sends as the answer' : 'type your instruction — it becomes this answer'}
+                  value={otherText[page] ?? ''}
+                  onChange={(e) => {
+                    const text = e.target.value
+                    setOtherText((current) => {
+                      const next = [...current]
+                      next[page] = text
+                      return next
+                    })
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && !e.shiftKey) {
                       e.preventDefault()
@@ -899,17 +956,56 @@ function AskRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'ask' 
                   }}
                 />
                 <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 6 }}>
-                  <span style={{ ...microMeta, color: 'var(--fg-3)' }}>↩ send · esc back to options</span>
+                  <span style={{ ...microMeta, color: 'var(--fg-3)' }}>{immediate ? '↩ send' : '↩ use'} · esc back to options</span>
                   <span style={{ flex: 1 }} />
                   <span onClick={sendOther} className="hov-panel" style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: 'pointer' }}>
-                    Send
+                    {immediate ? 'Send' : 'Use'}
                   </span>
                 </div>
               </div>
             )}
           </div>
         </div>
-        <div style={{ padding: '8px 15px 10px 16px', ...microMeta, color: 'var(--fg-3)' }}>{item.meta}</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 15px 10px 16px' }}>
+          <span style={{ ...microMeta, color: 'var(--fg-3)', minWidth: 0, ...ellipsis }}>{item.meta}</span>
+          <span style={{ flex: 1 }} />
+          {!single && (
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 9, flexShrink: 0 }}>
+              <span onClick={() => page > 0 && turn(page - 1)} aria-disabled={page === 0} className={page > 0 ? 'hov-accent' : undefined} style={navLink(page > 0)}>
+                ‹ prev
+              </span>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+                {item.questions.map((_, qi) => (
+                  <button
+                    key={qi}
+                    type="button"
+                    aria-label={`Question ${qi + 1}${picked[qi] !== undefined ? ', answered' : ''}`}
+                    aria-current={qi === page ? 'step' : undefined}
+                    onClick={() => turn(qi)}
+                    style={{
+                      width: 7, height: 7, padding: 0, borderRadius: 0, cursor: 'pointer',
+                      border: `1px solid ${qi === page ? 'var(--color-accent)' : 'var(--line-divider)'}`,
+                      background: picked[qi] !== undefined ? 'var(--color-sage)' : 'transparent',
+                    }}
+                  />
+                ))}
+              </span>
+              <span onClick={() => page < item.questions.length - 1 && turn(page + 1)} aria-disabled={page === item.questions.length - 1} className={page < item.questions.length - 1 ? 'hov-accent' : undefined} style={navLink(page < item.questions.length - 1)}>
+                next ›
+              </span>
+            </span>
+          )}
+          {!immediate && (
+            <span
+              onClick={submit}
+              aria-disabled={!complete}
+              className={complete ? 'hov-panel' : undefined}
+              style={{ ...label(8.5, '.12em'), color: 'var(--trk-on-fill)', background: 'var(--color-accent)', padding: '4px 10px', cursor: complete ? 'pointer' : 'not-allowed', opacity: complete ? 1 : 0.45, whiteSpace: 'nowrap', flexShrink: 0 }}
+            >
+              Submit {answeredCount}/{item.questions.length}
+            </span>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -997,7 +1093,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       return (
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
           <i style={{ width: 6, height: 6, borderRadius: 9999, background: 'var(--fg-3)', flexShrink: 0 }} />
-          <CapsLabel>{item.text}</CapsLabel>
+          <CapsLabel style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minWidth: 0 }}>{item.text}</CapsLabel>
           <span style={{ flex: 1, borderTop: '1px solid var(--line-color)' }} />
         </div>
       )
@@ -1053,7 +1149,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       )
     case 'stream':
       return (
-        <div id={`pm-${item.uid}`} className="lt-fade-in" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+        <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
           <Markdown text={item.text} />
           {item.streaming && <span className="lt-caret" style={{ verticalAlign: 'text-bottom', marginLeft: 3 }} />}
         </div>
@@ -1068,10 +1164,10 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       )
     case 'notice':
       return (
-        <div className="lt-fade-in" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0' }}>
-          <span style={{ flex: 1, borderTop: '1px dashed var(--color-teal)', opacity: 0.6 }} />
-          <span style={{ ...label(9, '.14em'), color: 'var(--color-teal)' }}>⇄ {item.text}</span>
-          <span style={{ flex: 1, borderTop: '1px dashed var(--color-teal)', opacity: 0.6 }} />
+        <div className={item.tone === 'error' ? 'lt-error-notice' : 'lt-fade-in'} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '2px 0', color: item.tone === 'error' ? 'var(--color-red)' : item.tone === 'warning' ? 'var(--color-gold)' : 'var(--color-teal)' }}>
+          <span style={{ flex: 1, borderTop: '1px dashed currentColor', opacity: 0.6 }} />
+          <span style={{ ...label(9, '.14em'), whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minWidth: 0 }}>⇄ {item.text}</span>
+          <span style={{ flex: 1, borderTop: '1px dashed currentColor', opacity: 0.6 }} />
         </div>
       )
   }

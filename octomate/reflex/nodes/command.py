@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.reflex.nodes.handoff import Handoff
 from octomate.reflex.nodes.scheme import Scheme
+from octomate.reflex.nodes.summon import Summon
 from octomate.reflex.nodes.teleport import Teleport
 from octomate.reflex.state import (
     ReflexDeps,
@@ -30,7 +30,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     async def run(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
-    ) -> Handoff | Scheme | Teleport | End[ReflexGraphResult]:
+    ) -> Summon | Scheme | Teleport | End[ReflexGraphResult]:
         context = self.signal.context
         agent = ctx.deps.agent(context.agent_id)
         channel = ctx.deps.channel(context.address.channel_tentacle_id)

@@ -245,6 +245,7 @@ class ClaudeRunAccumulator:
     usage: RunUsage = field(default_factory=RunUsage)
     result_text: str = ""
     session_id: str | None = None
+    model_name: str | None = None
     # Set when the run was driven with an `output_format` schema: the SDK's
     # validated structured result (a JSON-able object), used by
     # `build_structured_result` instead of the freeform text.
@@ -428,6 +429,7 @@ class ClaudeRunAccumulator:
     def _consume_assistant(
         self, message: AssistantMessage
     ) -> Iterator[StreamEvents[str]]:
+        self.model_name = message.model
         parts: list[ModelResponsePart] = []
         for block in message.content:
             if isinstance(block, TextBlock):

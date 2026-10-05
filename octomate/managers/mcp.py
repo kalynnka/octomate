@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, datetime
@@ -14,6 +13,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.shared._httpx_utils import McpHttpClientFactory
+from pydantic import UUID7
 from sqlalchemy.exc import IntegrityError
 from uuid_utils.compat import uuid7
 
@@ -70,11 +70,11 @@ class McpUnavailable(LookupError):
 class McpClientKey(NamedTuple):
     """The (user, mcp) pair a pooled client is cached under."""
 
-    user_id: uuid.UUID
-    mcp_id: uuid.UUID
+    user_id: UUID7
+    mcp_id: UUID7
 
 
-class McpManager(Manager, Locks[uuid.UUID]):
+class McpManager(Manager, Locks[UUID7]):
     """A user's MCP installations: install, enable, authorize and remove them, and
     pool their clients."""
 
@@ -103,7 +103,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
             tentacle.info for tentacle in self.tentacles.values() if tentacle.serving
         ]
 
-    async def install(self, user_id: uuid.UUID, request: McpInstallRequest) -> Mcp:
+    async def install(self, user_id: UUID7, request: McpInstallRequest) -> Mcp:
         mcp_id = uuid7()
         namespace = f"personal/{request.namespace}"
         instance: Mcp
@@ -198,7 +198,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
 
     async def list[McpT: Mcp](
         self,
-        user_id: uuid.UUID,
+        user_id: UUID7,
         *,
         enabled: bool = False,
         mcp_type: type[McpT] = Mcp,
@@ -234,7 +234,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
             summary.oauth = McpOAuthSummary(status=authorization.status, flows=flows)
         return summary
 
-    async def enable(self, user_id: uuid.UUID, mcp_id: uuid.UUID) -> Mcp:
+    async def enable(self, user_id: UUID7, mcp_id: UUID7) -> Mcp:
         async with self.lock(mcp_id):
             async with async_session() as session:
                 instance = await session.one_or_none(
@@ -251,7 +251,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
                 await session.commit()
             return instance
 
-    async def disable(self, user_id: uuid.UUID, mcp_id: uuid.UUID) -> Mcp:
+    async def disable(self, user_id: UUID7, mcp_id: UUID7) -> Mcp:
         async with self.lock(mcp_id):
             async with async_session() as session:
                 instance = await session.one_or_none(
@@ -280,7 +280,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
             await self.evict(McpClientKey(user_id=user_id, mcp_id=mcp_id))
             return instance
 
-    async def uninstall(self, user_id: uuid.UUID, mcp_id: uuid.UUID) -> None:
+    async def uninstall(self, user_id: UUID7, mcp_id: UUID7) -> None:
         async with self.lock(mcp_id):
             async with async_session() as session:
                 instance = await session.one_or_none(
@@ -309,9 +309,9 @@ class McpManager(Manager, Locks[uuid.UUID]):
 
     async def authorizable(
         self,
-        user_id: uuid.UUID,
+        user_id: UUID7,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
         namespace: str | None = None,
     ) -> OAuthMcp:
         if mcp_id is None and namespace is None:
@@ -333,7 +333,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
     async def connect(
         self,
         user: User,
-        mcp_id: uuid.UUID,
+        mcp_id: UUID7,
         *,
         profile: UserProfile | None = None,
         flow: OAuthFlowKind | None = None,
@@ -357,7 +357,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
             )
 
     async def pending_authorization(
-        self, user: User, mcp_id: uuid.UUID
+        self, user: User, mcp_id: UUID7
     ) -> OAuthStartResult | None:
         if self.oauth is None:
             raise McpUnavailable
@@ -366,7 +366,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
             user, mcp.tentacle_id or "mcp", mcp_id=mcp_id
         )
 
-    async def cancel_authorization(self, user: User, mcp_id: uuid.UUID) -> None:
+    async def cancel_authorization(self, user: User, mcp_id: UUID7) -> None:
         if self.oauth is None:
             raise McpUnavailable
         mcp = await self.authorizable(user_id=user.id, mcp_id=mcp_id)
@@ -395,7 +395,7 @@ class McpManager(Manager, Locks[uuid.UUID]):
     async def confirm(
         self,
         user: User,
-        mcp_id: uuid.UUID,
+        mcp_id: UUID7,
         *,
         profile: UserProfile | None = None,
     ) -> McpAuthorizationResult:

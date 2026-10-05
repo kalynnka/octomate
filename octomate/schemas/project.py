@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
-from typing import Annotated, Literal, Self, TypeAlias
+from typing import Annotated, Literal, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
 from pydantic import (
+    UUID7,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -70,7 +70,7 @@ class DirectoryUpstream(BaseModel):
 
 # Not one optional url: the two kinds carry different fields and drive different
 # sync code, so the branch lives in the type rather than in an `if url is None`.
-UpstreamVariant: TypeAlias = Annotated[
+type UpstreamVariant = Annotated[
     RemoteUpstream | DirectoryUpstream, Field(discriminator="kind")
 ]
 
@@ -85,7 +85,7 @@ class Project(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     name: str = Field(
         default="",
         description=(

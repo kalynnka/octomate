@@ -126,7 +126,7 @@ export function ControlRail() {
               <span
                 style={{
                   ...mono(12, on ? 700 : 500),
-                  color: on ? 'var(--fg-1)' : 'var(--fg-2)',
+                  color: on ? 'var(--fg-1)' : 'var(--trk-control-item-fg)',
                   flexShrink: 0,
                 }}
               >

@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar, Literal
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import JsonValue
+from pydantic import UUID7, JsonValue
 from sqlalchemy import JSON, ForeignKey, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -29,7 +28,7 @@ class ModelMessage(Base, TransmuterProxiedMixin):
         "polymorphic_abstract": True,
     }
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     run_id: Mapped[str] = mapped_column(
         String,
         ForeignKey("agent_runs.id", ondelete="CASCADE"),

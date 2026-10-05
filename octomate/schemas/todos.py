@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Annotated, NotRequired, TypedDict
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import AwareDatetime, ConfigDict, Field
+from pydantic import UUID7, AwareDatetime, ConfigDict, Field
 from pydantic_ai._utils import now_utc
 from uuid_utils.compat import uuid7
 
@@ -22,8 +21,8 @@ class Todo(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    conversation_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    conversation_id: UUID7
     ref: str
     content: str
     active_form: str = ""

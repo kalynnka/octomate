@@ -11,10 +11,10 @@ replays at the bottom of the chat instead of buried in an old thread)."""
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig, SlackChannelConfig
@@ -27,6 +27,7 @@ from tests.support.scenarios import (
     batch_actions,
     mid_run_notice,
     play,
+    recorded_questions,
     showcase,
     slack_card_payload,
     streamed_text,
@@ -53,7 +54,7 @@ def slack_run_thread(
             "slack channel/trigger target not configured in tentacles.yaml/trigger.yaml"
         )
     target = trigger_targets.slack
-    channel = SlackTentacle("slack", Octomate(), config=config)
+    channel = SlackTentacle("slack", Octomate(config=live_config), config=config)
     main_key = ChannelAddress(
         channel_tentacle_id="slack",
         chat_type=target.chat_type,
@@ -134,7 +135,7 @@ async def test_slack_renders_action_batch(
     channel, address = slack_channel
     # The slack buttons serialize the batch id into their state; the scenario
     # actions need real ids (on a live run the action manager sets them).
-    batch_id = uuid4()
+    batch_id = uuid7()
     question, approval = batch_actions()
     script = action_batch(
         batch_id=str(batch_id),
@@ -147,6 +148,27 @@ async def test_slack_renders_action_batch(
         await drive(channel, address, play(script))
 
     assert "timeline render failed" not in caplog.text
+
+
+async def test_slack_renders_recorded_question_batch(
+    slack_channel: tuple[SlackTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The batch a real run asked: checkboxes for the multi-select question, then
+    radio buttons for the single pick."""
+    channel, address = slack_channel
+    batch_id = uuid7()
+    script = action_batch(
+        batch_id=str(batch_id),
+        questions=recorded_questions(batch_id),
+        approvals=[],
+    )
+
+    with caplog.at_level("WARNING"):
+        await drive(channel, address, play(script))
+
+    # A card Slack refuses is only logged, so any warning fails the replay.
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
 
 
 async def test_slack_renders_mid_run_notice(

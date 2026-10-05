@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import uuid
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property, partial
@@ -35,10 +34,11 @@ from octomate_protocol.stream import (
     StreamEof,
     StreamFinalize,
     StreamHello,
+    StreamLine,
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import HttpUrl, ValidationError
+from pydantic import UUID7, HttpUrl, ValidationError
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -65,7 +65,7 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
 from octomate.prompts import tagged
@@ -98,7 +98,7 @@ from octomate.tentacles.deepseek.catalog import DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
-from octomate.tentacles.deepseek.ink import DeepseekInk
+from octomate.tentacles.deepseek.ink import DeepseekInk, TurnFrame
 from octomate.tentacles.deepseek.process import DeepseekProcess
 from octomate.tentacles.deepseek.tailer import DeepseekEventTailer
 from octomate.tentacles.deepseek.wire import (
@@ -110,7 +110,6 @@ from octomate.tentacles.deepseek.wire import (
     QuestionRequestedFrame,
     SessionAssistantFrame,
     SessionCreateValue,
-    SessionEventFrame,
     SessionProjectionsValue,
     SessionPromptValue,
     StreamErrorFrame,
@@ -124,7 +123,10 @@ from octomate.types.json import JsonObject, JsonValue
 if TYPE_CHECKING:
     from octomate.base import Octomate
     from octomate.managers.conversation import ConversationManager
+    from octomate.managers.deferred import DeferredActionManager
+    from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
+    from octomate.mcp.base import KnownBearers
 
 logger = logging.getLogger(__name__)
 
@@ -138,10 +140,12 @@ class DeepseekBridgeContext:
     """
 
     conversation: Conversation
-    conversation_address: ChannelAddress
-    run_name: str | None
     session_allowed: set[str]
     interactive: bool
+    # What a request pauses the turn on, and the turn's own frames, where its
+    # batch joins the stream.
+    suspender: DeferredSuspender | None
+    frames: asyncio.Queue[TurnFrame]
 
 
 @dataclass
@@ -168,6 +172,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     from native ingest because their runs are already recorded here.
     """
 
+    # TODO: Implement fork_session when DSH supports a destination cwd.
+    # Until then, inherit the base rejection to keep teleport/fork blocked.
+
     config: DeepseekConfig = field(init=False)
     default_provider: str | None = field(init=False)
     effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
@@ -175,6 +182,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     ink: DeepseekInk = field(init=False, repr=False)
     conversations: ConversationManager = field(init=False, repr=False)
     workspaces: WorkspaceManager = field(init=False, repr=False)
+    deferred_actions: DeferredActionManager = field(init=False, repr=False)
+    users: UserManager = field(init=False, repr=False)
+    bearers: KnownBearers = field(init=False, repr=False)
     bridge_contexts: dict[str, DeepseekBridgeContext] = field(
         default_factory=dict, init=False
     )
@@ -208,10 +218,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
         )
         self.config = config
         self.conversations = octomate.conversations
         self.workspaces = octomate.workspaces
+        self.deferred_actions = octomate.deferred_actions
+        self.users = octomate.users
+        self.bearers = octomate.bearers
         self.description = description or self.description
         self.process = None
         # The endpoint is fixed by config, so the client lives as long as the
@@ -224,7 +238,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         )
         self.bridge_contexts = {}
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         self.models = {}
@@ -235,9 +249,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.conversation_locks = SessionLocks()
         self.session_locks = SessionLocks()
         self.session_tailer = DeepseekEventTailer(
-            self.octomate.conversations,
-            self.octomate.threads,
-            self.octomate.projects,
+            self.conversations,
+            self.threads,
+            self.projects,
             self.session_locks,
         )
         self.session_ingest = DeepseekHookIngest(
@@ -259,8 +273,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         The guard covers the websocket too: FastAPI runs router dependencies
         at the handshake, so a bad bearer is denied with the same 401 before
         any socket opens."""
-        verifier = hook_guard(self.octomate.bearers)
-        resolve_sender = hook_sender(self.octomate.users, self.native_id, verifier)
+        verifier = hook_guard(self.bearers)
+        resolve_sender = hook_sender(self.users, self.native_id, verifier)
         router = APIRouter(tags=["deepseek"], dependencies=[Depends(verifier)])
 
         @router.post("/hooks/deepseek", summary="dsh native-session hook pipe")
@@ -353,6 +367,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     return
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
+                    return
+                if not isinstance(message, StreamLine):
+                    await websocket.close(
+                        code=1008, reason="expected a transcript line"
+                    )
                     return
                 if message.agent_id is not None:
                     # A dsh session streams as one event sequence; there are no
@@ -494,16 +513,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self.driving(session_id),
             contextlib.AsyncExitStack() as resources,
         ):
-            self.bridge_contexts[session_id] = DeepseekBridgeContext(
-                conversation=conversation,
-                conversation_address=context.address,
-                run_name="command",
-                session_allowed=set(conversation.allowed_tools),
-                interactive=True,
-            )
-            resources.callback(self.bridge_contexts.pop, session_id, None)
             queue = await self.ink.subscribe(session_id)
             resources.push_async_callback(self.ink.unsubscribe, session_id)
+            self.bridge_contexts[session_id] = DeepseekBridgeContext(
+                conversation=conversation,
+                session_allowed=set(conversation.allowed_tools),
+                interactive=True,
+                suspender=deferred_suspender,
+                frames=queue,
+            )
+            resources.callback(self.bridge_contexts.pop, session_id, None)
             execution = await self.ink.execute_command(session_id, line)
             if execution is None:
                 yield CommandError(
@@ -521,9 +540,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self,
         context: CommandContext,
         execution: CommandExecutionValue,
-        queue: asyncio.Queue[
-            SessionEventFrame | SessionAssistantFrame | StreamErrorFrame
-        ],
+        queue: asyncio.Queue[TurnFrame],
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
         """Fence direct results by command ID, and record only an actual native turn.
 
@@ -539,6 +556,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         run_id = str(uuid7())
         while not settled or (accumulator.turn_started and not accumulator.turn_ended):
             frame = await queue.get()
+            if isinstance(frame, ActionBatchEvent):
+                yield frame
+                continue
             if isinstance(frame, StreamErrorFrame):
                 accumulator.turn_error = frame.error.message
                 break
@@ -580,6 +600,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 run_id=run_id,
                 messages=accumulator.messages,
                 name="command",
+                model_name=accumulator.route.model
+                if accumulator.route is not None
+                else None,
+                permission_mode=conversation.permission_mode or context.permission_mode,
                 cwd=context.cwd,
                 external_id=conversation.external_id,
                 native_id=DEEPSEEK_NATIVE_ID,
@@ -717,10 +741,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self.session_ingest.shutdown()
             await self.session_tailer.shutdown()
             await self.ink.__aexit__(exc_type, exc_value, traceback)
-            for future in list(self.pending.values()):
+            for future in list(self.pendings.values()):
                 if not future.done():
                     future.cancel()
-            self.pending.clear()
+            self.pendings.clear()
             self.bridge_contexts.clear()
             if self.process is not None:
                 await self.process.stop()
@@ -776,7 +800,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
         if approved and response is not None and response.allow_session:
             context.session_allowed.add(frame.tool_name)
-            await self.octomate.conversations.grant_session_tool(
+            await self.conversations.grant_session_tool(
                 context.conversation,
                 frame.tool_name,
             )
@@ -812,13 +836,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 request["choices"] = choices
             if item.detail:
                 request["hint"] = item.detail
+            if item.multi_select:
+                request["multi_select"] = True
             questions.append(request)
         requests = DeferredToolRequests(
             calls=[
                 ToolCallPart(
                     tool_name="deepseek_user_input",
                     args={"questions": questions},
-                    tool_call_id=str(uuid4()),
+                    tool_call_id=str(uuid7()),
                     provider_name=DEEPSEEK_PROVIDER_NAME,
                 )
             ]
@@ -830,15 +856,18 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         # Batch questions carry their position in the call's list, so sorting
         # them realigns each with the dsh item it was built from. An answer
-        # matching an option label is echoed pristine into `selected` — dsh
-        # matches answers by label — anything else is `custom` text, and no
-        # answer is an answered-but-empty item, which dsh accepts as a skip.
+        # matching an option label, and a multi-select question's picks, are echoed
+        # pristine into `selected` — dsh matches answers by label — while anything
+        # else is `custom` text, and no answer is an answered-but-empty item, which
+        # dsh accepts as a skip.
         answers: list[JsonValue] = []
         for item, action in zip(frame.questions, sorted(batch.questions), strict=False):
             answer = response.answers.get(action.id)
             labels = {option.label for option in (item.options or [])}
             payload: JsonObject = {"id": item.id, "selected": []}
-            if answer and answer in labels:
+            if isinstance(answer, list):
+                payload["selected"] = [*answer]
+            elif answer and answer in labels:
                 payload["selected"] = [answer]
             elif answer:
                 payload["custom"] = answer
@@ -851,42 +880,28 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         context: DeepseekBridgeContext,
         requests: DeferredToolRequests,
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        channel = self.octomate.channels.get(
-            context.conversation_address.channel_tentacle_id
-        )
-        if channel is None:
-            raise RuntimeError(
-                "no channel "
-                f"{context.conversation_address.channel_tentacle_id!r} to present "
-                "a dsh approval/question"
-            )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=context.conversation,
-            agent_tentacle_id=self.id,
-            run_name=context.run_name,
-            source_address=context.conversation_address,
-            target_address=context.conversation_address,
-            target_mode="sub"
-            if context.conversation_address.channel_thread_id
-            else "main",
-            decision=None,
-            requests=requests,
-        )
+        if context.suspender is None:
+            raise RuntimeError("a dsh approval mid-turn needs a suspender to pause on")
+        # Waiting before the cards go up, so a quick answer cannot miss it.
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
-            )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            batch, event = await context.suspender.pause(requests, batch_id=batch_id)
+            if event is not None:
+                context.frames.put_nowait(event)
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
-        await self.octomate.deferred_actions.resolve_batch(response)
+            self.pendings.pop(batch_id, None)
+        await self.deferred_actions.resolve_batch(response)
         return batch, response
 
     @staticmethod
@@ -920,32 +935,31 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             return
         if not name or not name.strip():
             return
-        await self.octomate.conversations.set_name(conversation, name)
+        await self.conversations.set_name(conversation, name)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.octomate.threads.get(
-            conversation.thread_id, with_messages=False
-        )
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
         if thread is None:
             raise ValueError(f"unknown thread {conversation.thread_id}")
-        await self.octomate.threads.rename(thread, name)
+        await self.threads.rename(thread, name)
 
     async def _iter_events(
         self,
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
+        deferred_suspender: DeferredSuspender | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         deepseek_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
@@ -964,7 +978,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
 
         if conversation_id is not None:
-            conversation = await self.octomate.conversations.get(
+            conversation = await self.conversations.get(
                 conversation_id, with_history=False
             )
             if (
@@ -976,7 +990,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     f"({self.id!r}, {thread_id})"
                 )
         else:
-            conversation = await self.octomate.conversations.ensure(
+            conversation = await self.conversations.ensure(
                 thread_id,
                 agent_tentacle_id=self.id,
                 with_history=False,
@@ -1005,7 +1019,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         permission_mode = conversation.permission_mode or self.config.permission_mode
         self.check_permission_mode(permission_mode)
         project = await self.run_project(conversation.thread_id)
-        workspace = self.octomate.workspaces.open(conversation.thread_id, project)
+        workspace = self.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
 
         with deepseek_logfire.span(
@@ -1080,16 +1094,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             f"{execution.result.text}"
                         )
 
+                    queue = await self.ink.subscribe(session_id)
                     self.bridge_contexts[session_id] = DeepseekBridgeContext(
                         conversation=conversation,
-                        conversation_address=conversation_address,
-                        run_name=run_name,
                         session_allowed=set(conversation.allowed_tools),
                         interactive=interactive,
+                        suspender=deferred_suspender,
+                        frames=queue,
                     )
                     prompted = False
                     try:
-                        queue = await self.ink.subscribe(session_id)
                         SessionPromptValue.model_validate(
                             self.unwrap(
                                 await client.remote(
@@ -1111,6 +1125,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         prompted = True
                         while not accumulator.turn_ended:
                             frame = await queue.get()
+                            if isinstance(frame, ActionBatchEvent):
+                                # A batch the turn paused on, for whoever draws the run.
+                                yield frame
+                                continue
                             if isinstance(frame, StreamErrorFrame):
                                 accumulator.turn_error = f"dsh event stream failed mid-turn: {frame.error.message}"
                                 break
@@ -1148,11 +1166,15 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                             await self.ink.unsubscribe(session_id)
 
                 run_id = str(uuid7())
-                recorded_run = await self.octomate.conversations.record_agent_run(
+                recorded_run = await self.conversations.record_agent_run(
                     conversation,
                     run_id=run_id,
                     messages=accumulator.messages,
                     name=run_name,
+                    model_name=accumulator.route.model
+                    if accumulator.route is not None
+                    else deepseek_model,
+                    permission_mode=permission_mode,
                     cwd=Path(run_cwd),
                     external_id=session_id,
                     native_id=DEEPSEEK_NATIVE_ID,
@@ -1179,16 +1201,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     "prompt-source bindings require a persisted user ModelRequest"
                 )
             source_message_ids = list(source_thread_message_ids)
-            await self.octomate.threads.bind_messages(
+            await self.threads.bind_messages(
                 source_message_ids,
                 prompt_request.id,
                 kind="request_source",
                 run_id=recorded_run.id,
             )
-            source_thread = await self.octomate.threads.ensure(
+            source_thread = await self.threads.ensure(
                 source_thread_address or conversation_address
             )
-            await self.octomate.threads.advance_prompt_cursor(
+            await self.threads.advance_prompt_cursor(
                 source_thread,
                 source_message_ids[-1],
             )
@@ -1207,16 +1229,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1239,16 +1261,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1270,16 +1292,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1311,6 +1333,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 interactive=interactive,
                 instructions=instructions,
                 capabilities=capabilities,
+                deferred_suspender=deferred_suspender,
             )
         ):
             if isinstance(event, AgentRunResultEvent):
@@ -1325,16 +1348,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1356,16 +1379,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1386,16 +1409,16 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1426,6 +1449,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     interactive=interactive,
                     instructions=instructions,
                     capabilities=capabilities,
+                    deferred_suspender=deferred_suspender,
                 )
             )
         )

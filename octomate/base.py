@@ -29,6 +29,7 @@ from octomate.managers.auth import AuthManager
 from octomate.managers.commands import CommandManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.files import FileManager
 from octomate.managers.gateway import GatewayManager
 from octomate.managers.mcp import McpManager
 from octomate.managers.oauth import OAuthManager
@@ -49,7 +50,7 @@ from octomate.reflex import (
 from octomate.schemas.awakes import (
     AwakeSignal,
     DeferredActionBatchResponse,
-    GatewayHandoffSignal,
+    NativeGatewaySignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
@@ -134,6 +135,7 @@ class Octomate(FastAPI):
     oauth: OAuthManager = field(init=False)
     mcp: McpManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
+    files: FileManager = field(default_factory=FileManager)
 
     # Scoped API tokens, shared by MCP verification and hook guards.
     bearers: KnownBearers = field(init=False)
@@ -295,7 +297,7 @@ class Octomate(FastAPI):
         self,
         signal: AwakeSignal,
     ) -> ReflexGraphResult | None:
-        """Run Reflex and return its result, or resolve a live deferred response."""
+        """Trigger the agent graph from a user message turn or deferred response."""
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
@@ -303,37 +305,49 @@ class Octomate(FastAPI):
                 address = signal.address
                 span.set_attribute("channel_id", address.channel_tentacle_id)
                 span.set_attribute("conversation_address", str(address))
-            elif isinstance(signal, GatewayHandoffSignal):
+            elif isinstance(signal, NativeGatewaySignal):
                 span.set_attribute("agent_id", signal.agent_id)
                 span.set_attribute("action", signal.decision.action)
             elif isinstance(signal, DeferredActionBatchResponse):
                 span.set_attribute("batch_id", str(signal.batch_id))
-                # Deliver the response to a live Claude run blocked on this batch
-                # (approval/question), rather than resuming through the graph.
-                for agent in self.agents.values():
-                    if not agent.in_process:
-                        continue
-                    future = agent.pending.get(signal.batch_id)
-                    if future is None:
-                        continue
-                    if not future.done():
-                        future.set_result(signal)
-                    span.set_attribute("resolved_live", agent.id)
+                agent_id = await self.deliver_live_response(signal)
+                if agent_id is not None:
+                    span.set_attribute("resolved_live", agent_id)
                     return
-            with sqlalchemy_materia():
+            state = ReflexState()
+            deps = ReflexDeps(
+                workspaces=self.workspaces,
+                agents=self.agents,
+                channels=self.channels,
+                conversation_manager=self.conversations,
+                thread_manager=self.threads,
+                action_manager=self.deferred_actions,
+                gateway=self.gateway,
+            )
+            try:
                 return await reflex_graph.run(
-                    inputs=Awake(signal=signal),
-                    state=ReflexState(),
-                    deps=ReflexDeps(
-                        workspaces=self.workspaces,
-                        agents=self.agents,
-                        channels=self.channels,
-                        conversation_manager=self.conversations,
-                        thread_manager=self.threads,
-                        action_manager=self.deferred_actions,
-                        gateway=self.gateway,
-                    ),
+                    inputs=Awake(signal=signal), state=state, deps=deps
                 )
+            except Exception as error:
+                await deps.report(state, error)
+                raise
+
+    async def deliver_live_response(
+        self, response: DeferredActionBatchResponse
+    ) -> str | None:
+        """Return the live recipient's id; only an explicit resume batch returns None."""
+        batch = await self.deferred_actions.get_batch(response.batch_id)
+        if batch.response_mode == "resume":
+            return None
+        agent = self.agents.get(batch.agent_tentacle_id)
+        if agent is None or not agent.in_process:
+            raise RuntimeError("The agent for this live request is unavailable")
+        future = agent.pendings.get(response.batch_id)
+        if future is None:
+            raise RuntimeError("This live request is no longer awaiting a response")
+        if not future.done():
+            future.set_result(response)
+        return agent.id
 
     def kick_soon(self, signal: AwakeSignal) -> None:
         """`kick` as its own task, for a caller that must answer now — a served
@@ -353,6 +367,9 @@ class Octomate(FastAPI):
             # setting: probed here so the log says which mechanism this host
             # got, once, before anything asks for a workspace.
             await self.workspaces.detect()
+            # A live request's waiter died with the last process, so a reply to
+            # one still pending would be lost: it is refused as expired instead.
+            await self.deferred_actions.expire_live()
             async with (
                 # Starlette runs no lifespan for a mounted app, and the MCP
                 # transport's task group lives in that lifespan; the endpoint

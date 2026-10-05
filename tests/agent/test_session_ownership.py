@@ -19,6 +19,7 @@ async def test_unregistered_agents_keep_overlapping_claims_until_the_last_releas
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,

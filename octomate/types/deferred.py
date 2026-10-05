@@ -14,6 +14,7 @@ DeferredBatchStatus = Literal[
     "failed",
 ]
 DeferredActionKind = Literal["question", "approval"]
+DeferredResponseMode = Literal["live", "resume"]
 DeferredActionStatus = Literal[
     "pending",
     "answered",

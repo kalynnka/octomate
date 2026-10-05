@@ -18,6 +18,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config.agents import Claim, ClaudeCodeConfig, CodexConfig, DeepseekConfig
+from octomate.config.agents.codex import CodexReasoningEffort
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
@@ -71,6 +72,7 @@ async def test_claude_uses_native_metadata_before_config(
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,
@@ -107,6 +109,7 @@ async def test_claude_discovery_claims_its_session_through_client_cleanup(
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,
@@ -212,6 +215,7 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,
@@ -228,7 +232,7 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         assert tentacle.default_model is None
         assert tentacle.provider == prefix
         assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-            "Native description", efforts=("high",)
+            "Native description", efforts=("high",), default_effort="high"
         )
         assert [route.claim.efforts for route in tentacle.routes] == [
             ("high",),
@@ -238,9 +242,62 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
             "model/list",
             {"includeHidden": False, "cursor": "page-2"},
         )
-        codex_catalog.close.assert_not_awaited()
     codex_catalog.initialize.assert_awaited_once()
     codex_catalog.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("ours", "codex", "default"),
+    [
+        # The model's own default, unless Codex's setting or ours says otherwise.
+        (None, None, "high"),
+        (None, "low", "low"),
+        ("medium", "low", "medium"),
+        # A level the model does not take is no default anyone can be shown.
+        ("xhigh", None, None),
+    ],
+)
+async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
+    codex_catalog: AsyncMock,
+    ours: CodexReasoningEffort | None,
+    codex: str | None,
+    default: str | None,
+) -> None:
+    model = CodexModel.model_validate(
+        {
+            **codex_model("recommended").model_dump(by_alias=True),
+            "supportedReasoningEfforts": [
+                {"reasoningEffort": effort, "description": effort}
+                for effort in ("low", "medium", "high")
+            ],
+        }
+    )
+    codex_catalog.request.side_effect = [
+        ConfigReadResponse.model_validate(
+            {"config": {"model_reasoning_effort": codex}, "origins": {}}
+        ),
+        ModelListResponse(data=[model]),
+    ]
+    tentacle = CodexTentacle(
+        "codex",
+        Octomate(),
+        config=CodexConfig(effort=ours),
+        commands=Octomate().commands,
+        projects=Octomate().projects,
+        threads=Octomate().threads,
+        files=Octomate().files,
+        conversations=Octomate().conversations,
+        deferred_actions=Octomate().deferred_actions,
+        workspaces=Octomate().workspaces,
+        users=Octomate().users,
+        bearers=Octomate().bearers,
+        auth=Octomate().auth,
+        gateway_manager=Octomate().gateway,
+    )
+
+    await tentacle.discover_models()
+
+    assert tentacle.claims["openai:recommended"].default_effort == default
 
 
 async def test_codex_empty_catalog_fails_without_fabricating_models(
@@ -258,6 +315,7 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,
@@ -383,6 +441,7 @@ def harness(
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
             conversations=octomate.conversations,
             deferred_actions=octomate.deferred_actions,
             workspaces=octomate.workspaces,
@@ -409,6 +468,7 @@ def harness(
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
             conversations=octomate.conversations,
             deferred_actions=octomate.deferred_actions,
             workspaces=octomate.workspaces,

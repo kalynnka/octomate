@@ -47,6 +47,26 @@ const PATHS: Record<string, ReactNode> = {
       <path d="M18 9a9 9 0 0 1-9 9" />
     </>
   ),
+  arrowRightLeft: (
+    <>
+      <path d="m16 3 4 4-4 4" />
+      <path d="M20 7H4" />
+      <path d="m8 21-4-4 4-4" />
+      <path d="M4 17h16" />
+    </>
+  ),
+  wandSparkles: (
+    <>
+      <path d="m21.64 3.64-1.28-1.28a1.21 1.21 0 0 0-1.72 0L2.36 18.64a1.21 1.21 0 0 0 0 1.72l1.28 1.28a1.2 1.2 0 0 0 1.72 0L21.64 5.36a1.2 1.2 0 0 0 0-1.72" />
+      <path d="m14 7 3 3" />
+      <path d="M5 6v4" />
+      <path d="M19 14v4" />
+      <path d="M10 2v2" />
+      <path d="M7 8H3" />
+      <path d="M21 16h-4" />
+      <path d="M11 3H9" />
+    </>
+  ),
   sun: (
     <>
       <circle cx="12" cy="12" r="4" />

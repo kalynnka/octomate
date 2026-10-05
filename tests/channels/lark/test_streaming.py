@@ -6,7 +6,6 @@ import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import uuid4
 
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
@@ -22,11 +21,12 @@ from pydantic_ai.messages import (
     ToolCallPart,
     ToolReturnPart,
 )
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
     ResultSegmentEvent,
     StreamEvents,
-    SubagentActivity,
+    SubagentStartedEvent,
     TodoCompletedEvent,
     TodoCreatedEvent,
 )
@@ -220,7 +220,7 @@ async def test_lark_consume_renders_todo_checklist_card() -> None:
         chat_id="u1",
         user_id="u1",
     )
-    todo = Todo(conversation_id=uuid4(), ref="T1", content="Find the docs")
+    todo = Todo(conversation_id=uuid7(), ref="T1", content="Find the docs")
 
     async def events() -> AsyncIterator[
         StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
@@ -252,7 +252,7 @@ async def test_lark_consume_renders_action_batch_cards() -> None:
     )
     # The lark question card serializes its batch id into the button state,
     # so the scripted actions need a real one.
-    batch_id = uuid4()
+    batch_id = uuid7()
     question, approval = batch_actions()
     question = question.model_copy(update={"batch_id": batch_id})
     approval = approval.model_copy(update={"batch_id": batch_id})
@@ -488,8 +488,12 @@ async def test_lark_subagents_own_cards_separate_from_parent_and_siblings() -> N
         user_id="u1",
     )
 
-    first_activity = SubagentActivity("call-a", "commission", "audit")
-    second_activity = SubagentActivity("call-b", "commission", "tests")
+    first_activity = SubagentStartedEvent(
+        invocation_id="call-a", kind="commission", name="audit"
+    )
+    second_activity = SubagentStartedEvent(
+        invocation_id="call-b", kind="commission", name="tests"
+    )
     async with channel.feelers.timeline.open(address) as parent:
         await parent.thinking_start()
         await parent.thinking_delta("parent work")

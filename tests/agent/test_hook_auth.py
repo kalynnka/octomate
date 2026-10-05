@@ -50,6 +50,7 @@ def client_for(path: str) -> TestClient:
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
             conversations=octomate.conversations,
             deferred_actions=octomate.deferred_actions,
             workspaces=octomate.workspaces,
@@ -65,6 +66,7 @@ def client_for(path: str) -> TestClient:
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
             conversations=octomate.conversations,
             deferred_actions=octomate.deferred_actions,
             workspaces=octomate.workspaces,
@@ -130,6 +132,7 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,
@@ -151,6 +154,7 @@ async def test_stream_authentication_has_its_own_database_context(token: str) ->
             commands=app.commands,
             projects=app.projects,
             threads=app.threads,
+            files=app.files,
             conversations=app.conversations,
             deferred_actions=app.deferred_actions,
             workspaces=app.workspaces,
@@ -176,3 +180,39 @@ async def test_stream_authentication_has_its_own_database_context(token: str) ->
         with pytest.raises(WebSocketDenialResponse) as denial:
             Context().run(connect)
         assert denial.value.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("tool_name", "stamped"),
+    [("mcp__octomate__gateway_teleport", True), ("Bash", False)],
+)
+def test_a_teleport_call_is_answered_with_its_session_stamped_in(
+    tool_name: str, stamped: bool
+) -> None:
+    """A native call cannot say which session made it; the hook that sees it can,
+    and answers the teleport's input back with the session in it. Any other
+    tool's call is only observed."""
+    event = {
+        "hook_event_name": "PreToolUse",
+        "session_id": "s1",
+        "tool_name": tool_name,
+        "tool_input": {"hint": "moving over"},
+    }
+    with client_for(CLAUDE_HOOK_PATH) as client:
+        response = client.post(
+            CLAUDE_HOOK_PATH,
+            json=event,
+            headers={"Authorization": f"Bearer {SECRET.get_secret_value()}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == (
+        {
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": {"hint": "moving over", "session_id": "s1"},
+            }
+        }
+        if stamped
+        else {}
+    )

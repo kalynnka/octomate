@@ -3,13 +3,13 @@ keys — and the token payloads sign-in returns."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import Annotated
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
 from pydantic import (
+    UUID7,
     AnyHttpUrl,
     AwareDatetime,
     BaseModel,
@@ -31,7 +31,7 @@ class UserInvitation(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     token_hash: SecretStr = Field(exclude=True, repr=False)
     expires_at: AwareDatetime
     consumed_at: AwareDatetime | None = None
@@ -45,8 +45,8 @@ class UserSession(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    user_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    user_id: UUID7
     access_token_hash: SecretStr = Field(exclude=True, repr=False)
     refresh_token_hash: SecretStr = Field(exclude=True, repr=False)
     access_expires_at: AwareDatetime
@@ -64,8 +64,8 @@ class LinkProfileSession(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    profile_id: uuid.UUID = Field(
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    profile_id: UUID7 = Field(
         description="The exact channel profile this session may link."
     )
     token_hash: SecretStr = Field(exclude=True, repr=False)
@@ -81,8 +81,8 @@ class UserApiKey(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    user_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    user_id: UUID7
     name: str = Field(min_length=1, max_length=100)
     key_hash: SecretStr = Field(exclude=True, repr=False)
     key_prefix: str
@@ -95,8 +95,8 @@ class UserApiKey(BaseTransmuter):
 class SessionTokens(BaseModel):
     """Secrets returned only by successful login or refresh."""
 
-    session_id: uuid.UUID
-    user_id: uuid.UUID
+    session_id: UUID7
+    user_id: UUID7
     access_token: SecretStr = Field(repr=False)
     refresh_token: SecretStr = Field(repr=False)
     access_expires_at: AwareDatetime

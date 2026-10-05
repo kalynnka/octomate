@@ -32,7 +32,6 @@ from octomate.schemas.triage import (
     AgentRoute,
     Claim,
     SummonDecision,
-    ThreadLanding,
 )
 from octomate.tentacles.claude.mcp import octomate_mcp_server, sdk_tool
 from octomate.tentacles.mcp import BareMcpTentacle
@@ -52,23 +51,25 @@ CLAUDE_ROUTE = AgentRoute(
 SUMMON_ARGUMENTS = {
     "agent_id": "claude",
     "model": "opus",
-    "destination": {"kind": "thread"},
     "hint": "Working on it",
     "reason": "needs coding",
     "summon": "Please investigate the failing test.",
 }
 
 
-def a_turn() -> OctomateSession:
+def a_turn(*, in_thread: bool = False) -> OctomateSession:
+    """A turn on a group main, or in a thread of it — the shared surface a summon can
+    take over."""
     return OctomateSession(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": FakeChannelTentacle()},
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
-            chat_type="group",
+            chat_type="thread" if in_thread else "group",
             chat_id="room",
             user_id="alice",
+            channel_thread_id="t-1" if in_thread else None,
             shared=True,
         ),
     )
@@ -127,12 +128,12 @@ def test_the_instruction_names_the_tools_by_their_served_names() -> None:
     instruction = octomate_instructions()
 
     for name in (
-        "gateway_scry",
+        "gateway_inspect",
         "gateway_summon",
         "gateway_teleport",
         "gateway_scheme",
         "gateway_send",
-        "gateway_dispel",
+        "gateway_dismiss",
         "history_search",
     ):
         assert f"`{name}`" in instruction
@@ -142,18 +143,17 @@ def test_the_instruction_names_the_tools_by_their_served_names() -> None:
 
 
 async def test_summon_records_the_decision_and_answers_with_the_sentence() -> None:
-    session = a_turn()
+    session = a_turn(in_thread=True)
     tools = await spells(session)
 
     result = await tools["gateway_summon"].handler(dict(SUMMON_ARGUMENTS))
 
-    assert the_text(result) == "Summoning claude (opus) → thread."
+    assert the_text(result) == "Summoning claude (opus) to take over here."
     assert "is_error" not in result
     assert session.decision == SummonDecision(
         action="summon",
         agent_id="claude",
         model="opus",
-        destination=ThreadLanding(),
         effort=None,
         hint="Working on it",
         reason="needs coding",
@@ -162,7 +162,7 @@ async def test_summon_records_the_decision_and_answers_with_the_sentence() -> No
 
 
 async def test_a_refusal_is_an_error_result_carrying_the_same_sentence() -> None:
-    session = a_turn()
+    session = a_turn(in_thread=True)
     tools = await spells(session)
 
     result = await tools["gateway_summon"].handler(
@@ -179,14 +179,14 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
     session = a_turn()
     tools = await spells(session)
 
-    # The bad destination kind is the input under test: schema validation refuses
-    # it before any policy is consulted, and the refusal is a retryable error.
+    # The bad effort level is the input under test: schema validation refuses it
+    # before any policy is consulted, and the refusal is a retryable error.
     result = await tools["gateway_summon"].handler(
-        {**SUMMON_ARGUMENTS, "destination": {"kind": "everywhere"}}
+        {**SUMMON_ARGUMENTS, "effort": "everything"}
     )
 
     assert result["is_error"] is True
-    assert "destination" in the_text(result)
+    assert "effort" in the_text(result)
     assert session.decision is None
 
 

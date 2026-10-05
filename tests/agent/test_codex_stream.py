@@ -1,23 +1,26 @@
-"""Remote Codex rollout ingest: raw framed lines over the stream endpoint, assembled
-by the same tailer machinery the local pumps feed. Codex turns close on their own
-`task_complete`/`turn_aborted` lines, so nothing commits at a connection boundary —
-`eof` and a drop alike just return the registry slot — and every connect re-streams
-from byte 0, because a rollout's head is load-bearing: `session_meta` carries the
-thread id child classification checks against, and the parent's `sub_agent_activity`
-lines are what link child runs to their spawning calls. The committed-turn guard is
-what keeps the re-stream from duplicating anything."""
+"""Remote Codex ingest and incremental transcript uploads.
+
+Each fresh tailer replays the parent history from byte zero to restore metadata
+and child-call links. The endpoint supplies the stored prefix locally, so only
+new parent lines and bytes cross the socket. Child files still replay from zero.
+Committed-turn guards prevent replay from duplicating runs.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock
 
+import opendal
 import pytest
-from fastapi import FastAPI
+from anyio import Path as AsyncPath
+from fastapi import FastAPI, UploadFile
 from fastapi.testclient import TestClient
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH, CODEX_STREAM_PATH
 from octomate_protocol.stream import (
@@ -27,19 +30,23 @@ from octomate_protocol.stream import (
     StreamFinalize,
     StreamHello,
     StreamLine,
+    StreamSnapshotStart,
+    StreamSnapshotStored,
     StreamWelcome,
     server_message_adapter,
 )
 from pydantic import SecretStr
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
-from starlette.testclient import WebSocketDenialResponse
+from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
@@ -312,8 +319,12 @@ async def test_a_stop_waits_for_the_stopped_turn_then_asks_the_drain() -> None:
     assert run.id == "turn-a"
 
 
-def stream_client() -> tuple[TestClient, CodexTentacle]:
+def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    if storage is not None:
+        octomate.files = FileManager(
+            storage=opendal.AsyncOperator("fs", root=str(storage))
+        )
     tentacle = octomate.connect(
         CodexTentacle(
             "codex",
@@ -322,6 +333,7 @@ def stream_client() -> tuple[TestClient, CodexTentacle]:
             commands=octomate.commands,
             projects=octomate.projects,
             threads=octomate.threads,
+            files=octomate.files,
             conversations=octomate.conversations,
             deferred_actions=octomate.deferred_actions,
             workspaces=octomate.workspaces,
@@ -362,11 +374,83 @@ def test_the_stream_authenticates_like_the_hook_routers() -> None:
     assert denial.value.status_code == 401
 
 
-def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
-    """End to end through the endpoint: hello/welcome, framed lines, eof, and the
-    server's close. The next connect is welcomed at byte 0 again — Codex resumes by
-    re-streaming, with the committed-turn guard as the dedup."""
-    client, tentacle = stream_client()
+def upload_transcript(
+    websocket: WebSocketTestSession, data: bytes, *, start: int = 0
+) -> None:
+    request = StreamSnapshotStart(
+        transfer_id=uuid7(), start=start, end=start + len(data)
+    )
+    websocket.send_text(request.model_dump_json())
+    websocket.send_bytes(data)
+    stored = server_message_adapter.validate_json(websocket.receive_text())
+    assert isinstance(stored, StreamSnapshotStored)
+    assert stored.transfer_id == request.transfer_id
+
+
+async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) -> None:
+    octomate, _ = remote_tailer()
+    files = FileManager(storage=opendal.AsyncOperator("fs", root=str(tmp_path)))
+    owner = await a_user()
+    conversation = await octomate.conversations.ensure(
+        await a_thread(), agent_tentacle_id=CODEX_NATIVE_ID
+    )
+    first = await octomate.conversations.store_transcript(
+        UploadFile(BytesIO(b"first\n"), filename="rollout.jsonl"),
+        0,
+        conversation=conversation,
+        files=files,
+        owner_id=owner.id,
+    )
+
+    with pytest.raises(ValueError, match="Append offset"):
+        await octomate.conversations.store_transcript(
+            UploadFile(BytesIO(b"stale\n"), filename="rollout.jsonl"),
+            0,
+            conversation=conversation,
+            files=files,
+            owner_id=owner.id,
+        )
+
+    current = await octomate.conversations.get(conversation.id, with_history=False)
+    assert current.transcript_file_id == first.id
+    assert await files.read(first.id, owner_id=owner.id) == b"first\n"
+    assert conversation.transcript_file_id is None
+    assert len([path async for path in AsyncPath(tmp_path).glob("users/*/*")]) == 1
+
+
+def test_transcript_is_persisted_during_a_turn_and_appended_on_the_same_socket(
+    tmp_path: Path,
+) -> None:
+    client, _ = stream_client(storage=tmp_path)
+    batches = [[parent_metadata(), *TURN_A[:2]], TURN_A[2:]]
+    content = b""
+
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        websocket.receive_text()
+        for batch in batches:
+            for agent_id, start, end, line in frames(batch, start=len(content)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            delta = b"".join(map(line_bytes, batch))
+            upload_transcript(websocket, delta, start=len(content))
+            content += delta
+            assert [path.read_bytes() for path in tmp_path.glob("users/*/*")] == [
+                content
+            ]
+        websocket.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_text()
+
+
+def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly(tmp_path: Path) -> None:
+    """A reconnect sends only the suffix; an unchanged transcript needs no upload."""
+    client, tentacle = stream_client(storage=tmp_path)
+    prefix = b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+    suffix = b"".join(map(line_bytes, TURN_B))
 
     # One entered client, so both connects share a portal loop — the in-memory
     # database's connection is loop-bound, and two portals would strand it.
@@ -376,6 +460,8 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
             assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.transcript is not None
+            assert welcome.transcript.offset == 0
             assert tentacle.native_sessions == {SESSION_ID: 1}
             for agent_id, start, end, line in frames([parent_metadata(), *TURN_A]):
                 websocket.send_text(
@@ -383,6 +469,9 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
                         agent_id=agent_id, start=start, end=end, line=line
                     ).model_dump_json()
                 )
+            upload_transcript(
+                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+            )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -390,19 +479,75 @@ def test_lines_flow_over_the_socket_and_eof_closes_it_cleanly() -> None:
         assert tentacle.native_sessions == {}
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
+            websocket.receive_text()
+            for agent_id, start, end, line in frames(TURN_B, start=len(prefix)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            posted = client.post(
+                CODEX_HOOK_PATH,
+                json={
+                    "hook_event_name": "Stop",
+                    "session_id": SESSION_ID,
+                    "turn_id": "turn-b",
+                },
+                headers=AUTH,
+            )
+            assert posted.status_code == 200
+            assert isinstance(
+                server_message_adapter.validate_json(websocket.receive_text()),
+                StreamFinalize,
+            )
+            websocket.send_text(
+                StreamSnapshotStart(
+                    transfer_id=uuid7(), start=len(prefix), end=len(prefix + suffix)
+                ).model_dump_json()
+            )
+            websocket.send_bytes(suffix[: len(suffix) // 2])
+        # An interrupted delta leaves the durable prefix unchanged.
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.offsets == {SESSION_FILE: len(prefix)}
+            assert welcome.transcript is not None
+            assert welcome.transcript.sha256 == hashlib.sha256(prefix).hexdigest()
             assert tentacle.native_sessions == {SESSION_ID: 1}
+            for agent_id, start, end, line in frames(TURN_B, start=len(prefix)):
+                websocket.send_text(
+                    StreamLine(
+                        agent_id=agent_id, start=start, end=end, line=line
+                    ).model_dump_json()
+                )
+            upload_transcript(websocket, suffix, start=len(prefix))
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
         assert tentacle.native_sessions == {}
+        stored_contents = [
+            path.read_bytes() for path in tmp_path.glob("users/*/*") if path.is_file()
+        ]
+        assert stored_contents == [prefix + suffix]
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets == {SESSION_FILE: len(prefix + suffix)}
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert [
+            path.read_bytes() for path in tmp_path.glob("users/*/*") if path.is_file()
+        ] == stored_contents
 
 
-def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
+def test_a_stop_over_the_hook_pipe_drains_the_socket(tmp_path: Path) -> None:
     """End to end: the `Stop` hook's POST waits for the streamed turn to commit,
     reaches the open socket as `finalize`, and the client's `eof` closes the
-    connection — the tail process's exit. Codex resumes by re-streaming, so the
-    next welcome is byte 0 again; the committed run is the proof of the drain."""
-    client, _ = stream_client()
+    connection. The next welcome resumes after the durably uploaded prefix."""
+    client, _ = stream_client(storage=tmp_path)
 
     with client:
         with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
@@ -426,6 +571,9 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
             assert posted.status_code == 200
             relayed = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(relayed, StreamFinalize)
+            upload_transcript(
+                websocket, b"".join(map(line_bytes, [parent_metadata(), *TURN_A]))
+            )
             websocket.send_text(StreamEof().model_dump_json())
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
@@ -434,7 +582,11 @@ def test_a_stop_over_the_hook_pipe_drains_the_socket() -> None:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
             assert isinstance(welcome, StreamWelcome)
-            assert welcome.offsets == {SESSION_FILE: 0}
+            assert welcome.offsets == {
+                SESSION_FILE: sum(
+                    map(len, map(line_bytes, [parent_metadata(), *TURN_A]))
+                )
+            }
 
 
 def test_a_stale_protocol_is_refused_loudly() -> None:
@@ -501,6 +653,7 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
                 bearers=tentacle.octomate.bearers,
                 auth=tentacle.octomate.auth,
                 gateway_manager=tentacle.octomate.gateway,
+                files=tentacle.octomate.files,
             )
         )
         if other_tentacle
@@ -551,9 +704,9 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
 
 @pytest.mark.parametrize("eof", [False, True])
 async def test_an_accepted_stream_continues_when_octomate_starts_driving(
-    monkeypatch: pytest.MonkeyPatch, eof: bool
+    monkeypatch: pytest.MonkeyPatch, eof: bool, tmp_path: Path
 ) -> None:
-    client, tentacle = stream_client()
+    client, tentacle = stream_client(storage=tmp_path)
     feed_remote = AsyncMock()
     monkeypatch.setattr(tentacle.session_tailer, "feed_remote", feed_remote)
 
@@ -569,6 +722,7 @@ async def test_an_accepted_stream_continues_when_octomate_starts_driving(
                     websocket.send_text(
                         StreamLine(start=0, end=3, line="{}").model_dump_json()
                     )
+                    upload_transcript(websocket, b"{}\n")
                 websocket.send_text(StreamEof().model_dump_json())
                 with pytest.raises(WebSocketDisconnect) as disconnect:
                     websocket.receive_text()

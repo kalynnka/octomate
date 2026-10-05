@@ -58,6 +58,7 @@ def agent(client: AsyncMock) -> ClaudeCodeTentacle:
         commands=host.commands,
         projects=host.projects,
         threads=host.threads,
+        files=host.files,
         conversations=host.conversations,
         deferred_actions=host.deferred_actions,
         workspaces=host.workspaces,

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
@@ -16,6 +15,7 @@ from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 import anyio
+from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -52,6 +52,8 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
+from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
@@ -62,8 +64,11 @@ if TYPE_CHECKING:
     from octomate.base import Octomate
     from octomate.capabilities.harness.deferred import DeferredSuspender
     from octomate.managers.commands import CommandManager
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.files import FileManager
     from octomate.managers.project import ProjectManager
     from octomate.managers.thread import ThreadManager
+    from octomate.managers.workspaces import WorkspaceManager
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
 # agent includes DeferredToolRequests in it); run-level output_type overrides are
@@ -79,6 +84,9 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     commands: CommandManager
     projects: ProjectManager
     threads: ThreadManager
+    files: FileManager
+    conversations: ConversationManager
+    workspaces: WorkspaceManager
 
     def __init__(
         self,
@@ -88,11 +96,13 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         commands: CommandManager,
         projects: ProjectManager,
         threads: ThreadManager,
+        files: FileManager,
     ) -> None:
         super().__init__(id=id, octomate=octomate)
         self.commands = commands
         self.projects = projects
         self.threads = threads
+        self.files = files
 
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
@@ -265,25 +275,32 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             raise ValueError(f"agent {self.id!r} has no available model catalog")
         if model is None:
             return self.default_model
-        if model in self.models:
-            return model
-
-        # Saved handoffs may omit the provider; only an unambiguous match is valid.
-        if model and ":" not in model:
-            matches = [name for name in self.models if name.partition(":")[2] == model]
-            if len(matches) == 1:
-                return matches[0]
+        served = self.served_model(model)
+        if served is not None:
+            return served
 
         raise ValueError(
             f"agent {self.id!r} does not serve model {model!r} with an unambiguous provider"
         )
+
+    def served_model(self, name: str) -> str | None:
+        """The catalog entry a stored model name means: the entry itself, or, for
+        a name saved without its provider, the one entry it can be. None when this
+        agent serves no such model."""
+        if name in self.models:
+            return name
+        if name and ":" not in name:
+            matches = [key for key in self.models if key.partition(":")[2] == name]
+            if len(matches) == 1:
+                return matches[0]
+        return None
 
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
     # waiter, instead of resuming durably through the triage graph. In-process
     # agents populate `pending` (batch id -> waiter); the rest never touch it.
     in_process: ClassVar[bool] = False
-    pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
+    pendings: dict[UUID7, asyncio.Future[DeferredActionBatchResponse]]
 
     permission_modes: tuple[PermissionMode, ...] = ()
 
@@ -411,6 +428,88 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 spoken.append("Approved." if verdict else "Denied.")
         return "\n\n".join(spoken)
 
+    async def fork(
+        self,
+        source: Conversation,
+        destination: ThreadKey,
+        *,
+        sender: UserProfile,
+    ) -> Thread:
+        """Fork an owner's uploaded native history onto a new surface, as a
+        conversation this tentacle drives. The import is the runtime's own
+        `fork_transcript`; the checks and the thread around it are every runtime's."""
+        owner_id = sender.user_id
+        if owner_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only a root native session of this runtime can be forked")
+        threads = self.threads
+        source_thread = await threads.get(
+            source.thread_id, with_messages=False, user_id=owner_id
+        )
+        if source_thread is None:
+            raise FileNotFoundError("No conversation")
+        if source.transcript_file_id is None:
+            raise ValueError("The session transcript has not been uploaded yet")
+        await self.files.get(source.transcript_file_id, owner_id=owner_id)
+        project = await self.projects.of(source_thread)
+        if project is not None and not await anyio.Path(project.root).is_dir():
+            project = None
+        thread = await threads.ensure(destination, project=project)
+        target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
+        cwd = self.workspaces.open(thread.id, project).path
+        await self.fork_transcript(source, target, owner_id=owner_id, cwd=cwd)
+        return await threads.record_fork(
+            source, thread, sender=sender, title=source_thread.title
+        )
+
+    async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
+        """Refuse unusable native history before a destination is created,
+        including a session last run on a model this agent does not serve."""
+        if sender.user_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        _, completed = await self.read_fork_transcript(source, owner_id=sender.user_id)
+        model = completed.model_name
+        if model is not None and self.served_model(model) is None:
+            raise ValueError(
+                f"This session last ran {model!r}, which {self.id!r} does not offer "
+                "here; the server's runtime needs updating to continue it."
+            )
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: UUID7
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """An owner's uploaded native history up to its latest whole turn, and that
+        turn — what a fork of it carries."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: UUID7,
+        cwd: Path,
+    ) -> Conversation:
+        """Import an owner's native history into the empty `target`, as a session
+        this runtime resumes in `cwd`."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
+
+    @property
+    def supports_session_fork(self) -> bool:
+        """Whether this harness implements independent runtime session creation."""
+        return type(self).fork_session is not AgentTentacle.fork_session
+
+    async def fork_session(
+        self, conversation: Conversation, *, cwd: Path
+    ) -> str | None:
+        """Fork the runtime session, or stop if this agent cannot fork safely."""
+        raise NotImplementedError(f"Agent {self.id!r} does not support session forking")
+
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         """Relocate the runtime session behind `conversation` to `cwd`, where its next
         run resumes. The graph's call, made once a teleport has settled where the
@@ -423,7 +522,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         machine, so a native teleport has nothing here to move: bringing it over is
         a rebuild from the ledger, still to come, and this is where it lands."""
 
-    async def run_project(self, thread_id: uuid.UUID) -> Project | None:
+    async def run_project(self, thread_id: UUID7) -> Project | None:
         """The project a run in this thread is in, or None when it is in none.
 
         The thread is where a project is bound, and every conversation belongs to
@@ -447,16 +546,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -479,16 +578,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -511,16 +610,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -543,8 +642,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID,
-        conversation_id: uuid.UUID,
+        thread_id: UUID7,
+        conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
@@ -581,16 +680,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -612,16 +711,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -643,16 +742,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,

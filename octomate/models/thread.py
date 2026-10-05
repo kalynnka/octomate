@@ -3,12 +3,11 @@ full-text index."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import JsonValue
+from pydantic import UUID7, JsonValue
 from sqlalchemy import (
     JSON,
     Float,
@@ -45,12 +44,12 @@ class MessageBinding(Base, TransmuterProxiedMixin):
 
     __tablename__ = "message_binding"
 
-    thread_message_id: Mapped[uuid.UUID] = mapped_column(
+    thread_message_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("thread_messages.id", ondelete="CASCADE"),
         primary_key=True,
     )
-    model_message_id: Mapped[uuid.UUID] = mapped_column(
+    model_message_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("model_messages.id", ondelete="CASCADE"),
         primary_key=True,
@@ -122,7 +121,7 @@ class Thread(Base, TransmuterProxiedMixin):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
     kind: Mapped[ThreadKind] = mapped_column(
         String,
@@ -147,7 +146,7 @@ class Thread(Base, TransmuterProxiedMixin):
         ),
     )
 
-    parent_thread_id: Mapped[uuid.UUID | None] = mapped_column(
+    parent_thread_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("threads.id", ondelete="CASCADE"),
         nullable=True,
@@ -173,7 +172,7 @@ class Thread(Base, TransmuterProxiedMixin):
         ),
     )
 
-    project_id: Mapped[uuid.UUID | None] = mapped_column(
+    project_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("projects.id", ondelete="SET NULL"),
         nullable=True,
@@ -191,7 +190,7 @@ class Thread(Base, TransmuterProxiedMixin):
     status: Mapped[ThreadStatus] = mapped_column(
         String, nullable=False, default="active", index=True
     )
-    source_cursor_message_id: Mapped[uuid.UUID | None] = mapped_column(
+    source_cursor_message_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("thread_messages.id", ondelete="SET NULL"),
         nullable=True,
@@ -287,7 +286,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         ),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     kind: Mapped[str] = mapped_column(
         String,
         nullable=False,
@@ -295,7 +294,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         comment="Whether this ledger row is a chat message or an explicit command.",
     )
 
-    thread_id: Mapped[uuid.UUID] = mapped_column(
+    thread_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("threads.id", ondelete="CASCADE"),
         nullable=False,
@@ -323,7 +322,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         String, nullable=True, index=True
     )
 
-    sender_id: Mapped[uuid.UUID] = mapped_column(
+    sender_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("user_profiles.id"),
         nullable=False,
@@ -373,7 +372,7 @@ class ThreadCommand(ThreadMessage):
 
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "command"}
 
-    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+    conversation_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey(
             "conversations.id",
@@ -401,9 +400,9 @@ class Handoff(Base, TransmuterProxiedMixin):
 
     __tablename__ = "channel_handoffs"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
 
-    thread_id: Mapped[uuid.UUID] = mapped_column(
+    thread_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("threads.id", ondelete="CASCADE"),
         nullable=False,
@@ -419,7 +418,7 @@ class Handoff(Base, TransmuterProxiedMixin):
             "the thread itself and nobody handed it over."
         ),
     )
-    source_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+    source_conversation_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="SET NULL"),
         nullable=True,
@@ -431,7 +430,7 @@ class Handoff(Base, TransmuterProxiedMixin):
         nullable=True,
         index=True,
     )
-    source_model_message_id: Mapped[uuid.UUID | None] = mapped_column(
+    source_model_message_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("model_messages.id", ondelete="SET NULL"),
         nullable=True,
@@ -442,7 +441,7 @@ class Handoff(Base, TransmuterProxiedMixin):
         String, nullable=False, index=True
     )
     to_model: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
-    target_conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+    target_conversation_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="SET NULL"),
         nullable=True,
@@ -482,6 +481,6 @@ class ThreadMessageFTS(Base, TransmuterProxiedMixin):
     metadata: ClassVar[MetaData] = MetaData()
 
     rowid: Mapped[int] = mapped_column(Integer, primary_key=True)
-    message_id: Mapped[uuid.UUID] = mapped_column(Uuid)
+    message_id: Mapped[UUID7] = mapped_column(Uuid)
     message_text: Mapped[str] = mapped_column(String)
     rank: Mapped[float | None] = mapped_column(Float)
