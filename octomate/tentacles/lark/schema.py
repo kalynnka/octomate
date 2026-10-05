@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Annotated, Literal, NotRequired, Protocol, runtime_checkable
-from uuid import UUID
 
 from pydantic import (
+    UUID7,
     BaseModel,
     ConfigDict,
     Discriminator,
@@ -35,14 +35,14 @@ type LarkProfileData = dict[str, LarkProfileValue]
 
 class LarkApprovalActionValue(TypedDict):
     action: NonEmptyStr
-    batch_id: UUID
-    action_id: UUID
+    batch_id: UUID7
+    action_id: UUID7
     tool_name: NotRequired[str]
 
 
 class LarkQuestionActionValue(TypedDict):
     action: NonEmptyStr
-    batch_id: UUID
+    batch_id: UUID7
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
 
 

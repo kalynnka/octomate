@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from uuid import UUID
+
+from pydantic import UUID7
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -43,7 +44,7 @@ class ApprovalFeeler(ABC):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]: ...
+    ) -> dict[UUID7, IMMessageID | None]: ...
 
 
 class QuestionFeeler(ABC):
@@ -54,7 +55,7 @@ class QuestionFeeler(ABC):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]: ...
+    ) -> dict[UUID7, IMMessageID | None]: ...
 
 
 class PlainTextApprovalFeeler(ApprovalFeeler):
@@ -69,8 +70,8 @@ class PlainTextApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]:
-        message_ids: dict[UUID, IMMessageID | None] = {}
+    ) -> dict[UUID7, IMMessageID | None]:
+        message_ids: dict[UUID7, IMMessageID | None] = {}
         for action in actions:
             message_ids[action.id] = await self.markdown.present(
                 address,
@@ -95,8 +96,8 @@ class PlainTextAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
-        message_ids: dict[UUID, IMMessageID | None] = {}
+    ) -> dict[UUID7, IMMessageID | None]:
+        message_ids: dict[UUID7, IMMessageID | None] = {}
         for action in actions:
             choices_text = ""
             if choices := action.args.get("choices"):

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from datetime import UTC, datetime
 from typing import Literal
 from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
+from pydantic import UUID7
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
 )
@@ -33,7 +33,7 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
     return
 
 
-async def _thread() -> uuid.UUID:
+async def _thread() -> UUID7:
     return await a_thread()
 
 
@@ -318,7 +318,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
         run_id="ext",
         messages=_msgs("ext"),
         name="claude-native",
-        external_session_id="sess-9",
+        native_session_id="sess-9",
         source="claude-vscode",
         start_offset=0,
         end_offset=42,
@@ -335,7 +335,7 @@ async def test_external_run_reads_back_as_its_variant() -> None:
 
     external_run = by_id["ext"]
     assert isinstance(external_run, ExternalAgentRun)
-    assert external_run.external_session_id == "sess-9"
+    assert external_run.native_session_id == "sess-9"
     assert external_run.source == "claude-vscode"
     assert (external_run.start_offset, external_run.end_offset) == (0, 42)
     assert external_run.last_line_uuid == "u-last"
@@ -834,7 +834,7 @@ async def test_observed_permission_names_survive_without_a_running_catalog() -> 
 
 async def _carry_pair(
     tag: str,
-) -> tuple[ConversationManager, uuid.UUID, uuid.UUID, Conversation, Conversation]:
+) -> tuple[ConversationManager, UUID7, UUID7, Conversation, Conversation]:
     """A source conversation holding one recorded run with a resumable handle, and
     a fresh target beside it."""
     service = ConversationManager()

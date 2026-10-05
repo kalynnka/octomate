@@ -10,7 +10,6 @@ revoked retires the connection.
 
 from __future__ import annotations
 
-import uuid
 from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -27,6 +26,7 @@ from fastmcp.server.dependencies import get_http_headers
 from mcp.shared._httpx_utils import McpHttpClientFactory
 from pydantic import SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.base import Octomate
 from octomate.config import OctomateConfig, SlackChannelConfig, SlackStreamConfig
@@ -143,7 +143,7 @@ async def a_slack_turn(
         channel_routes={channel.id: []},
         current_agent_id="codex",
         channels={channel.id: channel, "im": FakeChannelTentacle(octomate=octomate)},
-        conversation_id=uuid.uuid4(),
+        conversation_id=uuid7(),
         conversation_address=address,
         users=octomate.users,
         user_profile=await octomate.users.profile(channel.id, "U1"),

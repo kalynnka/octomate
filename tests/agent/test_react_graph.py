@@ -9,6 +9,7 @@ from typing import cast
 
 import anyio
 import pytest
+from pydantic import UUID7
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import ModelMessage, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -71,7 +72,7 @@ class StubSuspender:
         return self.event
 
     async def pause(
-        self, requests: DeferredToolRequests
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
     ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
         raise AssertionError("an Inkling run suspends; it never pauses live")
 

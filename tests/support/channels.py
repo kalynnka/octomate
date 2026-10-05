@@ -14,8 +14,8 @@ from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, NotRequired
-from uuid import UUID
 
+from pydantic import UUID7
 from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
@@ -118,11 +118,11 @@ class FakeOctomate(Octomate):
 
 @dataclass
 class RecordingDeferredActions(DeferredActionManager):
-    marked: list[tuple[UUID, str | None]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str | None]] = field(default_factory=list)
 
     async def mark_action_presented(
         self,
-        action_id: UUID,
+        action_id: UUID7,
         platform_message_id: str | None,
     ) -> None:
         self.marked.append((action_id, platform_message_id))
@@ -518,7 +518,7 @@ class RecordingApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         self.presented.append((address, list(actions)))
         return {action.id: f"approval-{action.id}" for action in actions}
 
@@ -533,7 +533,7 @@ class RecordingQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         self.presented.append((address, list(actions)))
         return {action.id: f"question-{action.id}" for action in actions}
 

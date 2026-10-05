@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import UUID
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import UUID7, JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
@@ -55,7 +54,7 @@ class LarkAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         channel_thread_id = (
@@ -147,7 +146,7 @@ def ask_question_card_data(actions: list[DeferredQuestion]) -> JsonObject:
 
 def submitted_card_data(
     actions: list[DeferredQuestion],
-    answers: dict[UUID, QuestionAnswer] | None = None,
+    answers: dict[UUID7, QuestionAnswer] | None = None,
 ) -> JsonObject:
     answers = answers or {}
     count = len(actions)
@@ -169,10 +168,10 @@ def submitted_card_data(
 def collect_answers(
     actions: list[DeferredQuestion],
     form_value: LarkQuestionFormValue,
-) -> dict[UUID, QuestionAnswer]:
+) -> dict[UUID7, QuestionAnswer]:
     """Each question's answer from the submitted form: a multi-select question's
     picks over typed text, and typed text over a single pick."""
-    answers: dict[UUID, QuestionAnswer] = {}
+    answers: dict[UUID7, QuestionAnswer] = {}
     for index, action in enumerate(actions):
         picks = form_value.get(f"picks_{index}")
         typed = str(form_value.get(f"answer_{index}") or "").strip()

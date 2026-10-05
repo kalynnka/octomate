@@ -191,6 +191,9 @@ after `super().__init__`, keeping the defaults you do not replace.
   a `TextStreamBatcher` fed from `config.stream` for pacing and a `StreamFlusher`
   so the drive loop never waits on the platform. [Feelers](../concepts/feelers.md)
   explains the pipeline.
+  Override `actions_presented` only to flush output or indicate that input was
+  requested. A pending action may leave the agent running; keep its thinking and
+  answer surfaces open. The hook is serialized with stream events and cleanup.
 - **Approvals and questions.** Subclass `ApprovalFeeler` and `QuestionFeeler`;
   `present` posts the cards and returns each action's platform message id. For the
   way back, decide whether the button carries state (Slack, Lark) or ids the

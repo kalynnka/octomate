@@ -7,13 +7,13 @@ one lock per batch so concurrent clicks on it are serialized.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 from weakref import WeakKeyDictionary, WeakValueDictionary
 
 import discord
+from pydantic import UUID7
 
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.deferred import (
@@ -54,10 +54,10 @@ class DiscordComponentRouter:
 
     def __init__(self, octomate: Octomate) -> None:
         self.octomate = octomate
-        self.callback_locks: WeakValueDictionary[uuid.UUID, asyncio.Lock] = (
+        self.callback_locks: WeakValueDictionary[UUID7, asyncio.Lock] = (
             WeakValueDictionary()
         )
-        self.question_answers: dict[uuid.UUID, dict[uuid.UUID, QuestionAnswer]] = {}
+        self.question_answers: dict[UUID7, dict[UUID7, QuestionAnswer]] = {}
 
     def bind(self, client: discord.Client) -> None:
         self.routers[client] = self
@@ -72,8 +72,8 @@ class DiscordComponentRouter:
     async def resolve_approval(
         self,
         *,
-        batch_id: uuid.UUID,
-        action_id: uuid.UUID,
+        batch_id: UUID7,
+        action_id: UUID7,
         responder_id: str,
         approved: bool,
         settle_message: Callable[[DeferredApproval], Awaitable[None]],
@@ -115,8 +115,8 @@ class DiscordComponentRouter:
 
     async def load_questions(
         self,
-        batch_id: uuid.UUID,
-    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, QuestionAnswer]]:
+        batch_id: UUID7,
+    ) -> tuple[list[DeferredQuestion], dict[UUID7, QuestionAnswer]]:
         try:
             batch = await self.octomate.deferred_actions.get_batch(batch_id)
         except ValueError as error:
@@ -132,10 +132,10 @@ class DiscordComponentRouter:
     async def save_question_answer(
         self,
         *,
-        batch_id: uuid.UUID,
-        action_id: uuid.UUID,
+        batch_id: UUID7,
+        action_id: UUID7,
         answer: str | DiscordChoiceAnswer | list[DiscordChoiceAnswer],
-    ) -> tuple[list[DeferredQuestion], dict[uuid.UUID, QuestionAnswer]]:
+    ) -> tuple[list[DeferredQuestion], dict[UUID7, QuestionAnswer]]:
         callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())
         async with callback_lock:
             actions, answers = await self.load_questions(batch_id)
@@ -165,10 +165,10 @@ class DiscordComponentRouter:
     async def submit_questions(
         self,
         *,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         responder_id: str,
         settle_message: Callable[
-            [list[DeferredQuestion], dict[uuid.UUID, QuestionAnswer]], Awaitable[None]
+            [list[DeferredQuestion], dict[UUID7, QuestionAnswer]], Awaitable[None]
         ],
     ) -> list[DeferredQuestion]:
         callback_lock = self.callback_locks.setdefault(batch_id, asyncio.Lock())

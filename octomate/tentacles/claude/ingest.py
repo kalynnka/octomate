@@ -78,6 +78,17 @@ class ClaudeHookIngest:
         """`sender` is the verified bearer's own profile (the route's
         `hook_sender` dependency) — the person every ledger row this event
         writes is attributed to."""
+        if (
+            event.agent_id is None
+            and event.prompt_id
+            and await self.octomate.conversations.driven_run(
+                CLAUDE_NATIVE_ID, event.session_id, event.prompt_id
+            )
+            is not None
+        ):
+            if event.hook_event_name == "Stop":
+                await self.tailer.stop_turn(event.session_id, event.prompt_id)
+            return
         match event.hook_event_name:
             case "SubagentStart":
                 await self.on_subagent_start(event)
@@ -203,7 +214,7 @@ class ClaudeHookIngest:
             ],
             name=CLAUDE_NATIVE_ID,
             cwd=Path(event.cwd) if event.cwd else None,
-            external_session_id=event.agent_id,
+            native_session_id=event.agent_id,
             parent_run_id=event.prompt_id,
         )
 
@@ -316,7 +327,7 @@ class ClaudeHookIngest:
             messages=messages,
             name=CLAUDE_NATIVE_ID,
             cwd=Path(event.cwd) if event.cwd else None,
-            external_session_id=event.session_id,
+            native_session_id=event.session_id,
         )
 
     async def record_answer(

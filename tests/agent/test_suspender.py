@@ -266,9 +266,12 @@ async def test_a_live_run_pauses_on_its_batch_without_suspending(
         emit_on_stream=streamed,
     )
 
-    paused, event = await suspender.pause(_requests())
+    batch_id = uuid7()
+    paused, event = await suspender.pause(_requests(), batch_id=batch_id)
 
     assert paused is batch
+    # The batch is the one the caller already waits on, and its reply is live.
+    assert (paused.id, paused.response_mode) == (batch_id, "live")
     # The run stays live, so nothing records it as ended suspended.
     assert suspender.suspended_batch_id is None
     if streamed:

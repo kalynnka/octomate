@@ -599,6 +599,7 @@ async def test_private_threads_and_mutations_are_isolated(
         channel_thread_id="shared-key",
     )
     batch = await app.deferred_actions.create_batch(
+        response_mode="resume",
         conversation=stored_conversation,
         agent_tentacle_id="inkling",
         run_name="react",

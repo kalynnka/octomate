@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from types import SimpleNamespace
@@ -15,6 +14,7 @@ from typing import cast
 
 import pytest
 from octomate_protocol.gateway import GatewayTool
+from pydantic import UUID7
 from pydantic_ai import AgentStreamEvent, RunContext
 from pydantic_ai.exceptions import ModelRetry
 from pydantic_ai.messages import (
@@ -62,7 +62,7 @@ CLAUDE_ROUTE = AgentRoute(
 
 
 def _ctx(
-    parent_id: uuid.UUID,
+    parent_id: UUID7,
     run_id: str = "run-parent",
     tool_call_id: str = "call-1",
 ) -> RunContext[None]:

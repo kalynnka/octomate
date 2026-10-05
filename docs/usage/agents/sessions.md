@@ -37,6 +37,17 @@ and relevant context. Its local process and files stay where they are.
 
 ## What to expect when switching
 
+When you resume an Octomate-driven Claude, Codex or DeepSeek session in its native
+client, newly recorded driven turns stay in their original channel conversation.
+Native ingest recognises their runtime turn IDs and collects only the new native
+turns in the native thread. Reconnecting or restarting Octomate preserves this
+deduplication; it does not move the channel's history into the native thread.
+
+Older driven runs that were saved without runtime turn IDs cannot be matched this
+way and may still appear again in native history. Existing duplicates are not
+removed. A driven run that ends before the runtime reports its turn identity has
+the same limit.
+
 | Working directly with your agent | Working through a channel |
 |---|---|
 | Uses the machine and files where you started it | Uses the server and the selected project workspace |

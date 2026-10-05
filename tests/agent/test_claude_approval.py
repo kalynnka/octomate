@@ -10,7 +10,6 @@ out-of-band, the way a card button click would.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import ClassVar, cast
@@ -30,7 +29,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 from claude_agent_sdk.types import Message, ToolPermissionContext
-from pydantic import SecretStr
+from pydantic import UUID7, SecretStr
 from pydantic_ai.tools import DeferredToolRequests
 from uuid_utils.compat import uuid7
 
@@ -66,14 +65,20 @@ _THREAD = uuid7()
 
 @dataclass
 class RecordingDeferredActions:
+    batch: FakePresentedBatch
+
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
+        return self.batch
+
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
 
     async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
         self.resolved.append(awake)
 
     async def mark_batch(
-        self, batch_id: uuid.UUID, status: str, *, completed: bool = False
+        self, batch_id: UUID7, status: str, *, completed: bool = False
     ) -> None:
         self.marked.append((batch_id, status))
 
@@ -177,8 +182,8 @@ def _build(
     config: ClaudeCodeConfig | None = None,
     conversation: FakeConversation | None = None,
 ) -> tuple[ClaudeCodeTentacle, RecordingDeferredActions, RecordingSuspender]:
-    suspender = RecordingSuspender(batch=batch)
-    dam = RecordingDeferredActions()
+    suspender = RecordingSuspender(agent_tentacle_id="claude", batch=batch)
+    dam = RecordingDeferredActions(batch=suspender.batch)
     conversations = FakeConversationManager()
     if conversation is not None:
         conversations.store[(_THREAD, "claude", "")] = conversation
@@ -215,9 +220,9 @@ async def _drain(
 
 async def _wait_for_pending(
     tentacle: ClaudeCodeTentacle, suspender: RecordingSuspender
-) -> uuid.UUID:
+) -> UUID7:
     await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
-    return next(iter(tentacle.pending))
+    return next(iter(tentacle.pendings))
 
 
 async def test_approval_allow_lets_the_tool_run(
@@ -405,7 +410,7 @@ async def test_approval_timeout_denies_and_expires(
     decision = ScriptedClaudeClient.decisions[0]
     assert isinstance(decision, PermissionResultDeny)
     assert "expired" in decision.message
-    assert not tentacle.pending  # the parked future was cleaned up
+    assert not tentacle.pendings  # the parked future was cleaned up
 
 
 async def test_ask_user_question_hook_feeds_answer_back(
@@ -502,13 +507,15 @@ async def test_ask_user_question_keeps_a_multi_select(
 
 
 async def test_kick_routes_response_to_live_waiter() -> None:
-    tentacle, _dam, _suspender = _build(FakePresentedBatch())
+    tentacle, _dam, suspender = _build(FakePresentedBatch())
 
-    batch_id = uuid.uuid4()
+    batch_id = suspender.batch.id
+    suspender.batch.response_mode = "live"
+    suspender.batch.agent_tentacle_id = tentacle.id
     future: asyncio.Future[DeferredActionBatchResponse] = (
         asyncio.get_running_loop().create_future()
     )
-    tentacle.pending[batch_id] = future
+    tentacle.pendings[batch_id] = future
 
     response = DeferredActionBatchResponse(batch_id=batch_id, approvals={})
     await tentacle.octomate.kick(response)

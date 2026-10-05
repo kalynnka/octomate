@@ -2,9 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Annotated, Literal, NotRequired
-from uuid import UUID
 
-from pydantic import ConfigDict, Field, Json, TypeAdapter, with_config
+from pydantic import UUID7, ConfigDict, Field, Json, TypeAdapter, with_config
 from typing_extensions import TypedDict
 
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
@@ -83,14 +82,14 @@ class SlackActionMessage(TypedDict):
 
 
 class SlackApprovalActionValue(TypedDict):
-    batch_id: UUID
+    batch_id: UUID7
     approvals: Annotated[list[DeferredApproval], Field(min_length=1)]
     page: int
-    decisions: dict[UUID, bool]
+    decisions: dict[UUID7, bool]
 
 
 class SlackQuestionActionValue(TypedDict):
-    batch_id: UUID
+    batch_id: UUID7
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
 
 

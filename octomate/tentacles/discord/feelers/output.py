@@ -238,7 +238,9 @@ class DiscordTimelineState(TimelineState):
         await self.finish_text()
 
     async def actions_presented(self) -> None:
-        await self.finish_text()
+        self.answer_batcher.flush_block("answer")
+        await self.text_flusher.drain()
+        await self.flush_text()
 
     async def finish(self) -> None:
         await self.finish_text()

@@ -16,6 +16,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self, overload
 
+from pydantic import UUID7
+
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers.base import Locks, Manager
@@ -50,7 +52,7 @@ SAVED_REF = "refs/octomate/saved"
 SNAPSHOT_PREFIX = "octomate: "
 
 
-def thread_ref(thread_id: uuid.UUID) -> str:
+def thread_ref(thread_id: UUID7) -> str:
     """Where a thread's work is kept in its project's mirror.
 
     Outside `refs/heads/`, so the mirror does not grow a branch per thread and
@@ -114,7 +116,7 @@ class Workspace(ABC):
     """
 
     workspaces: WorkspaceManager
-    thread_id: uuid.UUID
+    thread_id: UUID7
 
     @property
     @abstractmethod
@@ -242,7 +244,7 @@ class ChatWorkspace(Workspace):
         await self.workspaces.discard(self)
 
 
-class WorkspaceManager(Manager, Locks[uuid.UUID]):
+class WorkspaceManager(Manager, Locks[UUID7]):
     """Every project-bound thread's workspace: a fork of the project's mirror at
     ``workspaces_dir/<thread_id>``, checked out on the thread's own branch and
     released when the disk is wanted back.
@@ -301,7 +303,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         # How many runs are in each thread's chat workspace right now. The tree
         # is the run's, and two overlapping runs of one conversation share it —
         # this is what stops the first to finish taking it from the second.
-        self.chatting: dict[uuid.UUID, int] = {}
+        self.chatting: dict[UUID7, int] = {}
 
     @property
     def identity(self) -> GitIdentity:
@@ -310,12 +312,12 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         carry one name and cannot drift into two."""
         return self.mirrors.config.identity
 
-    def path(self, thread_id: uuid.UUID) -> Path:
+    def path(self, thread_id: UUID7) -> Path:
         """Where this thread's workspace lives. Absolute, because it becomes the
         working directory of a process Octomate did not start in its own."""
         return (self.workspaces_dir / str(thread_id)).resolve()
 
-    def existing(self, thread_id: uuid.UUID) -> Path | None:
+    def existing(self, thread_id: UUID7) -> Path | None:
         """This thread's workspace if it is already forked, else None — what saves a
         resumed turn the fork and the sync in front of it.
 
@@ -329,15 +331,15 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         return path
 
     @overload
-    def open(self, thread_id: uuid.UUID, project: Project) -> ProjectWorkspace: ...
+    def open(self, thread_id: UUID7, project: Project) -> ProjectWorkspace: ...
 
     @overload
-    def open(self, thread_id: uuid.UUID, project: None) -> ChatWorkspace: ...
+    def open(self, thread_id: UUID7, project: None) -> ChatWorkspace: ...
 
     @overload
-    def open(self, thread_id: uuid.UUID, project: Project | None) -> Workspace: ...
+    def open(self, thread_id: UUID7, project: Project | None) -> Workspace: ...
 
-    def open(self, thread_id: uuid.UUID, project: Project | None) -> Workspace:
+    def open(self, thread_id: UUID7, project: Project | None) -> Workspace:
         """The workspace a run in this thread happens in, ready to be entered.
 
         Which one it is, is the whole of what a project decides about a run: a
@@ -571,7 +573,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
 
     async def checkout(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         mirror: Path,
         workspace: Path,
         ref: str | None = None,
@@ -760,7 +762,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
             *state, await self.snapshot(path), cwd=path
         )
 
-    async def prune(self, idle: float) -> list[uuid.UUID]:
+    async def prune(self, idle: float) -> list[UUID7]:
         """Release every workspace nothing has used for `idle` seconds, and answer
         with the threads that lost theirs.
 
@@ -774,7 +776,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         running, too: it has changed something since its last turn was saved,
         almost by definition.
         """
-        released: list[uuid.UUID] = []
+        released: list[UUID7] = []
         # Three counts, because "why is that workspace still there" has three
         # answers and the disk cannot tell them apart: nothing has been idle long
         # enough, or something is idle and holding work the mirror never got.
@@ -913,7 +915,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
             span.set_attribute("released", True)
             return True
 
-    async def release(self, thread_id: uuid.UUID) -> None:
+    async def release(self, thread_id: UUID7) -> None:
         """Give this thread's workspace back to the disk, or nothing when it is
         already gone — pruning and releasing a thread that never had one both
         arrive here, and a workspace is a cache either way.

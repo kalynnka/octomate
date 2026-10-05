@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import uuid
 from base64 import urlsafe_b64encode
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -14,7 +13,7 @@ import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from mcp.shared.auth import OAuthClientInformationFull
-from pydantic import AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
+from pydantic import UUID7, AnyHttpUrl, SecretStr, TypeAdapter, ValidationError
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
@@ -455,7 +454,7 @@ async def started(
     profile: UserProfile,
     flow: FakeAuthorizationCodeFlow,
     *,
-    mcp_id: uuid.UUID | None = None,
+    mcp_id: UUID7 | None = None,
 ) -> tuple[AuthorizationLink, str]:
     """Start an authorization and read back the state only the provider would know."""
     owner = await manager.users.owner(profile)

@@ -5,7 +5,6 @@ agent/channel/managers. End-to-end behavior lives in test_dispatch.py."""
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager, nullcontext
 from dataclasses import dataclass, field, replace
@@ -21,6 +20,7 @@ from pydantic_ai.messages import ToolCallPart, UserPromptPart
 from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
@@ -1753,12 +1753,12 @@ async def test_a_picture_reaches_the_prompt_as_itself() -> None:
         agent=FakeAgent(id="other"),
     )
     message = ThreadMessage(
-        thread_id=uuid.uuid4(),
+        thread_id=uuid7(),
         platform_message_id="m9",
         direction="inbound",
         actor_kind="human",
         user_id="alice",
-        sender_id=uuid.uuid4(),
+        sender_id=uuid7(),
         sender=Relation(UserProfile(channel_tentacle_id="im", channel_user_id="alice")),
         segments=[
             TextSegment(data={"text": "look at this"}),

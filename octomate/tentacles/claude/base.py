@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import uuid
 import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
@@ -53,7 +52,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import UUID7, TypeAdapter, ValidationError
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
@@ -185,7 +184,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         super().__init__(id=id, octomate=octomate)
         self.config = config
         self.description = description or self.description
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         # One live Claude client per conversation, keyed by conversation id: a new
@@ -193,7 +192,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # thread id — a thread also holds subagent conversations, whose runs must
         # neither interrupt the thread's own live run nor each other. Weak values
         # so a finished run's client drops out on its own once it is collected.
-        self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
+        self.live_clients: weakref.WeakValueDictionary[UUID7, ClaudeSDKClient] = (
             weakref.WeakValueDictionary()
         )
         self.models = {}
@@ -440,7 +439,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         line: StreamLine,
         kept: int,
         *,
-        owner_id: uuid.UUID,
+        owner_id: UUID7,
     ) -> int:
         """Append one session-file line to the native conversation's stored
         transcript, and answer how far the stored bytes now reach.
@@ -467,7 +466,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return line.end
 
     async def read_fork_transcript(
-        self, source: Conversation, *, owner_id: uuid.UUID
+        self, source: Conversation, *, owner_id: UUID7
     ) -> tuple[bytes, ExternalAgentRun]:
         """The stored history up to the latest turn kept whole, and that turn."""
         if source.agent_tentacle_id != self.native_id or source.subagent_id:
@@ -482,7 +481,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 run
                 for run in source.runs
                 if isinstance(run, ExternalAgentRun)
-                and run.external_session_id == source.external_id
+                and run.native_session_id == source.external_id
                 and run.end_offset is not None
                 and run.end_offset <= len(data)
             ),
@@ -498,7 +497,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         source: Conversation,
         target: Conversation,
         *,
-        owner_id: uuid.UUID,
+        owner_id: UUID7,
         cwd: Path,
     ) -> Conversation:
         """Lay the kept history where `cwd` files Claude's sessions and fork it there
@@ -552,10 +551,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         interjections: Interjections[Message],
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
         """Pause the run on a human through the graph's suspender, putting the
-        batch on this run's stream when that is what presents it, then park a
-        future until the human response arrives via `try_resolve_live_deferred`.
-        The Claude session stays open in-process while this awaits, so the answer
-        is not durable across an Octomate restart.
+        batch on this run's stream when that is what presents it. The reply waiter
+        is registered before the cards go up, so a quick answer arriving through
+        `Octomate.kick` cannot miss it. The Claude session stays open in-process
+        while this awaits, so the answer is not durable across an Octomate restart.
 
         Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
         batch is marked expired and the caller denies the pending tool so the live
@@ -564,22 +563,24 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             raise RuntimeError(
                 "a Claude approval mid-run needs a suspender to pause on"
             )
-        batch, event = await suspender.pause(requests)
-        if event is not None:
-            interjections.interject(event)
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
-            )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            batch, event = await suspender.pause(requests, batch_id=batch_id)
+            if event is not None:
+                interjections.interject(event)
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
+            self.pendings.pop(batch_id, None)
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
@@ -670,10 +671,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
         await super().__aexit__(exc_type, exc_value, traceback)
-        for future in list(self.pending.values()):
+        for future in list(self.pendings.values()):
             if not future.done():
                 future.cancel()
-        self.pending.clear()
+        self.pendings.clear()
         # Interrupt any run still streaming so its client/transport tears down
         # instead of orphaning a subprocess or SSH connection at shutdown.
         for client in self.live_clients.values():
@@ -688,14 +689,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -870,11 +871,19 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 }
             }
 
-        # Settle the session id before the CLI exists, so the hook pipe can be told to
-        # leave this session alone (claimed below) before it can fire anything. Resuming
-        # already names the session; a new one is pinned here — the SDK takes one or the
-        # other, never both.
+        # Resuming names the session; a new one is pinned before launching the CLI.
         session_id = conversation.external_id or str(uuid7())
+        prompt_id: str | None = None
+
+        async def remember_prompt(
+            hook_input: HookInput, tool_use_id: str | None, context: HookContext
+        ) -> HookJSONOutput:
+            nonlocal prompt_id
+            event = ClaudeHookInput.model_validate(hook_input)
+            if not event.prompt_id:
+                raise ValueError("Claude's prompt hook did not provide a prompt_id")
+            prompt_id = event.prompt_id
+            return {}
 
         project = await self.run_project(conversation.thread_id)
         # Settled here, forked when the run enters it below: the options this builds
@@ -938,9 +947,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             session_id=None if conversation.external_id else session_id,
             can_use_tool=can_use_tool,
             hooks={
+                "UserPromptSubmit": [HookMatcher(hooks=[remember_prompt])],
                 "PreToolUse": [
                     HookMatcher(matcher="AskUserQuestion", hooks=[ask_user_question])
-                ]
+                ],
             },
             mcp_servers=mcp_servers,
             extra_args={"safe-mode": None},
@@ -1052,6 +1062,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 permission_mode=options.permission_mode,
                 cwd=Path(run_cwd),
                 external_id=accumulator.session_id,
+                native_id=CLAUDE_NATIVE_ID,
+                native_turn_id=prompt_id,
             )
             if source_thread_message_ids:
                 if recorded_run is None:
@@ -1131,16 +1143,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1163,16 +1175,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1194,16 +1206,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1253,16 +1265,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1284,16 +1296,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1314,16 +1326,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,

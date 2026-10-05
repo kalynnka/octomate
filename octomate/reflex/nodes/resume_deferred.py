@@ -41,6 +41,9 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             "resume_deferred",
             batch_id=str(self.awake.batch_id),
         ) as span:
+            batch = await ctx.deps.action_manager.get_batch(self.awake.batch_id)
+            if batch.response_mode != "resume":
+                raise ValueError("A live request cannot resume a suspended run")
             batch = await ctx.deps.action_manager.resolve_batch(self.awake)
             span.set_attribute("run_name", batch.run_name)
             span.set_attribute("batch_status", batch.status)

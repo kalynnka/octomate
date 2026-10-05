@@ -62,6 +62,17 @@ class CodexHookIngest:
         """`sender` is the verified bearer's own profile (the route's
         `hook_sender` dependency) — the person every ledger row this event
         writes is attributed to."""
+        if (
+            event.agent_id is None
+            and event.turn_id
+            and await self.octomate.conversations.driven_run(
+                CODEX_NATIVE_ID, event.session_id, event.turn_id
+            )
+            is not None
+        ):
+            if event.hook_event_name == "Stop":
+                await self.tailer.stop_turn(event.session_id, event.turn_id)
+            return
         if event.hook_event_name == "SubagentStart":
             await self.on_subagent_start(event)
             return
@@ -227,5 +238,5 @@ class CodexHookIngest:
             messages=messages,
             name=CODEX_NATIVE_ID,
             cwd=Path(event.cwd) if event.cwd else None,
-            external_session_id=event.session_id,
+            native_session_id=event.session_id,
         )

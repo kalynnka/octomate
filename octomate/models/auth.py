@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import SecretStr
+from pydantic import UUID7, SecretStr
 from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
@@ -21,7 +20,7 @@ class UserInvitation(Base, TransmuterProxiedMixin):
 
     __tablename__ = "user_invitations"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     token_hash: Mapped[SecretStr] = mapped_column(
         SecretString,
         nullable=False,
@@ -45,8 +44,8 @@ class UserSession(Base, TransmuterProxiedMixin):
 
     __tablename__ = "user_sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    user_id: Mapped[UUID7] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     access_token_hash: Mapped[SecretStr] = mapped_column(
@@ -86,8 +85,8 @@ class LinkProfileSession(Base, TransmuterProxiedMixin):
 
     __tablename__ = "profile_binding_sessions"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    profile_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    profile_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("user_profiles.id", ondelete="CASCADE"),
         nullable=False,
@@ -124,8 +123,8 @@ class UserApiKey(Base, TransmuterProxiedMixin):
 
     __tablename__ = "user_api_keys"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    user_id: Mapped[UUID7] = mapped_column(
         Uuid, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String, nullable=False)

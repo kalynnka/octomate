@@ -86,6 +86,10 @@ The installer also registers a `PreToolUse` hook for the gateway's teleport alon
 which stamps the session's id into the call so the session can teleport itself;
 re-run the installer to add it.
 
+Resuming a driven session natively skips already recorded driven turns when their
+runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)
+for where new turns land and the limits for older history.
+
 What the tail skips: transcript line types it does not model, and inline subagent
 relics from transcripts older than the per-file subagent layout.
 

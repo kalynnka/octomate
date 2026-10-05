@@ -77,13 +77,22 @@ calls become tasks in the plan, expanded while they run and folded when done, wi
 arguments and results inside. Todos are tasks in the same plan; Slack has no
 "blocked" state, so a blocked todo shows as pending. Each answer text part is its
 own streamed message, and the assistant status line reads "Thinking", "Writing the
-response" or "Waiting for your input" as the turn moves.
+response" or "Input requested" as the turn moves.
 
 Approvals arrive as one paged message per batch with Approve and Deny buttons.
 Questions are one message holding the whole batch: radio buttons for choices, or
 checkboxes when the question takes several picks, a free-text field, and one
-Submit. Nothing reaches Octomate until Submit is pressed, and Submit keeps working
-across a restart.
+Submit. Nothing reaches Octomate until Submit is pressed. A card shows its
+submitted summary after Octomate handles the response; a rejected response leaves
+the card unchanged. Submit keeps the batch across a restart, but a live request
+still needs its running agent to receive the reply. See
+[Requests after a restart](../actions.md#if-the-request-expires-or-the-server-restarts)
+for the difference between live requests and saved, suspended runs.
+
+Approvals and questions flush buffered output without closing the current plan
+or answer message. The agent can continue working while prompts remain open;
+"Input requested" does not mean the whole run has paused. Tool results update
+their original plan entries, and continuing answer text stays in the same message.
 
 ## MCP tools acting as the person
 

@@ -79,7 +79,7 @@ SLACK_TODO_STATUS: dict[TodoStatus, str] = {
 THINKING_TITLE = "Thinking"
 STATUS_THINKING = "Thinking…"
 STATUS_WRITING = "Writing the response…"
-STATUS_WAITING = "Waiting for your input…"
+STATUS_INPUT_REQUESTED = "Input requested…"
 
 TEXT_STREAM_ROTATE_AFTER = 270.0
 
@@ -321,7 +321,6 @@ class SlackTimelineState(TimelineState):
         if stream is None:
             raise RuntimeError("Slack text stream is not open")
         if time.monotonic() - self.text_stream_started_at >= TEXT_STREAM_ROTATE_AFTER:
-            self.text_stream = None
             await self.ink.stop_stream(stream)
             stream = await self.ink.start_stream(
                 self.channel,
@@ -362,14 +361,15 @@ class SlackTimelineState(TimelineState):
         await self.emit(step, status="complete")
 
     async def actions_presented(self) -> None:
-        # The run is parked on a human: fold the in-flight surface, or the
-        # spinner and the last activity status outlive the work they described.
-        # Resuming needs nothing special — the next event opens a fresh plan
-        # and re-sets the status through the same cache this write goes through.
-        await self.finish_text()
-        await self.complete_active_thinking()
-        self.finish_plan()
-        await self.set_status(STATUS_WAITING)
+        # A prompt may block only one action; thinking and text can keep arriving.
+        update = self.answer_batcher.flush_block("answer")
+        if update is not None:
+            self.pending_text_delta += update.delta_text
+        await self.text_flusher.drain()
+        await self.flush_text()
+        await self.thinking_flusher.drain()
+        await self.flush_thinking()
+        await self.set_status(STATUS_INPUT_REQUESTED)
 
     async def thinking_start(self) -> None:
         await self.complete_active_thinking()

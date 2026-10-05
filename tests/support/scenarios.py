@@ -67,7 +67,7 @@ from octomate.types.json import JsonObject
 
 ChannelScript = list[ReactStreamEvent[ChannelOutput]]
 
-SCENARIO_CONVERSATION_ID = uuid.UUID(int=0x0C70)
+SCENARIO_CONVERSATION_ID = uuid.UUID("00000000-0000-7000-8000-000000000c70")
 RECORDED_QUESTIONS = (
     Path(__file__).parent.parent / "src" / "events" / "inkling_questions.jsonl"
 )

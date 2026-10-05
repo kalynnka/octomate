@@ -595,16 +595,16 @@ class ClaudeTranscriptTailer:
                     model_name=turn.accumulator.model_name,
                     permission_mode=turn.permission_mode,
                     cwd=Path(turn.cwd) if turn.cwd else None,
-                    external_session_id=state.session_id,
+                    native_session_id=state.session_id,
                     source=turn.source,
                     start_offset=turn.start_offset,
                     end_offset=turn.end_offset,
                     last_line_uuid=turn.last_line_uuid,
                 )
                 span.set_attribute("committed", run is not None)
+                state.recorded.add(turn.prompt_id)
                 if run is None:
                     return
-                state.recorded.add(turn.prompt_id)
                 await self.bind_ledger(
                     state.session_id,
                     run,
@@ -804,7 +804,7 @@ class ClaudeTranscriptTailer:
                     model_name=turn.accumulator.model_name,
                     permission_mode=turn.permission_mode,
                     cwd=Path(turn.cwd) if turn.cwd else None,
-                    external_session_id=tail.agent_id,
+                    native_session_id=tail.agent_id,
                     source=turn.source,
                     start_offset=turn.start_offset,
                     end_offset=turn.end_offset,

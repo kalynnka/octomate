@@ -41,7 +41,7 @@ from lark_oapi.core.http.transport import _build_header, _build_url
 from lark_oapi.core.json import JSON
 from lark_oapi.core.model import BaseRequest, Config, RawResponse, RequestOption
 from pydantic import SecretStr, TypeAdapter
-from uuid_utils import uuid7
+from uuid_utils.compat import uuid7
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment

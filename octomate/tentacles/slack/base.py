@@ -310,6 +310,13 @@ class SlackTentacle(
             ),
             None,
         )
+        await self.octomate.kick(
+            DeferredActionBatchResponse(
+                batch_id=action_value["batch_id"],
+                responder_id=responder_id,
+                approvals={approved_action.id: approved},
+            )
+        )
         await self.ink.update_message(
             channel,
             message_ts,
@@ -327,13 +334,6 @@ class SlackTentacle(
                     responder_id=responder_id,
                 )
             ),
-        )
-        await self.octomate.kick(
-            DeferredActionBatchResponse(
-                batch_id=action_value["batch_id"],
-                responder_id=responder_id,
-                approvals={approved_action.id: approved},
-            )
         )
 
     async def on_question_submit(self, ack, body: SlackQuestionActionBody) -> None:
@@ -354,18 +354,18 @@ class SlackTentacle(
         action_value = action_body["actions"][0]["value"]
         actions = action_value["questions"]
         answers = collect_answers(action_body["state"], actions)
-        await self.ink.update_message(
-            action_body["channel"]["id"],
-            action_body["message"]["ts"],
-            text="Answers submitted",
-            blocks=submitted_blocks(actions, answers),
-        )
         await self.octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=action_value["batch_id"],
                 responder_id=action_body["user"]["id"],
                 answers={action.id: answers.get(action.id, "") for action in actions},
             )
+        )
+        await self.ink.update_message(
+            action_body["channel"]["id"],
+            action_body["message"]["ts"],
+            text="Answers submitted",
+            blocks=submitted_blocks(actions, answers),
         )
 
     async def ensure_assistant_thread(

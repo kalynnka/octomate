@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass
 from functools import cached_property
 
-from pydantic import BaseModel, Field
+from pydantic import UUID7, BaseModel, Field
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import QuestionAnswer
@@ -16,7 +15,7 @@ from octomate.schemas.user import UserProfile
 @dataclass(frozen=True)
 class UserMessageSignal:
     messages: list[MessageEvent]
-    trigger_thread_message_id: uuid.UUID | None = None
+    trigger_thread_message_id: UUID7 | None = None
 
     def __bool__(self) -> bool:
         return bool(self.messages)
@@ -37,10 +36,10 @@ class UserMessageSignal:
 
 
 class DeferredActionBatchResponse(BaseModel):
-    batch_id: uuid.UUID
+    batch_id: UUID7
     responder_id: str = ""
-    answers: dict[uuid.UUID, QuestionAnswer] = Field(default_factory=dict)
-    approvals: dict[uuid.UUID, bool] = Field(default_factory=dict)
+    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
     allow_session: bool = False
 
 
@@ -69,7 +68,7 @@ class NativeGatewaySignal:
 class DrivenGatewaySignal:
     """An authenticated, validated operation on an existing thread."""
 
-    thread_id: uuid.UUID
+    thread_id: UUID7
     decision: SummonDecision | TeleportDecision
     agent_id: str
     user_profile: UserProfile

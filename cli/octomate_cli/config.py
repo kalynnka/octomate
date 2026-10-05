@@ -1,7 +1,7 @@
-"""The client's own configuration — the two facts the CLI needs to reach Octomate:
-where the server is, and the credential its hook routers require. A settings class,
-the way the deployment's own config is one, so the variables, the files and their
-precedence are declared in `CLISettings` rather than assembled by hand, and every
+"""The client's server addresses and credentials for hooks and native history reads.
+
+A settings class, the way the deployment's own config is one, so the variables,
+the files and their precedence are declared in `CLISettings` rather than assembled by hand, and every
 command reads the one `cli_settings()` object rather than building its own. Owned here
 so a machine holding only octomate-cli never touches the server's config.
 
@@ -17,15 +17,15 @@ a renamed field fails a test rather than a session going unauthenticated.
 
 from __future__ import annotations
 
-import json
 import tomllib
 from enum import StrEnum
 from functools import cache
 from pathlib import Path
 from typing import Annotated
 
+import tomlkit
 import typer
-from pydantic import Field
+from pydantic import BaseModel, Field
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -66,6 +66,19 @@ def project_config_path() -> Path:
     return Path.cwd() / PROJECT_CONFIG
 
 
+class DeepseekSettings(BaseModel):
+    """The local gateway used to read native DeepSeek history."""
+
+    url: str | None = Field(
+        default=None,
+        description=(
+            "The local DeepSeek gateway's launch URL, including its authentication "
+            "token. Store in cli.toml so native hooks can authenticate even when "
+            "DeepSeek removes DSH_* environment variables."
+        ),
+    )
+
+
 class CLISettings(BaseSettings):
     """What this machine's client half knows, resolved the same way everywhere.
 
@@ -103,6 +116,10 @@ class CLISettings(BaseSettings):
             "A server-issued API token with hooks and/or mcp scope, obtained through "
             "the authenticated account API."
         ),
+    )
+    deepseek: DeepseekSettings = Field(
+        default_factory=DeepseekSettings,
+        description="DeepSeek's native history gateway settings.",
     )
 
     @classmethod
@@ -193,6 +210,12 @@ def configure(
             help="A server-issued API token. Omitted, the token already resolving is kept."
         ),
     ] = None,
+    dsh_url: Annotated[
+        str | None,
+        typer.Option(
+            help="Save DeepSeek's gateway launch URL (including ?token=) under [deepseek]."
+        ),
+    ] = None,
     scope: Annotated[
         Scope,
         typer.Option(
@@ -213,19 +236,15 @@ def configure(
     current = load_config(path)
     if url is not None:
         current["url"] = url
+    if dsh_url is not None:
+        current["deepseek"] = DeepseekSettings(url=dsh_url).model_dump()
     if token is None:
         token = cli_settings().token
     if token is not None:
         current["token"] = token
     current.pop("secret", None)
 
-    # json.dumps output is a valid TOML basic string: the escapes JSON emits are the
-    # subset TOML shares, so no hand-rolled quoting and no extra dependency.
-    content = "".join(
-        f"{key} = {json.dumps(value)}\n"
-        for key, value in current.items()
-        if isinstance(value, str)
-    )
+    content = tomlkit.dumps(current)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content)
     path.chmod(0o600)  # it holds a credential

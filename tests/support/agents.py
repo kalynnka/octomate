@@ -10,7 +10,6 @@ model level instead — they build real pydantic-ai agents around a scripted
 from __future__ import annotations
 
 import json
-import uuid
 from collections.abc import (
     AsyncGenerator,
     AsyncIterator,
@@ -25,6 +24,7 @@ from typing import ClassVar, cast
 from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
 from claude_agent_sdk.types import Message as ClaudeMessage
 from octomate_protocol.gateway import GatewayTool
+from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
     AgentRunResult,
@@ -170,13 +170,13 @@ class RecordedRun:
     history: list[ModelMessage]
     address: ChannelAddress
     run_name: str | None
-    thread_id: uuid.UUID | None = None
+    thread_id: UUID7 | None = None
     source_thread_address: ChannelAddress | None = None
-    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
+    source_thread_message_ids: list[UUID7] = field(default_factory=list)
     deferred_results: DeferredToolResults | None = None
     model: Model | str | None = None
     effort: ThinkingEffort | None = None
-    conversation_id: uuid.UUID | None = None
+    conversation_id: UUID7 | None = None
     interactive: bool = True
     instructions: str | None = None
     capabilities: list[AgentCapability[None]] = field(default_factory=list)
@@ -242,7 +242,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     turns: list[RecordedRun] = field(default_factory=list)
     streams: list[RecordedRun] = field(default_factory=list)
     # Every `relocate` the graph asked for: the conversation's id and where to.
-    relocated: list[tuple[uuid.UUID, Path]] = field(default_factory=list)
+    relocated: list[tuple[UUID7, Path]] = field(default_factory=list)
 
     async def fork_session(
         self, conversation: Conversation, *, cwd: Path
@@ -258,14 +258,14 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -376,13 +376,13 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         model: Model | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,

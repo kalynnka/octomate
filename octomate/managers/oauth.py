@@ -13,6 +13,7 @@ from arcanus.materia.sqlalchemy import AsyncSession
 from mcp.client.auth.utils import validate_authorization_response_iss
 from mcp.shared._httpx_utils import McpHttpClientFactory
 from pydantic import (
+    UUID7,
     AnyHttpUrl,
     BaseModel,
     ConfigDict,
@@ -129,8 +130,8 @@ class OAuthCallback(NamedTuple):
 class OAuthLockKey(NamedTuple):
     """The (user, mcp, connector) triple an authorization is serialized under."""
 
-    user_id: uuid.UUID
-    mcp_id: uuid.UUID | None
+    user_id: UUID7
+    mcp_id: UUID7 | None
     connector_id: str
 
 
@@ -178,8 +179,8 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         self,
         connector_id: str,
         *,
-        user_id: uuid.UUID,
-        mcp_id: uuid.UUID | None,
+        user_id: UUID7,
+        mcp_id: UUID7 | None,
         discovery_state: OAuthDiscoveryState | None = None,
     ) -> OAuthConnector:
         if mcp_id is None:
@@ -227,7 +228,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user: User,
         connector_id: str,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
         profile: UserProfile | None = None,
         flow: OAuthFlowKind | None = None,
     ) -> OAuthStartResult:
@@ -350,7 +351,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         connector_id: str,
         *,
         profile: UserProfile | None = None,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
         flow: OAuthFlowKind | None = None,
     ) -> OAuthStartResult | None:
         """Restore a live authorization without starting another provider flow."""
@@ -433,7 +434,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user: User,
         connector_id: str,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
         profile: UserProfile | None = None,
     ) -> OAuthGrant | OAuthPending:
         """Poll this user's newest device operation from the originating context."""
@@ -464,7 +465,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
     async def complete(
         self,
         user: User,
-        operation_id: uuid.UUID,
+        operation_id: UUID7,
         *,
         profile: UserProfile | None = None,
     ) -> OAuthGrant | OAuthPending:
@@ -557,11 +558,11 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         self,
         grant: OAuthGrant,
         *,
-        user_id: uuid.UUID,
+        user_id: UUID7,
         connector_id: str,
         existing: OAuthConnection | None,
         flow: OAuthFlowKind,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
     ) -> OAuthConnection:
         """This user's connection to a connector, carrying a grant, encrypted.
 
@@ -607,7 +608,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
     async def staged_authorization(
         self,
         connector_id: str,
-        operation_id: uuid.UUID,
+        operation_id: UUID7,
     ) -> AuthorizationCodeOperationPayload:
         """The provider request a UUID-only start link stands for.
 
@@ -818,7 +819,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user: User,
         connector_id: str,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
         expected_token: SecretStr | None = None,
     ) -> None:
         """Record that this user's credentials for a connector no longer work.
@@ -869,7 +870,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user: User,
         connector_id: str,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
     ) -> OAuthConnectionStatus | None:
         """Whether this user has a connection to a connector, and whether it works.
 
@@ -894,7 +895,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user: User,
         connector_id: str,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
     ) -> SecretStr | None:
         """Return this user's active connector token."""
         cipher = self.cipher
@@ -938,7 +939,7 @@ class OAuthManager(Manager, Locks[OAuthLockKey]):
         user: User,
         connector_id: str,
         *,
-        mcp_id: uuid.UUID | None = None,
+        mcp_id: UUID7 | None = None,
     ) -> SecretStr | None:
         """Spend this user's refresh token for a credential worth starting a run on.
 

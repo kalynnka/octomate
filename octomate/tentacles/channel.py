@@ -24,7 +24,7 @@ from typing import (
 import anyio
 from opentelemetry import trace
 from pydantic_ai.tools import DeferredToolRequests
-from uuid_utils import uuid7
+from uuid_utils.compat import uuid7
 
 from octomate.config import ChannelConfig
 from octomate.config.channels import (

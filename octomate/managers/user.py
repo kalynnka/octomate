@@ -5,10 +5,9 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import uuid
 from datetime import UTC, datetime, timedelta
 
-from pydantic import AnyHttpUrl, SecretStr
+from pydantic import UUID7, AnyHttpUrl, SecretStr
 from sqlalchemy.orm.exc import StaleDataError
 
 from octomate.database import async_session
@@ -49,7 +48,7 @@ class ProfileNotLinked(ValueError):
         super().__init__("This profile is not linked to your account")
 
 
-class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
+class UserManager(Manager, Locks[tuple[str, str] | UUID7]):
     """The persisted cross-channel user registry and verified profile links."""
 
     def __init__(
@@ -61,7 +60,7 @@ class UserManager(Manager, Locks[tuple[str, str] | uuid.UUID]):
         self.authorization_base_uri = authorization_base_uri
         self.authorization_lifetime = authorization_lifetime
 
-    async def unlink_profile(self, user: User, profile_id: uuid.UUID) -> None:
+    async def unlink_profile(self, user: User, profile_id: UUID7) -> None:
         async with self.lock(profile_id), async_session() as session:
             profile = await session.get(UserProfile, profile_id)
             if profile is None or profile.user_id != user.id:

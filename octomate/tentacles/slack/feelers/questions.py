@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import UUID
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import UUID7, JsonValue, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -57,7 +56,7 @@ class SlackAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         text = question_title(actions)
@@ -144,7 +143,7 @@ def question_input_block(
 
 def submitted_blocks(
     actions: list[DeferredQuestion],
-    answers: dict[UUID, QuestionAnswer] | None = None,
+    answers: dict[UUID7, QuestionAnswer] | None = None,
 ) -> list[SlackBlock]:
     count = len(actions)
     noun = "question" if count == 1 else "questions"
@@ -178,10 +177,10 @@ def question_answer_block_id(action: DeferredQuestion) -> str:
 def collect_answers(
     state: SlackQuestionState,
     actions: list[DeferredQuestion],
-) -> dict[UUID, QuestionAnswer]:
+) -> dict[UUID7, QuestionAnswer]:
     """Each question's answer from the submitted state: a typed answer over a
     single pick, a multi-select question's checked boxes over typed text."""
-    answers: dict[UUID, QuestionAnswer] = {}
+    answers: dict[UUID7, QuestionAnswer] = {}
     for action in actions:
         choice_state = state["values"].get(question_choice_block_id(action), {})
         answer_state = state["values"].get(question_answer_block_id(action), {})

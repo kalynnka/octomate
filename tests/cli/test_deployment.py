@@ -122,6 +122,18 @@ def test_prepare_creates_valid_private_claude_configuration(
     }
 
 
+def test_prepare_restricts_dotenv_before_writing_secrets(preparation: Path) -> None:
+    write_text = Path.write_text
+
+    def check_permissions(path: Path, data: str) -> int:
+        if path.name == ".env":
+            assert path.stat().st_mode & 0o777 == 0o600
+        return write_text(path, data)
+
+    with patch.object(Path, "write_text", autospec=True, side_effect=check_permissions):
+        deployment.prepare(8123, [], ["claude"])
+
+
 @pytest.mark.parametrize(
     "agents",
     [["codex"], ["claude", "codex"], ["deepseek"], ["claude", "codex", "deepseek"]],

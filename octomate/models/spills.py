@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import UUID7
 from sqlalchemy import LargeBinary, String, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
@@ -24,7 +24,7 @@ class ToolOutputSpill(Base, TransmuterProxiedMixin):
 
     __tablename__ = "tool_output_spills"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     handle: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
     payload: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

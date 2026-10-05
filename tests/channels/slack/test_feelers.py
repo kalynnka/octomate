@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-import uuid
 from dataclasses import dataclass, field
 from typing import cast
+from unittest.mock import AsyncMock
 
-from pydantic import JsonValue, TypeAdapter
+import pytest
+from pydantic import UUID7, JsonValue, TypeAdapter
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -62,8 +63,8 @@ def _key(channel: str = "im") -> ChannelAddress:
 
 def _question(
     *,
-    batch_id: uuid.UUID | None = None,
-    action_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
+    action_id: UUID7 | None = None,
     position: int = 0,
     question: str = "Continue?",
     choices: list[str] | None = None,
@@ -86,8 +87,8 @@ def _question(
 
 def _approval(
     *,
-    batch_id: uuid.UUID | None = None,
-    action_id: uuid.UUID | None = None,
+    batch_id: UUID7 | None = None,
+    action_id: UUID7 | None = None,
 ) -> DeferredApproval:
     return DeferredApproval(
         id=action_id or uuid7(),
@@ -98,7 +99,7 @@ def _approval(
     )
 
 
-def _batch_id(action: DeferredQuestion | DeferredApproval) -> uuid.UUID:
+def _batch_id(action: DeferredQuestion | DeferredApproval) -> UUID7:
     assert action.batch_id is not None
     return action.batch_id
 
@@ -360,7 +361,58 @@ async def test_slack_callbacks_emit_deferred_responses_and_update_cards() -> Non
         answers={questions[0].id: "yes"},
     )
     assert ink.updates[1][0:3] == ("C1", "333.444", "Answers submitted")
-    assert events[-2:] == ["update", "kick"]
+    assert events == ["kick", "update", "kick", "update"]
+
+
+@pytest.mark.parametrize("approval", [True, False], ids=["approval", "question"])
+@pytest.mark.parametrize(
+    "error",
+    [
+        ValueError("unknown deferred action batch"),
+        RuntimeError("This live request is no longer awaiting a response"),
+    ],
+    ids=["unknown-batch", "missing-waiter"],
+)
+async def test_rejected_slack_response_leaves_card_unchanged(
+    approval: bool,
+    error: ValueError | RuntimeError,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ink = FakeSlackBlocksInk()
+    octomate = FakeOctomate()
+    kick = AsyncMock(side_effect=error)
+    monkeypatch.setattr(octomate, "kick", kick)
+    channel = object.__new__(SlackTentacle)
+    channel.id = "slack"
+    channel.ink = cast(SlackInk, ink)
+    channel.octomate = cast(Octomate, octomate)
+    ack = AsyncMock()
+
+    if approval:
+        buttons = _json_objects(approval_blocks([_approval()])[-1]["elements"])
+        submit = channel.on_approval_action(
+            ack,
+            _slack_approval_body(
+                action_id=SlackBlockAction.APPROVAL_APPROVE.value,
+                value=_json_string(buttons[0]["value"]),
+            ),
+        )
+    else:
+        buttons = _json_objects(ask_question_blocks([_question()])[-1]["elements"])
+        submit = channel.on_question_submit(
+            ack,
+            _slack_question_body(
+                action_id=SlackBlockAction.ASK_QUESTION_SUBMIT.value,
+                value=_json_string(buttons[0]["value"]),
+                state={"values": {}},
+            ),
+        )
+    with pytest.raises(type(error), match=str(error)):
+        await submit
+
+    ack.assert_awaited_once()
+    kick.assert_awaited_once()
+    assert ink.updates == []
 
 
 async def test_slack_approval_blocks_advance_through_multiple_approvals() -> None:

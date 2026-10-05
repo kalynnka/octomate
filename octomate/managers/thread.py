@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import noload, selectinload
+from pydantic import UUID7
 from sqlalchemy import and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
@@ -256,7 +257,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         thread.title = named
         return thread
 
-    async def bind(self, thread_id: uuid.UUID, project: Project) -> Thread:
+    async def bind(self, thread_id: UUID7, project: Project) -> Thread:
         """Attribute a thread that is in no project to `project`, once.
 
         The one exception to a project being written when the row is created: a
@@ -304,10 +305,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def get(
         self,
-        thread_id: uuid.UUID | ThreadKey,
+        thread_id: UUID7 | ThreadKey,
         *,
         with_messages: bool = True,
-        user_id: uuid.UUID | None = None,
+        user_id: UUID7 | None = None,
     ) -> Thread | None:
         """The thread by primary key, or by the key it is filed under, or None —
         its handoffs with the row, its ledger only when asked for. A key never
@@ -352,7 +353,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         channel_tentacle_id: str | None = None,
         *,
         limit: int = 100,
-        user_id: uuid.UUID | None = None,
+        user_id: UUID7 | None = None,
     ) -> list[Thread]:
         """Threads most recently touched first — one channel's, or every
         channel's when `channel_tentacle_id` is None. Sub-threads are not listed;
@@ -559,7 +560,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
     async def pending_prompt_messages(
         self,
         thread: Thread,
-        trigger_message_id: uuid.UUID,
+        trigger_message_id: UUID7,
         active_agent_id: str,
     ) -> list[ThreadMessage]:
         # A sub-thread's key is the chat room's, so this resolves the chat either
@@ -589,7 +590,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
     async def advance_prompt_cursor(
         self,
         thread: Thread,
-        message_id: uuid.UUID,
+        message_id: UUID7,
     ) -> Thread | None:
         async with async_session() as session:
             stored = await session.get(Thread, thread.id)
@@ -652,10 +653,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         reason: str = "",
         hint: str = "",
         brief: str = "",
-        source_conversation_id: uuid.UUID | None = None,
-        target_conversation_id: uuid.UUID | None = None,
+        source_conversation_id: UUID7 | None = None,
+        target_conversation_id: UUID7 | None = None,
         source_run_id: str | None = None,
-        source_model_message_id: uuid.UUID | None = None,
+        source_model_message_id: UUID7 | None = None,
     ) -> Handoff:
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
@@ -714,7 +715,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def find_message(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         platform_message_id: str,
         direction: ThreadMessageDirection,
     ) -> ThreadMessage | None:
@@ -743,8 +744,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def bind_messages(
         self,
-        thread_message_ids: list[uuid.UUID],
-        model_message_id: uuid.UUID,
+        thread_message_ids: list[UUID7],
+        model_message_id: UUID7,
         *,
         kind: MessageBindingKind,
         run_id: str,
@@ -768,7 +769,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def bind_assistant_replies(
         self,
-        thread_message_ids: list[uuid.UUID],
+        thread_message_ids: list[UUID7],
         *,
         run_id: str,
     ) -> list[MessageBinding]:
@@ -861,8 +862,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def chat_messages_before(
         self,
-        thread_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        thread_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ThreadMessage]:
@@ -895,8 +896,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def chat_messages_after(
         self,
-        thread_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        thread_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ThreadMessage]:
@@ -925,7 +926,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def related_model_messages(
         self,
-        thread_message_id: uuid.UUID,
+        thread_message_id: UUID7,
     ) -> list[ModelRequest | ModelResponse]:
         async with async_session() as session:
             message = await session.get(

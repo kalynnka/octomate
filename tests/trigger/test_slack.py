@@ -11,7 +11,6 @@ replays at the bottom of the chat instead of buried in an old thread)."""
 from __future__ import annotations
 
 import asyncio
-from uuid import uuid4
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -136,7 +135,7 @@ async def test_slack_renders_action_batch(
     channel, address = slack_channel
     # The slack buttons serialize the batch id into their state; the scenario
     # actions need real ids (on a live run the action manager sets them).
-    batch_id = uuid4()
+    batch_id = uuid7()
     question, approval = batch_actions()
     script = action_batch(
         batch_id=str(batch_id),

@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import uuid
 from abc import ABC, abstractmethod
 from collections import Counter
 from collections.abc import AsyncGenerator, Mapping, Sequence
@@ -16,6 +15,7 @@ from types import MappingProxyType, TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, TypeVar, overload
 
 import anyio
+from pydantic import UUID7
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -247,7 +247,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     # waiter, instead of resuming durably through the triage graph. In-process
     # agents populate `pending` (batch id -> waiter); the rest never touch it.
     in_process: ClassVar[bool] = False
-    pending: dict[uuid.UUID, asyncio.Future[DeferredActionBatchResponse]]
+    pendings: dict[UUID7, asyncio.Future[DeferredActionBatchResponse]]
 
     permission_modes: tuple[PermissionMode, ...] = ()
 
@@ -359,7 +359,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             )
 
     async def read_fork_transcript(
-        self, source: Conversation, *, owner_id: uuid.UUID
+        self, source: Conversation, *, owner_id: UUID7
     ) -> tuple[bytes, ExternalAgentRun]:
         """An owner's uploaded native history up to its latest whole turn, and that
         turn — what a fork of it carries."""
@@ -372,7 +372,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         source: Conversation,
         target: Conversation,
         *,
-        owner_id: uuid.UUID,
+        owner_id: UUID7,
         cwd: Path,
     ) -> Conversation:
         """Import an owner's native history into the empty `target`, as a session
@@ -404,7 +404,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         machine, so a native teleport has nothing here to move: bringing it over is
         a rebuild from the ledger, still to come, and this is where it lands."""
 
-    async def run_project(self, thread_id: uuid.UUID) -> Project | None:
+    async def run_project(self, thread_id: UUID7) -> Project | None:
         """The project a run in this thread is in, or None when it is in none.
 
         The thread is where a project is bound, and every conversation belongs to
@@ -428,16 +428,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -460,16 +460,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -492,16 +492,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -524,8 +524,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID,
-        conversation_id: uuid.UUID,
+        thread_id: UUID7,
+        conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
@@ -562,16 +562,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -593,16 +593,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,
@@ -624,16 +624,16 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
         deps: AgentDepsT = None,

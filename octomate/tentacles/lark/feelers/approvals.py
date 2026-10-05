@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import UUID
+
+from pydantic import UUID7
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -37,7 +38,7 @@ class LarkApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         channel_thread_id = (
@@ -45,7 +46,7 @@ class LarkApprovalFeeler(ApprovalFeeler):
             if address.channel_thread_id and address.channel_thread_id.startswith("om_")
             else address.chat_id or address.user_id
         )
-        message_ids: dict[UUID, IMMessageID | None] = {}
+        message_ids: dict[UUID7, IMMessageID | None] = {}
         for action in actions:
             message_ids[action.id] = await self.ink.send_message(
                 address.chat_id or address.user_id,

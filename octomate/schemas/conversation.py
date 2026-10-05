@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import field, fields
 from functools import cached_property
 from typing import Annotated, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import ConfigDict, Field, with_config
+from pydantic import UUID7, ConfigDict, Field, with_config
 from pydantic.dataclasses import dataclass
 from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
@@ -96,7 +95,7 @@ class ConversationKey(NamedTuple):
     every sender in a group thread keys to that one, independent of who woke
     it; each subagent keys to its own."""
 
-    thread_id: uuid.UUID
+    thread_id: UUID7
     agent_id: str
     subagent_id: str = ""
 
@@ -108,14 +107,14 @@ class Conversation(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     external_id: str | None = None
-    transcript_file_id: uuid.UUID | None = Field(
+    transcript_file_id: UUID7 | None = Field(
         default=None,
         description="Live native transcript, or the independent starting copy of an imported fork.",
     )
 
-    thread_id: uuid.UUID = Field(
+    thread_id: UUID7 = Field(
         frozen=True,
         description=(
             "The owning thread; with agent_tentacle_id it is the conversation's "
@@ -137,7 +136,7 @@ class Conversation(BaseTransmuter):
             "commission's name) for a context spawned by one run."
         ),
     )
-    parent_conversation_id: uuid.UUID | None = Field(
+    parent_conversation_id: UUID7 | None = Field(
         default=None,
         frozen=True,
         description=(

@@ -99,6 +99,10 @@ text, and Previous, Next and Submit. Button identities carry only ids, and the
 action is reloaded from the database when pressed, so they survive a restart.
 Answers typed but not yet submitted do not.
 
+With streaming enabled, an approval or question flushes buffered answer text
+without closing the message. The agent can continue updating that message while
+one or more prompts remain unanswered.
+
 ## Profile linking
 
 Optionally, let users link their Discord identity from Trunkline's Profile page:

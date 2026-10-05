@@ -82,6 +82,10 @@ close, not token by token.
 The tail also collects dsh's `session/title` events, including revisions and titles
 that arrive outside a turn, and updates the native session name and thread title.
 
+Resuming a driven session natively skips already recorded driven turns when their
+runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)
+for where new turns land and the limits for older history.
+
 A trailing interrupted turn is withheld until a later event proves its closing
 records are real, because the gateway synthesises closers for a still-open turn.
 Subagent child sessions are skipped by the tail. Hooks and the tail need dsh's

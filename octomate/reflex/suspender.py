@@ -3,9 +3,9 @@ back to the graph, everything else to a human as a persisted batch."""
 
 from __future__ import annotations
 
-import uuid
 from dataclasses import dataclass, field
 
+from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -21,6 +21,7 @@ from octomate.schemas.triage import (
 )
 from octomate.telemetry import reflex_logfire
 from octomate.tentacles.channel import ChannelTentacle
+from octomate.types.deferred import DeferredResponseMode
 
 
 @dataclass(frozen=True)
@@ -89,9 +90,9 @@ class ReflexSuspender:
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: SummonDecision | None
-    thread_id: uuid.UUID | None = None
+    thread_id: UUID7 | None = None
     emit_on_stream: bool = False
-    suspended_batch_id: uuid.UUID | None = field(default=None, init=False)
+    suspended_batch_id: UUID7 | None = field(default=None, init=False)
     # The deferred `teleport`, for the graph to perform instead of a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)
 
@@ -112,13 +113,13 @@ class ReflexSuspender:
             source_address=str(self.source_address),
             emit_on_stream=self.emit_on_stream,
         ) as span:
-            batch = await self.persist(requests)
+            batch = await self.persist(requests, response_mode="resume")
             self.suspended_batch_id = batch.id
             span.set_attribute("batch_id", str(batch.id))
             return await self.present(batch)
 
     async def pause(
-        self, requests: DeferredToolRequests
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
     ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
         with reflex_logfire.span(
             "pause_for_review",
@@ -127,11 +128,19 @@ class ReflexSuspender:
             target_address=str(self.target_address),
             emit_on_stream=self.emit_on_stream,
         ) as span:
-            batch = await self.persist(requests)
+            batch = await self.persist(
+                requests, response_mode="live", batch_id=batch_id
+            )
             span.set_attribute("batch_id", str(batch.id))
             return batch, await self.present(batch)
 
-    async def persist(self, requests: DeferredToolRequests) -> DeferredActionBatch:
+    async def persist(
+        self,
+        requests: DeferredToolRequests,
+        *,
+        response_mode: DeferredResponseMode,
+        batch_id: UUID7 | None = None,
+    ) -> DeferredActionBatch:
         if self.thread_id is None:
             raise ValueError("deferred review requires a thread_id")
         conversation = await self.conversation_manager.ensure(
@@ -139,6 +148,8 @@ class ReflexSuspender:
             agent_tentacle_id=self.agent_tentacle_id,
         )
         return await self.action_manager.create_batch(
+            response_mode=response_mode,
+            batch_id=batch_id,
             conversation=conversation,
             agent_tentacle_id=self.agent_tentacle_id,
             run_name=self.run_name,

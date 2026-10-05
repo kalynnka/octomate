@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +10,7 @@ from typing import Literal, TypeVar
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from fastapi import UploadFile
+from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
@@ -28,7 +28,7 @@ from octomate.types.permissions import AgentPermissionMode
 RunT = TypeVar("RunT", bound=AgentRun)
 
 
-class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
+class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
@@ -41,11 +41,11 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def ensure(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         *,
         agent_tentacle_id: str,
         subagent_id: str = "",
-        parent_conversation_id: uuid.UUID | None = None,
+        parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
@@ -93,7 +93,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             return conversation
 
     async def get(
-        self, conversation_id: uuid.UUID, *, with_history: bool = True
+        self, conversation_id: UUID7, *, with_history: bool = True
     ) -> Conversation:
         """Resolve a conversation by id — one fresh read; raises on an unknown
         id. This is the by-id path for a run addressed at a pre-ensured
@@ -141,7 +141,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             run.parent_tool_call_id = parent_tool_call_id
             await session.commit()
 
-    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+    async def subagents(self, parent_conversation_id: UUID7) -> list[Conversation]:
         """The subagent conversations spawned from `parent_conversation_id` — the
         live accomplices a `whisper` can reach. Rows only; callers resolve a
         chosen one through `ensure`."""
@@ -156,7 +156,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         return list(rows)
 
     async def for_thread(
-        self, thread_id: uuid.UUID, *, with_run_messages: bool = False
+        self, thread_id: UUID7, *, with_run_messages: bool = False
     ) -> list[Conversation]:
         """The thread's agent conversations, subagents included, each with its runs.
 
@@ -180,7 +180,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             )
         return list(rows)
 
-    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+    async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         async with async_session() as session:
             conversation = await session.get(Conversation, conversation_id)
         if conversation is None:
@@ -198,6 +198,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
+        native_id: str | None = None,
+        native_turn_id: str | None = None,
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> AgentRun | None:
@@ -212,6 +214,9 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         run = AgentRun(
             id=run_id,
             conversation_id=conversation.id,
+            native_id=native_id,
+            native_session_id=external_id,
+            native_turn_id=native_turn_id,
             name=name,
             model_name=model_name,
             permission_mode=permission_mode,
@@ -228,6 +233,22 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             run, conversation_id=conversation.id, external_id=external_id
         )
 
+    async def driven_run(
+        self, native_id: str, session_id: str, turn_id: str
+    ) -> AgentRun | None:
+        """Find the driven owner of a native turn without loading its messages."""
+        async with async_session() as session:
+            return await session.one_or_none(
+                AgentRun,
+                expressions=[
+                    AgentRun["kind"] == "octomate",
+                    AgentRun["native_id"] == native_id,
+                    AgentRun["native_session_id"] == session_id,
+                    AgentRun["native_turn_id"] == turn_id,
+                ],
+                options=[noload(AgentRun["messages"])],
+            )
+
     async def record_external_run(
         self,
         conversation: Conversation,
@@ -238,7 +259,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         model_name: str | None = None,
         permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
-        external_session_id: str,
+        native_session_id: str,
         source: str | None = None,
         start_offset: int | None = None,
         end_offset: int | None = None,
@@ -248,8 +269,12 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
     ) -> ExternalAgentRun | None:
         """Persist a turn of an external runtime's session (native Claude) as the
         `external` variant. `cwd` is the directory the turn ran in, as the hook or
-        the transcript reported it. `external_session_id` doubles as the
+        the transcript reported it. `native_session_id` doubles as the
         conversation's resumable handle (`external_id`).
+
+        A turn already recorded by the driven runtime keeps its original run and
+        messages. Its runtime identity lets native ingest skip the replay without
+        copying it into the native ledger or saving transcript coordinates on it.
 
         The byte range is what marks a turn finished. A run carrying `end_offset` was
         assembled from the transcript and is final, so recording it again — a recovery
@@ -266,6 +291,11 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         superseding the sketch once the turn closes.
         """
         if not messages:
+            return None
+        driven = await self.driven_run(
+            conversation.agent_tentacle_id, native_session_id, run_id
+        )
+        if driven is not None:
             return None
         async with async_session() as session:
             stored = await session.one_or_none(
@@ -286,6 +316,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         run = ExternalAgentRun(
             id=run_id,
             conversation_id=conversation.id,
+            native_id=conversation.agent_tentacle_id,
+            native_turn_id=run_id,
             name=name,
             model_name=model_name,
             permission_mode=permission_mode,
@@ -294,21 +326,21 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             parent_tool_call_id=parent_tool_call_id,
             started_at=messages[0].timestamp,
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
-            external_session_id=external_session_id,
+            native_session_id=native_session_id,
             source=source,
             start_offset=start_offset,
             end_offset=end_offset,
             last_line_uuid=last_line_uuid,
         )
         return await self.persist_run(
-            run, conversation_id=conversation.id, external_id=external_session_id
+            run, conversation_id=conversation.id, external_id=native_session_id
         )
 
     async def persist_run(
         self,
         run: RunT,
         *,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         external_id: str | None,
     ) -> RunT:
         """Persist a freshly built run. `external_id`, when given, updates the
@@ -383,7 +415,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                 run.id
                 for run in source.runs
                 if isinstance(run, ExternalAgentRun)
-                and run.external_session_id == source.external_id
+                and run.native_session_id == source.external_id
                 and run.end_offset is not None
                 and run.end_offset <= transcript.size
             }
@@ -456,7 +488,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         *,
         conversation: Conversation,
         files: FileManager,
-        owner_id: uuid.UUID,
+        owner_id: UUID7,
     ) -> FileVariant:
         """Persist new bytes of a native conversation's owner-scoped transcript.
 
@@ -588,7 +620,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def search_messages(
         self,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         query: str,
         *,
         role: Literal["user", "assistant"] | None = None,
@@ -617,8 +649,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def messages_before(
         self,
-        conversation_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        conversation_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ModelMessage]:
@@ -638,8 +670,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def messages_after(
         self,
-        conversation_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        conversation_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ModelMessage]:
@@ -659,7 +691,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def related_chat_messages(
         self,
-        model_message_id: uuid.UUID,
+        model_message_id: UUID7,
     ) -> list[ThreadMessage]:
         async with async_session() as session:
             message = await session.one_or_none(

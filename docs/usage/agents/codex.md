@@ -30,6 +30,11 @@ The app-server supplies the catalog: every non-hidden model with its supported
 reasoning efforts, keyed as `<provider>:<model>`, `openai` unless the Codex config
 names another provider.
 
+Octomate loads this catalog at startup using the SDK's bundled Codex runtime,
+unless `runtime.codex_bin` selects another executable. Updating a separate Codex
+CLI or IDE extension does not update the bundled runtime. Restart Octomate after
+upgrading its Codex dependency to refresh the available models.
+
 ## Driven runs
 
 Each conversation gets its own app-server process from a pool, evicted after
@@ -92,6 +97,10 @@ or aborted turn. A session can also teleport itself: Codex names its thread on
 every MCP call, which is how the served teleport finds the session's history. Later turns stay in the source session, including any turn still
 in progress. The new conversation keeps the selected turn's model, permissions
 and an independent transcript snapshot.
+
+Resuming a driven session natively skips already recorded driven turns when their
+runtime identity is available. See [switching sessions](sessions.md#what-to-expect-when-switching)
+for where new turns land and the limits for older history.
 
 ## Not yet
 

@@ -40,7 +40,7 @@ from octomate_protocol.gateway import (
     GATEWAY_TOOLSET_ID,
     GatewayTool,
 )
-from pydantic import Field
+from pydantic import UUID7, Field
 from pydantic_ai import AgentStreamEvent, CallDeferred, RunContext
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
@@ -394,9 +394,7 @@ class GatewayCapability(AbstractCapability[None]):
 
     def commission_deps(
         self,
-    ) -> tuple[
-        dict[str, AgentTentacle], ConversationManager, uuid.UUID, ChannelAddress
-    ]:
+    ) -> tuple[dict[str, AgentTentacle], ConversationManager, UUID7, ChannelAddress]:
         """The live handles the accomplice spells run with. Registration only
         offers the spells when all four are set, so a miss here is a
         construction bug, not a model mistake."""

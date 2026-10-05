@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -11,7 +10,7 @@ from typing import Any
 import anyio
 import logfire
 from anyio.abc import ObjectSendStream
-from pydantic import DirectoryPath
+from pydantic import UUID7, DirectoryPath
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -73,13 +72,13 @@ class ReactState:
 
     conversation_address: ChannelAddress
     agent_tentacle_id: str
-    thread_id: uuid.UUID
+    thread_id: UUID7
     # A pre-ensured conversation to run in, by id — the caller that spawned this
     # run chose the context (e.g. a commissioned accomplice's child conversation).
     # None resolves the agent's own (thread, agent) conversation as usual.
-    conversation_id: uuid.UUID | None = None
+    conversation_id: UUID7 | None = None
     source_thread_address: ChannelAddress | None = None
-    source_thread_message_ids: list[uuid.UUID] = field(default_factory=list)
+    source_thread_message_ids: list[UUID7] = field(default_factory=list)
 
 
 @dataclass

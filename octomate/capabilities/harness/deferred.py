@@ -22,6 +22,7 @@ from collections.abc import AsyncGenerator, AsyncIterable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
+from pydantic import UUID7
 from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
@@ -140,7 +141,8 @@ class DeferredSuspender(Protocol):
 
     `pause` is the same for a run that stays live while a human answers, as a
     runtime's in-process approval does: the batch it waits on, and its event when
-    the run's own stream is what presents it.
+    the run's own stream is what presents it. The caller names the batch, so it is
+    already waiting on that id when the cards go up and a quick reply finds it.
     """
 
     async def suspend(
@@ -148,7 +150,7 @@ class DeferredSuspender(Protocol):
     ) -> ActionBatchEvent | None: ...
 
     async def pause(
-        self, requests: DeferredToolRequests
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
     ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]: ...
 
 

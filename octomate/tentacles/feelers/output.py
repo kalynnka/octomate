@@ -824,10 +824,13 @@ class TimelineState:
             )
 
     async def actions_presented(self) -> None:
-        """A deferred-action batch was just presented in this timeline's thread,
-        and the run is parked on a human. Nothing will flow until the answer, so a
-        surface with live status should settle it and say so; the base renders no
-        status, so there is nothing to settle."""
+        """A deferred-action batch was just presented in this timeline's thread.
+
+        A pending action does not mean the run has stopped: a live run carries on
+        past it. Hooks may flush buffered output, but must keep active thinking and
+        answer surfaces open for more events. Drain background flushers before
+        flushing their buffers here to avoid overlapping writes. The base renders
+        no status, so there is nothing to settle."""
 
     async def begin_entry(self) -> None:
         """A new timeline entry is opening: if answer content streamed since

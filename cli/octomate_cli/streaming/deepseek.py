@@ -120,11 +120,13 @@ class DshHistoryClient:
                     pass
             except (urllib.error.URLError, OSError):
                 raise DshCompatibilityError(
-                    "Could not authenticate to dsh; check DSH_API_URL and DSH_LAUNCH_TOKEN"
+                    "Could not authenticate to dsh; save its current launch URL "
+                    "with octomate configure --dsh-url, or check DSH_API_URL and DSH_LAUNCH_TOKEN"
                 ) from None
             if not self.cookies:
                 raise DshCompatibilityError(
-                    "dsh did not issue an authentication cookie; check DSH_LAUNCH_TOKEN"
+                    "dsh did not issue an authentication cookie; save its current "
+                    "launch URL with octomate configure --dsh-url, or check DSH_LAUNCH_TOKEN"
                 )
 
     def rpc(self, method: str, args: dict[str, JsonValue]) -> dict[str, JsonValue]:
@@ -139,7 +141,9 @@ class DshHistoryClient:
                 answer = ServerResponse.model_validate_json(response.read())
         except urllib.error.HTTPError as error:
             raise DshCompatibilityError(
-                f"dsh Remote API {method} returned HTTP {error.code}; set DSH_LAUNCH_TOKEN for authentication and update dsh and Octomate together"
+                f"dsh Remote API {method} returned HTTP {error.code}; configure its "
+                "launch URL with octomate configure --dsh-url for authentication "
+                "and update dsh and Octomate together"
             ) from None
         if isinstance(answer.result, ErrResult):
             raise DshCompatibilityError(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
@@ -44,7 +43,7 @@ from openai_codex.generated.v2_all import (
     WorkspaceWriteSandboxPolicy,
 )
 from openai_codex.models import Notification, NotificationPayload
-from pydantic import BaseModel, SecretStr, TypeAdapter
+from pydantic import UUID7, BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
@@ -397,14 +396,20 @@ class ApprovalFakeTurn(FakeTurn):
 
 @dataclass
 class RecordingDeferredActions:
+    batch: FakePresentedBatch
+
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
+        return self.batch
+
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
 
     async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
         self.resolved.append(awake)
 
     async def mark_batch(
-        self, batch_id: uuid.UUID, status: str, *, completed: bool = False
+        self, batch_id: UUID7, status: str, *, completed: bool = False
     ) -> None:
         self.marked.append((batch_id, status))
 
@@ -562,9 +567,9 @@ def codex_bridge_context(
 
 async def wait_for_pending(
     tentacle: CodexTentacle, suspender: RecordingSuspender
-) -> uuid.UUID:
+) -> UUID7:
     await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
-    return next(iter(tentacle.pending))
+    return next(iter(tentacle.pendings))
 
 
 @pytest.mark.parametrize("instrument", [False, True])
@@ -633,6 +638,9 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     [recorded] = conversations.runs
     fake, _label, messages = recorded
     assert fake.external_id == "thread-1"
+    assert fake.runs[-1].native_id == "codex-native"
+    assert fake.runs[-1].native_session_id == "thread-1"
+    assert fake.runs[-1].native_turn_id == "turn-1"
     assert messages
 
 
@@ -978,8 +986,10 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = Octomate(
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
@@ -1025,8 +1035,10 @@ async def test_question_requests_bridge_to_cards() -> None:
         tool_call_id="ask-1",
         args={"question": "Which branch?"},
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(questions=[question]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(questions=[question])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
@@ -1080,8 +1092,10 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
         tool_call_id="mcp-1",
         args=ApprovalRequest(tool_name="codex_mcp_octomate_driven"),
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = Octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
     )
@@ -1139,8 +1153,10 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         conversations=FakeConversationManager(),
@@ -1207,8 +1223,10 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -2234,7 +2252,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
     )
-    suspender = RecordingSuspender()
+    suspender = RecordingSuspender(agent_tentacle_id="codex")
 
     events = []
     async with tentacle:

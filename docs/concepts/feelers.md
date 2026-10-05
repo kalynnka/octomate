@@ -73,12 +73,14 @@ Tools the timeline never draws: `ask_questions`, `send`, `commission`, `whisper`
 
 The suspender creates the batch and hands it to the channel as one event.
 Presenting it shows approvals then questions and records each card's platform
-message id against its action, so the card and the row stay linked.
+message id against its action, so the card and the row stay linked. A batch
+either answers a live request or resumes a suspended run; feelers present both
+the same way and do not decide which it is.
 Answering is per channel, and two designs coexist:
 
 - **Slack and Lark** carry the batch's state in the button payload: ids, the
   actions, the page, and the answers so far. A press validates the payload and
-  kicks the graph when the batch is complete.
+  delivers a response when the batch is complete.
 - **Discord** carries ids only, in the button's custom id, and reloads the batch
   from the database under a per-batch lock. Approvals survive a restart; answers
   typed but not submitted do not.

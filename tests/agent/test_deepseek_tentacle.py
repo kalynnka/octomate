@@ -23,12 +23,13 @@ from octomate_protocol.deepseek import (
     RpcResult,
 )
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags, use_span
-from pydantic import HttpUrl, SecretStr
+from pydantic import UUID7, HttpUrl, SecretStr
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import ModelMessage, PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import ActionBatchEvent
@@ -68,7 +69,7 @@ KEY = ChannelAddress(
     channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
 )
 
-_THREAD = uuid.uuid4()
+_THREAD = uuid7()
 
 TurnEntry = (
     JsonObject | ApprovalRequestedFrame | QuestionRequestedFrame | StreamErrorFrame
@@ -302,14 +303,20 @@ def calls_of(method: str) -> list[JsonValue]:
 
 @dataclass
 class RecordingDeferredActions:
+    batch: FakePresentedBatch
+
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
+        return self.batch
+
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
 
     async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
         self.resolved.append(awake)
 
     async def mark_batch(
-        self, batch_id: uuid.UUID, status: str, *, completed: bool = False
+        self, batch_id: UUID7, status: str, *, completed: bool = False
     ) -> None:
         self.marked.append((batch_id, status))
 
@@ -353,9 +360,9 @@ def bridge_context(
 
 async def wait_for_pending(
     tentacle: DeepseekTentacle, suspender: RecordingSuspender
-) -> uuid.UUID:
+) -> UUID7:
     await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
-    return next(iter(tentacle.pending))
+    return next(iter(tentacle.pendings))
 
 
 def interaction_octomate(
@@ -566,6 +573,9 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
     [recorded] = conversations.runs
     fake, _label, messages = recorded
     assert fake.external_id == "sess-1"
+    assert fake.runs[-1].native_id == "deepseek-native"
+    assert fake.runs[-1].native_session_id == "sess-1"
+    assert fake.runs[-1].native_turn_id == "sess-1:1"
     assert messages
 
 
@@ -882,6 +892,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
         permission_mode: str | None,
         cwd: Path,
         external_id: str,
+        native_id: str,
+        native_turn_id: str | None,
     ) -> None:
         assert tentacle.driven_sessions == {}
         observed.append("record")
@@ -894,6 +906,8 @@ async def test_driving_covers_runtime_cleanup_before_persistence_and_workspace_e
             permission_mode=permission_mode,
             cwd=cwd,
             external_id=external_id,
+            native_id=native_id,
+            native_turn_id=native_turn_id,
         )
 
     async def call(
@@ -984,8 +998,10 @@ async def test_an_approval_mid_run_bridges_to_a_card_and_back(
         tool_call_id="ap-1",
         args=ApprovalRequest(tool_name="bash"),
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversations = FakeConversationManager()
     octomate = interaction_octomate(deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
@@ -1030,8 +1046,10 @@ async def test_a_declined_approval_answers_rejected() -> None:
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
@@ -1065,8 +1083,10 @@ async def test_an_expired_approval_answers_cancelled() -> None:
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(
         FakeConversationManager(),
@@ -1101,8 +1121,10 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
     approval = DeferredApproval(
         tool_name="bash", tool_call_id="ap-1", args=ApprovalRequest(tool_name="bash")
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversations = FakeConversationManager()
     octomate = interaction_octomate(deferred_actions, conversations)
     tentacle = _tentacle(conversations, octomate=octomate)
@@ -1147,8 +1169,8 @@ async def test_allow_session_short_circuits_the_next_approval() -> None:
 
 async def test_a_non_interactive_run_declines_without_a_card() -> None:
     FakeDeepseekApi.reset()
-    suspender = RecordingSuspender()
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(agent_tentacle_id="deepseek")
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
@@ -1210,8 +1232,11 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
         position=1,
         args={"question": "Anything else?"},
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(questions=[first, second]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek",
+        batch=FakePresentedBatch(questions=[first, second]),
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = interaction_octomate(deferred_actions)
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
@@ -1254,6 +1279,9 @@ async def test_questions_map_labels_to_selected_and_text_to_custom() -> None:
             {"id": "q2", "selected": [], "custom": "ship it"},
         ],
     }
+    [requests] = suspender.paused
+    assert isinstance(requests, DeferredToolRequests)
+    assert uuid.UUID(requests.calls[0].tool_call_id).version == 7
 
 
 async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
@@ -1264,8 +1292,10 @@ async def test_a_multi_select_answer_comes_back_as_its_picks() -> None:
         position=0,
         args={"question": "Which checks?", "multi_select": True},
     )
-    suspender = RecordingSuspender(batch=FakePresentedBatch(questions=[question]))
-    octomate = interaction_octomate(RecordingDeferredActions())
+    suspender = RecordingSuspender(
+        agent_tentacle_id="deepseek", batch=FakePresentedBatch(questions=[question])
+    )
+    octomate = interaction_octomate(RecordingDeferredActions(batch=suspender.batch))
     tentacle = _tentacle(FakeConversationManager(), octomate=octomate)
     octomate.connect(tentacle)
     tentacle.client = cast(

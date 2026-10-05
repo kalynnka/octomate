@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 
 from arcanus.base import TransmuterProxiedMixin
+from pydantic import UUID7
 from sqlalchemy import (
     JSON,
     ForeignKey,
@@ -29,21 +29,21 @@ class OAuthOperation(Base, TransmuterProxiedMixin):
 
     __tablename__ = "oauth_operations"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    user_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
-    profile_id: Mapped[uuid.UUID | None] = mapped_column(
+    profile_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("user_profiles.id", ondelete="CASCADE"),
         nullable=True,
         index=True,
         comment="Initiating channel profile; null when authorization starts from an authenticated web session.",
     )
-    mcp_id: Mapped[uuid.UUID | None] = mapped_column(
+    mcp_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("mcp.id", ondelete="CASCADE"),
         nullable=True,
@@ -86,15 +86,15 @@ class OAuthConnection(Base, TransmuterProxiedMixin):
         UniqueConstraint("mcp_id", name="uq_oauth_connections_mcp"),
     )
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    user_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    user_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("users.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     connector_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
-    mcp_id: Mapped[uuid.UUID | None] = mapped_column(
+    mcp_id: Mapped[UUID7 | None] = mapped_column(
         Uuid,
         ForeignKey("mcp.id", ondelete="CASCADE"),
         nullable=True,

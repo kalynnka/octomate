@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, ClassVar
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import JsonValue
+from pydantic import UUID7, JsonValue
 from sqlalchemy import JSON, ForeignKey, Integer, String, Uuid, and_
 from sqlalchemy.orm import Mapped, foreign, mapped_column, relationship
 from uuid_utils.compat import uuid7
@@ -17,6 +16,7 @@ from octomate.types.deferred import (
     DeferredActionKind,
     DeferredActionStatus,
     DeferredBatchStatus,
+    DeferredResponseMode,
 )
 
 if TYPE_CHECKING:
@@ -28,8 +28,8 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
 
     __tablename__ = "deferred_action_batches"
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    conversation_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    conversation_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("conversations.id", ondelete="CASCADE"),
         nullable=False,
@@ -41,6 +41,12 @@ class DeferredActionBatch(Base, TransmuterProxiedMixin):
         String,
         nullable=False,
         default="pending",
+    )
+    response_mode: Mapped[DeferredResponseMode] = mapped_column(
+        String,
+        nullable=False,
+        server_default="live",
+        comment="Whether a reply answers a live request or resumes a suspended run.",
     )
     source_address: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
     target_address: Mapped[JsonValue] = mapped_column(JSON, nullable=False)
@@ -102,8 +108,8 @@ class DeferredAction(Base, TransmuterProxiedMixin):
         "polymorphic_abstract": True,
     }
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    batch_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("deferred_action_batches.id", ondelete="CASCADE"),
         nullable=False,

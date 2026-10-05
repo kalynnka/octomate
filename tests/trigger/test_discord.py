@@ -12,7 +12,6 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import uuid4
 
 import pytest
 import pytest_asyncio
@@ -216,7 +215,7 @@ async def test_discord_renders_action_controls(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     channel, address = discord_run_thread
-    batch_id = uuid4()
+    batch_id = uuid7()
     choice_question = DeferredQuestion(
         batch_id=batch_id,
         tool_name="ask_questions",
