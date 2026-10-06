@@ -838,6 +838,66 @@ async def test_react_passes_the_decision_effort_to_the_run() -> None:
     assert agent.turns[0].effort == "high"
 
 
+@pytest.mark.parametrize("effort", [None, "high"])
+async def test_react_resolves_conversation_and_explicit_effort(
+    effort: ThinkingEffort | None,
+) -> None:
+    address = _key()
+    thread = _thread(address)
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    stored = await conversations.ensure(thread.id, agent_tentacle_id="other")
+    stored.effort = "low"
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=["other"],
+        )
+    )
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(effort=effort),
+            thread=thread,
+        ),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert agent.turns[0].effort == (effort or "low")
+
+
+async def test_react_rejects_saved_effort_unsupported_by_current_model() -> None:
+    address = _key()
+    thread = _thread(address)
+    agent = FakeAgent(
+        id="other",
+        allow_reception_run=True,
+        claims={"test": Claim(ability="Current model", efforts=("low",))},
+    )
+    conversations = FakeConversationManager()
+    stored = await conversations.ensure(thread.id, agent_tentacle_id=agent.id)
+    stored.effort = "high"
+    target = _source_target(address)
+    with pytest.raises(ValueError, match="does not take effort 'high'"):
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target, target=target, decision=_summon(), thread=thread
+            ),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": _channel()},
+                agent=agent,
+            ),
+        )
+    assert not agent.turns
+
+
 async def test_reception_allow_here_false_on_group_main() -> None:
     # A group main channel refuses `summon here` (Case 1): the mounted gate is built
     # with allow_here=False so the model is steered to a thread.

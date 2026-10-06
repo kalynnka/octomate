@@ -11,6 +11,7 @@ No real provider or application database was used.
 import asyncio
 from collections.abc import AsyncGenerator
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -217,6 +218,39 @@ async def test_direct_commands_persist_receipts_and_native_session_without_model
     assert agent.driven_sessions == {}
     assert client.__aenter__.await_count == client.__aexit__.await_count
     build_result.assert_not_called()
+
+
+@pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize("saved", [False, True])
+async def test_runs_apply_saved_effort(
+    execution: tuple[
+        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    command: bool,
+    saved: bool,
+) -> None:
+    agent, context, client, options = execution
+    conversation = context.conversation
+    assert conversation is not None
+    model = next(iter(agent.models))
+    agent.routes = agent.build_routes()
+    context = replace(context, model=model)
+    await agent.conversations.set_effort(conversation, "max" if saved else None)
+    client.receive_response.side_effect = lambda: native_messages(streams["skill"])
+    if command:
+        invocation = CommandInvocation(command_id="fixture-review")
+        async for _ in agent.execute_command(context, invocation):
+            pass
+    else:
+        await agent.run(
+            "review",
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+            model=model,
+        )
+    assert options[-1].effort == ("max" if saved else None)
 
 
 @pytest.mark.parametrize("resumed", [False, True])

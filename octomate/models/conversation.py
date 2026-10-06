@@ -110,6 +110,16 @@ class Conversation(Base, TransmuterProxiedMixin):
             "project when the row is created, and owned by the conversation after."
         ),
     )
+    effort: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment=(
+            "Reasoning effort this conversation's runs ask for, one of the levels "
+            "its agent's route claims for the model. NULL is nothing declared, and "
+            "the runtime's own default decides. A run given an effort of its own, "
+            "as a summon is, uses that one instead."
+        ),
+    )
     # Native string array on Postgres; SQLite (tests/dev) has no array type, so
     # store the list as JSON there. The Python value is `list[str]` either way.
     allowed_tools: Mapped[list[str]] = mapped_column(

@@ -58,7 +58,6 @@ from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import TextContent, ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
@@ -67,7 +66,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender
 from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, DeepseekConfig, ThinkingEfforts
+from octomate.config.agents import Claim, DeepseekConfig
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -177,7 +176,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
 
     config: DeepseekConfig = field(init=False)
     default_provider: str | None = field(init=False)
-    effort_maps: dict[str, dict[ThinkingEffort, str]] = field(init=False)
     process: DeepseekProcess | None = field(default=None, init=False, repr=False)
     ink: DeepseekInk = field(init=False, repr=False)
     conversations: ConversationManager = field(init=False, repr=False)
@@ -250,7 +248,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         self.gateway = config.gateway
         self.models = {}
         self.default_provider = None
-        self.effort_maps = {}
         # Serializes turns per conversation: dsh queues a second prompt into a
         # live turn as steering, which would interleave two runs' frames.
         self.conversation_locks = SessionLocks()
@@ -523,13 +520,17 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.conversations.get(
                 conversation.id, with_history=False
             )
+            effort = self.resolve_effort(conversation, model=context.model)
             permission_mode = (
                 conversation.permission_mode or self.config.permission_mode
             )
             self.check_permission_mode(permission_mode)
             if context.model is not None:
                 await self.ink.select_model(
-                    session_id, context.model, default_provider=self.default_provider
+                    session_id,
+                    context.model,
+                    default_provider=self.default_provider,
+                    reasoning_effort=effort,
                 )
             await self.ink.set_permission_mode(session_id, permission_mode)
             queue = await self.ink.subscribe(session_id)
@@ -673,38 +674,26 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             )
         models: dict[str, Model | str] = {}
         claims: dict[str, Claim] = {}
-        effort_maps: dict[str, dict[ThinkingEffort, str]] = {}
         for provider in catalog.groups:
             for model in provider.models:
                 key = f"{provider.id}:{model.id}"
                 configured = self.config.claims.get(key)
-                mapping: dict[ThinkingEffort, str] = {}
-                if model.reasoning is not None:
-                    supported = {effort.id for effort in model.reasoning.efforts}
-                    for effort in ThinkingEfforts:
-                        native = (
-                            effort
-                            if effort in supported
-                            else self.config.efforts.get(effort)
-                        )
-                        if native is not None and native in supported:
-                            mapping[effort] = native
-                elif configured is not None:
-                    mapping = {
-                        effort: self.config.efforts.get(effort, effort)
-                        for effort in configured.efforts
-                    }
+                efforts = (
+                    tuple(effort.id for effort in model.reasoning.efforts)
+                    if model.reasoning is not None
+                    else configured.efforts
+                    if configured is not None
+                    else ()
+                )
                 models[key] = key
-                effort_maps[key] = mapping
                 claims[key] = Claim(
                     model.description
                     or (configured.ability if configured else model.name),
-                    tuple(mapping),
+                    efforts,
                 )
         if not models:
             raise ValueError("DeepSeek Harness advertised no available models")
         self.set_model_catalog(models, claims)
-        self.effort_maps = effort_maps
         self.default_provider = catalog.default.provider
 
     async def discover_permissions(self) -> None:
@@ -973,7 +962,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1056,6 +1045,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 conversation = await self.conversations.get(
                     conversation.id, with_history=False
                 )
+                effort = self.resolve_effort(
+                    conversation, model=deepseek_model, effort=effort
+                )
                 permission_mode = (
                     conversation.permission_mode or self.config.permission_mode
                 )
@@ -1077,18 +1069,11 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     await self.conversations.set_external_id(conversation, session_id)
                 async with self.driving(session_id):
                     if deepseek_model is not None:
-                        model_key = (
-                            deepseek_model
-                            if ":" in deepseek_model
-                            else f"{self.default_provider}:{deepseek_model}"
-                        )
                         await self.ink.select_model(
                             session_id,
                             deepseek_model,
                             default_provider=self.default_provider,
-                            reasoning_effort=self.effort_maps[model_key][effort]
-                            if effort is not None
-                            else None,
+                            reasoning_effort=effort,
                         )
                     await self.ink.set_permission_mode(session_id, permission_mode)
 
@@ -1235,7 +1220,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1267,7 +1252,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1298,7 +1283,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1354,7 +1339,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1385,7 +1370,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1415,7 +1400,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,

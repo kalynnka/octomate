@@ -16,7 +16,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
-from pydantic import UUID7
+from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -94,6 +94,8 @@ logger = logging.getLogger(__name__)
 MCP_WARM_TIMEOUT = 20.0
 
 type InklingOutput = str | list[MessageSegment] | DeferredToolRequests
+
+thinking_effort_adapter = TypeAdapter(ThinkingEffort)
 
 
 @dataclass(frozen=True)
@@ -441,7 +443,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -473,7 +475,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -504,7 +506,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -566,7 +568,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[InklingOutput]:
@@ -610,7 +612,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -641,7 +643,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -671,7 +673,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -730,7 +732,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -761,7 +763,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                     "effort cannot be combined with callable model_settings"
                 )
             model_settings = merge_model_settings(
-                model_settings, ModelSettings(thinking=effort)
+                model_settings,
+                ModelSettings(thinking=thinking_effort_adapter.validate_python(effort)),
             )
         react_output_type: OutputSpec[InklingOutput | RunOutputDataT] = (
             [str, list[MessageSegment], DeferredToolRequests]

@@ -411,8 +411,10 @@ async def test_client_owned_export_is_refused_before_dispatch(
     assert not calls_of("commands/execute")
 
 
+@pytest.mark.parametrize("saved_effort", [False, True])
 async def test_command_run_applies_selected_model_and_permissions(
     scenario: Scenario,
+    saved_effort: bool,
 ) -> None:
     app, agent, _, signal = scenario
     conversation = signal.context.conversation
@@ -424,6 +426,7 @@ async def test_command_run_applies_selected_model_and_permissions(
         thread, to_agent_tentacle_id=agent.id, to_model=model
     )
     await agent.set_permission_mode(conversation, "danger-full-access")
+    await agent.conversations.set_effort(conversation, "max" if saved_effort else None)
     assert not calls_of("commands/execute")
     signal = replace(
         signal,
@@ -438,6 +441,7 @@ async def test_command_run_applies_selected_model_and_permissions(
             "sessionId": "sess-1",
             "provider": "deepseek-official",
             "model": "deepseek-v4-flash",
+            **({"reasoningEffort": "max"} if saved_effort else {}),
         }
     ]
     assert calls_of("commands/execute")[0] == {

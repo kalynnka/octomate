@@ -48,8 +48,6 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.types.threads import NATIVE_CHANNEL_USER_ID
 
 if TYPE_CHECKING:
-    from pydantic_ai.settings import ThinkingEffort
-
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
     from octomate.managers.workspaces import WorkspaceManager
@@ -432,7 +430,7 @@ class OctomateSession:
         self,
         agent_id: str,
         model: str,
-        effort: ThinkingEffort | None,
+        effort: str | None,
         *,
         spell: str,
         offered: list[AgentRoute] | None = None,
@@ -564,7 +562,7 @@ class OctomateSession:
         hint: str,
         reason: str,
         summon: str,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
     ) -> str:
         """Validate and record a handoff of this conversation, where it is, for the
         graph to perform. Continuing somewhere else is `teleport`'s."""

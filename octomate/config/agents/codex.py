@@ -5,22 +5,13 @@ from __future__ import annotations
 from typing import Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
+from openai_codex.generated.v2_all import ReasoningEffort as CodexReasoningEffort
 from pydantic import ConfigDict, Field, model_validator
 
 from octomate.config.agents.common import AgentConfig, Claim
 from octomate.types.permissions import CodexPermissionMode
 
 type CodexPersonality = Literal["none", "friendly", "pragmatic"]
-
-
-type CodexReasoningEffort = Literal[
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-]
 
 
 type CodexReasoningSummary = Literal[

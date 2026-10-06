@@ -48,7 +48,7 @@ async def test_claude_uses_native_metadata_before_config(
                 "value": "future-model",
                 "displayName": "Future",
                 "description": "From the harness",
-                "supportedEffortLevels": ["low", "high"],
+                "supportedEffortLevels": ["low", "high", "max"],
             },
             {"value": "default", "displayName": "Account default"},
             {"value": "small", "displayName": "Small", "supportsEffort": False},
@@ -85,12 +85,12 @@ async def test_claude_uses_native_metadata_before_config(
         assert tentacle.default_model is None
         assert tentacle.models[f"{prefix}:default"] == "default"
         assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-            "From the harness", efforts=("minimal", "low", "high")
+            "From the harness", efforts=("low", "high", "max")
         )
         assert tentacle.claims[f"{prefix}:default"] == configured
         assert tentacle.claims[f"{prefix}:small"].efforts == ()
         assert [route.claim.efforts for route in tentacle.routes] == [
-            ("minimal", "low", "high"),
+            ("low", "high", "max"),
             ("medium",),
             (),
         ]
@@ -171,7 +171,8 @@ def codex_model(
             "hidden": hidden,
             "defaultReasoningEffort": "high",
             "supportedReasoningEfforts": [
-                {"reasoningEffort": "high", "description": "Deep"}
+                {"reasoningEffort": level, "description": level}
+                for level in ("none", "high", "max", "ultra", "future-effort")
             ],
         }
     )
@@ -232,11 +233,13 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         assert tentacle.default_model is None
         assert tentacle.provider == prefix
         assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-            "Native description", efforts=("high",), default_effort="high"
+            "Native description",
+            efforts=("none", "high", "max", "ultra", "future-effort"),
+            default_effort="high",
         )
         assert [route.claim.efforts for route in tentacle.routes] == [
-            ("high",),
-            ("high",),
+            ("none", "high", "max", "ultra", "future-effort"),
+            ("none", "high", "max", "ultra", "future-effort"),
         ]
         assert codex_catalog.request.call_args_list[2].args == (
             "model/list",
@@ -252,9 +255,9 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         # The model's own default, unless Codex's setting or ours says otherwise.
         (None, None, "high"),
         (None, "low", "low"),
-        ("medium", "low", "medium"),
+        (CodexReasoningEffort.medium, "low", "medium"),
         # A level the model does not take is no default anyone can be shown.
-        ("xhigh", None, None),
+        (CodexReasoningEffort.xhigh, None, None),
     ],
 )
 async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
@@ -349,7 +352,13 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
                             "id": "future-model",
                             "name": "Future",
                             "description": "Native ability",
-                            "reasoning": {"efforts": [{"id": "low"}, {"id": "max"}]},
+                            "reasoning": {
+                                "efforts": [
+                                    {"id": "low"},
+                                    {"id": "max"},
+                                    {"id": "plugin-effort"},
+                                ]
+                            },
                         }
                     ],
                 }
@@ -367,15 +376,18 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
         assert set(tentacle.models) == {"first:future-model", "second:future-model"}
         assert tentacle.default_model is None
         assert tentacle.claims["first:future-model"] == Claim(
-            "Native ability", efforts=("low", "xhigh")
+            "Native ability", efforts=("low", "max", "plugin-effort")
         )
-        assert all(route.claim.efforts == ("low", "xhigh") for route in tentacle.routes)
+        assert all(
+            route.claim.efforts == ("low", "max", "plugin-effort")
+            for route in tentacle.routes
+        )
         await tentacle.run(
             "hello",
             conversation_address=KEY,
             thread_id=uuid7(),
             model="first:future-model",
-            effort="low",
+            effort="plugin-effort",
         )
 
     [selected] = [
@@ -387,7 +399,7 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
         "sessionId": "sess-1",
         "provider": "first",
         "model": "future-model",
-        "reasoningEffort": "low",
+        "reasoningEffort": "plugin-effort",
     }
 
 

@@ -8,7 +8,6 @@ from typing import Annotated, Literal, NamedTuple
 from octomate_protocol.gateway import GatewayTool
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ToolCallPart
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config.agents import AgentRouteModelName, Claim
@@ -87,7 +86,7 @@ class SummonDecision(BaseModel):
     model: AgentRouteModelName | None = Field(
         description="Selected model, or null to use the harness's native default."
     )
-    effort: ThinkingEffort | None = None
+    effort: str | None = None
     hint: str
     summon: str = Field(
         max_length=8_000,

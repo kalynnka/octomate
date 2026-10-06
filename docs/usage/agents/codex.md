@@ -16,7 +16,7 @@ tentacles:
     type: codex
     permission_mode: user_review   # user_review | auto_review | full_access
     approval_timeout: 3600
-    effort: ~                      # none | minimal | low | medium | high | xhigh
+    effort: ~                      # e.g. none | minimal | low | medium | high | xhigh | max | ultra
     summary: ~                     # auto | concise | detailed | none
     personality: ~                 # none | friendly | pragmatic
     runtime:

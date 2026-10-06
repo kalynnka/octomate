@@ -73,7 +73,6 @@ from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import TextContent, ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
@@ -82,7 +81,7 @@ from uuid_utils.compat import uuid7
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, CodexConfig, ThinkingEfforts
+from octomate.config.agents import Claim, CodexConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -858,14 +857,11 @@ class CodexTentacle(AgentTentacle[str, None]):
         for model in catalog:
             key = f"{provider}:{model.model}"
             configured = self.config.claims.get(key)
-            supported = {
+            efforts = tuple(
                 option.reasoning_effort.value
                 for option in model.supported_reasoning_efforts
-            }
-            efforts: tuple[ThinkingEffort, ...] = tuple(
-                effort for effort in ThinkingEfforts if effort in supported
             )
-            default = ReasoningEffort(
+            default = (
                 self.config.effort
                 or configured_effort
                 or model.default_reasoning_effort
@@ -1258,7 +1254,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1348,13 +1344,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             if self.config.personality is not None
             else None
         )
-        # The caller's normalized effort wins over the config default; both speak
-        # values the SDK scale already contains, so no mapping table is needed.
-        turn_effort = (
-            ReasoningEffort(effort or self.config.effort)
-            if effort is not None or self.config.effort is not None
-            else None
-        )
         if self.config.summary is None:
             summary: ReasoningSummary | None = None
         elif self.config.summary == "none":
@@ -1386,6 +1375,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             conversation = await self.conversations.get(
                 conversation.id, with_history=False
+            )
+            effort = self.resolve_effort(conversation, model=sdk_model, effort=effort)
+            turn_effort = (
+                ReasoningEffort(effort) if effort is not None else self.config.effort
             )
             permission_mode = (
                 conversation.permission_mode or self.config.permission_mode
@@ -1568,7 +1561,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1600,7 +1593,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1631,7 +1624,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1690,7 +1683,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1721,7 +1714,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1751,7 +1744,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,

@@ -6,18 +6,8 @@ from dataclasses import dataclass
 from typing import Annotated
 
 from pydantic import BaseModel, Field
-from pydantic_ai.settings import ThinkingEffort
 
 type AgentRouteModelName = Annotated[str, Field(min_length=1)]
-
-
-ThinkingEfforts: tuple[ThinkingEffort, ...] = (
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-)
 
 
 @dataclass(frozen=True)
@@ -27,14 +17,11 @@ class Claim:
     # What this route is for — per-route, not per-agent, so two models of one
     # agent can advertise differently.
     ability: str
-    # The effort levels this route accepts from a caller — the one effort
-    # vocabulary across all agents; each tentacle maps it onto its runtime's
-    # knob. Defaults to the full scale, so a route whose provider takes less
-    # (DeepSeek has no `minimal`) must say so.
-    efforts: tuple[ThinkingEffort, ...] = ThinkingEfforts
+    # Native effort names accepted by this route, in the harness's advertised order.
+    efforts: tuple[str, ...] = ()
     # The level a run gets when its caller names none; None when the runtime
     # decides and does not say which.
-    default_effort: ThinkingEffort | None = None
+    default_effort: str | None = None
 
     def __str__(self) -> str:
         return f"[effort {'/'.join(self.efforts) or 'default'}] {self.ability}"

@@ -157,6 +157,15 @@ class Conversation(BaseTransmuter):
             "after, so a change made mid-thread is never revoked by a later ensure."
         ),
     )
+    effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort this conversation's runs ask for, one of the levels its "
+            "agent's route claims for the model. None declares nothing, and the "
+            "runtime's own default decides. A run given an effort of its own, as a "
+            "summon is, uses that one instead."
+        ),
+    )
     allowed_tools: list[str] = Field(
         default_factory=list,
         description=(

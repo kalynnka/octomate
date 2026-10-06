@@ -12,7 +12,6 @@ from pydantic import (
     HttpUrl,
     field_validator,
 )
-from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config.agents.common import AgentConfig, Claim
 from octomate.types.permissions import DeepseekPermissionMode
@@ -104,20 +103,6 @@ class DeepseekConfig(AgentConfig):
         default_factory=dict,
         description="Metadata for models whose harness omits descriptions or effort "
         "capabilities. Keys are provider-qualified model names.",
-    )
-    efforts: dict[ThinkingEffort, str] = Field(
-        default_factory=lambda: {
-            "minimal": "off",
-            "low": "off",
-            "medium": "high",
-            "high": "high",
-            "xhigh": "max",
-        },
-        description=(
-            "Octomate's one effort vocabulary mapped onto dsh's adapter-owned "
-            "reasoning-effort ids. The default fits llm-deepseek (off/high/max); "
-            "a deployment routing another adapter overrides it."
-        ),
     )
     permission_mode: DeepseekPermissionMode = Field(
         default="workspace-write",

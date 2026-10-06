@@ -59,6 +59,13 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   questions are one card with a page per question, sent together. A batch
   already resolved is refused rather than resumed twice.
 - **Switch a conversation's permission mode** among the agent's modes.
+- **Set a conversation's reasoning effort** with `/effort`: a scale of the levels
+  the thread's model takes, moved with ←→ or by dragging and applied with ↵. The
+  level holds for the conversation's following turns, including command-triggered
+  runs, until you change it, and a teleport keeps it; Auto leaves it to the agent.
+  If the selected model no longer supports the saved level, change it or choose
+  Auto before running again. A turn already running keeps the
+  level it started at. The composer's route chip shows the level once one is set.
 - **Teleport or Summon** from the chat header's split button. Use its arrow to
   choose an action, ordered Teleport, Summon. The button selects the first
   available action unless you choose another available one. Your choice stays
@@ -66,14 +73,20 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   to the first available action. Disabled choices show their reason. Teleport
   and Summon expand the composer instead of opening a dialog: the button, ×
   or Esc returns to chat with your draft kept, and ⌘↵ submits.
-  Typing `/` in an existing thread's composer opens a command finder for the
-  same two actions: `/summon <agent>` and `/teleport [destination]`.
+  Typing `/` in an existing thread's composer opens a command finder. The
+  gateway's commands come first — `/summon <agent>`, `/teleport [destination]`,
+  `/effort <level>` and `/new` — then the commands the thread's agent offers in
+  its own runtime, looked up the first time you type `/` in that conversation.
   ↑↓ moves, ⇥ completes, ↵ runs and Esc dismisses it. `/summon` lists the
   agents Summon offers, with the model and effort to hand over, and opens the
   Summon composer on the one you pick. `/teleport` lists the connected
   channels and opens Teleport on the one you pick, or on the destination
-  browser when you pick none. A command that is unavailable is dimmed and shows
-  its reason. A line that names no command is sent as an ordinary message.
+  browser when you pick none. `/new` opens the composer for a new thread. An
+  agent's own command takes what you type after it, exactly as typed, and what
+  it answers streams into the message panel like a turn. A command that is
+  unavailable is dimmed and shows its reason, and when the agent's commands
+  cannot be looked up the finder says why. A line that names no command is sent
+  as an ordinary message.
   Teleport needs a destination; your draft, if any, is sent as your next
   message once it lands in a Trunkline thread. Browse destinations one level at a time: the connected
   channels, then what each holds, loaded as you open it. The filter narrows the
@@ -86,8 +99,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Summon hands this conversation to another agent where it is, with your draft
   as the brief; to continue elsewhere as well, teleport first. A native session
   or a group's main channel cannot be summoned. Its chip picks the agent and
-  model from the routes this channel runs, and sets effort on a scale that dims
-  the levels the model does not take. The scale
+  model from the routes this channel runs, and sets effort from the native
+  levels the model advertises. The scale
   starts at the route's default effort where the agent reports one. Where it does
   not, the scale starts at Auto, which leaves the level to the agent.
   Run output streams into the message panel. After the server confirms arrival,
@@ -139,7 +152,8 @@ The console's HTTP API, its request bodies and the events it streams are in the
 ## The console surface
 
 One screen: a threads sidebar with a channel rail, the chat ledger in the middle, a
-timeline of the run's events on the right, a control rail for agents, MCP, profile,
+timeline on the right that groups each conversation's messages under the turns
+that drew them, each group folding on its own, a control rail for agents, MCP, profile,
 keys and settings, and a review panel for a workspace's changes. Ordinary chat runs
 stream over server-sent events; a browser that disconnects mid-run only stops
 watching, and the run finishes and records regardless.

@@ -98,6 +98,14 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             state.handoff = None
         runtime = ctx.deps.runtime
         session, suspender, capabilities = await runtime.resources(ctx)
+        # A summon names the level it hands over at; every other turn runs at the
+        # one the conversation was set to.
+        effort = decision.effort
+        if effort is None and state.conversation_id is not None:
+            conversation = await ctx.deps.conversation_manager.get(
+                state.conversation_id, with_history=False
+            )
+            effort = agent.resolve_effort(conversation, model=model)
         if state.user_profile is not None:
             await runtime.prepare_user(
                 ctx,
@@ -125,7 +133,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 source_thread_message_ids=state.source_thread_message_ids,
                 run_name=state.run_name,
                 model=run_model,
-                effort=decision.effort,
+                effort=effort,
                 deferred_tool_results=deferred_results,
                 deferred_suspender=suspender,
                 capabilities=capabilities,
@@ -155,7 +163,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                         source_thread_message_ids=state.source_thread_message_ids,
                         run_name=state.run_name,
                         model=run_model,
-                        effort=decision.effort,
+                        effort=effort,
                         deferred_tool_results=deferred_results,
                         deferred_suspender=suspender,
                         capabilities=capabilities,

@@ -3,13 +3,18 @@
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
 from openai_codex import SkillInput, TextInput
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError
-from openai_codex.generated.v2_all import SkillsListEntry, TurnCompletedNotification
+from openai_codex.generated.v2_all import (
+    ReasoningEffort,
+    SkillsListEntry,
+    TurnCompletedNotification,
+)
 from openai_codex.models import Notification
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import UserPromptPart
@@ -21,6 +26,7 @@ from octomate.config.agents import CodexConfig
 from octomate.schemas.commands import CommandContext, CommandError, CommandInvocation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.thread import ThreadCommand
+from octomate.schemas.triage import Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
@@ -114,6 +120,67 @@ async def execution(
                 yield agent, context, skills
             finally:
                 await app.commands.close()
+
+
+@pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize(
+    "effort", [None, "high", "none", "max", "ultra", "future-effort"]
+)
+async def test_runs_apply_saved_effort(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    command: bool,
+    effort: str | None,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    model = next(iter(agent.models))
+    agent.claims = {
+        model: Claim(
+            ability="Test model",
+            efforts=("high", "none", "max", "ultra", "future-effort"),
+        )
+    }
+    agent.routes = agent.build_routes()
+    context = replace(context, model=model)
+    await agent.conversations.set_effort(conversation, "high")
+    await agent.conversations.set_effort(conversation, effort)
+    if command:
+        catalog = await agent.discover_commands(context)
+        invocation = CommandInvocation(command_id=next(iter(catalog.descriptors)).id)
+        async for _ in agent.execute_command(context, invocation):
+            pass
+    else:
+        await agent.run(
+            "review",
+            conversation_address=context.address,
+            conversation_id=conversation.id,
+            thread_id=conversation.thread_id,
+            model=model,
+        )
+    assert FakeCodex.turn_calls[-1].effort == (
+        ReasoningEffort(effort) if effort is not None else None
+    )
+
+
+async def test_command_rejects_effort_unsupported_by_current_model(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    model = next(iter(agent.models))
+    agent.claims = {model: Claim(ability="Test model", efforts=("low",))}
+    agent.routes = agent.build_routes()
+    context = replace(context, model=model)
+    await agent.conversations.set_effort(conversation, "high")
+    catalog = await agent.discover_commands(context)
+    invocation = CommandInvocation(command_id=next(iter(catalog.descriptors)).id)
+    with pytest.raises(ValueError, match="does not take effort 'high'"):
+        async for _ in agent.execute_command(context, invocation):
+            pass
+    assert not FakeCodex.thread_calls
+    assert not FakeCodex.turn_calls
 
 
 @pytest.mark.parametrize("resumed", [False, True])

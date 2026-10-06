@@ -660,6 +660,80 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
     assert unknown.status_code == 404
 
 
+async def test_an_effort_set_mid_thread_stays_on_the_row_until_cleared(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    inkling = octomate.agents["inkling"]
+    inkling.claims = {RECEPTION_MODEL: Claim(ability="test", efforts=("high",))}
+    inkling.routes = inkling.build_routes()
+    route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={"text": "hello", "model": route},
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        conversations = f"/api/trunkline/threads/{listed['id']}/conversations"
+        [opened] = (await client.get(conversations)).json()
+        effort = f"/api/trunkline/conversations/{opened['id']}/effort"
+        raised = await client.patch(effort, json={"effort": "high"})
+        [reread] = (await client.get(conversations)).json()
+        cleared = await client.patch(effort, json={"effort": None})
+
+    assert opened["effort"] is None
+    assert raised.status_code == 200
+    assert raised.json()["effort"] == "high"
+    assert reread["effort"] == "high"
+    assert cleared.json()["effort"] is None
+
+
+async def test_an_effort_the_route_does_not_claim_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    inkling = octomate.agents["inkling"]
+    inkling.claims = {RECEPTION_MODEL: Claim(ability="test", efforts=("low", "medium"))}
+    inkling.routes = inkling.build_routes()
+    route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={"text": "hello", "model": route},
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        [opened] = (
+            await client.get(f"/api/trunkline/threads/{listed['id']}/conversations")
+        ).json()
+        refused = await client.patch(
+            f"/api/trunkline/conversations/{opened['id']}/effort",
+            json={"effort": "xhigh"},
+        )
+        unknown = await client.patch(
+            f"/api/trunkline/conversations/{uuid7()}/effort", json={"effort": "low"}
+        )
+
+    assert refused.status_code == 422
+    assert "does not take effort 'xhigh'" in refused.json()["detail"]
+    assert unknown.status_code == 404
+
+
 async def test_a_posture_with_no_agent_to_read_it_is_refused(
     in_memory_engine: AsyncEngine,
 ) -> None:

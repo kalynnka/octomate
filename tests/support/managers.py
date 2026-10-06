@@ -156,6 +156,7 @@ class FakeConversation:
     agent_tentacle_id: str = ""
     runs: list[AgentRun] = field(default_factory=list)
     permission_mode: AgentPermissionMode | None = None
+    effort: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
 
 

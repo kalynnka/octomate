@@ -35,7 +35,6 @@ from pydantic_ai.agent.abstract import (
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
@@ -308,6 +307,31 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Reject selections absent from this tentacle's current catalog."""
         if not any(option.value == mode for option in self.permission_modes):
             raise ValueError(f"{mode!r} is not one of {self.id}'s modes")
+
+    def check_effort(self, model: AgentRouteModelName | None, effort: str) -> None:
+        """Reject a level the route for `model` does not claim."""
+        route = next((route for route in self.routes if route.model == model), None)
+        efforts = route.claim.efforts if route is not None else ()
+        if effort not in efforts:
+            raise ValueError(
+                f"{self.id} ({model}) does not take effort {effort!r}; it claims "
+                f"{'/'.join(efforts) or 'none'}"
+            )
+
+    def resolve_effort(
+        self,
+        conversation: Conversation,
+        *,
+        model: AgentRouteModelName | None,
+        effort: str | None = None,
+    ) -> str | None:
+        """Prefer the run's effort; otherwise validate the conversation's selection
+        against the current route before passing it to the runtime.
+        """
+        if effort is not None or conversation.effort is None:
+            return effort
+        self.check_effort(self.resolve_model(model), conversation.effort)
+        return conversation.effort
 
     async def set_permission_mode(
         self, conversation: Conversation, mode: str | None
@@ -582,7 +606,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -614,7 +638,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -646,7 +670,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -674,7 +698,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[AgentOutputT]:
@@ -716,7 +740,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -747,7 +771,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -778,7 +802,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,

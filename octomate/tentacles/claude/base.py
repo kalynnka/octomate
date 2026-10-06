@@ -72,7 +72,6 @@ from pydantic_ai.agent.abstract import (
 from pydantic_ai.messages import ToolCallPart, UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
@@ -83,7 +82,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
-from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
+from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -116,7 +115,10 @@ from octomate.telemetry import (
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
-from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor
+from octomate.tentacles.claude.catalog import (
+    ClaudeCommandDescriptor,
+    claude_effort_adapter,
+)
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.ink import ClaudeInk
@@ -761,12 +763,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 continue
             configured = self.config.claims.get(key)
             if model.supported_effort_levels is not None:
-                efforts: tuple[ThinkingEffort, ...] = tuple(
-                    effort
-                    for effort in ThinkingEfforts
-                    if ("low" if effort == "minimal" else effort)
-                    in model.supported_effort_levels
-                )
+                efforts: tuple[str, ...] = tuple(model.supported_effort_levels)
             elif model.supports_effort is False:
                 efforts = ()
             else:
@@ -835,7 +832,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -865,6 +862,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 agent_tentacle_id=self.id,
                 with_history=False,
             )
+        effort = self.resolve_effort(conversation, model=cli_model, effort=effort)
         if deferred_tool_results is not None:
             # A resumed run. The CLI takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.
@@ -1071,10 +1069,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # a settings tree, a sibling checkout — so Claude may reach them too.
             add_dirs=[str(root) for root in project.extra_roots] if project else [],
             model=cli_model,
-            # The SDK scale has no `minimal` (and a `max` tier Octomate does not
-            # offer); minimal maps down to low, the rest pass through. None
-            # leaves the CLI default.
-            effort="low" if effort == "minimal" else effort,
+            effort=claude_effort_adapter.validate_python(effort)
+            if effort is not None
+            else None,
             # Stored in the SDK's own vocabulary, so it goes over untranslated.
             permission_mode=(
                 conversation.permission_mode
@@ -1292,7 +1289,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1324,7 +1321,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1355,7 +1352,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1414,7 +1411,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1445,7 +1442,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -1475,7 +1472,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,

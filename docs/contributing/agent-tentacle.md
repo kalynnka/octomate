@@ -58,7 +58,8 @@ def run_stream_events(self, ...same...) -> ReactEventStream[...]
 
 A run either has a `user_prompt` or `deferred_tool_results`, never both: the
 second is a resumed turn whose answers to a batch become tool results. `effort` is
-Octomate's vocabulary, which you map onto the runtime's knob. `interactive` is
+the selected harness's native name, validated against the model's advertised
+levels and passed through unchanged. `interactive` is
 false for a commissioned run that has no user to ask. `capabilities` carries the
 gateway capability when the run should offer the routing spells.
 

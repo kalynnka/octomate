@@ -456,6 +456,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             if stored_target is None:
                 raise ValueError(f"unknown conversation {target.id}")
             stored_target.permission_mode = permission_mode or source.permission_mode
+            stored_target.effort = source.effort
             if transcript is not None:
                 session.add(transcript)
                 await session.flush()
@@ -550,6 +551,23 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             stored.permission_mode = mode
             await session.commit()
         conversation.permission_mode = mode
+        return conversation
+
+    async def set_effort(
+        self, conversation: Conversation, effort: str | None
+    ) -> Conversation:
+        """Store the reasoning effort this conversation's runs ask for.
+
+        Callers validate the level against the route the conversation runs on;
+        None clears it and lets the runtime's own default decide.
+        """
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.effort = effort
+            await session.commit()
+        conversation.effort = effort
         return conversation
 
     async def set_name(self, conversation: Conversation, name: str) -> Conversation:

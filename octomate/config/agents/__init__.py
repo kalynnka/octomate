@@ -16,7 +16,6 @@ from octomate.config.agents.common import (
     AgentConfig,
     AgentRouteModelName,
     Claim,
-    ThinkingEfforts,
 )
 from octomate.config.agents.deepseek import (
     ConfigPath,
@@ -47,7 +46,6 @@ __all__ = [
     "InklingConfig",
     "SpillAction",
     "SummarizeAction",
-    "ThinkingEfforts",
     "ToolOutputAction",
     "ToolOutputBand",
     "ToolOutputConfig",

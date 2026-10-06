@@ -29,7 +29,6 @@ from fastmcp.server.dependencies import (
 )
 from octomate_protocol.gateway import GatewayTool
 from pydantic import Field, TypeAdapter
-from pydantic_ai.settings import ThinkingEffort
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
@@ -259,7 +258,7 @@ def mount_gateway(
         hint: str,
         reason: str,
         summon: Annotated[str, Field(max_length=8_000)],
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         session: OctomateSession = octomate_session,
     ) -> str:
         return await session.summon(

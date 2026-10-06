@@ -822,7 +822,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
             developer_instructions="dev",
             ephemeral=True,
             personality="pragmatic",
-            effort="xhigh",
+            effort=ReasoningEffort.xhigh,
             summary="detailed",
         ),
     )

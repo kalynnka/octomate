@@ -489,15 +489,19 @@ async def test_driven_name_lookup_failure_or_missing_session_keeps_result(
 
 
 @pytest.mark.parametrize("instrument", [False, True])
+@pytest.mark.parametrize("saved_effort", [False, True])
 async def test_run_stream_events_creates_session_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
     instrument: bool,
+    saved_effort: bool,
     capfire: CaptureLogfire,
 ) -> None:
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations, config=DeepseekConfig(instrument=instrument))
+    conversation = await conversations.ensure(_THREAD, agent_tentacle_id=tentacle.id)
+    conversation.effort = "max" if saved_effort else None
 
     events = []
     with use_span(NonRecordingSpan(SpanContext(91, 92, False, TraceFlags(1)))):
@@ -508,7 +512,7 @@ async def test_run_stream_events_creates_session_proxies_events_and_persists(
                 thread_id=_THREAD,
                 run_name="react",
                 model="deepseek-v4-pro",
-                effort="xhigh",
+                effort=None if saved_effort else "max",
             ) as stream:
                 async for event in stream:
                     events.append(event)

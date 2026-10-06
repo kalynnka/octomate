@@ -1,9 +1,12 @@
 """Model and command metadata in Claude Code's initialize response."""
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from claude_agent_sdk.types import EffortLevel as ClaudeEffort
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, TypeAdapter
 from pydantic.alias_generators import to_camel
 
 from octomate.schemas.commands import CommandDescriptor
+
+claude_effort_adapter = TypeAdapter(ClaudeEffort)
 
 
 class ClaudeCommandDescriptor(CommandDescriptor, frozen=True):
@@ -36,7 +39,7 @@ class ClaudeModelInfo(BaseModel):
     display_name: str
     description: str | None = None
     supports_effort: bool | None = None
-    supported_effort_levels: list[str] | None = None
+    supported_effort_levels: list[ClaudeEffort] | None = None
 
 
 class ClaudeAccountInfo(BaseModel):

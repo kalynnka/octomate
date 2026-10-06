@@ -43,10 +43,8 @@ so custom presets work, and a configured `permission_mode` the harness does not
 know fails the start. The child's launch token is exchanged for a cookie on
 loopback; the login link the child prints is logged once for browser access.
 
-Effort is mapped onto dsh's adapter vocabulary. An Octomate level maps to itself
-when dsh advertises that id, and otherwise through `efforts`, whose default suits
-`llm-deepseek`: `minimal` and `low` to `off`, `medium` and `high` to `high`, `xhigh`
-to `max`.
+Choose effort from the model's advertised names. DSH passes provider-defined
+names unchanged, including plugin-specific levels.
 
 ## Driven runs
 
