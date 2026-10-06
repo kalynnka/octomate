@@ -49,7 +49,7 @@ from octomate.tentacles.lark.feelers.questions import (
     collect_answers,
     submitted_card_data,
 )
-from octomate.tentacles.lark.ink import LarkInk
+from octomate.tentacles.lark.ink import LarkInk, LarkWebSocketClient
 from octomate.tentacles.lark.schema import (
     LarkApprovalActionValue,
     LarkOutboundMessage,
@@ -91,7 +91,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
     ink: LarkInk
     chromo: LarkChromo
 
-    ws_client: lark_oapi.ws.Client
+    ws_client: LarkWebSocketClient
     ping_task: asyncio.Task[None] | None
 
     @property
@@ -119,7 +119,7 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             .register_p2_card_action_trigger(self.on_card_action)
             .build()
         )
-        self.ws_client = lark_oapi.ws.Client(
+        self.ws_client = LarkWebSocketClient(
             self.ink.app_id,
             self.ink.app_secret.get_secret_value(),
             event_handler=event_handler,
@@ -156,15 +156,13 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
         logger.info("Channel %s: starting Lark WebSocket client", self.id)
         # lark-oapi exposes a blocking public start(), but its WebSocket client
         # is async internally. Run those internals on Octomate's event loop so
-        # message callbacks can schedule ingest directly. `_connect` plus the ping
-        # task keep the socket live and callback-driven — no receive loop to park.
+        # message callbacks can schedule ingest directly.
         ws_mod.loop = asyncio.get_running_loop()
         await self.ws_client._connect()  # type: ignore[attr-defined]
         self.ping_task = asyncio.create_task(self.ws_client._ping_loop())  # type: ignore[attr-defined]
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        self.ws_client._auto_reconnect = False  # type: ignore[attr-defined]
         if self.ping_task is not None:
             ping_task = self.ping_task
             self.ping_task = None
@@ -173,8 +171,10 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
                 await ping_task
             except asyncio.CancelledError:
                 pass
-        await self.ws_client._disconnect()  # type: ignore[attr-defined]
-        await super().__aexit__(*exc)
+        try:
+            await self.ws_client.close()
+        finally:
+            await super().__aexit__(*exc)
 
     def is_shared(self, address: ChannelAddress) -> bool:
         """A one-to-one chat is keyed on the person's open id, `ou_…`, and a topic

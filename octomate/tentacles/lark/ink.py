@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from contextlib import suppress
 from dataclasses import replace
 from typing import Self
 
@@ -129,6 +130,36 @@ async def pooled_aexecute(
     resp.headers = dict(response.headers)
     resp.content = response.content
     return resp
+
+
+class LarkWebSocketClient(lark.ws.Client):
+    """Retain the SDK receiver so shutdown joins it before closing the socket.
+
+    The SDK starts a detached receiver on each connection; that same task also
+    reconnects. Cancelling it first prevents a normal close from becoming an
+    unhandled receive error or starting another connection during shutdown.
+    """
+
+    receive_task: asyncio.Task[None] | None = None
+    closing: bool = False
+
+    async def _receive_message_loop(self) -> None:
+        if self.closing:
+            return
+        self.receive_task = asyncio.current_task()
+        await super()._receive_message_loop()
+
+    async def close(self) -> None:
+        self.closing = True
+        self._auto_reconnect = False
+        try:
+            if self.receive_task is not None:
+                self.receive_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await self.receive_task
+        finally:
+            self.receive_task = None
+            await self._disconnect()
 
 
 class LarkInk(Ink[LarkOutboundMessage]):
