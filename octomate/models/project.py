@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import uuid
 from pathlib import Path
 
 from arcanus.base import TransmuterProxiedMixin
-from pydantic import JsonValue
+from pydantic import UUID7, JsonValue
 from sqlalchemy import JSON, Boolean, String, UniqueConstraint, Uuid, true
 from sqlalchemy.orm import Mapped, mapped_column
 from uuid_utils.compat import uuid7
@@ -23,7 +22,7 @@ class Project(Base, TransmuterProxiedMixin):
     # Named, so the constraint alembic generates carries the name it can drop again.
     __table_args__ = (UniqueConstraint("root", name="uq_projects_root"),)
 
-    id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
     name: Mapped[str] = mapped_column(
         String,
         nullable=False,

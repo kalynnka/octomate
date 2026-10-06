@@ -52,6 +52,27 @@ def make_registry() -> ProviderRegistry:
     )
 
 
+def test_inkling_claims_the_thinking_level_built_into_a_model() -> None:
+    config = InklingConfig.model_validate(
+        {
+            "models": [
+                {"name": "openai:gpt-5.2", "settings": {"thinking": "medium"}},
+                {"name": "openai:gpt-5-mini", "settings": {"thinking": "xhigh"}},
+            ],
+            "claims": {
+                "openai:gpt-5.2": {"ability": "Thinks", "efforts": ["low", "medium"]},
+                "openai:gpt-5-mini": {"ability": "Quick", "efforts": ["low"]},
+            },
+        }
+    )
+
+    tentacle = build_inkling("inkling", config, Octomate(), registry=make_registry())
+
+    assert tentacle.claims["openai:gpt-5.2"].default_effort == "medium"
+    # A level the claim does not offer is no default anyone can be shown.
+    assert tentacle.claims["openai:gpt-5-mini"].default_effort is None
+
+
 def test_unsupported_provider_prefix_is_rejected() -> None:
     with pytest.raises(ValidationError, match="unsupported model provider prefix"):
         ModelConfig(name="xai:grok-3")

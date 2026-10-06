@@ -18,6 +18,10 @@ If Octomate's tools do not appear, revisit the MCP setup for that client. Sessio
 collection and the MCP connection are separate; seeing a transcript in Trunkline
 does not by itself mean the agent can use Octomate's tools.
 
+The tools that only read, inspecting agents and destinations, reading history
+and listing your services' tools, are marked read-only, so an agent that asks
+before an MCP tool call, such as Codex, runs those without asking.
+
 ## Find previous work
 
 > Find our earlier discussion about the launch plan and read the decisions before

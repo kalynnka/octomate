@@ -7,11 +7,11 @@ belongs to no single provider, so it lives here rather than in one of them.
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 import httpx2
+from pydantic import UUID7
 
 from octomate.schemas.user import User
 
@@ -25,7 +25,7 @@ class McpBearerAuth(httpx2.Auth):
         *,
         manager: OAuthManager,
         user: User,
-        mcp_id: uuid.UUID,
+        mcp_id: UUID7,
         connector_id: str,
         url: str,
     ) -> None:

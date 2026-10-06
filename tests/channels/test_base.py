@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
-from uuid import uuid4
 
 import anyio
 import pytest
@@ -21,6 +20,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
@@ -543,7 +543,7 @@ async def test_consume_appends_todo_checklist_to_final_message(
     channel: FakeChannelTentacle,
 ) -> None:
     todo = Todo(
-        conversation_id=uuid4(),
+        conversation_id=uuid7(),
         ref="T1",
         content="Find the docs",
         status="completed",

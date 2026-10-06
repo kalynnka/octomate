@@ -42,6 +42,8 @@ class Received:
     def __init__(self) -> None:
         self.body: dict[str, object] | None = None
         self.authorization: str | None = None
+        # What the router answers with.
+        self.answer = b"{}"
 
 
 @pytest.fixture
@@ -57,7 +59,7 @@ def router() -> Iterator[tuple[str, Received]]:
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(b"{}")
+            self.wfile.write(received.answer)
 
         def log_message(self, format: str, *args: object) -> None:
             pass
@@ -100,6 +102,26 @@ def test_the_payload_is_delivered_bearing_the_hook_credential(
     assert received.authorization == f"Bearer {SECRET}"
     # Codex reads stdout as the hook's decision; an observer decides nothing.
     assert result.stdout.strip() == "{}"
+
+
+def test_claude_reads_the_routers_answer_to_a_tool_call(
+    router: tuple[str, Received],
+) -> None:
+    """Claude takes a PreToolUse hook's stdout as its decision, so the router's
+    answer is passed through; every other Claude event stays silent."""
+    url, received = router
+    claude = url.replace(CODEX_HOOK_PATH, "/hooks/claude")
+    received.answer = b'{"hookSpecificOutput": {"hookEventName": "PreToolUse"}}'
+    pre_tool_use = {"hook_event_name": "PreToolUse", "session_id": "s1"}
+
+    answered = emit(
+        ["--path", "/hooks/claude", "--url", claude], {TOKEN_ENV: SECRET}, pre_tool_use
+    )
+    silent = emit(["--path", "/hooks/claude", "--url", claude], {TOKEN_ENV: SECRET})
+
+    assert answered.returncode == 0
+    assert answered.stdout.strip() == received.answer.decode()
+    assert silent.stdout.strip() == ""
 
 
 def test_an_undriven_session_is_not_marked(router: tuple[str, Received]) -> None:

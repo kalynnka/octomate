@@ -7,6 +7,7 @@ import uuid
 from typing import Self
 
 import discord
+from pydantic import UUID7
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import DeferredApproval
@@ -37,8 +38,8 @@ class DiscordApprovalButton(
 
     def __init__(
         self,
-        batch_id: uuid.UUID,
-        action_id: uuid.UUID,
+        batch_id: UUID7,
+        action_id: UUID7,
         approved: bool,
         *,
         disabled: bool = False,
@@ -117,8 +118,8 @@ class DiscordApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[uuid.UUID, IMMessageID | None]:
-        message_ids: dict[uuid.UUID, IMMessageID | None] = {}
+    ) -> dict[UUID7, IMMessageID | None]:
+        message_ids: dict[UUID7, IMMessageID | None] = {}
         chat_id = address.chat_id or address.user_id
         for action in actions:
             message_ids[action.id] = await self.ink.send_message(

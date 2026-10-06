@@ -13,7 +13,9 @@ In [api.slack.com/apps](https://api.slack.com/apps), create an app and:
    private assistant pane and the status line it sets while working.
 3. **OAuth & Permissions**, bot token scopes, from what the bot calls:
    `chat:write`, `users:read`, `im:write`, `im:history`, `channels:history`,
-   `groups:history`, `mpim:history`, `files:write`, `files:read`, `assistant:write`.
+   `groups:history`, `mpim:history`, `files:write`, `files:read`, `assistant:write`,
+   and `channels:read` and `groups:read` for listing the channels a conversation
+   can move into.
    Install the app to the workspace; the bot token is `bot_token`, an `xoxb-` value.
 4. **Event Subscriptions**: subscribe the bot to `message.channels`,
    `message.groups`, `message.im`, `message.mpim`, `assistant_thread_started` and
@@ -55,7 +57,16 @@ channel and `@`-mention it, or open its assistant pane. Verify a reply.
 Slack's streaming API takes a thread and nothing else, so the bot never streams
 into a channel root. When it opens a sub-thread it posts the hint as a message and
 that message becomes the thread. A private hand-off opens a thread inside your DM
-the same way.
+the same way. A teleport into a new DM thread posts one opener at the DM root
+and continues in that thread.
+
+
+Teleport uses the current group or DM as the parent for a new sub-thread.
+It does not offer nested sub-threads inside an existing thread. Entry from another
+platform uses the linked account's DM, or a channel you and the bot are both in:
+browsing Slack lists those channels, public and private, and a thread opened in
+one is read by its members. Without `channels:read` and `groups:read` the listing
+is refused with the scope Slack names, and the DM still works.
 
 Text over Slack's limit is uploaded as a Markdown file with a one-line note.
 
@@ -66,12 +77,22 @@ calls become tasks in the plan, expanded while they run and folded when done, wi
 arguments and results inside. Todos are tasks in the same plan; Slack has no
 "blocked" state, so a blocked todo shows as pending. Each answer text part is its
 own streamed message, and the assistant status line reads "Thinking", "Writing the
-response" or "Waiting for your input" as the turn moves.
+response" or "Input requested" as the turn moves.
 
 Approvals arrive as one paged message per batch with Approve and Deny buttons.
-Questions are a small wizard: radio buttons for choices, a free-text field, Back,
-Next and Submit. The buttons carry the batch's state, so they keep working across
-a restart.
+Questions are one message holding the whole batch: radio buttons for choices, or
+checkboxes when the question takes several picks, a free-text field, and one
+Submit. Nothing reaches Octomate until Submit is pressed. A card shows its
+submitted summary after Octomate handles the response; a rejected response leaves
+the card unchanged. Submit keeps the batch across a restart, but a live request
+still needs its running agent to receive the reply. See
+[Requests after a restart](../actions.md#if-the-request-expires-or-the-server-restarts)
+for the difference between live requests and saved, suspended runs.
+
+Approvals and questions flush buffered output without closing the current plan
+or answer message. The agent can continue working while prompts remain open;
+"Input requested" does not mean the whole run has paused. Tool results update
+their original plan entries, and continuing answer text stays in the same message.
 
 ## MCP tools acting as the person
 

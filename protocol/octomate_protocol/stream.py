@@ -18,13 +18,14 @@ costs a re-stream, never a loss. Lines then flow contiguously per file; `finaliz
 from __future__ import annotations
 
 from typing import Annotated, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field, TypeAdapter
 
 # Bumped when a message's meaning changes. The server refuses a mismatch at hello and
 # names both versions, so a stale client surfaces as one clear line instead of being
 # half-understood; the session still degrades to hooks-only ingest.
-STREAM_PROTOCOL = 1
+STREAM_PROTOCOL = 2
 
 # The key the session transcript itself streams under in per-file maps; a subagent's
 # file streams under its agent id.
@@ -75,26 +76,66 @@ class StreamEof(BaseModel):
     type: Literal["eof"] = "eof"
 
 
+class StreamSnapshotCursor(BaseModel):
+    """The durable transcript prefix the client must verify before appending."""
+
+    offset: int = Field(ge=0, description="Number of transcript bytes already stored.")
+    sha256: str = Field(
+        pattern=r"^[0-9a-f]{64}$", description="SHA-256 of that prefix."
+    )
+
+
 class StreamWelcome(BaseModel):
     """The server's answer to hello: where each file resumes, keyed by `SESSION_FILE`
     or agent id. A file absent from the map starts at 0."""
 
     type: Literal["welcome"] = "welcome"
     offsets: dict[str, int]
+    transcript: StreamSnapshotCursor | None = Field(
+        default=None,
+        description="Continuously upload bytes after this verified prefix; None disables upload.",
+    )
+
+
+class StreamSnapshotStart(BaseModel):
+    """Client announces the next transcript range before sending its bytes."""
+
+    type: Literal["snapshot_start"] = "snapshot_start"
+    transfer_id: UUID
+    start: int = Field(
+        ge=0, description="Exclusive end of the previously stored prefix."
+    )
+    end: int = Field(
+        gt=0, description="Exclusive byte offset at a complete-line boundary."
+    )
+
+
+class StreamSnapshotStored(BaseModel):
+    """Server acknowledgment after the uploaded snapshot is durably stored."""
+
+    type: Literal["snapshot_stored"] = "snapshot_stored"
+    transfer_id: UUID
 
 
 class StreamFinalize(BaseModel):
     """Server → client: the session ended (`SessionEnd` arrived on the hook pipe) —
-    drain to EOF, answer with `eof`, and exit."""
+    drain the remaining bytes, answer with `eof`, and exit.
+
+    A snapshot starts with `snapshot_start`, followed by binary messages totaling
+    `end - start` bytes. The client waits for `snapshot_stored` before sending `eof`.
+    Each batch's transcript lines precede its binary messages; they never interleave.
+    Batches may upload throughout a turn, before finalization.
+    """
 
     type: Literal["finalize"] = "finalize"
 
 
 StreamClientMessage = Annotated[
-    StreamHello | StreamLine | StreamEof, Field(discriminator="type")
+    StreamHello | StreamLine | StreamSnapshotStart | StreamEof,
+    Field(discriminator="type"),
 ]
 StreamServerMessage = Annotated[
-    StreamWelcome | StreamFinalize, Field(discriminator="type")
+    StreamWelcome | StreamFinalize | StreamSnapshotStored, Field(discriminator="type")
 ]
 
 client_message_adapter: TypeAdapter[StreamClientMessage] = TypeAdapter(

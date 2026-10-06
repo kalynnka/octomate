@@ -3,7 +3,6 @@ batch they are presented and resolved as."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import (
     Annotated,
@@ -22,6 +21,7 @@ from arcanus import (
 )
 from arcanus.base import Identity
 from pydantic import (
+    UUID7,
     AliasChoices,
     AwareDatetime,
     BaseModel,
@@ -40,15 +40,20 @@ from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.types.deferred import (
     DeferredActionStatus,
     DeferredBatchStatus,
+    DeferredResponseMode,
 )
 from octomate.types.json import JsonObject
 
 # Max suggested choices a question may carry — octomate keeps question cards to a
 # small, consistent set. It bounds what the inkling ask tool may suggest, and
-# bridged agents whose native tool offers more (Claude's `AskUserQuestion` allows
-# up to 4) are truncated to fit. Channels render each choice as a button; the user
-# can always answer with free text, so this is guidance, not a hard UI limit.
-MAX_QUESTION_CHOICES = 3
+# bridged agents whose native tool offers more are truncated to fit. Discord renders
+# each choice as a button, five to a row; the user can always answer with free
+# text, so this is guidance, not a hard UI limit.
+MAX_QUESTION_CHOICES = 5
+
+# One question's answer: the text typed or the one choice picked, or the choices
+# picked on a multi-select question.
+type QuestionAnswer = str | list[str]
 
 
 class QuestionRequest(TypedDict):
@@ -68,6 +73,15 @@ class QuestionRequest(TypedDict):
         ]
     ]
     hint: NotRequired[str]
+    multi_select: NotRequired[
+        Annotated[
+            bool,
+            Field(
+                description="Whether several choices may be picked together, in "
+                "which case the answer lists the picks."
+            ),
+        ]
+    ]
 
 
 class ApprovalRequest(BaseModel):
@@ -83,6 +97,7 @@ class ApprovalRequest(BaseModel):
 class ApprovalRequestPayload(TypedDict):
     tool_name: str
     args: JsonObject
+    description: str
 
 
 class DeferredQuestionPayload(TypedDict):
@@ -106,7 +121,7 @@ type DeferredActionPayload = DeferredQuestionPayload | DeferredApprovalPayload
 type DeferredActionCollectionInput = (
     DeferredToolRequests | list[DeferredActionPayload | JsonObject]
 )
-type DeferredQuestionResult = str | None
+type DeferredQuestionResult = QuestionAnswer | None
 type DeferredApprovalResult = bool | None
 
 
@@ -120,8 +135,8 @@ class DeferredAction(BaseTransmuter):
         populate_by_name=True,
     )
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    batch_id: uuid.UUID | None = None
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    batch_id: UUID7 | None = None
     status: DeferredActionStatus = "pending"
     tool_name: str
     tool_call_id: str
@@ -203,21 +218,22 @@ def from_deferred_requests(
             )
             for position, question in enumerate(questions)
         )
-    action_payloads.extend(
-        DeferredApprovalPayload(
-            kind="approval",
-            tool_name=call.tool_name,
-            tool_call_id=call.tool_call_id,
-            args=ApprovalRequestPayload(
+    for call in request.approvals:
+        metadata = cast(JsonObject, request.metadata.get(call.tool_call_id, {}) or {})
+        action_payloads.append(
+            DeferredApprovalPayload(
+                kind="approval",
                 tool_name=call.tool_name,
-                args=cast(JsonObject, call.args_as_dict()),
-            ),
-            metadata=cast(
-                JsonObject, request.metadata.get(call.tool_call_id, {}) or {}
-            ),
+                tool_call_id=call.tool_call_id,
+                args=ApprovalRequestPayload(
+                    tool_name=call.tool_name,
+                    args=cast(JsonObject, call.args_as_dict()),
+                    # What whoever deferred the call wants the card to say about it.
+                    description=str(metadata.get("description") or ""),
+                ),
+                metadata=metadata,
+            )
         )
-        for call in request.approvals
-    )
     return action_payloads
 
 
@@ -236,11 +252,14 @@ class DeferredActionBatch(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    conversation_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    conversation_id: UUID7
     agent_tentacle_id: str
     run_name: str | None = "react"
     status: DeferredBatchStatus = "pending"
+    response_mode: DeferredResponseMode = Field(
+        description="Whether a reply answers a live request or resumes a suspended run."
+    )
     source_address: ChannelAddress
     target_address: ChannelAddress
     target_mode: ResponseTargetMode = "main"
@@ -272,7 +291,7 @@ class DeferredActionBatch(BaseTransmuter):
                 results.metadata[action.tool_call_id] = action.metadata
         for tool_call_id, actions in question_actions.items():
             results.calls[tool_call_id] = [
-                "" if action.result is None else str(action.result)
+                "" if action.result is None else action.result
                 for action in sorted(actions)
             ]
         return results

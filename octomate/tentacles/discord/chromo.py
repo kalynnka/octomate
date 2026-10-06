@@ -57,7 +57,7 @@ class DiscordChromo(Chromo[discord.Message, DiscordOutboundMessage]):
                 chat_type = "thread"
                 chat_id = str(channel.parent_id)
                 channel_thread_id = str(channel.id)
-                shared = True
+                shared = channel.type is not discord.ChannelType.private_thread
             elif isinstance(channel, discord.TextChannel):
                 chat_type = "group"
                 chat_id = str(channel.id)

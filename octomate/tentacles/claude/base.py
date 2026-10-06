@@ -9,11 +9,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-import uuid
 import weakref
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass, field
 from functools import cached_property
+from io import BytesIO
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -36,20 +36,23 @@ from claude_agent_sdk import (
     PermissionResultDeny,
     PreToolUseHookInput,
     ToolPermissionContext,
+    fork_session,
 )
-from claude_agent_sdk.types import SystemPromptPreset
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from claude_agent_sdk.types import Message, SystemPromptPreset
+from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
+from octomate_protocol.gateway import GatewayTool, gateway_tool
 from octomate_protocol.stream import (
     SESSION_FILE,
     STREAM_PROTOCOL,
     StreamEof,
     StreamFinalize,
     StreamHello,
+    StreamLine,
     StreamWelcome,
     client_message_adapter,
 )
-from pydantic import TypeAdapter, ValidationError
+from pydantic import UUID7, TypeAdapter, ValidationError
 from pydantic.json_schema import JsonSchemaValue
 from pydantic_ai import (
     AgentCapability,
@@ -73,10 +76,12 @@ from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
+from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.deferred import DeferredSuspender
+from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, ClaudeCodeConfig, ThinkingEfforts
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
@@ -91,6 +96,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -106,7 +112,7 @@ from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import ClaudeHookIngest
 from octomate.tentacles.claude.mcp import octomate_mcp_server
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
-from octomate.tentacles.claude.transcript import relocate_session
+from octomate.tentacles.claude.transcript import relocate_session, transcripts_dir
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
@@ -142,6 +148,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     config: ClaudeCodeConfig = field(init=False)
     native_id: ClassVar[str] = CLAUDE_NATIVE_ID
+    # Claude Code's own names for models, such as `opus`, to the catalog entry each
+    # runs now, so a pin saved under one still finds its model.
+    model_aliases: dict[str, str] = field(init=False)
 
     # A Claude run stays live in-process; `pending` (from `AgentTentacle`) parks a
     # waiter per gated tool / question until `Octomate.kick` delivers the response.
@@ -175,7 +184,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         super().__init__(id=id, octomate=octomate)
         self.config = config
         self.description = description or self.description
-        self.pending = {}
+        self.pendings = {}
         self.claims = dict(config.claims)
         self.gateway = config.gateway
         # One live Claude client per conversation, keyed by conversation id: a new
@@ -183,10 +192,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # thread id — a thread also holds subagent conversations, whose runs must
         # neither interrupt the thread's own live run nor each other. Weak values
         # so a finished run's client drops out on its own once it is collected.
-        self.live_clients: weakref.WeakValueDictionary[uuid.UUID, ClaudeSDKClient] = (
+        self.live_clients: weakref.WeakValueDictionary[UUID7, ClaudeSDKClient] = (
             weakref.WeakValueDictionary()
         )
         self.models = {}
+        self.model_aliases = {}
         # Per-session locks shared by the hook ingest and the transcript tailer, so a
         # session's ledger writes (hooks) and run commits (tailer) serialize.
         self.session_locks = SessionLocks()
@@ -239,6 +249,24 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             sender: UserProfile = Depends(resolve_sender),  # noqa: B008
         ) -> JSONResponse:
             await self.session_ingest.handle(event, sender)
+            teleport = gateway_tool(GatewayTool.TELEPORT)
+            if (
+                event.hook_event_name == "PreToolUse"
+                and event.tool_input is not None
+                and (event.tool_name or "").endswith(f"__{teleport}")
+            ):
+                # The served teleport finds the session's history by this id.
+                return JSONResponse(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "PreToolUse",
+                            "updatedInput": {
+                                **event.tool_input,
+                                "session_id": event.session_id,
+                            },
+                        }
+                    }
+                )
             # Claude Code reads the JSON body as the hook's decision; an empty object
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
@@ -309,6 +337,23 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         state, offsets = await self.session_tailer.attach_remote(
             hello.session_id, Path(hello.transcript_path), sender
         )
+        conversation = state.conversation
+        if conversation is None:
+            raise RuntimeError(f"session {hello.session_id} attached without a home")
+        # How much of the session file is kept, so the session can be forked onto
+        # another surface; only its owner's bytes, and only a registered owner's.
+        # Read before the welcome, so a client leaving at once cancels no read.
+        kept = (
+            (
+                await self.octomate.files.get(
+                    conversation.transcript_file_id,
+                    owner_id=sender.user_id,
+                )
+            ).size
+            if conversation.transcript_file_id is not None
+            and sender.user_id is not None
+            else 0
+        )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
             hello.session_id,
@@ -345,6 +390,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 if isinstance(message, StreamHello):
                     await websocket.close(code=1008, reason="hello already received")
                     return
+                if not isinstance(message, StreamLine):
+                    await websocket.close(
+                        code=1008, reason="expected a transcript line"
+                    )
+                    return
                 key = message.agent_id or SESSION_FILE
                 want = expected_offsets.get(key, 0)
                 if message.start != want:
@@ -358,6 +408,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 await self.session_tailer.feed_remote(
                     state, message.agent_id, message.line, message.start, message.end
                 )
+                if message.agent_id is None and sender.user_id is not None:
+                    kept = await self.keep_transcript(
+                        conversation, message, kept, owner_id=sender.user_id
+                    )
         except WebSocketDisconnect:
             pass
         except ValidationError:
@@ -379,6 +433,108 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             else:
                 self.session_tailer.detach_remote(state)
 
+    async def keep_transcript(
+        self,
+        conversation: Conversation,
+        line: StreamLine,
+        kept: int,
+        *,
+        owner_id: UUID7,
+    ) -> int:
+        """Append one session-file line to the native conversation's stored
+        transcript, and answer how far the stored bytes now reach.
+
+        A line already kept is skipped, as a reconnect resends the turn it was in.
+        One that does not start where the stored bytes end is not kept at all: the
+        file has to be the session's own bytes, or a fork of it would replay
+        something Claude never wrote.
+        """
+        data = line.line.encode() + b"\n"
+        if line.start != kept or len(data) != line.end - line.start:
+            return kept
+        await self.octomate.conversations.store_transcript(
+            UploadFile(
+                BytesIO(data),
+                filename=f"{conversation.external_id or conversation.id}.jsonl",
+                headers=Headers({"content-type": "application/jsonl"}),
+            ),
+            line.start,
+            conversation=conversation,
+            files=self.octomate.files,
+            owner_id=owner_id,
+        )
+        return line.end
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: UUID7
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """The stored history up to the latest turn kept whole, and that turn."""
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only root native Claude Code sessions can be forked here")
+        if source.transcript_file_id is None or source.external_id is None:
+            raise ValueError("Native Claude Code history has not been uploaded")
+        data = await self.octomate.files.read(
+            source.transcript_file_id, owner_id=owner_id
+        )
+        completed = max(
+            (
+                run
+                for run in source.runs
+                if isinstance(run, ExternalAgentRun)
+                and run.native_session_id == source.external_id
+                and run.end_offset is not None
+                and run.end_offset <= len(data)
+            ),
+            key=lambda run: run.end_offset or 0,
+            default=None,
+        )
+        if completed is None or completed.end_offset is None:
+            raise ValueError("Native Claude Code history has no completed turn yet")
+        return data[: completed.end_offset], completed
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: UUID7,
+        cwd: Path,
+    ) -> Conversation:
+        """Lay the kept history where `cwd` files Claude's sessions and fork it there
+        with fresh message ids, for this tentacle to resume; the staged copy goes."""
+        conversations = self.octomate.conversations
+        async with conversations.lock(target.key):
+            target = await conversations.get(target.id)
+            if target.messages or target.external_id:
+                raise ValueError("Transcript imports require an empty target")
+            if source.external_id is None:
+                raise ValueError("Native Claude Code history has not been uploaded")
+            data, completed = await self.read_fork_transcript(source, owner_id=owner_id)
+            staged = transcripts_dir(cwd) / f"{source.external_id}.jsonl"
+            staged.parent.mkdir(parents=True, exist_ok=True)
+            staged.write_bytes(data)
+            try:
+                forked = await asyncio.to_thread(
+                    fork_session, source.external_id, str(cwd)
+                )
+            finally:
+                staged.unlink()
+            await conversations.fork(
+                source,
+                target,
+                external_id=forked.session_id,
+                model_name=completed.model_name,
+                permission_mode=completed.permission_mode,
+            )
+            return await conversations.get(target.id)
+
+    async def fork_session(self, conversation: Conversation, *, cwd: Path) -> str:
+        """Fork Claude's transcript without changing the source session."""
+        if not conversation.external_id:
+            raise ValueError("Cannot fork a Claude conversation without a session id")
+        forked = await asyncio.to_thread(fork_session, conversation.external_id)
+        return forked.session_id
+
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         """Claude files a session under the cwd it ran in and resumes it only from
         there, so the transcript goes where the next run will look for it. A
@@ -389,50 +545,42 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
 
     async def _await_human(
         self,
-        *,
-        conversation: Conversation,
-        conversation_address: ChannelAddress,
-        run_name: str | None,
         requests: DeferredToolRequests,
+        *,
+        suspender: DeferredSuspender | None,
+        interjections: Interjections[Message],
     ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
-        """Present a deferred batch as approval/question cards through the channel,
-        then park a future until the human response arrives via
-        `try_resolve_live_deferred`. The Claude session stays open in-process while
-        this awaits, so the answer is not durable across an Octomate restart.
+        """Pause the run on a human through the graph's suspender, putting the
+        batch on this run's stream when that is what presents it. The reply waiter
+        is registered before the cards go up, so a quick answer arriving through
+        `Octomate.kick` cannot miss it. The Claude session stays open in-process
+        while this awaits, so the answer is not durable across an Octomate restart.
 
         Returns `(batch, None)` if the wait exceeds `config.approval_timeout`; the
         batch is marked expired and the caller denies the pending tool so the live
         run unblocks."""
-        channel = self.octomate.channels.get(conversation_address.channel_tentacle_id)
-        if channel is None:
+        if suspender is None:
             raise RuntimeError(
-                f"no channel {conversation_address.channel_tentacle_id!r} to "
-                f"present a Claude approval/question"
+                "a Claude approval mid-run needs a suspender to pause on"
             )
-        batch = await channel.feelers.present_actions(
-            action_manager=self.octomate.deferred_actions,
-            conversation=conversation,
-            agent_tentacle_id=self.id,
-            run_name=run_name,
-            source_address=conversation_address,
-            target_address=conversation_address,
-            target_mode="sub" if conversation_address.channel_thread_id else "main",
-            decision=None,
-            requests=requests,
-        )
+        batch_id: UUID7 = uuid7()
         future: asyncio.Future[DeferredActionBatchResponse] = (
             asyncio.get_running_loop().create_future()
         )
-        self.pending[batch.id] = future
+        self.pendings[batch_id] = future
         try:
-            response = await asyncio.wait_for(
-                asyncio.shield(future), self.config.approval_timeout
-            )
-        except TimeoutError:
-            await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
-            return batch, None
+            batch, event = await suspender.pause(requests, batch_id=batch_id)
+            if event is not None:
+                interjections.interject(event)
+            try:
+                response = await asyncio.wait_for(
+                    asyncio.shield(future), self.config.approval_timeout
+                )
+            except TimeoutError:
+                await self.octomate.deferred_actions.mark_batch(batch.id, "expired")
+                return batch, None
         finally:
-            self.pending.pop(batch.id, None)
+            self.pendings.pop(batch_id, None)
         await self.octomate.deferred_actions.resolve_batch(response)
         return batch, response
 
@@ -459,8 +607,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             provider = "anthropic"
         models: dict[str, Model | str] = {}
         claims: dict[str, Claim] = {}
+        aliases: dict[str, str] = {}
         for model in info.models:
-            key = f"{provider}:{model.value}"
+            # Named by the model it runs, so a pinned conversation keeps that model
+            # when Claude Code's own names move on; the first entry describes it.
+            resolved = model.resolved_model or model.value
+            key = f"{provider}:{resolved}"
+            aliases[model.value] = key
+            if key in models:
+                continue
             configured = self.config.claims.get(key)
             if model.supported_effort_levels is not None:
                 efforts: tuple[ThinkingEffort, ...] = tuple(
@@ -473,13 +628,34 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 efforts = ()
             else:
                 efforts = configured.efforts if configured else ()
-            models[key] = model.value
+            models[key] = resolved
             claims[key] = Claim(
                 model.description
                 or (configured.ability if configured else model.display_name),
                 efforts,
             )
         self.set_model_catalog(models, claims)
+        self.model_aliases = aliases
+
+    def served_model(self, name: str) -> str | None:
+        """An entry by its own name, by a name Claude Code itself uses (`opus`,
+        `anthropic:opus[1m]`), or by the model id a transcript records, which
+        drops the context-window suffix an entry may carry: the larger window
+        takes whatever history there is."""
+        if name in self.models:
+            return name
+        bare = name.rpartition(":")[2]
+        alias = self.model_aliases.get(bare) or self.model_aliases.get(
+            bare.partition("[")[0]
+        )
+        if alias is not None:
+            return alias
+        windows = [
+            key
+            for key, model in self.models.items()
+            if str(model).partition("[")[0] == bare
+        ]
+        return max(windows, key=lambda key: "[" in key, default=None)
 
     async def __aenter__(self) -> ClaudeCodeTentacle:
         await self.discover_models()
@@ -495,10 +671,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         runs unblock instead of hanging shutdown. The pending tools are denied as
         the cancellation unwinds; the live sessions are not durable across this."""
         await super().__aexit__(exc_type, exc_value, traceback)
-        for future in list(self.pending.values()):
+        for future in list(self.pendings.values()):
             if not future.done():
                 future.cancel()
-        self.pending.clear()
+        self.pendings.clear()
         # Interrupt any run still streaming so its client/transport tears down
         # instead of orphaning a subprocess or SSH connection at shutdown.
         for client in self.live_clients.values():
@@ -513,14 +689,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
@@ -554,6 +730,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             user_prompt = self.resumed_prompt(deferred_tool_results)
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(user_prompt)
+        interjections = Interjections[Message]()
         # Tools the user already granted "allow for session" on this conversation
         # auto-approve without a card; new grants extend the set and persist.
         session_allowed: set[str] = set(conversation.allowed_tools)
@@ -606,10 +783,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ]
             )
             batch, response = await self._await_human(
-                conversation=conversation,
-                conversation_address=conversation_address,
-                run_name=run_name,
-                requests=requests,
+                requests, suspender=deferred_suspender, interjections=interjections
             )
             # `can_use_tool` fires per tool call, so we built the batch with a
             # single approval — this is that one action.
@@ -666,6 +840,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                                     ][:MAX_QUESTION_CHOICES]
                                     or None,
                                     hint=str(item.get("header", "")),
+                                    multi_select=bool(item.get("multiSelect", False)),
                                 )
                                 for item in asked
                             ]
@@ -675,16 +850,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ]
             )
             batch, response = await self._await_human(
-                conversation=conversation,
-                conversation_address=conversation_address,
-                run_name=run_name,
-                requests=requests,
+                requests, suspender=deferred_suspender, interjections=interjections
             )
             answered = (
                 [
-                    f"{question.args['question']}: {response.answers[question.id]}"
+                    f"{question.args['question']}: "
+                    + (answer if isinstance(answer, str) else ", ".join(answer))
                     for question in sorted(batch.questions)
-                    if response.answers.get(question.id)
+                    if (answer := response.answers.get(question.id))
                 ]
                 if response is not None
                 else []
@@ -846,6 +1019,10 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 workspace,
                 self.driving(session_id),
                 ClaudeSDKClient(options=options) as client,
+                # Closed before the client, so its reader never outlives the SDK.
+                contextlib.aclosing(
+                    interjections.around(client.receive_response())
+                ) as messages,
             ):
                 # One live run per conversation: register this client and interrupt
                 # any prior run for the same conversation so a mid-run follow-up
@@ -858,7 +1035,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                         await previous.interrupt()
                 await client.query(prompt_text)
                 interrupted = False
-                async for message in client.receive_response():
+                async for message in messages:
+                    if isinstance(message, ActionBatchEvent):
+                        # A batch the run paused on, for whoever draws the run.
+                        yield message
+                        continue
                     for event in accumulator.consume(message):
                         yield event
                     if (
@@ -877,6 +1058,8 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 run_id=run_id,
                 messages=accumulator.messages,
                 name=run_name,
+                model_name=accumulator.model_name or cli_model,
+                permission_mode=options.permission_mode,
                 cwd=Path(run_cwd),
                 external_id=accumulator.session_id,
                 native_id=CLAUDE_NATIVE_ID,
@@ -960,16 +1143,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -992,16 +1175,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1023,16 +1206,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1082,16 +1265,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1113,16 +1296,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT],
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,
@@ -1143,16 +1326,16 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         user_prompt: str | Sequence[UserContent] | None = None,
         *,
         conversation_address: ChannelAddress,
-        thread_id: uuid.UUID | None = None,
+        thread_id: UUID7 | None = None,
         source_thread_address: ChannelAddress | None = None,
-        source_thread_message_ids: Sequence[uuid.UUID] | None = None,
+        source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         output_type: OutputSpec[RunOutputDataT] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
         effort: ThinkingEffort | None = None,
-        conversation_id: uuid.UUID | None = None,
+        conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
         deps: None = None,

@@ -1,11 +1,10 @@
 """The local account HTTP API: registration, sign-in and session refresh, password
 and API-key management, and channel profile linking."""
 
-import uuid
 from typing import Annotated, NotRequired
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from pydantic import AwareDatetime, Field, SecretStr
+from pydantic import UUID7, AwareDatetime, Field, SecretStr
 from typing_extensions import TypedDict
 
 from octomate.base import Octomate
@@ -132,7 +131,7 @@ class ChannelAuthorizationInfo(TypedDict):
 
 class LinkProfileConfirmationBody(LinkProfileBody):
     expected_user_id: Annotated[
-        uuid.UUID, Field(description="The account displayed on the confirmation page.")
+        UUID7, Field(description="The account displayed on the confirmation page.")
     ]
 
 
@@ -249,7 +248,7 @@ async def list_api_keys(
 
 @auth_router.delete("/api-keys/{key_id}", status_code=204, response_model=None)
 async def revoke_api_key(
-    key_id: uuid.UUID,
+    key_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[AuthManager, Depends(auth_manager)],
 ) -> None:
@@ -261,7 +260,7 @@ async def revoke_api_key(
 
 @auth_router.delete("/profiles/{profile_id}", status_code=204, response_model=None)
 async def unlink_profile(
-    profile_id: uuid.UUID,
+    profile_id: UUID7,
     app: Annotated[Octomate, Depends(application)],
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[UserManager, Depends(user_manager)],

@@ -9,7 +9,7 @@ them the parent row SQLite's foreign keys require.
 
 from __future__ import annotations
 
-import uuid
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import cast
 
 from arcanus import Relation
+from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from uuid_utils.compat import uuid7
@@ -35,7 +36,11 @@ from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.deferred import (
+    DeferredActionBatch,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
@@ -49,7 +54,7 @@ from octomate.schemas.thread import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.schemas.user import UserProfile
-from octomate.types.deferred import DeferredBatchStatus
+from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 from octomate.types.permissions import AgentPermissionMode
 
 
@@ -115,7 +120,7 @@ async def the_sub_thread(chat_room: Thread) -> Thread:
     return rows[0]
 
 
-async def a_thread(chat_id: str = "chat") -> uuid.UUID:
+async def a_thread(chat_id: str = "chat") -> UUID7:
     """A persisted `threads` row to hang conversations off, idempotent per
     `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
     `uuid7()` names a parent that does not exist."""
@@ -142,12 +147,12 @@ class FakeConversation:
     """Stand-in whose `messages` is a plain list react can read + accumulate
     into, since the real arcanus relation can't be appended to detached."""
 
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    id: UUID7 = field(default_factory=uuid7)
     messages: list[ModelMessage] = field(default_factory=list)
     external_id: str | None = None
-    thread_id: uuid.UUID | None = None
+    thread_id: UUID7 | None = None
     subagent_id: str = ""
-    parent_conversation_id: uuid.UUID | None = None
+    parent_conversation_id: UUID7 | None = None
     agent_tentacle_id: str = ""
     runs: list[AgentRun] = field(default_factory=list)
     permission_mode: AgentPermissionMode | None = None
@@ -156,10 +161,10 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager(ConversationManager):
-    store: dict[tuple[uuid.UUID, str | None, str], FakeConversation] = field(
+    store: dict[tuple[UUID7, str | None, str], FakeConversation] = field(
         default_factory=dict
     )
-    ensured: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
+    ensured: list[tuple[UUID7, str | None]] = field(default_factory=list)
     runs: list[tuple[FakeConversation, str, list[ModelMessage]]] = field(
         default_factory=list
     )
@@ -167,11 +172,11 @@ class FakeConversationManager(ConversationManager):
 
     async def ensure(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         *,
         agent_tentacle_id: str | None = None,
         subagent_id: str = "",
-        parent_conversation_id: uuid.UUID | None = None,
+        parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
     ) -> Conversation:
         self.ensured.append((thread_id, agent_tentacle_id))
@@ -188,7 +193,7 @@ class FakeConversationManager(ConversationManager):
         return cast(Conversation, conversation)
 
     async def get(
-        self, conversation_id: uuid.UUID, *, with_history: bool = True
+        self, conversation_id: UUID7, *, with_history: bool = True
     ) -> Conversation:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
@@ -204,7 +209,7 @@ class FakeConversationManager(ConversationManager):
     ) -> None:
         self.parent_links.append((run_id, parent_run_id, parent_tool_call_id))
 
-    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+    async def subagents(self, parent_conversation_id: UUID7) -> list[Conversation]:
         return [
             cast(Conversation, conversation)
             for conversation in self.store.values()
@@ -212,7 +217,7 @@ class FakeConversationManager(ConversationManager):
             and conversation.subagent_id
         ]
 
-    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+    async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         for conversation in self.store.values():
             if conversation.id == conversation_id:
                 return conversation.thread_id
@@ -225,6 +230,8 @@ class FakeConversationManager(ConversationManager):
         messages: Sequence[ModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
         native_id: str | None = None,
@@ -240,6 +247,8 @@ class FakeConversationManager(ConversationManager):
                 conversation_id=fake.id,
                 name=name,
                 cwd=cwd,
+                model_name=model_name,
+                permission_mode=permission_mode,
                 native_id=native_id,
                 native_session_id=external_id,
                 native_turn_id=native_turn_id,
@@ -289,7 +298,7 @@ class FakeThreadManager(ThreadManager):
     sub_threads: list[Thread] = field(default_factory=list)
     handoffs: list[Handoff] = field(default_factory=list)
     outbounds: list[ThreadMessage] = field(default_factory=list)
-    assistant_reply_bindings: list[tuple[list[uuid.UUID], str]] = field(
+    assistant_reply_bindings: list[tuple[list[UUID7], str]] = field(
         default_factory=list
     )
 
@@ -337,7 +346,7 @@ class FakeThreadManager(ThreadManager):
         return thread
 
     async def get(
-        self, thread_id: uuid.UUID, *, with_messages: bool = True
+        self, thread_id: UUID7, *, with_messages: bool = True
     ) -> Thread | None:
         return next(
             (
@@ -358,10 +367,10 @@ class FakeThreadManager(ThreadManager):
         reason: str = "",
         hint: str = "",
         brief: str = "",
-        source_conversation_id: uuid.UUID | None = None,
-        target_conversation_id: uuid.UUID | None = None,
+        source_conversation_id: UUID7 | None = None,
+        target_conversation_id: UUID7 | None = None,
         source_run_id: str | None = None,
-        source_model_message_id: uuid.UUID | None = None,
+        source_model_message_id: UUID7 | None = None,
     ) -> Handoff:
         if isinstance(thread_or_address, Thread):
             thread = thread_or_address
@@ -437,7 +446,7 @@ class FakeThreadManager(ThreadManager):
 
     async def bind_assistant_replies(
         self,
-        thread_message_ids: list[uuid.UUID],
+        thread_message_ids: list[UUID7],
         *,
         run_id: str,
     ) -> list[MessageBinding]:
@@ -455,16 +464,19 @@ class CreateBatchCall:
     target_mode: ResponseTargetMode
     decision: SummonDecision | None
     requests: DeferredToolRequests
-    batch_id: uuid.UUID
+    response_mode: DeferredResponseMode
+    batch_id: UUID7
 
 
 @dataclass
 class FakePresentedBatch:
     """What `create_batch` hands back: the persisted actions to present."""
 
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    id: UUID7 = field(default_factory=uuid7)
     questions: list[DeferredQuestion] = field(default_factory=list)
     approvals: list[DeferredApproval] = field(default_factory=list)
+    response_mode: DeferredResponseMode = "resume"
+    agent_tentacle_id: str = "inkling"
 
 
 @dataclass
@@ -477,13 +489,14 @@ class FakeDeferredBatch:
     deferred_results: DeferredToolResults
     # The conversation the suspended run was in — which names the thread it ran
     # in, and so the sub-thread a chat room's kick opened.
-    conversation_id: uuid.UUID = field(default_factory=uuid.uuid4)
-    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    conversation_id: UUID7 = field(default_factory=uuid7)
+    id: UUID7 = field(default_factory=uuid7)
     agent_tentacle_id: str = "inkling"
     run_name: str | None = "react"
     target_mode: ResponseTargetMode = "main"
     decision: SummonDecision | None = None
     status: DeferredBatchStatus = "resolved"
+    response_mode: DeferredResponseMode = "resume"
     completed: bool = True
 
     def build_results(self) -> DeferredToolResults:
@@ -495,10 +508,8 @@ class FakeActionManager:
     batch: FakeDeferredBatch | None = None
     presented_batch: FakePresentedBatch | None = None
     create_calls: list[CreateBatchCall] = field(default_factory=list)
-    presented: list[tuple[uuid.UUID, str | None]] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, DeferredBatchStatus, bool]] = field(
-        default_factory=list
-    )
+    presented: list[tuple[UUID7, str | None]] = field(default_factory=list)
+    marked: list[tuple[UUID7, DeferredBatchStatus, bool]] = field(default_factory=list)
 
     async def create_batch(
         self,
@@ -511,8 +522,14 @@ class FakeActionManager:
         target_mode: ResponseTargetMode,
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
+        response_mode: DeferredResponseMode,
+        batch_id: UUID7 | None = None,
     ) -> FakePresentedBatch:
         batch = self.presented_batch or FakePresentedBatch()
+        batch.response_mode = response_mode
+        batch.agent_tentacle_id = agent_tentacle_id
+        if batch_id is not None:
+            batch.id = batch_id
         self.create_calls.append(
             CreateBatchCall(
                 conversation=conversation,
@@ -523,6 +540,7 @@ class FakeActionManager:
                 target_mode=target_mode,
                 decision=decision,
                 requests=requests,
+                response_mode=response_mode,
                 batch_id=batch.id,
             )
         )
@@ -530,7 +548,7 @@ class FakeActionManager:
 
     async def mark_action_presented(
         self,
-        action_id: uuid.UUID,
+        action_id: UUID7,
         platform_message_id: str | None,
     ) -> None:
         self.presented.append((action_id, platform_message_id))
@@ -543,14 +561,14 @@ class FakeActionManager:
             raise ValueError(f"unknown deferred action batch {awake.batch_id}")
         return self.batch
 
-    async def get_batch(self, batch_id: uuid.UUID) -> FakeDeferredBatch:
+    async def get_batch(self, batch_id: UUID7) -> FakeDeferredBatch:
         if self.batch is None:
             raise ValueError(f"unknown deferred action batch {batch_id}")
         return self.batch
 
     async def mark_batch(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         status: DeferredBatchStatus,
         *,
         completed: bool = False,
@@ -569,7 +587,7 @@ class RecordingWorkspaceManager(WorkspaceManager):
 
     def __init__(self) -> None:
         super().__init__()
-        self.saved: list[uuid.UUID] = []
+        self.saved: list[UUID7] = []
 
     async def save(self, thread: Thread) -> None:
         self.saved.append(thread.id)
@@ -577,10 +595,28 @@ class RecordingWorkspaceManager(WorkspaceManager):
 
 @dataclass
 class RecordingSuspender:
-    """A `DeferredSuspender` that keeps what it was handed and presents nothing."""
+    """A `DeferredSuspender` that keeps what it was handed and presents nothing. A
+    live run that pauses on it gets `batch`, with its event for the run's stream."""
 
+    batch: FakePresentedBatch = field(default_factory=FakePresentedBatch)
+    # The agent whose run pauses here, as the graph's suspender records it.
+    agent_tentacle_id: str = "inkling"
     suspended: list[DeferredToolRequests] = field(default_factory=list)
+    paused: list[DeferredToolRequests] = field(default_factory=list)
+    # Set once a live run has paused, so a test can answer it.
+    put_up: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
+
+    async def pause(
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+        self.paused.append(requests)
+        self.batch.id = batch_id
+        self.batch.response_mode = "live"
+        self.batch.agent_tentacle_id = self.agent_tentacle_id
+        self.put_up.set()
+        batch = cast(DeferredActionBatch, self.batch)
+        return batch, ActionBatchEvent.from_batch(batch)

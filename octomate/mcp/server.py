@@ -7,7 +7,6 @@ Inkling already has gateway and history tools in process, so it mounts only
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Awaitable, Callable
 from typing import Annotated, Literal
 
@@ -17,7 +16,8 @@ from fastmcp.dependencies import Depends
 from fastmcp.exceptions import ToolError
 from fastmcp.tools import ToolResult
 from mcp.shared.exceptions import MCPError
-from pydantic import Field, JsonValue
+from octomate_protocol.gateway import GATEWAY_NAMESPACE, gateway_tool
+from pydantic import UUID7, Field, JsonValue, WithJsonSchema
 
 from octomate.capabilities.gateway import gateway_instructions
 from octomate.capabilities.history import history_instructions
@@ -28,7 +28,7 @@ from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import mount_gateway
 from octomate.mcp.history import HISTORY_TOOL_NAMES, mount_history
 from octomate.mcp.oauth import OAUTH_NAMESPACE, mount_oauth
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.mcp import (
     McpInstallRequest,
     McpServerSummary,
@@ -46,7 +46,6 @@ OCTOMATE_SERVER_NAME = "octomate"
 # The one endpoint: the host mounts the server's app under its name, and the
 # transport answers at `/mcp` inside it. Every install config copies this literal.
 OCTOMATE_MCP_PATH = f"/{OCTOMATE_SERVER_NAME}/mcp"
-GATEWAY_NAMESPACE = "gateway"
 HISTORY_NAMESPACE = "history"
 TENTACLES_SERVER_NAME = "tentacles"
 LIST_MCP_TOOLS = "mcp_list_tools"
@@ -57,11 +56,6 @@ INSTALL_MCP = "mcp_install"
 UNINSTALL_MCP = "mcp_uninstall"
 ENABLE_MCP = "mcp_enable"
 DISABLE_MCP = "mcp_disable"
-
-
-def gateway_tool(name: str) -> str:
-    """A spell's served name: the family's namespace over Inkling's own."""
-    return f"{GATEWAY_NAMESPACE}_{name}"
 
 
 def history_tool(name: str) -> str:
@@ -204,7 +198,8 @@ def tentacles_mcp(
         annotations={"destructiveHint": False, "idempotentHint": True},
     )
     async def enable(
-        mcp_id: uuid.UUID,
+        # OpenAI strict mode needs the standard format; UUID7 still validates values.
+        mcp_id: Annotated[UUID7, WithJsonSchema({"type": "string", "format": "uuid"})],
         user: User = Depends(require_user),  # noqa: B008
     ) -> McpServerSummary:
         try:
@@ -222,7 +217,7 @@ def tentacles_mcp(
         annotations={"destructiveHint": False, "idempotentHint": True},
     )
     async def disable(
-        mcp_id: uuid.UUID,
+        mcp_id: Annotated[UUID7, WithJsonSchema({"type": "string", "format": "uuid"})],
         user: User = Depends(require_user),  # noqa: B008
     ) -> McpServerSummary:
         try:
@@ -241,7 +236,7 @@ def tentacles_mcp(
         annotations={"destructiveHint": True},
     )
     async def uninstall(
-        mcp_id: uuid.UUID,
+        mcp_id: Annotated[UUID7, WithJsonSchema({"type": "string", "format": "uuid"})],
         user: User = Depends(require_user),  # noqa: B008
     ) -> str:
         try:
@@ -253,6 +248,7 @@ def tentacles_mcp(
     @mcp.tool(
         name=LIST_MCP_TOOLS,
         description="Load tool schemas for one of the current user's installed MCPs.",
+        annotations={"readOnlyHint": True},
     )
     async def list_tools(namespace: str) -> McpToolCatalog:
         try:
@@ -294,7 +290,7 @@ def tentacles_mcp(
 def octomate_mcp(
     resolve_session: Callable[[], Awaitable[OctomateSession]],
     thread_manager: ThreadManager,
-    kick: Callable[[GatewayHandoffSignal], None] | None = None,
+    kick: Callable[[NativeGatewaySignal], None] | None = None,
     *,
     bearers: KnownBearers | None = None,
     manager: McpManager,

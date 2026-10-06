@@ -8,6 +8,7 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import GatewayEvent
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     ReflexDeps,
@@ -16,7 +17,7 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
-from octomate.schemas.triage import HereLanding, SchemeDecision, SummonDecision
+from octomate.schemas.triage import SchemeDecision, SummonDecision
 from octomate.telemetry import reflex_logfire
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         target = self.request.destination
         channel = ctx.deps.channel(target.channel_tentacle_id)
 
-        # The hint opens it, the way a summon's does the sub-thread it lands in: on a
+        # The hint opens it, the way a teleport's does the sub-thread it lands in: on a
         # channel that can only be run inside a thread it is the message that thread
         # hangs from, and it is written to be read. The brief is not — that goes to
         # whoever answers, as their prompt.
@@ -87,11 +88,13 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             thread_strategy=channel.thread_strategy,
             mode="main",
         )
+        await ctx.deps.announce(
+            state, origin.address, GatewayEvent(action="scheme", destination=dm_address)
+        )
         state.decision = SummonDecision(
             action="summon",
             agent_id=resolved.agent,
             model=resolved.model,
-            destination=HereLanding(),
             reason="Continuing with this user privately.",
             hint=self.request.hint,
             summon=self.request.brief,

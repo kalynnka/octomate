@@ -10,7 +10,6 @@ pinned in memory by `test_gateway_tools`.
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Literal, Self
@@ -22,14 +21,19 @@ from fastapi import FastAPI
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.exceptions import ToolError
+from pydantic import TypeAdapter
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate.base import Octomate
 from octomate.capabilities.history import HISTORY_TOOLS
 from octomate.config.base import OctomateConfig
 from octomate.config.channels import ChannelConfig
 from octomate.managers.gateway import OctomateSession
-from octomate.mcp.gateway import CLIENT_HEADER, CONVERSATION_HEADER, GATEWAY_SPELLS
+from octomate.mcp.gateway import (
+    CLIENT_HEADER,
+    CONVERSATION_HEADER,
+)
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL, LINK_PROFILE_TOOL
 from octomate.mcp.server import (
     CALL_MCP_TOOL,
@@ -41,13 +45,12 @@ from octomate.mcp.server import (
     LIST_MCPS,
     OCTOMATE_MCP_PATH,
     UNINSTALL_MCP,
-    gateway_tool,
     history_tool,
     octomate_instructions,
 )
-from octomate.schemas.awakes import GatewayHandoffSignal
+from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.triage import SummonDecision
+from octomate.schemas.triage import SchemeDecision
 from octomate.tentacles.mcp import OAuthMcpTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent
@@ -57,7 +60,15 @@ from tests.support.users import a_api_key, a_user, auth_config
 LIST_TOOLS = {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
 
 # Octomate's own families, in the order the server lists them.
-OCTOMATE_TOOLS = [*map(gateway_tool, GATEWAY_SPELLS), *map(history_tool, HISTORY_TOOLS)]
+OCTOMATE_TOOLS = [
+    "gateway_inspect",
+    "gateway_summon",
+    "gateway_teleport",
+    "gateway_scheme",
+    "gateway_send",
+    "gateway_dismiss",
+    *map(history_tool, HISTORY_TOOLS),
+]
 
 
 @pytest.fixture(autouse=True)
@@ -155,7 +166,7 @@ async def a_driven_turn(octomate: Octomate) -> OctomateSession:
         channel_routes={"im": []},
         current_agent_id="codex",
         channels={"im": FakeChannelTentacle(octomate=octomate)},
-        conversation_id=uuid.uuid4(),
+        conversation_id=uuid7(),
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="group",
@@ -229,6 +240,18 @@ async def test_a_provider_adds_the_link_tools_and_lists_nothing_of_its_own() -> 
         CONNECT_TOOL,
         CONFIRM_TOOL,
         LINK_PROFILE_TOOL,
+    ]
+    # Codex runs a tool that says it only reads without asking first.
+    assert [
+        tool.name
+        for tool in tools
+        if tool.annotations is not None and tool.annotations.read_only_hint
+    ] == [
+        "gateway_inspect",
+        *map(history_tool, HISTORY_TOOLS),
+        LIST_MCP_TENTACLES,
+        LIST_MCPS,
+        LIST_MCP_TOOLS,
     ]
 
 
@@ -310,11 +333,18 @@ async def test_a_served_call_runs_against_the_turn_its_header_names(
             {**DRIVEN_BEARER, CONVERSATION_HEADER: str(session.conversation_id)},
             mode=mode,
         ) as client:
-            result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+            result = await client.call_tool(
+                "gateway_inspect", {"reveal": "destinations"}
+            )
+            # Naming a channel browses it instead, and this one runs nobody.
+            with pytest.raises(ToolError, match="No connected agent serves"):
+                await client.call_tool(
+                    "gateway_inspect",
+                    {"reveal": "destinations", "channel": "im", "inside": "200"},
+                )
 
-    assert result.data == "\n".join(
-        str(one) for one in await session.scry("destinations")
-    )
+    addresses = TypeAdapter(list[ChannelAddress]).validate_json(result.data)
+    assert addresses == await session.inspect("destinations")
 
 
 async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
@@ -333,7 +363,7 @@ async def test_a_driven_turn_answers_only_its_kickers_bearer() -> None:
             octomate, app, {"Authorization": "Bearer hui-token", **header}
         ) as client:
             with pytest.raises(ToolError, match="not this bearer's to drive"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
 async def test_a_call_naming_no_turn_is_refused() -> None:
@@ -342,17 +372,17 @@ async def test_a_call_naming_no_turn_is_refused() -> None:
 
         async with over(octomate, app, DRIVEN_BEARER) as client:
             with pytest.raises(ToolError, match="names no identity"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
         stray = {**DRIVEN_BEARER, CONVERSATION_HEADER: "not-a-uuid"}
         async with over(octomate, app, stray) as client:
             with pytest.raises(ToolError, match="not a conversation id"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
-        unknown = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(uuid.uuid4())}
+        unknown = {**DRIVEN_BEARER, CONVERSATION_HEADER: str(uuid7())}
         async with over(octomate, app, unknown) as client:
             with pytest.raises(ToolError, match="No turn of conversation"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
 async def a_native_deployment() -> FakeOctomate:
@@ -387,45 +417,47 @@ async def test_a_client_header_naming_no_native_runtime_is_refused() -> None:
             octomate, app, {**USER_BEARER, CLIENT_HEADER: "emacs-native"}
         ) as client:
             with pytest.raises(ToolError, match="names no native runtime"):
-                await client.call_tool("gateway_scry", {"reveal": "routes"})
+                await client.call_tool("gateway_inspect", {"reveal": "routes"})
 
 
 async def test_a_native_call_runs_against_an_ephemeral_session() -> None:
     async with served(await a_native_deployment()) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
-            result = await client.call_tool("gateway_scry", {"reveal": "destinations"})
+            result = await client.call_tool(
+                "gateway_inspect", {"reveal": "destinations"}
+            )
 
     # The bearer named luhui, so their linked account's crossing is on offer, and
     # nothing was ever registered: the session lived exactly one call.
-    assert "their direct messages on" in result.data
+    assert TypeAdapter(list[ChannelAddress]).validate_json(result.data) == [
+        ChannelAddress("im", "dm", "", "alice")
+    ]
     assert octomate.gateway.sessions == {}
 
 
-async def test_a_native_summon_kicks_exactly_one_handoff() -> None:
+async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
     octomate = await a_native_deployment()
     async with served(octomate) as (octomate, app):
         async with over(octomate, app, {**USER_BEARER, **NATIVE}) as client:
             result = await client.call_tool(
-                "gateway_summon",
+                "gateway_scheme",
                 {
-                    "agent_id": "other",
-                    "model": "test",
-                    "destination": {"kind": "channel", "channel": "im"},
                     "hint": "Working on it",
-                    "reason": "the operator asked",
-                    "summon": "Please take this up.",
+                    "brief": "Please take this up.",
+                    "destination": {"kind": "dm", "channel": "im"},
                 },
             )
         await asyncio.gather(*octomate.background)
 
-    assert result.data == "Summoning other (test) → im."
+    assert result.data.startswith("Taking this to")
     assert isinstance(octomate, FakeOctomate)
     [signal] = octomate.kicks
-    assert isinstance(signal, GatewayHandoffSignal)
+    assert isinstance(signal, NativeGatewaySignal)
     assert signal.agent_id == CLAUDE_NATIVE_ID
-    # The handoff carries who the bearer named, so the summoned run knows whose
+    # The handoff carries who the bearer named, so the run it starts knows whose
     # behalf it was asked on.
     assert signal.user_profile is not None
     assert signal.user_profile.name == "luhui"
-    assert isinstance(signal.decision, SummonDecision)
-    assert signal.decision.summon == "Please take this up."
+    assert isinstance(signal.decision, SchemeDecision)
+    assert signal.decision.destination == ChannelAddress("im", "dm", "", "alice")
+    assert signal.decision.brief == "Please take this up."

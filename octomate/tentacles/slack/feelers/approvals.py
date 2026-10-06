@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from uuid import UUID
 
-from pydantic import TypeAdapter
+from pydantic import UUID7, TypeAdapter
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
@@ -52,7 +51,7 @@ class SlackApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]:
+    ) -> dict[UUID7, IMMessageID | None]:
         if not actions:
             return {}
         text = approval_title(actions)
@@ -77,7 +76,7 @@ def approval_blocks(
     actions: list[DeferredApproval],
     *,
     page: int = 0,
-    decisions: dict[UUID, bool] | None = None,
+    decisions: dict[UUID7, bool] | None = None,
 ) -> list[SlackBlock]:
     if not actions:
         return []
@@ -134,7 +133,7 @@ def approval_blocks(
 
 def approval_submitted_blocks(
     actions: list[DeferredApproval],
-    decisions: dict[UUID, bool] | None = None,
+    decisions: dict[UUID7, bool] | None = None,
     *,
     responder_id: str = "",
 ) -> list[SlackBlock]:
@@ -185,7 +184,7 @@ def approval_button(
     action: SlackBlockAction,
     actions: list[DeferredApproval],
     page: int,
-    decisions: dict[UUID, bool],
+    decisions: dict[UUID7, bool],
     *,
     style: str,
 ) -> SlackBlock:

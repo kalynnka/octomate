@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from ipaddress import ip_address
+from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
 from unittest.mock import AsyncMock, Mock
@@ -28,6 +28,8 @@ from openai_codex.generated.v2_all import (
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
+    SandboxMode,
+    ThreadForkParams,
     ThreadItem,
     ThreadReadResponse,
     ThreadResumeParams,
@@ -41,20 +43,27 @@ from openai_codex.generated.v2_all import (
     WorkspaceWriteSandboxPolicy,
 )
 from openai_codex.models import Notification, NotificationPayload
-from pydantic import BaseModel, SecretStr, TypeAdapter
+from pydantic import UUID7, BaseModel, SecretStr, TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import PartStartEvent, TextPart
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_graph import GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
+from octomate.capabilities.harness.deferred import Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces.base import ChatWorkspace, Workspace
+from octomate.reflex.nodes.teleport import Teleport
+from octomate.reflex.state import ReflexDeps, ReflexState, ResponseTarget
+from octomate.reflex.suspender import TeleportRequest
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
@@ -67,7 +76,6 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
-from octomate.tentacles.feelers.base import Feelers
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
@@ -256,6 +264,7 @@ class FakeThread:
 class FakeCodex:
     script: ClassVar[list[Notification]] = []
     thread_name: ClassVar[str | None] = None
+    model_name: ClassVar[str] = "runtime-model"
     read_calls: ClassVar[list[tuple[str, bool]]] = []
     last_config: ClassVar[CodexSdkConfig | None] = None
     thread_calls: ClassVar[list[ThreadCall]] = []
@@ -275,6 +284,9 @@ class FakeCodex:
         # handler-bearing sync client into it for every client it builds.
         self._client = SimpleNamespace(
             _sync=None,
+            thread_start=self.thread_start,
+            thread_resume=self.thread_resume,
+            thread_fork=self.thread_fork,
             request=AsyncMock(
                 return_value=ConfigReadResponse.model_validate(
                     {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
@@ -293,69 +305,74 @@ class FakeCodex:
     ) -> None:
         FakeCodex.closed += 1
 
-    async def thread_start(
-        self,
-        *,
-        approval_mode: ApprovalMode = ApprovalMode.auto_review,
-        base_instructions: str | None = None,
-        config: JsonObject | None = None,
-        cwd: str | None = None,
-        developer_instructions: str | None = None,
-        ephemeral: bool | None = None,
-        model: str | None = None,
-        model_provider: str | None = None,
-        personality: Personality | None = None,
-        sandbox: Sandbox | None = None,
-    ) -> FakeThread:
-        FakeCodex.thread_calls.append(
-            ThreadCall(
-                kind="start",
-                thread_id=None,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=ephemeral,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
-                sandbox=sandbox,
-            )
+    async def _ensure_initialized(self) -> None:
+        return
+
+    async def thread_start(self, params: ThreadStartParams) -> SimpleNamespace:
+        self.record_thread(params)
+        return SimpleNamespace(
+            thread=FakeThread("thread-new"), model=params.model or self.model_name
         )
-        return FakeThread("thread-new")
 
     async def thread_resume(
-        self,
-        thread_id: str,
-        *,
-        approval_mode: ApprovalMode | None = None,
-        base_instructions: str | None = None,
-        config: JsonObject | None = None,
-        cwd: str | None = None,
-        developer_instructions: str | None = None,
-        model: str | None = None,
-        model_provider: str | None = None,
-        personality: Personality | None = None,
-        sandbox: Sandbox | None = None,
-    ) -> FakeThread:
+        self, thread_id: str, params: ThreadResumeParams
+    ) -> SimpleNamespace:
+        self.record_thread(params)
+        return SimpleNamespace(
+            thread=FakeThread(thread_id), model=params.model or self.model_name
+        )
+
+    async def thread_fork(
+        self, thread_id: str, params: ThreadForkParams
+    ) -> SimpleNamespace:
+        return SimpleNamespace(thread=FakeThread("thread-fork"))
+
+    def record_thread(self, params: ThreadStartParams | ThreadResumeParams) -> None:
+        assert params.approval_policy is not None
+        assert params.sandbox is not None
+        approval = {
+            ApprovalsReviewer.user: None,
+            ApprovalsReviewer.auto_review: ApprovalMode.auto_review,
+            None: ApprovalMode.deny_all,
+        }[params.approvals_reviewer]
+        sandbox = {
+            SandboxMode.read_only: Sandbox.read_only,
+            SandboxMode.workspace_write: Sandbox.workspace_write,
+            SandboxMode.danger_full_access: Sandbox.full_access,
+        }[params.sandbox]
         FakeCodex.thread_calls.append(
             ThreadCall(
-                kind="resume",
-                thread_id=thread_id,
-                approval_mode=approval_mode,
-                base_instructions=base_instructions,
-                config=config,
-                cwd=cwd,
-                developer_instructions=developer_instructions,
-                ephemeral=None,
-                model=model,
-                model_provider=model_provider,
-                personality=personality,
+                kind="start" if isinstance(params, ThreadStartParams) else "resume",
+                thread_id=params.thread_id
+                if isinstance(params, ThreadResumeParams)
+                else None,
+                approval_mode=approval,
+                base_instructions=params.base_instructions,
+                config=params.config,
+                cwd=params.cwd,
+                developer_instructions=params.developer_instructions,
+                ephemeral=params.ephemeral
+                if isinstance(params, ThreadStartParams)
+                else None,
+                model=params.model,
+                model_provider=params.model_provider,
+                personality=params.personality,
                 sandbox=sandbox,
             )
         )
-        return FakeThread(thread_id)
+
+
+@pytest.fixture(autouse=True)
+def fake_thread_handle(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        codex_base,
+        "AsyncThread",
+        lambda client, thread_id: (
+            FakeThread(thread_id)
+            if isinstance(client, FakeCodex)
+            else AsyncThread(client, thread_id)
+        ),
+    )
 
 
 class ApprovalFakeTurn(FakeTurn):
@@ -378,37 +395,21 @@ class ApprovalFakeTurn(FakeTurn):
 
 
 @dataclass
-class FakeFeelers:
+class RecordingDeferredActions:
     batch: FakePresentedBatch
-    requests: list[object] = field(default_factory=list)
-    presented: asyncio.Event = field(default_factory=asyncio.Event)
 
-    async def present_actions(
-        self, *, requests: object, **_: object
-    ) -> FakePresentedBatch:
-        self.requests.append(requests)
-        self.presented.set()
+    async def get_batch(self, batch_id: UUID7) -> FakePresentedBatch:
+        assert self.batch.id == batch_id
         return self.batch
 
-
-def a_channel(feelers: FakeFeelers) -> FakeChannelTentacle:
-    """The `im` channel the tentacle presents approvals and questions through,
-    its feelers recording what was asked."""
-    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["inkling"]))
-    channel.feelers = cast(Feelers, feelers)
-    return channel
-
-
-@dataclass
-class RecordingDeferredActions:
     resolved: list[DeferredActionBatchResponse] = field(default_factory=list)
-    marked: list[tuple[uuid.UUID, str]] = field(default_factory=list)
+    marked: list[tuple[UUID7, str]] = field(default_factory=list)
 
     async def resolve_batch(self, awake: DeferredActionBatchResponse) -> None:
         self.resolved.append(awake)
 
     async def mark_batch(
-        self, batch_id: uuid.UUID, status: str, *, completed: bool = False
+        self, batch_id: UUID7, status: str, *, completed: bool = False
     ) -> None:
         self.marked.append((batch_id, status))
 
@@ -420,6 +421,7 @@ class StructuredCodexResult(BaseModel):
 def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.script = script
     FakeCodex.thread_name = None
+    FakeCodex.model_name = "runtime-model"
     FakeCodex.read_calls = []
     FakeCodex.last_config = None
     FakeCodex.thread_calls = []
@@ -552,20 +554,22 @@ def _tentacle(
 
 
 def codex_bridge_context(
-    conversation: FakeConversation,
+    conversation: FakeConversation, suspender: RecordingSuspender
 ) -> codex_base.CodexBridgeContext:
     return codex_base.CodexBridgeContext(
         loop=asyncio.get_running_loop(),
         conversation=cast(codex_base.Conversation, conversation),
-        conversation_address=KEY,
-        run_name="react",
         session_allowed=set(conversation.allowed_tools),
+        suspender=suspender,
+        interjections=Interjections[Notification](),
     )
 
 
-async def wait_for_pending(tentacle: CodexTentacle, feelers: FakeFeelers) -> uuid.UUID:
-    await asyncio.wait_for(feelers.presented.wait(), timeout=5)
-    return next(iter(tentacle.pending))
+async def wait_for_pending(
+    tentacle: CodexTentacle, suspender: RecordingSuspender
+) -> UUID7:
+    await asyncio.wait_for(suspender.put_up.wait(), timeout=5)
+    return next(iter(tentacle.pendings))
 
 
 @pytest.mark.parametrize("instrument", [False, True])
@@ -623,6 +627,9 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == "start"
     assert thread_call.model == "gpt-5.3-codex"
+    [recorded] = conversations.store[(_THREAD, "codex", "")].runs
+    assert recorded.model_name == "gpt-5.3-codex"
+    assert recorded.permission_mode == "auto_review"
     assert thread_call.approval_mode == ApprovalMode.auto_review
     # The configured preset, in a chat thread as in any other: the run has a
     # workspace of its own for it to be scoped to.
@@ -728,6 +735,161 @@ async def test_run_resumes_prior_thread_and_applies_config(
     assert turn_call.summary == ReasoningSummary(ReasoningSummaryValue.detailed)
 
 
+@pytest.mark.parametrize("here", [False, True])
+async def test_teleport_forks_codex_and_resumes_the_new_id(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    here: bool,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("before", thread_id="thread-new"))
+    fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
+    octomate = Octomate()
+    thread = await octomate.thread_manager.ensure(KEY)
+    tentacle = CodexTentacle(
+        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+    )
+    channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["codex"]))
+    origin = ResponseTarget(channel_id="im", address=KEY)
+    state = ReflexState(source_target=origin, target=origin, thread=thread)
+    deps = ReflexDeps(
+        agents={"codex": tentacle},
+        channels={"im": channel},
+        conversation_manager=octomate.conversations,
+        thread_manager=octomate.thread_manager,
+        action_manager=octomate.deferred_actions,
+        gateway=octomate.gateway,
+        workspaces=octomate.workspaces,
+    )
+    async with tentacle:
+        await tentacle.run("before", conversation_address=KEY, thread_id=thread.id)
+        source = await octomate.conversations.ensure(
+            thread.id, agent_tentacle_id="codex"
+        )
+        node = Teleport(
+            request=TeleportRequest(
+                hint="continue",
+                tool_call_id="move",
+                destination=KEY,
+                new_thread=not here,
+                resume=True,
+            ),
+            origin=origin,
+            agent_id="codex",
+        )
+        await node.run(GraphRunContext(state=state, deps=deps))
+        assert state.thread is not None
+        destination = await octomate.conversations.ensure(
+            state.thread.id, agent_tentacle_id="codex"
+        )
+        assert destination.external_id == "thread-fork"
+        assert source.external_id == "thread-new"
+        if not here:
+            assert destination.id != source.id
+            assert (
+                await octomate.conversations.get(source.id)
+            ).external_id == "thread-new"
+            assert len(destination.messages) == len(source.messages)
+        fork.assert_awaited_once_with(
+            "thread-new",
+            ThreadForkParams(
+                thread_id="thread-new",
+                cwd=str(octomate.workspaces.open(state.thread.id, None).path),
+                config={"mcp_servers": {}},
+                ephemeral=False,
+            ),
+        )
+        FakeCodex.script = text_script("after", thread_id="thread-fork")
+        await tentacle.run("after", conversation_address=KEY, thread_id=state.thread.id)
+        assert FakeCodex.thread_calls[-1].kind == "resume"
+        assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
+        if not here:
+            FakeCodex.script = text_script("local continuation", thread_id="thread-new")
+            await tentacle.run(
+                "local continuation", conversation_address=KEY, thread_id=thread.id
+            )
+            original = await octomate.conversations.get(source.id)
+            forked = await octomate.conversations.get(destination.id)
+            assert original.external_id == "thread-new"
+            assert forked.external_id == "thread-fork"
+            assert "local continuation" not in str(list(forked.messages))
+            assert "after" not in str(list(original.messages))
+
+    # A fresh app-server must also select the persisted fork, without forking again.
+    FakeCodex.script = text_script("restarted", thread_id="thread-fork")
+    async with tentacle:
+        await tentacle.run("again", conversation_address=KEY, thread_id=state.thread.id)
+    assert FakeCodex.thread_calls[-1].thread_id == "thread-fork"
+    assert fork.await_count == 1
+
+
+@pytest.mark.parametrize("last_turn_id", [None, "completed-turn"])
+async def test_codex_fork_passes_the_turn_cutoff(
+    monkeypatch: pytest.MonkeyPatch, last_turn_id: str | None
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex([])
+    fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork)
+    source = Conversation(
+        thread_id=uuid7(), agent_tentacle_id="codex", external_id="source"
+    )
+
+    result = await _tentacle(FakeConversationManager()).fork_session(
+        source, cwd=Path("/destination"), last_turn_id=last_turn_id
+    )
+
+    assert result == "thread-fork"
+    fork.assert_awaited_once_with(
+        "source",
+        ThreadForkParams(
+            thread_id="source",
+            cwd="/destination",
+            config={"mcp_servers": {}},
+            ephemeral=False,
+            last_turn_id=last_turn_id,
+        ),
+    )
+    assert source.external_id == "source"
+    assert FakeCodex.closed == 1
+
+
+async def test_codex_fork_failure_leaves_the_source_unchanged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex([])
+    fork = AsyncMock(side_effect=RuntimeError("fork failed"))
+    monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
+    tentacle = _tentacle(FakeConversationManager())
+    source = Conversation(
+        thread_id=uuid7(), agent_tentacle_id="codex", external_id="source"
+    )
+
+    with pytest.raises(RuntimeError, match="fork failed"):
+        await tentacle.fork_session(source, cwd=Path("/destination"))
+
+    assert source.external_id == "source"
+    assert FakeCodex.closed == 1
+
+
+@pytest.mark.parametrize("external_id", [None, ""])
+async def test_codex_cannot_fork_without_a_session_id(
+    monkeypatch: pytest.MonkeyPatch, external_id: str | None
+) -> None:
+    client = Mock()
+    monkeypatch.setattr(codex_base, "AsyncCodex", client)
+    source = Conversation(
+        thread_id=_THREAD, agent_tentacle_id="codex", external_id=external_id
+    )
+    with pytest.raises(ValueError, match="without a session id"):
+        await _tentacle(FakeConversationManager()).fork_session(
+            source, cwd=Path("/new")
+        )
+    client.assert_not_called()
+
+
 async def test_run_with_output_type_passes_schema_and_validates_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -798,15 +960,20 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> FakeThread:
+    ) -> tuple[FakeThread, str]:
         # `user_review` is the one posture with no public SDK knob, so it is the
         # reviewer path the bridge exists for.
         assert approval_mode is None
         assert sandbox is Sandbox.workspace_write
         assert config == {"mcp_servers": {}}
         assert isinstance(client, FakeCodex)
-        client._client.turn_start = AsyncMock()
-        return FakeThread("thread-new")
+        client._client._start_turn = AsyncMock(
+            return_value=(
+                SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
+                None,
+            )
+        )
+        return FakeThread("thread-new"), "runtime-model"
 
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     monkeypatch.setattr(codex_base, "CodexClient", capture_handler)
@@ -819,12 +986,13 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     octomate = Octomate(
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -833,26 +1001,30 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
     )
     octomate.connect(tentacle)
 
-    async def drain() -> None:
+    async def drain() -> list[ReactStreamEvent[str]]:
         async with tentacle.run_stream_events(
             "run tests",
             conversation_address=KEY,
             thread_id=_THREAD,
+            deferred_suspender=suspender,
         ) as stream:
-            async for _event in stream:
-                pass
+            return [event async for event in stream]
 
     async with tentacle:
         task = asyncio.ensure_future(drain())
-        batch_id = await wait_for_pending(tentacle, feelers)
+        batch_id = await wait_for_pending(tentacle, suspender)
         await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id, approvals={approval.id: True}
             )
         )
-        await task
+        events = await task
 
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
+    # The batch rides the turn's own stream, for whoever draws the run to present.
+    assert [
+        event.batch_id for event in events if isinstance(event, ActionBatchEvent)
+    ] == [str(suspender.batch.id)]
     assert deferred_actions.resolved
     assert FakeCodex.approval_responses == [{"decision": "accept"}]
 
@@ -863,12 +1035,13 @@ async def test_question_requests_bridge_to_cards() -> None:
         tool_call_id="ask-1",
         args={"question": "Which branch?"},
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(questions=[question]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(questions=[question])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -876,7 +1049,7 @@ async def test_question_requests_bridge_to_cards() -> None:
         config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -891,7 +1064,7 @@ async def test_question_requests_bridge_to_cards() -> None:
             },
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -900,7 +1073,7 @@ async def test_question_requests_bridge_to_cards() -> None:
     )
     response = await task
 
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
     assert deferred_actions.resolved
     assert response == {
         "action": "accept",
@@ -909,19 +1082,85 @@ async def test_question_requests_bridge_to_cards() -> None:
     }
 
 
+@pytest.mark.parametrize("approved", [True, False])
+async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) -> None:
+    """Codex asks to run an MCP tool as an elicitation; it is approved or declined
+    on a card worded as Codex words it, not answered as a free-text question."""
+    prompt = 'Allow the octomate_driven MCP server to run tool "gateway_teleport"?'
+    approval = DeferredApproval(
+        tool_name="codex_mcp_octomate_driven",
+        tool_call_id="mcp-1",
+        args=ApprovalRequest(tool_name="codex_mcp_octomate_driven"),
+    )
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
+    octomate = Octomate(
+        deferred_actions=cast(DeferredActionManager, deferred_actions),
+    )
+    tentacle = CodexTentacle(
+        "codex", octomate, config=CodexConfig(permission_mode="user_review")
+    )
+    octomate.connect(tentacle)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
+        FakeConversation(thread_id=_THREAD), suspender
+    )
+
+    task = asyncio.create_task(
+        asyncio.to_thread(
+            tentacle.handle_sdk_request,
+            _THREAD,
+            "mcpServer/elicitation/request",
+            {
+                "threadId": "thread-1",
+                "requestId": "mcp-1",
+                "serverName": "octomate_driven",
+                "mode": "form",
+                "_meta": {
+                    "codex_approval_kind": "mcp_tool_call",
+                    "tool_params": {"hint": "Continue here", "new_thread": True},
+                },
+                "message": prompt,
+                "requestedSchema": {"type": "object", "properties": {}},
+            },
+        )
+    )
+    batch_id = await wait_for_pending(tentacle, suspender)
+    await octomate.kick(
+        DeferredActionBatchResponse(
+            batch_id=batch_id, approvals={approval.id: approved}
+        )
+    )
+    response = await task
+
+    [presented] = suspender.paused
+    assert isinstance(presented, DeferredToolRequests)
+    assert presented.calls == []
+    [call] = presented.approvals
+    assert call.tool_name == "codex_mcp_octomate_driven"
+    # The card shows what the call would run with.
+    assert call.args == {"hint": "Continue here", "new_thread": True}
+    assert presented.metadata == {"mcp-1": {"description": prompt}}
+    assert response == (
+        {"action": "accept", "content": {}} if approved else {"action": "decline"}
+    )
+
+
 async def test_codex_approval_deny_and_timeout_paths() -> None:
     approval = DeferredApproval(
         tool_name="codex_command_execution",
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     octomate = Octomate(
         conversations=FakeConversationManager(),
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -929,7 +1168,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -939,7 +1178,7 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -960,7 +1199,9 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         ),
     )
     octomate.connect(timeout_tentacle)
-    timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
+        conversation, suspender
+    )
     timeout_task = asyncio.create_task(
         asyncio.to_thread(
             timeout_tentacle.handle_sdk_request,
@@ -982,14 +1223,15 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         tool_call_id="cmd-1",
         args=ApprovalRequest(tool_name="codex_command_execution"),
     )
-    feelers = FakeFeelers(batch=FakePresentedBatch(approvals=[approval]))
-    deferred_actions = RecordingDeferredActions()
+    suspender = RecordingSuspender(
+        agent_tentacle_id="codex", batch=FakePresentedBatch(approvals=[approval])
+    )
+    deferred_actions = RecordingDeferredActions(batch=suspender.batch)
     conversation = FakeConversation(thread_id=_THREAD)
     conversations = FakeConversationManager()
     octomate = Octomate(
         conversations=conversations,
         deferred_actions=cast(DeferredActionManager, deferred_actions),
-        tentacles={"im": a_channel(feelers)},
     )
     tentacle = CodexTentacle(
         "codex",
@@ -997,7 +1239,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         config=CodexConfig(permission_mode="user_review"),
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation)
+    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
         asyncio.to_thread(
@@ -1007,7 +1249,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
     )
-    batch_id = await wait_for_pending(tentacle, feelers)
+    batch_id = await wait_for_pending(tentacle, suspender)
     await octomate.kick(
         DeferredActionBatchResponse(
             batch_id=batch_id,
@@ -1028,7 +1270,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
     assert response == {"decision": "accept"}
     assert second_response == {"decision": "accept"}
     assert conversation.allowed_tools == ["codex_command_execution"]
-    assert len(feelers.requests) == 1
+    assert len(suspender.paused) == 1
 
 
 @pytest.mark.parametrize(
@@ -1297,7 +1539,7 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    reset_fake_codex(text_script("done"))
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
     other_thread = uuid7()
     tentacle = _tentacle(FakeConversationManager())
 
@@ -1306,7 +1548,7 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
         await tentacle.run("two", conversation_address=KEY, thread_id=_THREAD)
         # Same thread: one warm client, one thread_start, both turns reuse it.
         assert FakeCodex.builds == 1
-        assert len([c for c in FakeCodex.thread_calls if c.kind == "start"]) == 1
+        assert len(FakeCodex.thread_calls) == 1
         assert len(FakeCodex.turn_calls) == 2
 
         await tentacle.run(
@@ -1404,7 +1646,7 @@ async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
             return self
 
     monkeypatch.setattr(codex_base, "AsyncCodex", SlowStartingCodex)
-    reset_fake_codex(text_script("done"))
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
@@ -1486,16 +1728,46 @@ async def test_the_conversations_preset_overrides_the_configured_one(
     assert thread_call.approval_mode is approval
     assert thread_call.sandbox is sandbox
     assert thread_call.kind == ("resume" if external_id else "start")
+    assert thread_call.model is None
+    assert thread_call.model_provider is None
     [turn_call] = FakeCodex.turn_calls
     assert turn_call.approval_mode is approval
     assert turn_call.sandbox is sandbox
+    assert turn_call.model is None
+    [recorded] = conversations.store[(_THREAD, "codex", "")].runs
+    assert recorded.model_name == "runtime-model"
+    assert recorded.permission_mode == mode
+
+
+async def test_a_warm_thread_retains_the_reported_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+
+    async with tentacle:
+        for model in (None, "requested-model", None):
+            FakeCodex.script = text_script("done", thread_id="thread-new")
+            await tentacle.run(
+                "go", conversation_address=KEY, thread_id=_THREAD, model=model
+            )
+
+    assert len(FakeCodex.thread_calls) == 1
+    runs = conversations.store[(_THREAD, "codex", "")].runs
+    assert [run.model_name for run in runs] == [
+        "runtime-model",
+        "requested-model",
+        "requested-model",
+    ]
 
 
 async def test_a_warm_thread_reapplies_the_selected_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    reset_fake_codex(text_script("done"))
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
     conversation = FakeConversation(thread_id=_THREAD, permission_mode="auto_review")
     conversations.store[(_THREAD, "codex", "")] = conversation
@@ -1508,6 +1780,11 @@ async def test_a_warm_thread_reapplies_the_selected_preset(
 
     assert FakeCodex.builds == 1
     assert len(FakeCodex.thread_calls) == 1
+    assert [run.permission_mode for run in conversation.runs] == [
+        "auto_review",
+        "full_access",
+        "auto_review",
+    ]
     assert [(call.approval_mode, call.sandbox) for call in FakeCodex.turn_calls] == [
         (ApprovalMode.auto_review, Sandbox.workspace_write),
         (ApprovalMode.deny_all, Sandbox.full_access),
@@ -1594,12 +1871,14 @@ async def a_kicker() -> UserProfile:
     ],
 )
 @pytest.mark.parametrize("external_id", [None, "previous-thread"])
+@pytest.mark.parametrize("permission_mode", ["auto_review", "full_access"])
 async def test_a_registered_octomate_session_wires_the_thread_config(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
     host: str,
     url_host: str,
     external_id: str | None,
+    permission_mode: Literal["auto_review", "full_access"],
 ) -> None:
     monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
@@ -1628,7 +1907,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(permission_mode="auto_review"),
+        config=CodexConfig(permission_mode=permission_mode),
     )
 
     async with tentacle:
@@ -1654,6 +1933,13 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == ("resume" if external_id else "start")
+    expected = (
+        ApprovalMode.auto_review
+        if permission_mode == "auto_review"
+        else ApprovalMode.deny_all
+    )
+    assert thread_call.approval_mode == expected
+    assert FakeCodex.turn_calls[0].approval_mode == expected
     assert thread_call.config == {
         "mcp_servers": {
             "octomate": {"enabled": False},
@@ -1665,6 +1951,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
                 },
+                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             },
         }
     }
@@ -1863,6 +2150,7 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION",
                 },
+                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
         }
     }
@@ -1880,7 +2168,11 @@ class BindingFakeTurn(FakeTurn):
         yield first
         assert BindingFakeTurn.session is not None
         BindingFakeTurn.session.decision = TeleportDecision(
-            hint="into inky", here=True, project="inky"
+            agent_id="codex",
+            hint="into inky",
+            destination=KEY,
+            new_thread=False,
+            project="inky",
         )
         for event in rest:
             yield event
@@ -1940,7 +2232,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         model_provider: str | None,
         personality: Personality | None,
         sandbox: Sandbox,
-    ) -> BindingFakeThread:
+    ) -> tuple[BindingFakeThread, str]:
         assert config["mcp_servers"] == {
             "octomate_driven": {
                 "enabled": True,
@@ -1949,9 +2241,10 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
                 "env_http_headers": {
                     "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
                 },
+                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
         }
-        return BindingFakeThread("thread-new")
+        return BindingFakeThread("thread-new"), "runtime-model"
 
     monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_binding_thread)
     tentacle = CodexTentacle(
@@ -1959,7 +2252,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
     )
-    suspender = RecordingSuspender()
+    suspender = RecordingSuspender(agent_tentacle_id="codex")
 
     events = []
     async with tentacle:
@@ -2019,17 +2312,36 @@ async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
 
 
 @pytest.mark.parametrize("resume", [False, True])
-async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
+@pytest.mark.parametrize(
+    ("approval_mode", "reviewer", "policy"),
+    [
+        (None, ApprovalsReviewer.user, AskForApprovalValue.on_request),
+        (
+            ApprovalMode.auto_review,
+            ApprovalsReviewer.auto_review,
+            AskForApprovalValue.on_request,
+        ),
+        (ApprovalMode.deny_all, None, AskForApprovalValue.never),
+    ],
+)
+async def test_thread_settings_preserve_reviewer_and_report_model(
+    resume: bool,
+    approval_mode: ApprovalMode | None,
+    reviewer: ApprovalsReviewer | None,
+    policy: AskForApprovalValue,
+) -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = AsyncMock(spec=AsyncCodex)
     client._client = AsyncMock()
     client._client.thread_start.return_value.thread.id = "new-thread"
+    client._client.thread_start.return_value.model = "runtime-model"
+    client._client.thread_resume.return_value.model = "runtime-model"
     client._client.thread_resume.return_value.thread.id = "previous-thread"
     if resume:
-        thread = await tentacle.resume_codex_thread(
+        thread, model_name = await tentacle.resume_codex_thread(
             client,
             thread_id="previous-thread",
-            approval_mode=None,
+            approval_mode=approval_mode,
             base_instructions=None,
             config={},
             cwd="/workspace",
@@ -2044,9 +2356,9 @@ async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
         assert thread.id == "previous-thread"
         client.thread_resume.assert_not_awaited()
     else:
-        thread = await tentacle.start_codex_thread(
+        thread, model_name = await tentacle.start_codex_thread(
             client,
-            approval_mode=None,
+            approval_mode=approval_mode,
             base_instructions=None,
             config={},
             cwd="/workspace",
@@ -2061,17 +2373,20 @@ async def test_human_review_uses_the_sdk_user_reviewer(resume: bool) -> None:
         assert isinstance(params, ThreadStartParams)
         assert thread.id == "new-thread"
         client.thread_start.assert_not_awaited()
+    assert model_name == "runtime-model"
     assert params.approval_policy is not None
-    assert params.approval_policy.root is AskForApprovalValue.on_request
-    assert params.approvals_reviewer is ApprovalsReviewer.user
+    assert params.approval_policy.root is policy
+    assert params.approvals_reviewer is reviewer
 
 
 async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> None:
     tentacle = _tentacle(FakeConversationManager())
     client = AsyncCodex()
     client._client = AsyncMock()
-    client._client._start_turn.return_value = (Mock(turn=Mock(id="turn")), None)
-    client._client._subscribe_turn_notifications = Mock()
+    client._client._start_turn.return_value = (
+        SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
+        Mock(),
+    )
     client._initialized = True
     thread = AsyncThread(client, "warm-thread")
     for approval, sandbox, reviewer, policy in (
@@ -2108,12 +2423,7 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
             personality=None,
             summary=None,
         )
-        start = (
-            client._client.turn_start
-            if approval is None
-            else client._client._start_turn
-        )
-        params = start.call_args.kwargs["params"]
+        params = client._client._start_turn.call_args.kwargs["params"]
         assert isinstance(params, TurnStartParams)
         assert params.thread_id == "warm-thread"
         assert params.approval_policy is not None

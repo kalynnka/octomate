@@ -2,13 +2,13 @@
 enabling and removing them."""
 
 import logging
-import uuid
 from typing import Annotated
 
 import httpx2
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 from mcp.client.auth.exceptions import OAuthFlowError
+from pydantic import UUID7
 
 from octomate.auth import browser_request, current_user
 from octomate.dependencies import mcp_manager
@@ -65,7 +65,7 @@ async def install(
 
 @mcp_router.get("/{mcp_id}/authorization", response_model=OAuthStartResult | None)
 async def pending_authorization(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
 ) -> JSONResponse:
@@ -88,7 +88,7 @@ async def pending_authorization(
 
 @mcp_router.delete("/{mcp_id}/authorization", status_code=204)
 async def cancel_authorization(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
 ) -> None:
@@ -100,7 +100,7 @@ async def cancel_authorization(
 
 @mcp_router.post("/{mcp_id}/connect", response_model=OAuthStartResult)
 async def connect(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
     flow: OAuthFlowKind | None = None,
@@ -122,7 +122,7 @@ async def connect(
 
 @mcp_router.post("/{mcp_id}/confirm", response_model=McpAuthorizationResult)
 async def confirm(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
 ) -> McpAuthorizationResult:
@@ -139,7 +139,7 @@ async def confirm(
 
 @mcp_router.post("/{mcp_id}/enable", response_model=McpVariant)
 async def enable(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
 ) -> Mcp:
@@ -151,7 +151,7 @@ async def enable(
 
 @mcp_router.post("/{mcp_id}/disable", response_model=McpVariant)
 async def disable(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
 ) -> Mcp:
@@ -163,7 +163,7 @@ async def disable(
 
 @mcp_router.delete("/{mcp_id}", status_code=204)
 async def uninstall(
-    mcp_id: uuid.UUID,
+    mcp_id: UUID7,
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[McpManager, Depends(mcp_manager)],
 ) -> None:

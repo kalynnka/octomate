@@ -66,6 +66,12 @@ agent, `minimal`, `low`, `medium`, `high`, `xhigh`, and each tentacle maps it on
 its runtime's own knob. A route whose provider takes less must say so in its claim,
 because nothing downgrades an effort the provider lacks.
 
+A claim also carries `default_effort`, the level a run gets when its caller names
+none, where that is known: Codex's is its `effort` setting, then Codex's own
+`model_reasoning_effort`, then the model's default; Inkling's is the model's
+`thinking` setting. It is set only when the route accepts that level. Claude Code
+and DeepSeek Harness decide for themselves and report nothing, so theirs stays empty.
+
 ## Models
 
 A harness agent has no configured default model. Omitting one preserves the

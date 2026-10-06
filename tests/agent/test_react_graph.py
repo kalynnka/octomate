@@ -9,6 +9,7 @@ from typing import cast
 
 import anyio
 import pytest
+from pydantic import UUID7
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import ModelMessage, ToolCallPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
@@ -36,6 +37,7 @@ from octomate.capabilities.harness.react import (
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import DeferredActionBatch
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest as OctomateModelRequest
 from octomate.schemas.segments import TextSegment
@@ -68,6 +70,11 @@ class StubSuspender:
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return self.event
+
+    async def pause(
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+        raise AssertionError("an Inkling run suspends; it never pauses live")
 
 
 def _key() -> ChannelAddress:

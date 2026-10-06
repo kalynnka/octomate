@@ -1,26 +1,36 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import aclosing
+from typing import cast
 
-import anyio
 import pytest
+from openai_codex.models import Notification
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
+from octomate.capabilities.harness.deferred import Interjections
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
+from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
 from octomate.tentacles.trunkline import TrunklineTentacle
-from octomate.tentacles.trunkline.base import TrunklineStreamItem, current_sink
 from octomate.types.json import JsonObject
 
 
+async def never() -> AsyncIterator[Notification]:
+    """A turn that says nothing while it waits on its answer."""
+    await asyncio.Event().wait()
+    yield cast(Notification, None)
+
+
 @pytest.mark.parametrize("answer", ["Accept", "Decline", "Cancel", None])
-async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
+async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
     in_memory_engine: AsyncEngine, answer: str | None
 ) -> None:
     octomate = Octomate()
@@ -68,22 +78,29 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
             },
         ],
     }
-    send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](10)
-    async with send, receive:
-        token = current_sink.set(send)
-        try:
-            tentacle.bridge_contexts[conversation.id] = CodexBridgeContext(
-                loop=asyncio.get_running_loop(),
-                conversation=conversation,
-                conversation_address=address,
-                run_name="react",
-                session_allowed=set(),
-            )
-        finally:
-            current_sink.reset(token)
-
-        # The SDK invokes its handler on a plain transport thread, which does
-        # not inherit the active request's ContextVars (unlike asyncio.to_thread).
+    interjections = Interjections[Notification]()
+    tentacle.bridge_contexts[conversation.id] = CodexBridgeContext(
+        loop=asyncio.get_running_loop(),
+        conversation=conversation,
+        session_allowed=set(),
+        suspender=ReflexSuspender(
+            channel=octomate.channels["trunkline"],
+            action_manager=octomate.deferred_actions,
+            conversation_manager=octomate.conversations,
+            agent_tentacle_id="codex",
+            run_name="react",
+            source_address=address,
+            target_address=address,
+            target_mode="sub",
+            decision=None,
+            thread_id=thread.id,
+            emit_on_stream=True,
+        ),
+        interjections=interjections,
+    )
+    turn = interjections.around(never())
+    async with aclosing(turn):
+        # The SDK invokes its handler on a plain transport thread.
         task = asyncio.get_running_loop().run_in_executor(
             None,
             tentacle.handle_sdk_request,
@@ -92,7 +109,7 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
             params,
         )
         try:
-            card = await asyncio.wait_for(receive.receive(), timeout=1)
+            card = await asyncio.wait_for(anext(turn), timeout=1)
             assert isinstance(card, ActionBatchEvent)
             question, follow_up = sorted(card.questions)
             assert question.args.get("choices") == ["Accept", "Decline", "Cancel"]
@@ -105,7 +122,7 @@ async def test_mcp_consent_reaches_console_and_returns_the_selected_answer(
                 assert await task == {"answers": {}}
                 batch = await octomate.deferred_actions.get_batch(batch_id)
                 assert batch.status == "expired"
-                assert tentacle.pending == {}
+                assert tentacle.pendings == {}
                 return
             await octomate.kick(
                 DeferredActionBatchResponse(

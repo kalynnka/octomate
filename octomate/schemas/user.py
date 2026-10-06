@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-import uuid
 from typing import Annotated
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import BaseModel, ConfigDict, Field, SecretStr
+from pydantic import UUID7, BaseModel, ConfigDict, Field, SecretStr
 from uuid_utils.compat import uuid7
 
 from octomate.models.user import User as UserModel
@@ -38,7 +37,7 @@ class UserProfile(BaseTransmuter):
         from_attributes=True,
     )
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     channel_tentacle_id: str = Field(
         default="",
         description=(
@@ -53,7 +52,7 @@ class UserProfile(BaseTransmuter):
     age: int | None = None
     title: str | None = None
 
-    user_id: uuid.UUID | None = Field(
+    user_id: UUID7 | None = Field(
         default=None,
         description=(
             "The registered owning User; None for ephemeral snapshots and "
@@ -76,7 +75,7 @@ class User(BaseTransmuter):
         from_attributes=True, json_schema_serialization_defaults_required=True
     )
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     username: str = Field(
         frozen=True,
         description="Stable username naming this human across sign-in and channels.",

@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from uuid import UUID
+
+from pydantic import UUID7
 
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredApproval,
     DeferredQuestion,
+    QuestionAnswer,
 )
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.feelers.output import IMMessageID, MarkdownFeeler
@@ -26,6 +28,14 @@ def question_text(action: DeferredQuestion) -> str:
     return cleaned or text
 
 
+def answer_text(answer: QuestionAnswer | None) -> str:
+    """An answer as one line of text, for a card to show: a multi-select
+    question's picks are listed."""
+    if isinstance(answer, list):
+        return ", ".join(answer)
+    return answer or ""
+
+
 class ApprovalFeeler(ABC):
     """Presents approval actions for one response target."""
 
@@ -34,7 +44,7 @@ class ApprovalFeeler(ABC):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]: ...
+    ) -> dict[UUID7, IMMessageID | None]: ...
 
 
 class QuestionFeeler(ABC):
@@ -45,7 +55,7 @@ class QuestionFeeler(ABC):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]: ...
+    ) -> dict[UUID7, IMMessageID | None]: ...
 
 
 class PlainTextApprovalFeeler(ApprovalFeeler):
@@ -60,8 +70,8 @@ class PlainTextApprovalFeeler(ApprovalFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredApproval],
-    ) -> dict[UUID, IMMessageID | None]:
-        message_ids: dict[UUID, IMMessageID | None] = {}
+    ) -> dict[UUID7, IMMessageID | None]:
+        message_ids: dict[UUID7, IMMessageID | None] = {}
         for action in actions:
             message_ids[action.id] = await self.markdown.present(
                 address,
@@ -86,8 +96,8 @@ class PlainTextAskQuestionFeeler(QuestionFeeler):
         self,
         address: ChannelAddress,
         actions: list[DeferredQuestion],
-    ) -> dict[UUID, IMMessageID | None]:
-        message_ids: dict[UUID, IMMessageID | None] = {}
+    ) -> dict[UUID7, IMMessageID | None]:
+        message_ids: dict[UUID7, IMMessageID | None] = {}
         for action in actions:
             choices_text = ""
             if choices := action.args.get("choices"):

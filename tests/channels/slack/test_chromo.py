@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import pytest
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import AtSegment, ImageSegment, TextSegment
 from octomate.tentacles.slack import SlackChromo
 from octomate.types.conversations import ChatType
+from tests.channels.slack.fakes import FakeSlackInk, slack_channel
 
 
 async def test_slack_chromo_decodes_mentions_and_images() -> None:
@@ -38,19 +40,21 @@ async def test_slack_chromo_decodes_mentions_and_images() -> None:
 
 
 @pytest.mark.parametrize(
-    ("channel_type", "thread_ts", "chat_type", "shared"),
+    ("channel_type", "channel_id", "thread_ts", "chat_type", "shared"),
     [
-        ("im", "", "dm", False),
+        ("im", "D1", "", "dm", False),
         # The assistant pane: a DM whose every message is a thread reply.
-        ("im", "1710000000.000001", "thread", False),
-        ("app_home", "", "dm", False),
-        ("channel", "", "group", True),
-        ("channel", "1710000000.000001", "thread", True),
-        ("mpim", "", "group", True),
+        ("im", "D1", "1710000000.000001", "thread", False),
+        ("app_home", "D1", "", "dm", False),
+        ("channel", "C1", "", "group", True),
+        ("channel", "C1", "1710000000.000001", "thread", True),
+        ("group", "G1", "", "group", True),
+        ("mpim", "G2", "", "group", True),
     ],
 )
 async def test_slack_chromo_reads_the_surface_a_thread_sits_in(
     channel_type: str,
+    channel_id: str,
     thread_ts: str,
     chat_type: ChatType,
     shared: bool,
@@ -60,7 +64,7 @@ async def test_slack_chromo_reads_the_surface_a_thread_sits_in(
         {
             "ts": "1710000000.000100",
             "user": "U1",
-            "channel": "C1",
+            "channel": channel_id,
             "channel_type": channel_type,
             "thread_ts": thread_ts,
             "text": "hi",
@@ -70,6 +74,12 @@ async def test_slack_chromo_reads_the_surface_a_thread_sits_in(
     assert event is not None
     assert event.chat_type == chat_type
     assert event.shared is shared
+    # A thread's row has only its address, and the channel must read the same
+    # answer off it as the message gave.
+    address = ChannelAddress(
+        "slack", event.chat_type, event.chat_id, "U1", event.channel_thread_id
+    )
+    assert slack_channel(FakeSlackInk()).is_shared(address) is shared
 
 
 def test_slack_chromo_renders_markdown_result() -> None:

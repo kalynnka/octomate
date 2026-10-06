@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
@@ -10,13 +9,17 @@ from typing import Literal, TypeVar
 
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
+from fastapi import UploadFile
+from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
+from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import ThreadMessage
@@ -25,7 +28,7 @@ from octomate.types.permissions import AgentPermissionMode
 RunT = TypeVar("RunT", bound=AgentRun)
 
 
-class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
+class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
     """Resolves and persists agent `Conversation` entities, and owns their model
     message history.
 
@@ -38,11 +41,11 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def ensure(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         *,
         agent_tentacle_id: str,
         subagent_id: str = "",
-        parent_conversation_id: uuid.UUID | None = None,
+        parent_conversation_id: UUID7 | None = None,
         with_history: bool = True,
     ) -> Conversation:
         """Resolve the conversation owned by `agent_tentacle_id` in `thread_id`,
@@ -90,7 +93,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             return conversation
 
     async def get(
-        self, conversation_id: uuid.UUID, *, with_history: bool = True
+        self, conversation_id: UUID7, *, with_history: bool = True
     ) -> Conversation:
         """Resolve a conversation by id — one fresh read; raises on an unknown
         id. This is the by-id path for a run addressed at a pre-ensured
@@ -138,7 +141,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             run.parent_tool_call_id = parent_tool_call_id
             await session.commit()
 
-    async def subagents(self, parent_conversation_id: uuid.UUID) -> list[Conversation]:
+    async def subagents(self, parent_conversation_id: UUID7) -> list[Conversation]:
         """The subagent conversations spawned from `parent_conversation_id` — the
         live accomplices a `whisper` can reach. Rows only; callers resolve a
         chosen one through `ensure`."""
@@ -153,7 +156,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         return list(rows)
 
     async def for_thread(
-        self, thread_id: uuid.UUID, *, with_run_messages: bool = False
+        self, thread_id: UUID7, *, with_run_messages: bool = False
     ) -> list[Conversation]:
         """The thread's agent conversations, subagents included, each with its runs.
 
@@ -177,7 +180,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             )
         return list(rows)
 
-    async def thread_id(self, conversation_id: uuid.UUID) -> uuid.UUID | None:
+    async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         async with async_session() as session:
             conversation = await session.get(Conversation, conversation_id)
         if conversation is None:
@@ -191,6 +194,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
         native_id: str | None = None,
@@ -213,6 +218,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             native_session_id=external_id,
             native_turn_id=native_turn_id,
             name=name,
+            model_name=model_name,
+            permission_mode=permission_mode,
             cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
@@ -249,6 +256,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         messages: Sequence[PydanticModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         native_session_id: str,
         source: str | None = None,
@@ -310,6 +319,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
             native_id=conversation.agent_tentacle_id,
             native_turn_id=run_id,
             name=name,
+            model_name=model_name,
+            permission_mode=permission_mode,
             cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
@@ -329,7 +340,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         self,
         run: RunT,
         *,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         external_id: str | None,
     ) -> RunT:
         """Persist a freshly built run. `external_id`, when given, updates the
@@ -362,6 +373,10 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         target: Conversation,
         *,
         carry_external_id: bool = False,
+        external_id: str | None = None,
+        transcript: Jsonl | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
     ) -> AgentRun | None:
         """Fork `source`'s full message history into `target` as one new run, so a
         same-agent `teleport` resumes seamlessly against the copy.
@@ -377,15 +392,38 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         to `target` in the same commit, so a driven external session continues in
         the new place — and the handle keeps naming exactly one conversation. The
         move matters even when the mirror history is empty: the runtime holds its
-        own transcript, and the handle is what resumes it."""
+        own transcript, and the handle is what resumes it. `external_id` instead
+        attaches an independently forked runtime session, preserving the source.
+        An uploaded `transcript` is committed with the target and limits copied
+        messages to completed external runs within its byte boundary."""
+        if transcript is not None and (external_id is None or carry_external_id):
+            raise ValueError("An imported transcript requires an independent session")
+        if external_id is not None and (
+            carry_external_id or external_id == source.external_id
+        ):
+            raise ValueError(
+                "a fork requires a new external id without carrying the source"
+            )
         if target.messages:
             raise ValueError(
                 f"fork target {target.id} already holds "
                 f"{len(target.messages)} messages; refusing to splice histories"
             )
         messages = list(source.messages)
+        if transcript is not None:
+            included_runs = {
+                run.id
+                for run in source.runs
+                if isinstance(run, ExternalAgentRun)
+                and run.native_session_id == source.external_id
+                and run.end_offset is not None
+                and run.end_offset <= transcript.size
+            }
+            messages = [
+                message for message in messages if message.run_id in included_runs
+            ]
         carry_handle = carry_external_id and source.external_id is not None
-        if not messages and not carry_handle:
+        if not messages and not carry_handle and external_id is None:
             return None
 
         forked_run: AgentRun | None = None
@@ -395,6 +433,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
                 id=run_id,
                 conversation_id=target.id,
                 name="fork",
+                model_name=model_name,
+                permission_mode=permission_mode or source.permission_mode,
                 started_at=messages[0].timestamp,
                 # New uuid7 ids minted in source order stay monotonic, so the copies
                 # keep their ordering under the id-ordered messages relation.
@@ -412,22 +452,82 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
         # same reasoning as `persist_run`, and the handle moves by mutating the two
         # conversations as this session loads them.
         async with async_session() as session:
+            stored_target = await session.get(Conversation, target.id)
+            if stored_target is None:
+                raise ValueError(f"unknown conversation {target.id}")
+            stored_target.permission_mode = permission_mode or source.permission_mode
+            if transcript is not None:
+                session.add(transcript)
+                await session.flush()
             if forked_run is not None:
                 session.add(forked_run)
             if carry_handle:
                 moving_source = await session.get(Conversation, source.id)
-                moving_target = await session.get(Conversation, target.id)
-                if moving_source is None or moving_target is None:
+                if moving_source is None:
                     raise ValueError(
                         "fork can only carry a handle between persisted conversations"
                     )
-                moving_target.external_id = moving_source.external_id
+                stored_target.external_id = moving_source.external_id
                 moving_source.external_id = None
+            elif external_id is not None:
+                stored_target.external_id = external_id
+                if transcript is not None:
+                    stored_target.transcript_file_id = transcript.id
             await session.commit()
         if carry_handle:
             # The caller's transmuter mirrors the committed move.
             source.external_id = None
+        elif external_id is not None:
+            target.external_id = external_id
         return forked_run
+
+    async def store_transcript(
+        self,
+        uploaded: UploadFile,
+        start: int,
+        *,
+        conversation: Conversation,
+        files: FileManager,
+        owner_id: UUID7,
+    ) -> FileVariant:
+        """Persist new bytes of a native conversation's owner-scoped transcript.
+
+        Create the first file and conversation reference in one transaction;
+        subsequent uploads append to that file. Never mutate the caller's conversation.
+        """
+        async with self.lock(conversation.key):
+            current = await self.get(conversation.id, with_history=False)
+            previous_id = current.transcript_file_id
+            if previous_id is not None:
+                return await files.append(
+                    previous_id, uploaded.file, offset=start, owner_id=owner_id
+                )
+            if start != 0:
+                raise ValueError("The first transcript upload must start at zero")
+            async with (
+                files.upload(uploaded, owner_id=owner_id) as transcript,
+                async_session() as session,
+            ):
+                stored = await session.get(Conversation, conversation.id)
+                if stored is None:
+                    raise ValueError(f"unknown conversation {conversation.id}")
+                session.add(transcript)
+                await session.flush()
+                stored.transcript_file_id = transcript.id
+                await session.commit()
+            return transcript
+
+    async def set_external_id(
+        self, conversation: Conversation, external_id: str
+    ) -> None:
+        """Bind a conversation to its replacement runtime session."""
+        async with async_session() as session:
+            stored = await session.get(Conversation, conversation.id)
+            if stored is None:
+                raise ValueError(f"unknown conversation {conversation.id}")
+            stored.external_id = external_id
+            await session.commit()
+        conversation.external_id = external_id
 
     async def set_permission_mode(
         self,
@@ -520,7 +620,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def search_messages(
         self,
-        conversation_id: uuid.UUID,
+        conversation_id: UUID7,
         query: str,
         *,
         role: Literal["user", "assistant"] | None = None,
@@ -549,8 +649,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def messages_before(
         self,
-        conversation_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        conversation_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ModelMessage]:
@@ -570,8 +670,8 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def messages_after(
         self,
-        conversation_id: uuid.UUID,
-        anchor_id: uuid.UUID,
+        conversation_id: UUID7,
+        anchor_id: UUID7,
         *,
         limit: int = 5,
     ) -> list[ModelMessage]:
@@ -591,7 +691,7 @@ class ConversationManager(Manager, Locks[tuple[uuid.UUID, str, str]]):
 
     async def related_chat_messages(
         self,
-        model_message_id: uuid.UUID,
+        model_message_id: UUID7,
     ) -> list[ThreadMessage]:
         async with async_session() as session:
             message = await session.one_or_none(

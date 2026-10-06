@@ -21,6 +21,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from typing import Any
 
+from pydantic import UUID7
 from pydantic_ai.agent.abstract import AgentInstructions
 from pydantic_ai.capabilities import AbstractCapability
 from pydantic_ai.exceptions import ModelRetry
@@ -67,7 +68,7 @@ def history_instructions(tool_name: Callable[[str], str]) -> str:
 HISTORY_INSTRUCTIONS = history_instructions(lambda name: name)
 
 
-def conversation_id(ctx: object) -> uuid.UUID:
+def conversation_id(ctx: object) -> UUID7:
     value = getattr(ctx, "conversation_id", None)
     if isinstance(value, uuid.UUID):
         return value
@@ -78,9 +79,7 @@ def conversation_id(ctx: object) -> uuid.UUID:
     raise TypeError("history tools require a UUID conversation_id")
 
 
-async def thread_id(
-    ctx: object, conversation_manager: ConversationManager
-) -> uuid.UUID:
+async def thread_id(ctx: object, conversation_manager: ConversationManager) -> UUID7:
     value = await conversation_manager.thread_id(conversation_id(ctx))
     if value is not None:
         return value

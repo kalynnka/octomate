@@ -12,7 +12,7 @@ class TracedCodexClient(CodexClient):
     """Propagate the current kick on each request, including reused SDK processes."""
 
     def _write_message(self, payload: JsonObject) -> None:
-        # openai-codex 0.147.0 has no public trace-context argument or envelope hook.
+        # openai-codex 0.160.0 has no public trace-context argument or envelope hook.
         # Keep the SDK transport and add the app-server's top-level W3C `trace`.
         # Replace this override when the SDK exposes propagation; see
         # docs/agent-telemetry.md for the checked versions and native export test.

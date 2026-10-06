@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import uuid
 from base64 import b64decode, urlsafe_b64encode
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -13,6 +12,7 @@ import pytest
 from mcp.shared.auth import OAuthClientInformationFull
 from pydantic import AnyHttpUrl, AnyUrl, SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import OAuthMcpConfig, OctomateConfig
@@ -57,7 +57,7 @@ def test_configured_code_flow_requires_only_provider_oauth_inputs() -> None:
 
 def context() -> OAuthFlowContext:
     return OAuthFlowContext(
-        operation_id=uuid.uuid4(),
+        operation_id=uuid7(),
         connector_id="work",
         user=User(username="alice"),
         profile=None,

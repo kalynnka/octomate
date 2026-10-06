@@ -24,7 +24,11 @@ import type {
   ApiThread,
   ApiThreadMessage,
   BatchResponseBody,
+  ChannelAddress,
   DirectiveBody,
+  GatewayEvent,
+  GatewayRequest,
+  ThreadOperations,
   McpInstallBody,
   OAuthFlowKind,
   WireEvent,
@@ -192,9 +196,8 @@ async function streamSse(
   onEvent: (event: WireEvent) => void,
 ): Promise<void> {
   const res = await apiFetch(path, { method: 'POST', json: body })
-  if (!res.ok || res.body == null) {
-    throw new Error(`POST ${path} → ${res.status}`)
-  }
+  if (!res.ok) return refuse(res)
+  if (res.body == null) throw new Error('The relay returned no event stream.')
   const reader = res.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -232,4 +235,50 @@ export function resolveBatch(
   onEvent: (event: WireEvent) => void,
 ): Promise<void> {
   return streamSse(`/api/trunkline/batches/${batchId}/resolve`, body, onEvent)
+}
+
+export async function fetchThreadOperations(threadId: string): Promise<ThreadOperations> {
+  const res = await apiFetch(`/api/trunkline/threads/${encodeURIComponent(threadId)}/operations`)
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<ThreadOperations>
+}
+
+/** One level of a connected channel's destinations; `inside` opens a listed place. */
+export async function fetchAddresses(threadId: string, channelId: string, inside?: string): Promise<ChannelAddress[]> {
+  const query = inside === undefined ? '' : `?inside=${encodeURIComponent(inside)}`
+  const res = await apiFetch(
+    `/api/trunkline/threads/${encodeURIComponent(threadId)}/channels/${encodeURIComponent(channelId)}/addresses${query}`,
+  )
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<ChannelAddress[]>
+}
+
+export async function streamGateway(
+  threadId: string,
+  request: GatewayRequest,
+  onEvent: (event: WireEvent) => void,
+): Promise<GatewayEvent> {
+  // The operation's own move confirms it; the last move says where it ended.
+  const completion: { confirmed?: boolean; landing?: GatewayEvent; error?: string; started?: boolean } = {}
+  await streamSse(
+    `/api/trunkline/threads/${encodeURIComponent(threadId)}/${request.action}`,
+    request.body,
+    (event) => {
+      if (event.event_kind === 'gateway') {
+        completion.confirmed ||= event.action === request.action
+        completion.landing = event
+      }
+      // Once a run starts where the move landed, a failure is that run's, shown there.
+      else if (event.event_kind === 'run_error' && !completion.started) completion.error = event.message
+      else {
+        if (event.event_kind === 'custom' && event.name === 'run_started') completion.started = true
+        onEvent(event)
+      }
+    },
+  )
+  if (completion.error) throw new Error(completion.error)
+  if (!completion.confirmed || !completion.landing) {
+    throw new Error('The stream closed without confirming a destination. Check the thread before retrying.')
+  }
+  return completion.landing
 }

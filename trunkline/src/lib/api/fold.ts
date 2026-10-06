@@ -15,7 +15,7 @@ import type {
   WireSegment,
   WireTodo,
 } from '@/lib/api/events'
-import type { LedgerItem, LedgerItemDraft } from '@/lib/api/types'
+import type { AskAnswer, LedgerItem, LedgerItemDraft } from '@/lib/api/types'
 
 /**
  * A batch's unanswered actions as feeler cards. Both sources reach this: the
@@ -23,34 +23,46 @@ import type { LedgerItem, LedgerItemDraft } from '@/lib/api/types'
  * carry the same action shapes under different batch-id spellings. `uid` is
  * filled by the caller.
  */
+/** An answer as one line of text, for showing it. */
+export function answerText(answer: AskAnswer): string {
+  return typeof answer === 'string' ? answer : answer.join(', ')
+}
+
 export function batchFeelers(
   batchId: string,
   questions: WireDeferredQuestion[],
   approvals: WireDeferredApproval[],
 ): LedgerItemDraft[] {
   const items: LedgerItemDraft[] = []
-  for (const q of questions) {
+  // A batch's questions are one card: answered together, they resume the run once.
+  const ordered = [...questions].sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+  if (ordered.length > 0) {
+    const tool = ordered[0].tool_name
     items.push({
       kind: 'ask',
-      title: 'Question',
-      body: q.args.question,
-      options: (q.args.choices ?? []).map((choice) => ({
-        label: choice,
-        sum: choice,
-        desc: '',
+      title: ordered.length === 1 ? 'Question' : 'Questions',
+      questions: ordered.map((q) => ({
+        body: q.args.question,
+        multiSelect: q.args.multi_select ?? false,
+        options: (q.args.choices ?? []).map((choice) => ({
+          label: choice,
+          sum: choice,
+          desc: '',
+        })),
+        actionId: q.id,
       })),
-      tool: q.tool_name,
-      meta: `${q.tool_name} · answer resumes the run`,
+      tool,
+      meta: `${tool} · ${ordered.length === 1 ? 'answer resumes' : 'submitting every answer resumes'} the run`,
       state: 'waiting',
       batchId,
-      actionId: q.id,
     })
   }
   for (const a of approvals) {
     items.push({
       kind: 'approval',
       title: a.args.title || 'Permission required',
-      desc: a.args.description || JSON.stringify(a.args.args ?? {}),
+      // A description says what the request risks; it never stands in for the request.
+      desc: [a.args.description, JSON.stringify(a.args.args ?? {})].filter(Boolean).join(' '),
       tool: a.args.tool_name,
       meta: `${a.args.tool_name} · approval resumes the run`,
       state: 'waiting',
@@ -531,7 +543,7 @@ export class TurnFold {
         if (this.ended) break
         this.closeThink()
         this.closeStream()
-        this.sink.push({ kind: 'notice', text: `run failed — ${event.message}` })
+        this.sink.push({ kind: 'notice', text: `run failed — ${event.message}`, tone: 'error' })
         this.ended = true
         this.sink.done()
         break
@@ -546,13 +558,12 @@ export class TurnFold {
   }
 
   /** The stream closed without a terminal event (transport drop). */
-  abort(message: string) {
+  abort(message: string, tone?: Extract<LedgerItem, { kind: 'notice' }>['tone']) {
     if (this.ended) return
     this.closeThink()
     this.closeStream()
-    this.sink.push({ kind: 'notice', text: message })
+    this.sink.push({ kind: 'notice', text: message, tone })
     this.ended = true
     this.sink.done()
   }
 }
-

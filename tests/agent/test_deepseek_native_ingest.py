@@ -350,10 +350,17 @@ async def test_the_observed_permission_preset_lands_on_the_conversation() -> Non
         [
             ev(0, "permission/preset", {"preset": "danger-full-access"}),
             *turn_events(1, 1, "go", "gone"),
+            ev(5, "permission/preset", {"preset": "workspace-write"}),
+            *turn_events(2, 6, "again", "done"),
         ],
     )
     conversation = await native_conversation(octomate)
-    assert conversation.permission_mode == "danger-full-access"
+    assert conversation.permission_mode == "workspace-write"
+    assert [run.permission_mode for run in conversation.runs] == [
+        "danger-full-access",
+        "workspace-write",
+    ]
+    assert all(run.model_name == "deepseek-v4-flash" for run in conversation.runs)
 
 
 async def test_a_custom_preset_is_observed_and_stored() -> None:
@@ -369,6 +376,21 @@ async def test_a_custom_preset_is_observed_and_stored() -> None:
     )
     conversation = await native_conversation(octomate)
     assert conversation.permission_mode == "read-only-audit"
+    assert conversation.runs[0].permission_mode == "read-only-audit"
+
+
+async def test_a_preset_observed_inside_a_turn_is_recorded() -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    events = turn_events(1, 1, "go", "done")
+    events[0] = ev(0, "turn/start", {"turn": 1})
+    events.insert(1, ev(1, "permission/preset", {"preset": "workspace-write"}))
+
+    await stream_events(tailer, events)
+
+    conversation = await native_conversation(octomate)
+    assert conversation.permission_mode == "workspace-write"
+    assert conversation.runs[0].permission_mode == "workspace-write"
 
 
 async def test_hooks_and_stream_for_an_sdk_session_are_recorded_as_external() -> None:

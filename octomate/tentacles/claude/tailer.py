@@ -38,6 +38,7 @@ from octomate.tentacles.claude.transcript import (
     TranscriptAiTitleLine,
     TranscriptAssistantLine,
     TranscriptLine,
+    TranscriptSystemLine,
     TranscriptUserLine,
     prompt_text,
     transcript_line_adapter,
@@ -100,8 +101,9 @@ def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> N
 class OpenTurn:
     """The turn currently being assembled off the live tail — its accumulator fed line
     by line, its byte range advancing to cover the last transcript line folded in. It
-    commits as an `ExternalAgentRun` when the next prompt line closes it, when its own
-    `Stop` hook reaches `stop_turn`, or at `finalize`."""
+    commits as an `ExternalAgentRun` when the next prompt line or its `Stop` hooks'
+    summary line closes it, when its own `Stop` hook reaches `stop_turn`, or at
+    `finalize`."""
 
     prompt_id: str
     prompt_text: str  # the human's clean prompt, for creating the inbound ledger row
@@ -116,6 +118,7 @@ class OpenTurn:
     end_offset: int  # byte offset past the last line folded in
     accumulator: ClaudeRunAccumulator
     last_line_uuid: str | None
+    permission_mode: str | None  # Permission mode on the turn's opening prompt.
 
 
 @dataclass
@@ -300,7 +303,8 @@ class ClaudeTranscriptTailer:
         await self.prepare(state)
 
         conversation = state.conversation
-        assert conversation is not None  # prepare() resolved it
+        if conversation is None:
+            raise RuntimeError(f"session {session_id} prepared without a conversation")
         state.offset = max(
             (
                 run.end_offset or 0
@@ -420,9 +424,10 @@ class ClaudeTranscriptTailer:
     ) -> None:
         """Route one typed line: a `prompt_source` user line opens a turn (closing the
         previous one); other user (tool-result) and assistant lines fold into the open
-        turn. Inline `is_sidechain` lines are skipped — transcripts since 2.1.177 keep
-        subagents in their own files (`pump_subagents`), so this guards only against an
-        older transcript's inline relics."""
+        turn, and a `stop_hook_summary` closes it. Inline `is_sidechain` lines are
+        skipped — transcripts since 2.1.177 keep subagents in their own files
+        (`pump_subagents`), so this guards only against an older transcript's inline
+        relics."""
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
@@ -438,6 +443,11 @@ class ClaudeTranscriptTailer:
                 return
             if state.open_turn is not None:
                 self.fold(state, line, end)
+        elif isinstance(line, TranscriptSystemLine):
+            # Claude writes it once the turn's `Stop` hooks have run, delivered or
+            # not: a server down through the stop never hears the hook.
+            if line.subtype == "stop_hook_summary" and not line.is_sidechain:
+                await self.close_turn(state)
         elif isinstance(line, TranscriptAiTitleLine):
             await self.record_title(state, line.ai_title)
 
@@ -488,7 +498,8 @@ class ClaudeTranscriptTailer:
         """Fold a line into the open turn: consume it (pushing its live events) and
         extend the turn's byte range and provenance to cover it."""
         turn = state.open_turn
-        assert turn is not None
+        if turn is None:
+            raise RuntimeError(f"session {state.session_id}: no open turn to fold into")
         written = len(turn.accumulator.messages)
         for event in turn.accumulator.consume(line):
             self.emit(state, event)
@@ -541,6 +552,7 @@ class ClaudeTranscriptTailer:
             end_offset=end,
             accumulator=accumulator,
             last_line_uuid=line.uuid,
+            permission_mode=line.permission_mode,
         )
 
     async def close_turn(self, state: TailState) -> None:
@@ -562,7 +574,8 @@ class ClaudeTranscriptTailer:
         if turn is None or turn.prompt_id in state.recorded:
             return
         conversation = state.conversation
-        assert conversation is not None
+        if conversation is None:
+            raise RuntimeError(f"session {state.session_id} has no conversation")
         with claude_logfire.span(
             "claude.tailer.commit_turn {prompt_id} [{session_id}]",
             prompt_id=turn.prompt_id,
@@ -579,6 +592,8 @@ class ClaudeTranscriptTailer:
                     run_id=turn.prompt_id,
                     messages=turn.accumulator.messages,
                     name=CLAUDE_NATIVE_ID,
+                    model_name=turn.accumulator.model_name,
+                    permission_mode=turn.permission_mode,
                     cwd=Path(turn.cwd) if turn.cwd else None,
                     native_session_id=state.session_id,
                     source=turn.source,
@@ -677,7 +692,8 @@ class ClaudeTranscriptTailer:
         """Resolve the child's conversation under the session's thread and seed its
         committed-turn guard — the first time this child's lines are fed."""
         parent = state.conversation
-        assert parent is not None  # prepare() resolves it at attach
+        if parent is None:
+            raise RuntimeError(f"session {state.session_id} has no conversation")
         tail.conversation = await self.conversation_manager.ensure(
             parent.thread_id,
             agent_tentacle_id=CLAUDE_NATIVE_ID,
@@ -731,6 +747,7 @@ class ClaudeTranscriptTailer:
             end_offset=end,
             accumulator=accumulator,
             last_line_uuid=line.uuid,
+            permission_mode=line.permission_mode,
         )
 
     def fold_subagent(
@@ -743,7 +760,8 @@ class ClaudeTranscriptTailer:
         the live stream is the parent timeline's; fanning child events into it would
         interleave two timelines under one label."""
         turn = tail.open_turn
-        assert turn is not None
+        if turn is None:
+            raise RuntimeError(f"subagent {tail.agent_id}: no open turn to fold into")
         written = len(turn.accumulator.messages)
         for _ in turn.accumulator.consume(line):
             pass
@@ -765,7 +783,8 @@ class ClaudeTranscriptTailer:
         if run_id in tail.recorded or not turn.accumulator.messages:
             return
         conversation = tail.conversation
-        assert conversation is not None
+        if conversation is None:
+            raise RuntimeError(f"subagent {tail.agent_id} has no conversation")
         with claude_logfire.span(
             "claude.tailer.commit_subagent_turn {run_id} [{session_id}]",
             run_id=run_id,
@@ -782,6 +801,8 @@ class ClaudeTranscriptTailer:
                     run_id=run_id,
                     messages=turn.accumulator.messages,
                     name=CLAUDE_NATIVE_ID,
+                    model_name=turn.accumulator.model_name,
+                    permission_mode=turn.permission_mode,
                     cwd=Path(turn.cwd) if turn.cwd else None,
                     native_session_id=tail.agent_id,
                     source=turn.source,

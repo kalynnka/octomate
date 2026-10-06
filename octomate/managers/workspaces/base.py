@@ -16,6 +16,8 @@ from pathlib import Path
 from types import TracebackType
 from typing import Self, overload
 
+from pydantic import UUID7
+
 from octomate.config.mirrors import GitIdentity
 from octomate.config.workspaces import WorkspacesConfig
 from octomate.managers.base import Locks, Manager
@@ -50,7 +52,7 @@ SAVED_REF = "refs/octomate/saved"
 SNAPSHOT_PREFIX = "octomate: "
 
 
-def thread_ref(thread_id: uuid.UUID) -> str:
+def thread_ref(thread_id: UUID7) -> str:
     """Where a thread's work is kept in its project's mirror.
 
     Outside `refs/heads/`, so the mirror does not grow a branch per thread and
@@ -60,6 +62,11 @@ def thread_ref(thread_id: uuid.UUID) -> str:
     across whatever the mirror has.
     """
     return f"refs/octomate/threads/{thread_id}"
+
+
+def thread_branch(thread_id: uuid.UUID) -> str:
+    """The branch a thread's first fork starts on, its own."""
+    return f"octomate/thread-{thread_id}"
 
 
 class CopyError(RuntimeError):
@@ -109,7 +116,7 @@ class Workspace(ABC):
     """
 
     workspaces: WorkspaceManager
-    thread_id: uuid.UUID
+    thread_id: UUID7
 
     @property
     @abstractmethod
@@ -237,7 +244,7 @@ class ChatWorkspace(Workspace):
         await self.workspaces.discard(self)
 
 
-class WorkspaceManager(Manager, Locks[uuid.UUID]):
+class WorkspaceManager(Manager, Locks[UUID7]):
     """Every project-bound thread's workspace: a fork of the project's mirror at
     ``workspaces_dir/<thread_id>``, checked out on the thread's own branch and
     released when the disk is wanted back.
@@ -261,7 +268,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
     The whole lifecycle is here. A turn asks `open` for the workspace its thread
     runs in and enters it, which is what forks the tree and what ends it; the turn
     itself owes one more thing, `save`, which the graph does after the run — or
-    `dispel`, once the agent has said the thread's work is done. Those
+    `dismiss`, once the agent has said the thread's work is done. Those
     need the registry to say which project a thread is in and the mirrors to say
     where that project's is, which is why this holds both — which fork a thread gets
     is exactly what the registry says about it, so knowing what binds one is not a
@@ -296,7 +303,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         # How many runs are in each thread's chat workspace right now. The tree
         # is the run's, and two overlapping runs of one conversation share it —
         # this is what stops the first to finish taking it from the second.
-        self.chatting: dict[uuid.UUID, int] = {}
+        self.chatting: dict[UUID7, int] = {}
 
     @property
     def identity(self) -> GitIdentity:
@@ -305,12 +312,12 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         carry one name and cannot drift into two."""
         return self.mirrors.config.identity
 
-    def path(self, thread_id: uuid.UUID) -> Path:
+    def path(self, thread_id: UUID7) -> Path:
         """Where this thread's workspace lives. Absolute, because it becomes the
         working directory of a process Octomate did not start in its own."""
         return (self.workspaces_dir / str(thread_id)).resolve()
 
-    def existing(self, thread_id: uuid.UUID) -> Path | None:
+    def existing(self, thread_id: UUID7) -> Path | None:
         """This thread's workspace if it is already forked, else None — what saves a
         resumed turn the fork and the sync in front of it.
 
@@ -324,15 +331,15 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         return path
 
     @overload
-    def open(self, thread_id: uuid.UUID, project: Project) -> ProjectWorkspace: ...
+    def open(self, thread_id: UUID7, project: Project) -> ProjectWorkspace: ...
 
     @overload
-    def open(self, thread_id: uuid.UUID, project: None) -> ChatWorkspace: ...
+    def open(self, thread_id: UUID7, project: None) -> ChatWorkspace: ...
 
     @overload
-    def open(self, thread_id: uuid.UUID, project: Project | None) -> Workspace: ...
+    def open(self, thread_id: UUID7, project: Project | None) -> Workspace: ...
 
-    def open(self, thread_id: uuid.UUID, project: Project | None) -> Workspace:
+    def open(self, thread_id: UUID7, project: Project | None) -> Workspace:
         """The workspace a run in this thread happens in, ready to be entered.
 
         Which one it is, is the whole of what a project decides about a run: a
@@ -566,7 +573,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
 
     async def checkout(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
         mirror: Path,
         workspace: Path,
         ref: str | None = None,
@@ -600,7 +607,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         ) as span:
             if not await run_git("ls-remote", str(mirror), saved):
                 span.set_attribute("resumed", False)
-                branch = f"octomate/thread-{thread_id}"
+                branch = thread_branch(thread_id)
                 if ref is None:
                     await run_git("checkout", "-b", branch, cwd=workspace)
                     return
@@ -755,7 +762,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
             *state, await self.snapshot(path), cwd=path
         )
 
-    async def prune(self, idle: float) -> list[uuid.UUID]:
+    async def prune(self, idle: float) -> list[UUID7]:
         """Release every workspace nothing has used for `idle` seconds, and answer
         with the threads that lost theirs.
 
@@ -769,7 +776,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         running, too: it has changed something since its last turn was saved,
         almost by definition.
         """
-        released: list[uuid.UUID] = []
+        released: list[UUID7] = []
         # Three counts, because "why is that workspace still there" has three
         # answers and the disk cannot tell them apart: nothing has been idle long
         # enough, or something is idle and holding work the mirror never got.
@@ -820,7 +827,67 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
             except Exception:
                 logger.exception("the workspace sweep failed")
 
-    async def dispel(self, thread: Thread) -> bool:
+    async def carry(self, source: Thread, thread: Thread) -> None:
+        """Give `thread`, landed in `source`'s project, a workspace holding the work
+        as `source` left it — what a conversation moving to another thread takes of
+        its work — and fork it.
+
+        Saved first: the source's last turn may not have been, and what it left
+        uncommitted has to travel as uncommitted. The snapshot is filed under
+        `thread` too, so its first fork resumes into it the way a pruned workspace
+        does; on a branch of its own when the source was on its own, since two
+        threads pushing one branch would overwrite each other. A source that never
+        forked a workspace has no snapshot, and `thread` forks the project fresh.
+
+        Ignored files are copied across, an `.env` among them, since a snapshot
+        never holds them. Ignored directories are not: they are dependencies and
+        build output, which the fork's install and the next build make again.
+        """
+        project = await self.projects.of(source)
+        if project is None:
+            return
+        await self.save(source)
+        mirror = self.mirrors.path(project)
+        saved = thread_ref(source.id)
+        if await run_git("ls-remote", str(mirror), saved):
+            subject = await run_git("show", "-s", "--format=%s", saved, cwd=mirror)
+            filed = saved
+            if subject.strip() == f"{SNAPSHOT_PREFIX}{thread_branch(source.id)}":
+                filed = await run_git(
+                    *self.identity.commit_flags,
+                    "commit-tree",
+                    f"{saved}^{{tree}}",
+                    "-p",
+                    f"{saved}^",
+                    "-m",
+                    f"{SNAPSHOT_PREFIX}{thread_branch(thread.id)}",
+                    cwd=mirror,
+                )
+            await run_git(
+                "update-ref", thread_ref(thread.id), filed.strip(), cwd=mirror
+            )
+        landed = await self.open(thread.id, project).prepare()
+        origin = self.existing(source.id)
+        if origin is None:
+            return
+        ignored = await run_git(
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--directory",
+            "-z",
+            cwd=origin,
+        )
+        for name in ignored.split("\0"):
+            if not name or name.endswith("/") or (landed / name).exists():
+                continue
+            (landed / name).parent.mkdir(parents=True, exist_ok=True)
+            await asyncio.to_thread(
+                shutil.copy2, origin / name, landed / name, follow_symlinks=False
+            )
+
+    async def dismiss(self, thread: Thread) -> bool:
         """Release this thread's workspace on its agent's word that the work in it
         is done — the one release that is asked for rather than swept up — and
         answer whether it went.
@@ -831,7 +898,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
         a fork on the thread's next turn with the ref laid back over it.
         """
         with workspace_logfire.span(
-            "workspace.dispel", thread_id=str(thread.id), released=False
+            "workspace.dismiss", thread_id=str(thread.id), released=False
         ) as span:
             await self.save(thread)
             path = self.path(thread.id)
@@ -839,7 +906,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
                 return False
             if not await self.saved(path):
                 logger.warning(
-                    "the workspace for thread %s was dispelled but holds work the "
+                    "the workspace for thread %s was dismissed but holds work the "
                     "mirror does not have; keeping it",
                     thread.id,
                 )
@@ -848,7 +915,7 @@ class WorkspaceManager(Manager, Locks[uuid.UUID]):
             span.set_attribute("released", True)
             return True
 
-    async def release(self, thread_id: uuid.UUID) -> None:
+    async def release(self, thread_id: UUID7) -> None:
         """Give this thread's workspace back to the disk, or nothing when it is
         already gone — pruning and releasing a thread that never had one both
         arrive here, and a workspace is a cache either way.

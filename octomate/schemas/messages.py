@@ -3,7 +3,6 @@ polymorphic `model_messages` table."""
 
 from __future__ import annotations
 
-import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Annotated, Literal, Self
@@ -11,7 +10,9 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self
 from arcanus import BaseTransmuter, RelationCollection, Relationships, Transmuter
 from arcanus.base import Identity
 from arcanus.dataclass import dataclass as arcanus_dataclass
+from octomate_protocol.gateway import GatewayTool
 from pydantic import (
+    UUID7,
     AwareDatetime,
     ConfigDict,
     Field,
@@ -37,12 +38,6 @@ from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.schemas.thread import ThreadMessage
-
-# The message-send tool's name. Owned at the message-schema boundary, where a
-# send call is recognized in run history, so the `send` capability that registers
-# the tool and the feelers projection that renders it share one value without the
-# schema layer importing the capability layer.
-SEND_TOOL_NAME = "send"
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes
@@ -80,7 +75,7 @@ class ModelMessage(BaseTransmuter, ABC):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     conversation_id: str | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
@@ -99,7 +94,7 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     """A persisted pydantic-ai request; `role` and `message_text` are derived from
     its parts."""
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     timestamp: AwareDatetime | None = None
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
@@ -131,7 +126,7 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     """A persisted pydantic-ai response; `message_text` is its spoken text,
     including what it delivered through `send`."""
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     timestamp: AwareDatetime = Field(default_factory=now_utc)
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
@@ -149,7 +144,8 @@ class ModelResponse(Transmuter, PydanticModelResponse):
                     if part.content:
                         fragments.append(part.content)
                 elif (
-                    isinstance(part, ToolCallPart) and part.tool_name == SEND_TOOL_NAME
+                    isinstance(part, ToolCallPart)
+                    and part.tool_name == GatewayTool.SEND
                 ):
                     fragments.append(str(part.args_as_dict()))
             self.message_text = "\n\n".join(fragments) or None

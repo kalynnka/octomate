@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Annotated, Self
 
 from arcanus import BaseTransmuter, Relation, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import AfterValidator, AwareDatetime, ConfigDict, Field, model_validator
+from pydantic import (
+    UUID7,
+    AfterValidator,
+    AwareDatetime,
+    ConfigDict,
+    Field,
+    computed_field,
+    model_validator,
+)
 from pydantic.dataclasses import dataclass
 from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
@@ -79,6 +86,16 @@ class ThreadKey:
             channel_thread_id=address.channel_thread_id,
         )
 
+    def address(self, user_id: str) -> ChannelAddress:
+        """The surface this key names, spoken to `user_id` — `from_address` back."""
+        return ChannelAddress(
+            channel_tentacle_id=self.channel_tentacle_id,
+            chat_type=self.chat_type,
+            chat_id=self.chat_id,
+            channel_thread_id=self.channel_thread_id,
+            user_id=user_id,
+        )
+
     @property
     def kind(self) -> ThreadKind:
         """What this key names — the chat type, unless a native client owns it."""
@@ -100,7 +117,7 @@ class ThreadMessageFTS(BaseTransmuter):
     model_config = ConfigDict(from_attributes=True)
 
     rowid: Annotated[int, Identity]
-    message_id: uuid.UUID
+    message_id: UUID7
     message_text: str
     rank: float | None = None
 
@@ -112,8 +129,8 @@ class ThreadMessage(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    thread_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    thread_id: UUID7
     platform_message_id: str | None = None
     reply_id: str = ""
     # When the message happened, and what the ledger orders on: a platform's or a
@@ -126,7 +143,7 @@ class ThreadMessage(BaseTransmuter):
     actor_kind: ChannelActorKind
     user_id: str = ""
     agent_tentacle_id: str | None = None
-    sender_id: uuid.UUID = Field(
+    sender_id: UUID7 = Field(
         description=(
             "The sender's registry profile row (user_profiles); `sender` "
             "resolves it. Inbound: the platform account; outbound: the channel "
@@ -158,8 +175,8 @@ class MessageBinding(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    thread_message_id: Annotated[uuid.UUID, Identity]
-    model_message_id: Annotated[uuid.UUID, Identity]
+    thread_message_id: Annotated[UUID7, Identity]
+    model_message_id: Annotated[UUID7, Identity]
     kind: Annotated[MessageBindingKind, Identity]
     run_id: str
     tool_call_id: str | None = None
@@ -173,18 +190,18 @@ class Handoff(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
-    thread_id: uuid.UUID
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    thread_id: UUID7
     source_agent_tentacle_id: str | None = None
     to_agent_tentacle_id: str
     to_model: AgentRouteModelName | None = None
     reason: str = ""
     hint: str = ""
     brief: str = ""
-    source_conversation_id: uuid.UUID | None = None
-    target_conversation_id: uuid.UUID | None = None
+    source_conversation_id: UUID7 | None = None
+    target_conversation_id: UUID7 | None = None
     source_run_id: str | None = None
-    source_model_message_id: uuid.UUID | None = None
+    source_model_message_id: UUID7 | None = None
     created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
 
     def __lt__(self, other: Handoff) -> bool:
@@ -201,7 +218,7 @@ class Thread(BaseTransmuter):
 
     model_config = ConfigDict(from_attributes=True)
 
-    id: Annotated[uuid.UUID, Identity] = Field(default_factory=uuid7, frozen=True)
+    id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     kind: ThreadKind = Field(
         frozen=True,
         description=(
@@ -217,7 +234,7 @@ class Thread(BaseTransmuter):
         default=None,
         description=("The platform's own thread id; None unless `kind` is `thread`."),
     )
-    parent_thread_id: uuid.UUID | None = Field(
+    parent_thread_id: UUID7 | None = Field(
         default=None,
         description=(
             "The thread this one was opened inside — a kick in a chat room works "
@@ -234,7 +251,7 @@ class Thread(BaseTransmuter):
             "been spoken in, and a listing then falls back to the surface."
         ),
     )
-    project_id: uuid.UUID | None = Field(
+    project_id: UUID7 | None = Field(
         default=None,
         description=(
             "The declared project this thread's work is in; None is unattributed, "
@@ -247,7 +264,7 @@ class Thread(BaseTransmuter):
             "the manager can state and a field cannot."
         ),
     )
-    source_cursor_message_id: uuid.UUID | None = None
+    source_cursor_message_id: UUID7 | None = None
     status: ThreadStatus = "active"
     created_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
@@ -262,6 +279,7 @@ class Thread(BaseTransmuter):
 
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
+    conversations: RelationCollection[Conversation] = Relationships(exclude=True)
 
     @model_validator(mode="after")
     def kind_agrees_with_the_key(self) -> Self:
@@ -288,14 +306,20 @@ class Thread(BaseTransmuter):
 
     @property
     def latest_handoff(self) -> Handoff | None:
-        return max(self.handoffs, default=None)
+        return self.handoffs[-1] if self.handoffs else None
 
+    @computed_field
     @property
     def active_agent_tentacle_id(self) -> str | None:
         handoff = self.latest_handoff
-        if handoff is None:
-            return None
-        return handoff.to_agent_tentacle_id
+        if handoff is not None:
+            return handoff.to_agent_tentacle_id
+        conversations = [
+            conversation
+            for conversation in self.conversations
+            if not conversation.subagent_id
+        ]
+        return conversations[-1].agent_tentacle_id if conversations else None
 
     @property
     def active_model(self) -> AgentRouteModelName | None:

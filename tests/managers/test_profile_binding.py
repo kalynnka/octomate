@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import uuid
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
@@ -9,6 +8,7 @@ import httpx
 import pytest
 from pydantic import AnyHttpUrl, SecretStr
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import AuthConfig, OAuthConfig, OctomateConfig
@@ -131,7 +131,7 @@ async def test_unlink_rejects_unknown_and_other_users_profiles(
     await manager.confirm_link_profile(ticket, user)
 
     with pytest.raises(ProfileNotLinked):
-        await manager.unlink_profile(other, uuid.uuid4() if missing else profile.id)
+        await manager.unlink_profile(other, uuid7() if missing else profile.id)
     stored = await manager.profile("slack", "U1")
     assert stored is not None
     assert stored.user_id == user.id
@@ -184,9 +184,7 @@ async def test_browser_disconnect_checks_session_ownership_and_direct_identity(
                 404 if username == "bob" else 204 if channel_id == "slack" else 409
             )
             assert response.status_code == expected
-        assert (
-            await client.delete(f"/api/auth/profiles/{uuid.uuid4()}")
-        ).status_code == 404
+        assert (await client.delete(f"/api/auth/profiles/{uuid7()}")).status_code == 404
     async with async_session() as session:
         stored = await session.get(UserProfile, profile.id)
     assert stored is not None

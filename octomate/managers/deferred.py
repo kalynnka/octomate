@@ -3,12 +3,14 @@ for a human — and their resolution from replies."""
 
 from __future__ import annotations
 
-import uuid
 from datetime import UTC, datetime
 
 from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import noload
+from pydantic import UUID7
 from pydantic_ai.tools import DeferredToolRequests
+from sqlalchemy import update
+from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers.base import Manager
@@ -23,7 +25,7 @@ from octomate.schemas.deferred import (
 )
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 from octomate.telemetry import deferred_logfire
-from octomate.types.deferred import DeferredBatchStatus
+from octomate.types.deferred import DeferredBatchStatus, DeferredResponseMode
 
 
 class DeferredActionManager(Manager):
@@ -40,6 +42,8 @@ class DeferredActionManager(Manager):
         target_mode: ResponseTargetMode,
         decision: SummonDecision | None,
         requests: DeferredToolRequests,
+        response_mode: DeferredResponseMode,
+        batch_id: UUID7 | None = None,
     ) -> DeferredActionBatch:
         with deferred_logfire.span("deferred.create_batch", run_name=run_name) as span:
             actions = DeferredActionCollection.validate_python(requests)
@@ -50,6 +54,8 @@ class DeferredActionManager(Manager):
                 action for action in actions if isinstance(action, DeferredApproval)
             ]
             batch = DeferredActionBatch(
+                id=batch_id or uuid7(),
+                response_mode=response_mode,
                 conversation_id=conversation.id,
                 agent_tentacle_id=agent_tentacle_id,
                 run_name=run_name,
@@ -77,7 +83,7 @@ class DeferredActionManager(Manager):
 
     async def pending_for_thread(
         self,
-        thread_id: uuid.UUID,
+        thread_id: UUID7,
     ) -> list[DeferredActionBatch]:
         """The thread's unanswered batches, oldest first, so a channel can
         re-present waiting questions and approvals when the thread is reloaded."""
@@ -110,7 +116,7 @@ class DeferredActionManager(Manager):
 
     async def get_batch(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
     ) -> DeferredActionBatch:
         async with async_session() as session:
             batch = await session.get(DeferredActionBatch, batch_id)
@@ -188,7 +194,7 @@ class DeferredActionManager(Manager):
 
     async def mark_action_presented(
         self,
-        action_id: uuid.UUID,
+        action_id: UUID7,
         platform_message_id: str | None,
     ) -> None:
         if not platform_message_id:
@@ -203,7 +209,7 @@ class DeferredActionManager(Manager):
 
     async def mark_batch(
         self,
-        batch_id: uuid.UUID,
+        batch_id: UUID7,
         status: DeferredBatchStatus,
         *,
         completed: bool = False,
@@ -217,4 +223,19 @@ class DeferredActionManager(Manager):
             batch.updated_at = now
             if completed:
                 batch.completed_at = now
+            await session.commit()
+
+    async def expire_live(self) -> None:
+        """Expire every live request still pending. Its waiter lived in the process
+        that asked, so after a restart a reply has nowhere to go; expired, the reply
+        is refused rather than accepted and lost."""
+        async with async_session() as session:
+            await session.execute(
+                update(DeferredActionBatch)
+                .where(
+                    DeferredActionBatch["response_mode"] == "live",
+                    DeferredActionBatch["status"] == "pending",
+                )
+                .values(status="expired", updated_at=datetime.now(UTC))
+            )
             await session.commit()

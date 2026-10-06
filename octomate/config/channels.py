@@ -288,8 +288,8 @@ class TrunklineStreamConfig(ChannelStreamConfig):
 
     # The console renders tokens as it receives them; stream every event
     # straight through (the timeline feeler forwards raw events, so batching
-    # is moot).
-    enabled: bool = True
+    # is moot). The stream is the console's only delivery, so it cannot be off.
+    enabled: Literal[True] = True
     flush_interval: float = 0.0
 
 
