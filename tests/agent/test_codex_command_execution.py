@@ -8,7 +8,8 @@ from unittest.mock import AsyncMock
 import pytest
 from openai_codex import SkillInput, TextInput
 from openai_codex.api import ApprovalMode, Sandbox
-from openai_codex.generated.v2_all import SkillsListEntry
+from openai_codex.errors import CodexError
+from openai_codex.generated.v2_all import SkillsListEntry, TurnCompletedNotification
 from openai_codex.models import Notification
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import UserPromptPart
@@ -23,6 +24,7 @@ from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex.schemas import ThreadSettingsUpdateResponse
 from tests.agent.test_codex_tentacle import (
     KEY,
     FakeCodex,
@@ -274,18 +276,45 @@ async def test_detached_skill_stream_drains_before_releasing_the_command_guard(
 
 async def test_permission_update_applies_to_next_turn_on_the_same_thread(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent, context, _ = execution
     conversation = context.conversation
     assert conversation is not None
+    finish = asyncio.Event()
+
+    async def stream(turn: FakeTurn) -> AsyncIterator[Notification]:
+        for notification in FakeCodex.script:
+            if isinstance(notification.payload, TurnCompletedNotification):
+                await finish.wait()
+            yield notification
+
+    monkeypatch.setattr(FakeTurn, "stream", stream)
     async with agent.run_stream_events(
         "work",
         conversation_address=context.address,
         conversation_id=conversation.id,
         thread_id=conversation.thread_id,
     ) as events:
-        await anext(events)
-        await agent.set_permission_mode(conversation, "full_access")
+        try:
+            await anext(events)
+            assert conversation.id in agent.live_turns
+            await agent.set_permission_mode(conversation, "full_access")
+            request = agent.ink.client._client.request
+            assert isinstance(request, AsyncMock)
+            request.assert_awaited_with(
+                "thread/settings/update",
+                {
+                    "threadId": "thread-new",
+                    "approvalPolicy": "never",
+                    "approvalsReviewer": None,
+                    "sandboxPolicy": {"type": "dangerFullAccess"},
+                },
+                response_model=ThreadSettingsUpdateResponse,
+            )
+            assert not FakeCodex.turns[0].interrupted
+        finally:
+            finish.set()
         async for _ in events:
             pass
     assert len(FakeCodex.turn_calls) == 1
@@ -304,3 +333,89 @@ async def test_permission_update_applies_to_next_turn_on_the_same_thread(
     assert len(FakeCodex.thread_calls) == 1
     assert FakeCodex.turn_calls[-1].sandbox is Sandbox.full_access
     assert FakeCodex.turn_calls[-1].approval_mode is ApprovalMode.deny_all
+
+
+@pytest.mark.parametrize(
+    ("mode", "reviewer"),
+    [("user_review", "user"), ("auto_review", "auto_review"), (None, "auto_review")],
+)
+async def test_permission_update_resets_native_reviewer_on_an_idle_thread(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    mode: str | None,
+    reviewer: str,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.set_permission_mode(conversation, "full_access")
+    await agent.run(
+        "work",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    await agent.set_permission_mode(conversation, mode)
+    request.assert_awaited_once_with(
+        "thread/settings/update",
+        {
+            "threadId": "thread-new",
+            "approvalPolicy": "on-request",
+            "approvalsReviewer": reviewer,
+            "sandboxPolicy": {
+                "type": "workspaceWrite",
+                "writableRoots": [],
+                "networkAccess": False,
+                "excludeTmpdirEnvVar": False,
+                "excludeSlashTmp": False,
+            },
+        },
+        response_model=ThreadSettingsUpdateResponse,
+    )
+    assert len(FakeCodex.turn_calls) == 1
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.permission_mode == mode
+
+
+@pytest.mark.parametrize("native_thread", [False, True])
+async def test_unloaded_permission_selection_does_not_open_a_native_thread(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    native_thread: bool,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    if native_thread:
+        await agent.conversations.set_external_id(conversation, "unloaded-thread")
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    await agent.set_permission_mode(conversation, "full_access")
+    request.assert_not_awaited()
+    assert not FakeCodex.thread_calls
+    assert not FakeCodex.turn_calls
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.permission_mode == "full_access"
+
+
+async def test_rejected_codex_permission_update_does_not_save_the_selection(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.run(
+        "work",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.side_effect = CodexError("permission update rejected")
+    with pytest.raises(CodexError, match="permission update rejected"):
+        await agent.set_permission_mode(conversation, "full_access")
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.permission_mode is None

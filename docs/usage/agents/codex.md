@@ -54,8 +54,11 @@ name lookup is logged and does not discard the run's result.
 The run's working directory is the thread's [workspace](../workspaces.md). In
 `user_review` and `auto_review` the sandbox is `workspace_write`, so that directory
 is the write boundary; `full_access` removes the sandbox and the prompts. Both the
-sandbox and the approval policy are reapplied on every turn, so a posture change
-takes effect on the next message even on a warm process.
+sandbox and the approval policy are reapplied on every turn. Changing a mode also
+sends the new settings to the loaded Codex thread immediately, without sending a
+prompt or interrupting work. Codex retains an active turn's permissions; the new
+mode takes effect on the next run. A rejected update leaves the saved selection
+unchanged.
 
 Local customisation is off through config overrides appended after your own:
 hooks, plugins, apps and notifications are disabled, and every MCP server in the

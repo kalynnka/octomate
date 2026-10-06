@@ -46,6 +46,7 @@ from octomate.config.agents import CodexConfig
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.telemetry import octomate_trace_environment
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
+from octomate.tentacles.codex.schemas import ThreadSettingsUpdateResponse
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -384,6 +385,47 @@ class CodexInk:
         if forked.thread.id == thread_id:
             raise ValueError("Codex fork returned the source thread id")
         return forked.thread.id
+
+    async def set_permission_mode(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: uuid.UUID,
+        approval_mode: ApprovalMode | None,
+        sandbox: Sandbox,
+    ) -> None:
+        """Queue native permissions for a loaded thread owned by this conversation.
+
+        thread/settings/update is experimental and available in the bundled
+        runtime, but absent from the SDK's generated methods. It accepts changes
+        during an active turn without starting or interrupting work; the active
+        turn retains its policy and later turns use the updated settings.
+        Unbound threads receive their settings when opened for the next run.
+        """
+        binding = self.thread_bindings.get(thread_id)
+        if binding is None or binding[0] != conversation_id:
+            return
+        approval_policy, reviewer = (
+            _approval_mode_settings(approval_mode)
+            if approval_mode is not None
+            else (
+                AskForApproval(root=AskForApprovalValue.on_request),
+                ApprovalsReviewer.user,
+            )
+        )
+        sandbox_policy = _sandbox_policy(sandbox)
+        await self.client._client.request(
+            "thread/settings/update",
+            {
+                "threadId": thread_id,
+                "approvalPolicy": approval_policy.model_dump(mode="json"),
+                "approvalsReviewer": reviewer.value if reviewer is not None else None,
+                "sandboxPolicy": sandbox_policy.model_dump(mode="json", by_alias=True)
+                if sandbox_policy is not None
+                else None,
+            },
+            response_model=ThreadSettingsUpdateResponse,
+        )
 
     async def start_turn(
         self,

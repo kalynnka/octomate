@@ -11,8 +11,9 @@ work. To approve just one pending action, answer its card instead of changing th
 whole conversation's mode.
 
 For runs driven by Octomate, Claude Code and DeepSeek Harness can apply changes
-during a run. Inkling uses the new choice at its next tool deferral. Codex applies
-it when the next run starts. A mode change does not undo tools already executed
+during a run. Inkling uses the new choice at its next tool deferral. Codex receives
+the change immediately when its thread is loaded and applies it to subsequent
+runs. A mode change does not undo tools already executed
 or answer an existing approval card. Command-triggered runs use the conversation's
 selected permissions too.
 

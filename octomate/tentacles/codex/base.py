@@ -258,6 +258,26 @@ class CodexTentacle(AgentTentacle[str, None]):
     def default_permission_mode(self) -> str | None:
         return self.config.permission_mode
 
+    async def apply_permission_mode(
+        self, conversation: Conversation, mode: str
+    ) -> None:
+        # A first run may have assigned its native ID since the caller loaded it.
+        current = await self.conversations.get(conversation.id, with_history=False)
+        if current.external_id is None:
+            return
+        await self.ink.set_permission_mode(
+            current.external_id,
+            conversation_id=current.id,
+            approval_mode=ApprovalMode.auto_review
+            if mode == "auto_review"
+            else ApprovalMode.deny_all
+            if mode == "full_access"
+            else None,
+            sandbox=Sandbox.full_access
+            if mode == "full_access"
+            else Sandbox.workspace_write,
+        )
+
     # OpenAI's own green, so Codex's lines read as Codex's in a console it shares
     # with every other tentacle.
     brand_color: ClassVar[Style | None] = Style(color="#10A37F", bold=True)

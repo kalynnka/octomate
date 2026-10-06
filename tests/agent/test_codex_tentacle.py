@@ -351,6 +351,8 @@ class FakeCodex:
         elif method == "thread/unsubscribe":
             assert params is not None
             payload = {"status": "unsubscribed"}
+        elif method == "thread/settings/update":
+            payload = {}
         else:
             payload = {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
         return response_model.model_validate(payload)

@@ -1,11 +1,19 @@
-"""Codex metadata carried through the shared command contract."""
+"""Codex command metadata and native protocol extensions."""
 
 from pathlib import Path
 
 from openai_codex.generated.v2_all import SkillScope
-from pydantic import Field
+from pydantic import BaseModel, Field
 
 from octomate.schemas.commands import CommandDescriptor
+
+
+class ThreadSettingsUpdateResponse(BaseModel):
+    """Native acknowledgement that a thread settings update was queued.
+
+    The SDK omits this experimental endpoint. Codex emits
+    thread/settings/updated when the settings have been applied for future turns.
+    """
 
 
 class CodexCommandDescriptor(CommandDescriptor, frozen=True):
