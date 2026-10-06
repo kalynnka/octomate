@@ -5,7 +5,7 @@ import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, PermissionMode
 from claude_agent_sdk.types import Message
 
 from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
@@ -42,7 +42,10 @@ class ClaudeInk:
         command: ClaudeCommandDescriptor | None = None,
     ) -> AsyncGenerator[Message]:
         """Stream a turn, superseding the prior client for this conversation."""
-        async with ClaudeSDKClient(options=options) as client:
+        async with contextlib.AsyncExitStack() as resources:
+            client = await resources.enter_async_context(
+                ClaudeSDKClient(options=options)
+            )
             if command is not None:
                 info = ClaudeServerInfo.model_validate(await client.get_server_info())
                 commands = {entry.id: entry for entry in info.commands or ()}
@@ -50,6 +53,13 @@ class ClaudeInk:
                     raise LookupError("This command changed; refresh commands.")
             previous = self.live_clients.get(conversation_id)
             self.live_clients[conversation_id] = client
+            resources.callback(
+                lambda: (
+                    self.live_clients.pop(conversation_id, None)
+                    if self.live_clients.get(conversation_id) is client
+                    else None
+                )
+            )
             if previous is not None and previous is not client:
                 with contextlib.suppress(Exception):
                     await previous.interrupt()
@@ -60,6 +70,14 @@ class ClaudeInk:
                 if not interrupted and should_interrupt():
                     interrupted = True
                     await client.interrupt()
+
+    async def set_permission_mode(
+        self, conversation_id: uuid.UUID, mode: PermissionMode
+    ) -> None:
+        """Apply a control request to this conversation's active SDK client."""
+        client = self.live_clients.get(conversation_id)
+        if client is not None:
+            await client.set_permission_mode(mode)
 
     async def close(self) -> None:
         """Interrupt active turns so their client contexts can close."""

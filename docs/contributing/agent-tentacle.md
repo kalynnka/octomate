@@ -73,6 +73,11 @@ runtime that takes no tool result back, and `subagent_run`.
 
 ## Runtime commands
 
+Permission changes belong to the agent tentacle. Channels use its permission
+selection operation so the runtime can apply live changes where supported. See
+the [agent interface](../api/tentacles/base.md#octomate.tentacles.agent.AgentTentacle.set_permission_mode) and
+[permission modes](../usage/agents/permissions.md) for the contract and timing.
+
 The optional `probe_commands` and `execute_command` hooks use the
 [command schemas](../api/schemas/commands.md). Their defaults report unsupported
 without starting a turn. Each agent exposes `discover_commands` for cached discovery,
@@ -89,11 +94,10 @@ command entry delivers direct feedback or consumes the same native agent stream
 with gateway capabilities, approvals and normal channel delivery. The context
 must already identify the authenticated user and originating surface. The command
 manager revalidates it before dispatch; retries use the same delivery ID.
-For Trunkline addresses, the browser execution endpoint uses this graph entry and
-the existing request-local output sink. Reflex presents command feedback through
-channel events; the endpoint emits the returned outcome after graph cleanup.
-HTTP execution for IM addresses still calls the manager directly; that integration
-remains separate.
+Browser command execution uses this graph entry for both Trunkline and IM
+destinations. Results and approvals appear on the destination channel; the browser
+receives completion after the graph finishes. See the
+[command API](../api/schemas/commands.md) for the response contract.
 
 Both hooks receive a `CommandContext` resolved by the caller: selected agent, authenticated user,
 originating channel address, effective workspace, conversation, model and approval

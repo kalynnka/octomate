@@ -109,6 +109,16 @@ async def scenario(
     async def execute(
         self: FakeDeepseekApi, endpoint: str, args: JsonObject
     ) -> RpcResult:
+        line = args.get("line")
+        if (
+            endpoint == "commands/execute"
+            and isinstance(line, str)
+            and line.startswith("/permission ")
+        ):
+            FakeDeepseekApi.calls.append((endpoint, {"args": args}))
+            return OkResult(
+                value={"commandId": "permission-1", "result": {"kind": "success"}}
+            )
         result = await remote(self, endpoint, args)
         if (
             endpoint != "commands/execute"
@@ -193,10 +203,17 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
         {
             "args": {
                 "agentId": "sess-1",
+                "line": "/permission workspace-write",
+                "submittedAttachments": [],
+            }
+        },
+        {
+            "args": {
+                "agentId": "sess-1",
                 "line": f"/plan {signal.invocation.arguments}",
                 "submittedAttachments": [],
             }
-        }
+        },
     ]
     assert not calls_of("session/prompt")
     conversation = signal.context.conversation
@@ -209,7 +226,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
     assert isinstance(receipt, ThreadCommand)
     assert receipt.outcome == outcome
     assert await app.kick(signal) == outcome
-    assert len(calls_of("commands/execute")) == 1
+    assert len(calls_of("commands/execute")) == 2
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -282,7 +299,7 @@ async def test_plan_run_uses_the_existing_command_entry_once(
     assert isinstance(receipt, ThreadCommand)
     assert receipt.outcome == CommandResult()
     assert await app.kick(signal) == CommandResult()
-    assert len(calls_of("commands/execute")) == 1
+    assert len(calls_of("commands/execute")) == 2
 
 
 async def test_stream_failure_preserves_partial_run_and_fails_receipt(
@@ -392,3 +409,95 @@ async def test_client_owned_export_is_refused_before_dispatch(
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unsupported"
     assert not calls_of("commands/execute")
+
+
+async def test_command_run_applies_selected_model_and_permissions(
+    scenario: Scenario,
+) -> None:
+    app, agent, _, signal = scenario
+    conversation = signal.context.conversation
+    assert conversation is not None
+    model = "deepseek-official:deepseek-v4-flash"
+    thread = await app.threads.get(conversation.thread_id)
+    assert thread is not None
+    await app.threads.record_handoff(
+        thread, to_agent_tentacle_id=agent.id, to_model=model
+    )
+    await agent.set_permission_mode(conversation, "danger-full-access")
+    assert not calls_of("commands/execute")
+    signal = replace(
+        signal,
+        context=replace(
+            signal.context, model=model, permission_mode="danger-full-access"
+        ),
+    )
+    FakeDeepseekApi.turn_script = turn_events("Plan")
+    await asyncio.wait_for(app.kick(signal), 3)
+    assert calls_of("session/selectModel") == [
+        {
+            "sessionId": "sess-1",
+            "provider": "deepseek-official",
+            "model": "deepseek-v4-flash",
+        }
+    ]
+    assert calls_of("commands/execute")[0] == {
+        "args": {
+            "agentId": "sess-1",
+            "line": "/permission danger-full-access",
+            "submittedAttachments": [],
+        }
+    }
+
+
+@pytest.mark.parametrize("new_session", [False, True])
+async def test_dsh_permission_update_reaches_live_run_without_another_prompt(
+    scenario: Scenario,
+    new_session: bool,
+) -> None:
+    _, agent, _, signal = scenario
+    conversation = signal.context.conversation
+    assert conversation is not None
+    if new_session:
+        async with async_session() as session:
+            stored = await session.get(type(conversation), conversation.id)
+            assert stored is not None
+            stored.external_id = None
+            await session.commit()
+    FakeDeepseekApi.turn_script = turn_events("Done")[:2]
+    async with agent.run_stream_events(
+        "work",
+        conversation_address=signal.context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    ) as events:
+        await anext(events)
+        selected = await agent.conversations.get(conversation.id, with_history=False)
+        assert selected.external_id == "sess-1"
+        await agent.set_permission_mode(selected, "danger-full-access")
+        assert calls_of("commands/execute")[-1] == {
+            "args": {
+                "agentId": "sess-1",
+                "line": "/permission danger-full-access",
+                "submittedAttachments": [],
+            }
+        }
+        assert len(calls_of("session/prompt")) == 1
+        FakeDeepseekApi.push("sess-1", turn_events("Done")[2:])
+        async for _ in events:
+            pass
+    stored = await agent.conversations.get(conversation.id, with_history=False)
+    assert stored.permission_mode == "danger-full-access"
+    FakeDeepseekApi.turn_script = turn_events("Done")
+    await agent.run(
+        "continue",
+        conversation_address=signal.context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+    assert calls_of("commands/execute")[-1] == {
+        "args": {
+            "agentId": "sess-1",
+            "line": "/permission danger-full-access",
+            "submittedAttachments": [],
+        }
+    }

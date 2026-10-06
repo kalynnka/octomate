@@ -536,9 +536,9 @@ def build_trunkline_router(
         conversations: Annotated[ConversationManager, Depends(conversation_manager)],
         user: Annotated[User, Depends(current_user)],
     ) -> Conversation:
-        """The one place a live thread's posture changes. A run reads it as it
-        starts, so the switch lands on the next turn and leaves anything in flight
-        alone — including a batch already waiting on a human."""
+        """Change the selection through the owning agent, including live updates
+        where its runtime supports them. Pending approval cards stay separate.
+        """
         try:
             conversation = await conversations.get(conversation_id)
         except ValueError as error:
@@ -550,11 +550,7 @@ def build_trunkline_router(
                 raise ValueError(
                     "This conversation has no driven agent to set permissions on"
                 )
-            if body.permission_mode is not None:
-                agent.check_permission_mode(body.permission_mode)
-            return await conversations.set_permission_mode(
-                conversation, body.permission_mode
-            )
+            return await agent.set_permission_mode(conversation, body.permission_mode)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
 

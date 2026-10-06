@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from openai_codex import SkillInput, TextInput
+from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.generated.v2_all import SkillsListEntry
 from openai_codex.models import Notification
 from pydantic_ai import AgentRunResultEvent
@@ -269,3 +270,37 @@ async def test_detached_skill_stream_drains_before_releasing_the_command_guard(
     assert isinstance(receipt, ThreadCommand)
     assert receipt.outcome is not None
     assert receipt.outcome.status == "failed"
+
+
+async def test_permission_update_applies_to_next_turn_on_the_same_thread(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    async with agent.run_stream_events(
+        "work",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    ) as events:
+        await anext(events)
+        await agent.set_permission_mode(conversation, "full_access")
+        async for _ in events:
+            pass
+    assert len(FakeCodex.turn_calls) == 1
+    await agent.run(
+        "continue",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.permission_mode == "full_access"
+    assert [run.permission_mode for run in await stored.runs] == [
+        "auto_review",
+        "full_access",
+    ]
+    assert len(FakeCodex.thread_calls) == 1
+    assert FakeCodex.turn_calls[-1].sandbox is Sandbox.full_access
+    assert FakeCodex.turn_calls[-1].approval_mode is ApprovalMode.deny_all

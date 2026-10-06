@@ -50,6 +50,9 @@ to `max`.
 
 ## Driven runs
 
+You can change a driven conversation's [permission mode](permissions.md) while
+it is running. Ordinary prompts and commands use the selected model and permissions.
+
 A session is created with the thread's [workspace](../workspaces.md) as its
 working directory, and that is fixed for the session's life. Model and effort are
 selected before each prompt, since dsh has no per-turn override, and the posture is

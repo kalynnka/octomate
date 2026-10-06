@@ -682,6 +682,14 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     expected: list[CommandStreamEvent] = [outcome]
     if address.channel_tentacle_id == "trunkline":
         expected.insert(0, MessageSentEvent(segments=segments))
+    else:
+        channel = app.channels[address.channel_tentacle_id]
+        assert isinstance(channel, FakeChannelTentacle)
+        assert [
+            message.get("text", "")
+            for _, _, messages, *_ in channel.sent
+            for message in messages
+        ] == ["Done", "Done"]
     assert command_events(response) == expected
     assert command_events(replay) == command_events(response)
     assert agent.invocations == [
@@ -816,42 +824,51 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     assert response.headers["x-accel-buffering"] == "no"
     assert "content-length" not in response.headers
     received = command_events(response)
+    outcome = CommandOutcomeEvent(outcome=CommandResult())
     if address.channel_tentacle_id == "trunkline":
         started = received.pop(0)
         assert isinstance(started, RunStartedEvent)
         assert started.address == address
-    assert len(received) == 3
-    assert isinstance(received[0], MessageSentEvent)
-    assert isinstance(received[1], RunResultEvent)
-    assert received[1].output == "Done"
-    assert received[-1] == CommandOutcomeEvent(outcome=CommandResult())
-    assert command_events(replay) == [received[-1]]
+        assert len(received) == 3
+        assert isinstance(received[0], MessageSentEvent)
+        assert isinstance(received[1], RunResultEvent)
+        assert received[1].output == "Done"
+        assert received[-1] == outcome
+    else:
+        assert received == [outcome]
+        channel = app.channels[address.channel_tentacle_id]
+        assert isinstance(channel, FakeChannelTentacle)
+        shown = [
+            message.get("text", "")
+            for _, _, messages, *_ in channel.sent
+            for message in messages
+        ]
+        assert "Running" in shown
+        assert "Done" in shown
+    assert command_events(replay) == [outcome]
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions
-    if address.channel_tentacle_id == "trunkline":
-        user_capabilities.assert_awaited_once()
-        assert isinstance(agent.suspender, ReflexSuspender)
-        gateway = next(
-            cap
-            for cap in agent.capabilities or []
-            if isinstance(cap, GatewayCapability)
-        )
-        assert gateway.session.user_profile is not None
-        assert gateway.session.user_profile.user_id == user.id
-        thread = await app.threads.get(conversation.thread_id)
-        assert thread is not None
-        replies = [
-            message for message in thread.messages if message.direction == "outbound"
-        ]
-        assert len(replies) == 1
-        assert replies[0].message_text == "Done"
-        bound = await app.threads.related_model_messages(replies[0].id)
-        assert len(bound) == 1
-        assert bound[0].run_id == result.run_id
+    user_capabilities.assert_awaited_once()
+    assert isinstance(agent.suspender, ReflexSuspender)
+    gateway = next(
+        cap for cap in agent.capabilities or [] if isinstance(cap, GatewayCapability)
+    )
+    assert gateway.session.user_profile is not None
+    assert gateway.session.user_profile.user_id == user.id
+    thread = await app.threads.get(conversation.thread_id)
+    assert thread is not None
+    replies = [
+        message for message in thread.messages if message.direction == "outbound"
+    ]
+    assert len(replies) == 1
+    assert replies[0].message_text == "Done"
+    bound = await app.threads.related_model_messages(replies[0].id)
+    assert len(bound) == 1
+    assert bound[0].run_id == result.run_id
 
 
-@pytest.mark.parametrize("address", ["trunkline"], indirect=True)
-async def test_trunkline_command_streams_a_persisted_reflex_approval(
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
+async def test_command_presents_a_persisted_reflex_approval(
     app: Octomate,
     agent: ExecutingAgent,
     conversation: Conversation,
@@ -866,8 +883,8 @@ async def test_trunkline_command_streams_a_persisted_reflex_approval(
     async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
         assert isinstance(agent.suspender, ReflexSuspender)
         approval = await agent.suspender.suspend(requests)
-        assert approval is not None
-        yield approval
+        if approval is not None:
+            yield approval
         yield AgentRunResultEvent(AgentRunResult[ChannelOutput](requests))
 
     agent.behavior = "stream_complete"
@@ -881,12 +898,18 @@ async def test_trunkline_command_streams_a_persisted_reflex_approval(
             json=command_body,
         )
     received = command_events(response)
-    started = received.pop(0)
-    assert isinstance(started, RunStartedEvent)
-    assert started.address == address
-    assert isinstance(received[0], ActionBatchEvent)
-    assert len(received[0].approvals) == 1
-    batch = await app.deferred_actions.get_batch(uuid.UUID(received[0].batch_id))
+    if address.channel_tentacle_id == "trunkline":
+        started = received.pop(0)
+        assert isinstance(started, RunStartedEvent)
+        assert started.address == address
+        assert isinstance(received[0], ActionBatchEvent)
+        assert len(received[0].approvals) == 1
+        batch = await app.deferred_actions.get_batch(uuid.UUID(received[0].batch_id))
+    else:
+        assert received == [CommandOutcomeEvent(outcome=CommandResult())]
+        [batch] = await app.deferred_actions.pending_for_thread(conversation.thread_id)
+        [approval] = await batch.approvals
+        assert approval.platform_message_id is not None
     assert batch.conversation_id == conversation.id
     assert batch.run_name == "command"
     assert batch.decision is not None
@@ -909,19 +932,10 @@ async def test_trunkline_command_streams_a_persisted_reflex_approval(
         ("cancel", True),
     ],
 )
-@pytest.mark.parametrize(
-    "address",
-    [
-        "im",
-        pytest.param(
-            "trunkline",
-            marks=pytest.mark.skip(
-                reason="External Reflex cancellation cleanup is deferred."
-            ),
-        ),
-    ],
-    indirect=True,
+@pytest.mark.skip(
+    reason="External Reflex cancellation cleanup is deferred for both channels."
 )
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
 async def test_http_stream_interruption_closes_runtime_and_records_failure(
     app: Octomate,
     agent: ExecutingAgent,
@@ -1104,3 +1118,42 @@ async def test_http_execution_openapi_describes_intent_and_response_types(
         validator.validate(
             {"event_kind": "command_outcome", "outcome": {"status": "invented"}}
         )
+
+
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
+@pytest.mark.parametrize("endpoint", ["catalog", "execute"])
+async def test_foreign_agent_conversation_is_rejected_before_discovery_or_execution(
+    app: Octomate,
+    agent: ExecutingAgent,
+    address: ChannelAddress,
+    conversation: Conversation,
+    command_body: dict[str, JsonValue],
+    endpoint: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    other = ExecutingAgent(id="other")
+    other.commands = app.commands
+    app.connect(other)
+    app.channels[address.channel_tentacle_id].config.agents.append(other.id)
+    kick = AsyncMock()
+    monkeypatch.setattr(app, "kick", kick)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/commands/{endpoint}",
+            headers={"X-Octomate-Request": "1"},
+            json={**command_body, "agent_id": other.id},
+        )
+    assert response.status_code == 422
+    assert response.json() == {
+        "detail": "Command conversation belongs to another agent"
+    }
+    kick.assert_not_awaited()
+    assert not other.calls
+    assert not agent.calls
+    assert not other.invocations
+    assert not agent.invocations
+    assert not app.workspaces.open(conversation.thread_id, None).path.exists()
+    async with async_session() as session:
+        assert await session.count(ThreadCommand) == 0

@@ -7,7 +7,7 @@ for this API's SSE responses.
 import asyncio
 import uuid
 from collections.abc import AsyncGenerator
-from contextlib import AsyncExitStack, aclosing, suppress
+from contextlib import aclosing, suppress
 from typing import Annotated
 
 import anyio
@@ -22,7 +22,6 @@ from octomate.capabilities.harness.events import (
     WireEvent,
     wire_event_adapter,
 )
-from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.dependencies import (
     application,
     conversation_manager,
@@ -44,11 +43,9 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.user import User
-from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.trunkline.base import (
     SSE_HEADERS,
     TrunklineStreamItem,
-    TrunklineTentacle,
     current_sink,
     to_wire,
 )
@@ -162,7 +159,9 @@ async def command_context(
         ),
     ] = None,
 ) -> CommandContext:
-    """Check that the channel enables the agent, then resolve inspection context."""
+    """Resolve inspection context; reject foreign-agent conversations with HTTP 422
+    before discovery, workspace lookup, or graph execution.
+    """
     channel = app.channels.get(address.channel_tentacle_id)
     if channel is None:
         raise HTTPException(status_code=404, detail="Command channel is unavailable")
@@ -181,6 +180,11 @@ async def command_context(
             raise HTTPException(
                 status_code=404, detail="Command conversation is unavailable"
             ) from error
+        if conversation.agent_tentacle_id != agent.id:
+            raise HTTPException(
+                status_code=422,
+                detail="Command conversation belongs to another agent",
+            )
         thread = await threads.get(conversation.thread_id, with_messages=False)
         if thread is None:
             raise HTTPException(
@@ -284,13 +288,14 @@ async def execute_command(
     """Execute explicit command intent against an existing conversation.
 
     Every execution response is SSE. Each data field contains CommandStreamEvent
-    JSON, identified by event_kind. Trunkline presents direct results and refusals
-    through channel events. The terminal command_outcome reports completion after
+    JSON, identified by event_kind. Every channel executes through the Reflex
+    command node. IM destinations receive feedback, run output and approvals on
+    their channel; Trunkline's channel events also appear in this HTTP stream.
+    The terminal command_outcome reports completion after
     cleanup and persistence; clients must not render it as another channel message.
     A failed stream closes without an outcome.
     Authentication and request-validation errors remain non-2xx JSON responses.
     """
-    agent = app.agents[context.agent_id]
     invocation = CommandInvocation(command_id=command_id, arguments=arguments)
 
     async def reflex_events() -> AsyncGenerator[
@@ -326,32 +331,4 @@ async def execute_command(
         )
         yield CommandOutcomeEvent(outcome=outcome)
 
-    if isinstance(app.channels[context.address.channel_tentacle_id], TrunklineTentacle):
-        return CommandResponse(reflex_events())
-
-    async def events() -> AsyncGenerator[
-        ReactStreamEvent[ChannelOutput] | CommandOutcomeEvent, None
-    ]:
-        async with AsyncExitStack() as stack:
-            validated = await stack.enter_async_context(
-                agent.commands.validate(
-                    agent, context, invocation, delivery_id=delivery_id
-                )
-            )
-            if isinstance(validated, CommandResult | CommandError):
-                result = validated
-            else:
-                result = await stack.enter_async_context(
-                    agent.commands.execute(
-                        agent, context, invocation, validated, delivery_id=delivery_id
-                    )
-                )
-            if isinstance(result, CommandResult | CommandError):
-                outcome = result
-            else:
-                async for event in result:
-                    yield event
-                outcome = CommandResult()
-        yield CommandOutcomeEvent(outcome=outcome)
-
-    return CommandResponse(events())
+    return CommandResponse(reflex_events())

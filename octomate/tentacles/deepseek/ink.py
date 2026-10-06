@@ -29,6 +29,7 @@ from octomate.tentacles.deepseek.wire import (
     SessionEventFrame,
     StreamErrorFrame,
 )
+from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 
@@ -224,6 +225,45 @@ class DeepseekInk:
                 f"dsh commands/list failed: {result.error.message} ({result.error.code})"
             )
         return command_descriptors_adapter.validate_python(result.value)
+
+    async def set_permission_mode(self, session_id: str, mode: str) -> None:
+        """Switch the session's sandbox and approval preset without opening a turn."""
+        execution = await self.execute_command(session_id, f"/permission {mode}")
+        if execution is None:
+            raise AgentRunError(
+                f"dsh has no /permission command, so the run's posture ({mode}) cannot be set"
+            )
+        if execution.result.kind == "error":
+            raise AgentRunError(
+                f"dsh refused /permission {mode}: {execution.result.text}"
+            )
+
+    async def select_model(
+        self,
+        session_id: str,
+        model: str,
+        *,
+        default_provider: str | None,
+        reasoning_effort: str | None = None,
+    ) -> None:
+        """Apply the selected provider/model and optional native reasoning effort."""
+        provider, separator, model_id = model.partition(":")
+        if not separator:
+            provider, model_id = default_provider, model
+        if provider is None:
+            raise ValueError("A DeepSeek model selection must include its provider")
+        payload: JsonObject = {
+            "sessionId": session_id,
+            "provider": provider,
+            "model": model_id,
+        }
+        if reasoning_effort is not None:
+            payload["reasoningEffort"] = reasoning_effort
+        result = await self.client.remote("session/selectModel", {"request": payload})
+        if isinstance(result, ErrResult):
+            raise AgentRunError(
+                f"dsh session/selectModel failed: {result.error.message} ({result.error.code})"
+            )
 
     async def execute_command(
         self, session_id: str, line: str

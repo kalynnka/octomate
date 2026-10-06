@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from claude_agent_sdk import ClaudeAgentOptions
 from claude_agent_sdk._internal.message_parser import parse_message
-from claude_agent_sdk.types import Message
+from claude_agent_sdk.types import Message, ResultMessage
 from pydantic import TypeAdapter
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -66,6 +66,16 @@ async def native_messages(messages: list[JsonObject]) -> AsyncGenerator[Message]
     for raw in messages:
         message = parse_message(raw)
         assert message is not None
+        yield message
+
+
+async def paused_native_messages(
+    messages: list[JsonObject], release: asyncio.Event
+) -> AsyncGenerator[Message]:
+    """Keep the SDK client active until the test permits the result to arrive."""
+    async for message in native_messages(messages):
+        if isinstance(message, ResultMessage):
+            await release.wait()
         yield message
 
 
@@ -473,3 +483,97 @@ async def test_missing_terminal_result_never_reports_success(
         assert isinstance(outcome, CommandError)
         assert outcome.status == "failed"
     assert client.__aenter__.await_count == client.__aexit__.await_count
+
+
+@pytest.mark.parametrize("mode", ["plan", None])
+async def test_permission_updates_reach_live_client_and_next_run(
+    execution: tuple[
+        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+    mode: str | None,
+) -> None:
+    agent, context, client, options = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.set_permission_mode(conversation, "acceptEdits")
+    release = asyncio.Event()
+    client.receive_response.side_effect = lambda: paused_native_messages(
+        streams["skill"], release
+    )
+    async with agent.run_stream_events(
+        "work",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    ) as events:
+        await anext(events)
+        assert conversation.id in agent.ink.live_clients
+        selected = await agent.conversations.get(conversation.id, with_history=False)
+        await agent.set_permission_mode(selected, mode)
+        client.set_permission_mode.assert_awaited_once_with(
+            mode or agent.default_permission_mode
+        )
+        release.set()
+        async for _ in events:
+            pass
+    assert not agent.ink.live_clients
+    stored = await agent.conversations.get(conversation.id, with_history=False)
+    assert stored.permission_mode == mode
+    await agent.run(
+        "continue",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+    assert options[-1].permission_mode == (mode or agent.default_permission_mode)
+
+
+async def test_rejected_live_permission_update_does_not_save_the_selection(
+    execution: tuple[
+        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+    streams: dict[str, list[JsonObject]],
+) -> None:
+    agent, context, client, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    release = asyncio.Event()
+    client.receive_response.side_effect = lambda: paused_native_messages(
+        streams["skill"], release
+    )
+    client.set_permission_mode.side_effect = RuntimeError("runtime refused the switch")
+    async with agent.run_stream_events(
+        "work",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    ) as events:
+        await anext(events)
+        with pytest.raises(RuntimeError, match="runtime refused"):
+            await agent.set_permission_mode(conversation, "plan")
+        release.set()
+        async for _ in events:
+            pass
+    stored = await agent.conversations.get(conversation.id, with_history=False)
+    assert stored.permission_mode is None
+
+
+async def test_permission_selection_validates_owner_and_mode_before_runtime_access(
+    execution: tuple[
+        ClaudeCodeTentacle, CommandContext, AsyncMock, list[ClaudeAgentOptions]
+    ],
+) -> None:
+    agent, context, client, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    with pytest.raises(ValueError, match="not one of"):
+        await agent.set_permission_mode(conversation, "unknown")
+    foreign = await agent.conversations.ensure(
+        conversation.thread_id, agent_tentacle_id="another"
+    )
+    with pytest.raises(ValueError, match="belongs to another agent"):
+        await agent.set_permission_mode(foreign, "plan")
+    client.set_permission_mode.assert_not_called()
+    stored = await agent.conversations.get(conversation.id, with_history=False)
+    assert stored.permission_mode is None

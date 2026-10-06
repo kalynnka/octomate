@@ -811,10 +811,8 @@ async def test_new_run_interrupts_the_prior_live_run(
     await asyncio.gather(first, second)
 
     assert client_a.interrupted
-    # B superseded A: the live entry for the conversation is now B's client.
-    assert (
-        tentacle.ink.live_clients.get(conversation.id) is GatedClaudeClient.instances[1]
-    )
+    # Both clients have closed; permission updates must not target either one.
+    assert not tentacle.ink.live_clients
 
 
 async def test_shutdown_interrupts_live_runs(

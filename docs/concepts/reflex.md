@@ -14,7 +14,7 @@ validates that every node is reachable from the entry.
 
 ```mermaid
 flowchart TD
-  START([kick]) -->|message or resume batch| Awake
+  START([kick]) -->|message, command or resume batch| Awake
   START -->|live batch| Live[Deliver to the owning request]
   Awake -->|user message| Route
   Awake -->|explicit command| Command
@@ -95,11 +95,11 @@ existing `ResumeDeferred` path. Accepted command attempts save their workspace o
 exit; rejected and replayed deliveries do not prepare user tools or save it.
 The inner React graph and its stream contract remain dedicated to agent runs.
 
-Trunkline's command API enters this graph and streams through the channel's
-request-local output sink. Reflex presents direct feedback through the channel,
-just like agent activity. After the graph finishes, the response emits a terminal
-command outcome for completion tracking; clients render the channel events and
-do not display the outcome again. A disconnected command request cancels execution.
+Commands submitted through the HTTP API enter this graph for both Trunkline and
+IM destinations. Reflex sends direct feedback, agent output and approval requests
+to the destination channel. Trunkline also streams that output to the browser;
+the HTTP caller receives completion after the graph finishes. A disconnected
+command request cancels execution.
 Cleanup under external graph cancellation is not guaranteed; SDK shutdown, receipt
 persistence and workspace saving may be interrupted.
 

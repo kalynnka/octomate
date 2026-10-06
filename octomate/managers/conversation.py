@@ -540,8 +540,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         Native observers also store modes that are no longer selectable. None clears
         the selection and lets the agent's configured default decide.
 
-        Each run reads the posture as it starts, so a switch lands on the next turn
-        and nothing already in flight is rewritten.
+        This method only persists the selection. User changes go through the
+        owning agent tentacle, which also updates its live runtime when supported.
         """
         async with async_session() as session:
             stored = await session.get(Conversation, conversation.id)

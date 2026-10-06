@@ -199,6 +199,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     def default_permission_mode(self) -> str | None:
         return self.config.permission_mode
 
+    async def apply_permission_mode(
+        self, conversation: Conversation, mode: str
+    ) -> None:
+        session_id = conversation.external_id
+        if session_id is not None and session_id in self.driven_sessions:
+            await self.ink.set_permission_mode(session_id, mode)
+
     # DeepSeek's own blue, so dsh's lines read as dsh's in a shared console.
     brand_color: ClassVar[Style | None] = Style(color="#4D6BFE", bold=True)
 
@@ -513,6 +520,18 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             self.driving(session_id),
             contextlib.AsyncExitStack() as resources,
         ):
+            conversation = await self.conversations.get(
+                conversation.id, with_history=False
+            )
+            permission_mode = (
+                conversation.permission_mode or self.config.permission_mode
+            )
+            self.check_permission_mode(permission_mode)
+            if context.model is not None:
+                await self.ink.select_model(
+                    session_id, context.model, default_provider=self.default_provider
+                )
+            await self.ink.set_permission_mode(session_id, permission_mode)
             queue = await self.ink.subscribe(session_id)
             resources.push_async_callback(self.ink.unsubscribe, session_id)
             self.bridge_contexts[session_id] = DeepseekBridgeContext(
@@ -1016,8 +1035,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if isinstance(instructions, str) and instructions:
             prompt_text = f"{tagged('instructions', instructions)}\n\n{prompt_text}"
 
-        permission_mode = conversation.permission_mode or self.config.permission_mode
-        self.check_permission_mode(permission_mode)
         project = await self.run_project(conversation.thread_id)
         workspace = self.workspaces.open(conversation.thread_id, project)
         run_cwd = str(workspace.path)
@@ -1036,6 +1053,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 self.conversation_locks.hold(str(conversation.id)),
                 workspace,
             ):
+                conversation = await self.conversations.get(
+                    conversation.id, with_history=False
+                )
+                permission_mode = (
+                    conversation.permission_mode or self.config.permission_mode
+                )
+                self.check_permission_mode(permission_mode)
                 session_id = conversation.external_id
                 if not session_id:
                     create_payload: JsonObject = {"cwd": run_cwd}
@@ -1050,49 +1074,23 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         )
                     )
                     session_id = created.session_id
+                    await self.conversations.set_external_id(conversation, session_id)
                 async with self.driving(session_id):
                     if deepseek_model is not None:
-                        provider_id, separator, model_id = deepseek_model.partition(":")
-                        provider = provider_id if separator else self.default_provider
-                        if not separator:
-                            model_id = deepseek_model
-                        if provider is None:
-                            raise ValueError(
-                                "A DeepSeek model selection must include its provider"
-                            )
-                        select_payload: JsonObject = {
-                            "sessionId": session_id,
-                            "provider": provider,
-                            "model": model_id,
-                        }
-                        reasoning_effort = (
-                            self.effort_maps[f"{provider}:{model_id}"][effort]
+                        model_key = (
+                            deepseek_model
+                            if ":" in deepseek_model
+                            else f"{self.default_provider}:{deepseek_model}"
+                        )
+                        await self.ink.select_model(
+                            session_id,
+                            deepseek_model,
+                            default_provider=self.default_provider,
+                            reasoning_effort=self.effort_maps[model_key][effort]
                             if effort is not None
-                            else None
+                            else None,
                         )
-                        if reasoning_effort is not None:
-                            select_payload["reasoningEffort"] = reasoning_effort
-                        self.unwrap(
-                            await client.remote(
-                                "session/selectModel", {"request": select_payload}
-                            ),
-                            "session/selectModel",
-                        )
-                    # No permission RPC exists: the preset switches through the
-                    # remotes-plane command, which opens no turn.
-                    execution = await self.ink.execute_command(
-                        session_id, f"/permission {permission_mode}"
-                    )
-                    if execution is None:
-                        raise AgentRunError(
-                            "dsh has no /permission command, so the run's posture "
-                            f"({permission_mode}) cannot be set"
-                        )
-                    if execution.result.kind == "error":
-                        raise AgentRunError(
-                            f"dsh refused /permission {permission_mode}: "
-                            f"{execution.result.text}"
-                        )
+                    await self.ink.set_permission_mode(session_id, permission_mode)
 
                     queue = await self.ink.subscribe(session_id)
                     self.bridge_contexts[session_id] = DeepseekBridgeContext(

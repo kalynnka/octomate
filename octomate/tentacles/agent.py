@@ -309,6 +309,34 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if not any(option.value == mode for option in self.permission_modes):
             raise ValueError(f"{mode!r} is not one of {self.id}'s modes")
 
+    async def set_permission_mode(
+        self, conversation: Conversation, mode: str | None
+    ) -> Conversation:
+        """Validate and save a selection, updating a live runtime when supported.
+
+        None restores the configured default. Native update failures propagate
+        before the selection is saved. Runtimes without live updates read the
+        saved selection on their next run; existing approvals remain separate.
+        """
+        if conversation.agent_tentacle_id != self.id:
+            raise ValueError("conversation belongs to another agent")
+        effective = mode if mode is not None else self.default_permission_mode
+        if effective is not None:
+            self.check_permission_mode(effective)
+            await self.apply_permission_mode(conversation, effective)
+        updated = await self.conversations.set_permission_mode(conversation, mode)
+        self.commands.invalidate(agent_id=self.id, conversation_id=conversation.id)
+        return updated
+
+    async def apply_permission_mode(
+        self, conversation: Conversation, mode: str
+    ) -> None:
+        """Update an active native runtime when it supports permission changes.
+
+        The default leaves in-flight work alone. Codex applies both permission
+        axes at the next turn start; Inkling reads storage at each deferral.
+        """
+
     @property
     def default_permission_mode(self) -> str | None:
         """The posture this agent's conversations run under when they declare none —

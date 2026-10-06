@@ -89,6 +89,9 @@ are applied again on the next turn.
 
 ## Approvals and questions
 
+You can change a driven conversation's [permission mode](permissions.md) while
+it is running. The choice also applies to subsequent runs.
+
 Two bridges, both landing on the same cards:
 
 - **Tool permission.** The SDK asks Octomate before each tool the posture does not

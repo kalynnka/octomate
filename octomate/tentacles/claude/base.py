@@ -191,6 +191,13 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     def default_permission_mode(self) -> str | None:
         return self.config.permission_mode
 
+    async def apply_permission_mode(
+        self, conversation: Conversation, mode: str
+    ) -> None:
+        if not is_claude_mode(mode):
+            raise ValueError(f"{mode!r} is not a Claude permission mode")
+        await self.ink.set_permission_mode(conversation.id, mode)
+
     # Claude's own orange, so its lines carry its identity in a console shared with
     # every other tentacle, instead of whatever hue the connection order landed on.
     brand_color: ClassVar[Style | None] = Style(color="#D97757", bold=True)

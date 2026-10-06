@@ -1323,20 +1323,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             or None
         )
 
-        permission_mode = conversation.permission_mode or self.config.permission_mode
-        self.check_permission_mode(permission_mode)
-        sandbox = (
-            Sandbox.full_access
-            if permission_mode == "full_access"
-            else Sandbox.workspace_write
-        )
-        approval_mode = (
-            ApprovalMode.auto_review
-            if permission_mode == "auto_review"
-            else ApprovalMode.deny_all
-            if permission_mode == "full_access" or not interactive
-            else None
-        )
         personality = (
             Personality(self.config.personality)
             if self.config.personality is not None
@@ -1380,6 +1366,22 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             conversation = await self.conversations.get(
                 conversation.id, with_history=False
+            )
+            permission_mode = (
+                conversation.permission_mode or self.config.permission_mode
+            )
+            self.check_permission_mode(permission_mode)
+            sandbox = (
+                Sandbox.full_access
+                if permission_mode == "full_access"
+                else Sandbox.workspace_write
+            )
+            approval_mode = (
+                ApprovalMode.auto_review
+                if permission_mode == "auto_review"
+                else ApprovalMode.deny_all
+                if permission_mode == "full_access" or not interactive
+                else None
             )
             # Keep the workspace alive until the native turn finishes.
             await resources.enter_async_context(workspace)
