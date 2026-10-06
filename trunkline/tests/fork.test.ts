@@ -17,7 +17,7 @@ const thread: ApiThread = {
 const conversation: ApiConversation = {
   id: 'native-conversation', external_id: 'native-session', thread_id: thread.id,
   agent_tentacle_id: 'codex-native', subagent_id: '', parent_conversation_id: null,
-  name: null, status: 'active', permission_mode: null, allowed_tools: [], runs: [],
+  name: null, status: 'active', permission_mode: null, effort: null, allowed_tools: [], runs: [],
 }
 
 before(async () => {

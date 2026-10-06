@@ -226,6 +226,8 @@ function liveSessions(
           handoff?.to_model ?? model,
         ),
         agent: conversation.agent_tentacle_id,
+        model: handoff?.to_model ?? model,
+        effort: conversation.effort,
         mode: conversation.permission_mode ?? latest?.permission_mode ?? null,
         kind: ingested ? 'ingest' : index === 0 ? 'entry' : 'summon',
         t: when ? clock(when) : '',

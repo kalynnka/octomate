@@ -1,19 +1,17 @@
-import { useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useEffect, useEffectEvent, useId, useMemo, useRef, useState } from 'react'
 import type { SyntheticEvent } from 'react'
 import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
-import { useChannels, usePermissionModes, useRoutes, useThreadOperations } from '@/lib/api/hooks'
+import { useAddresses, useAgents, useChannels, useCommandCatalog, usePermissionModes, useRoutes, useThreadOperations } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
 import { CommandPanel } from './CommandPanel'
 import { DestinationPicker } from './GatewayDestination'
 import { SummonRoute } from './GatewayRoute'
-import { completion, matching, readCommand, type Argument } from './commands'
-import { channelRows, gatewayRequest, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type EffortLevel } from './gateway'
-
-const EFFORTS = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
+import { COMMANDS, commandArguments, completeCommand, completion, editArguments, matching, nativeCommand, readCommand, type Argument, type GatewayOp } from './commands'
+import { channelRows, destinationReason, gatewayRequest, isGatewayCommand, level as destinationLevel, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type GatewayAction, type GatewayForm } from './gateway'
 
 // What the composer becomes for each gateway op; `max` is the relay's own cap.
 const GATEWAY_MODES = {
@@ -45,6 +43,7 @@ const composerType = {
   fontFamily: 'var(--font-mono)',
   fontSize: 12,
   lineHeight: 1.75,
+  padding: 0,
 } as const
 
 interface RouteGroup {
@@ -61,6 +60,9 @@ function RouteSelector() {
   const ntMenu = useConsole((s) => s.ntMenu)
   const { setNtMenu, setNtRoute } = useConsole((s) => s.actions)
   const { data: routesData } = useRoutes()
+  const { data: agents } = useAgents()
+  const effortRoute = agents?.find((agent) => agent.id === ntAgent)?.routes.find((route) => route.model === ntModel)
+  const nativeEffort = routeEffort(effortRoute, ntEffort)
   const groups: RouteGroup[] = useMemo(() => {
     const byAgent = new Map<string, { id: string | null; model: string }[]>()
     for (const r of routesData?.routes ?? []) {
@@ -105,7 +107,7 @@ function RouteSelector() {
           <span style={{ color: 'var(--color-accent)' }}>{ntAgent}</span>
           <span style={{ color: 'var(--fg-3)' }}>·</span>
           <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{ntModel}</span>
-          <span style={{ color: 'var(--fg-3)' }}>[{ntEffort}]</span>
+          <span style={{ color: 'var(--fg-3)' }}>[{nativeEffort.effort}]</span>
           <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
         </span>
         {open && (
@@ -218,11 +220,11 @@ function RouteSelector() {
             })}
             <span style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 12px', background: 'var(--surface-sunken)' }}>
               <span style={{ ...fieldLabel, color: 'var(--fg-2)' }}>Effort</span>
-              <span style={{ ...mono(8), color: 'var(--fg-3)' }}>({ntEffort})</span>
+              <span style={{ ...mono(8), color: 'var(--fg-3)' }}>({nativeEffort.effort})</span>
               <span style={{ flex: 1 }} />
               <span style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
-                {EFFORTS.map((v, i) => {
-                  const cur = EFFORTS.indexOf(ntEffort as (typeof EFFORTS)[number])
+                {nativeEffort.efforts.map((v, i) => {
+                  const cur = nativeEffort.efforts.indexOf(nativeEffort.effort)
                   const onStep = cur >= i
                   return (
                     <span
@@ -434,14 +436,15 @@ export function Composer() {
   const ntEffort = useConsole((s) => s.ntEffort)
   const running = useConsole((s) => s.running)
   const gatewayMode = useConsole((s) => s.gatewayMode)
-  const { removeQueued, setGatewayMode, gateway } = useConsole((s) => s.actions)
+  const { removeQueued, setGatewayMode, gateway, setEffort, startNewThread, runCommand: runNative } = useConsole((s) => s.actions)
   const username = useAuth((s) => s.user?.username ?? 'operator')
 
   const isReview = useConsole((s) => s.pvOpen)
   const lastSes = detail?.sessions[detail.sessions.length - 1]
   // The channel list is the connected tentacles only, so a native channel is not
   // in it; its display name is the same table the sidebar reads.
-  const routeChip = `${channelMeta(selChannel).label.toLowerCase()}/${detail?.key ?? selThreadId}`
+  const channel = channelMeta(selChannel)
+  const routeChip = `${channel.label.toLowerCase()}/${detail?.key ?? selThreadId}`
   const modelChip = ntOn ? `${ntAgent} · ${ntModel}[${ntEffort}]` : (lastSes?.route ?? '')
   const [sesAgent, sesModel] = (lastSes?.route ?? '').split(' · ')
 
@@ -459,7 +462,7 @@ export function Composer() {
   const operations = eligibility.data
   const availability = mode ? operations?.[mode] : undefined
   const [form, patchForm, seedForm] = useGatewayForm(selThreadId, mode)
-  const modeInput = useRef<HTMLTextAreaElement>(null)
+  const commandInput = mode !== null && isGatewayCommand(composerText, mode)
   const draftInput = useRef<HTMLTextAreaElement>(null)
   // Summon hands this conversation over where it is, to an agent its channel runs.
   const summonRoutes = Object.values(operations?.summon.routes ?? {}).flat()
@@ -473,7 +476,7 @@ export function Composer() {
       : !availability ? 'Checking available destinations…'
         : availability.reason
           // Only a thread here can take the message after the move.
-          ?? (mode === 'teleport' && composerText.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
+          ?? (mode === 'teleport' && !commandInput && composerText.trim() && form.destination && form.destination.address.channel_tentacle_id !== 'trunkline'
             ? 'A prompt can follow a teleport only into a Trunkline thread.' : undefined)
   const ready = Boolean(request) && !blocked
   // What a channel that cannot carry this conversation says in the destination browser.
@@ -484,84 +487,177 @@ export function Composer() {
   const submitGateway = () => {
     if (!mode || blocked) return
     if (!request) {
-      if (mode === 'teleport' && !form.destination) patchForm({ menu: 'destination' })
+      if (commandInput || (mode === 'teleport' && !form.destination) || (mode === 'summon' && !route)) {
+        patchForm({ menu: mode === 'teleport' ? 'destination' : 'route' })
+      } else draftInput.current?.focus()
       return
     }
     aui.composer.setText('')
     void gateway(selThreadId, request)
   }
 
-  useEffect(() => {
-    if (mode !== 'summon') return
-    const input = modeInput.current
-    input?.focus()
-    input?.setSelectionRange(input.value.length, input.value.length)
-  }, [mode])
+  const enterGateway = useEffectEvent(() => {
+    if (!mode) return
+    if (commandInput) patchForm({ menu: mode === 'teleport' ? 'destination' : 'route' })
+    else if (form.menu === null) draftInput.current?.focus()
+  })
+  useEffect(() => { enterGateway() }, [mode])
 
-  // A line that spells a gateway op opens the command finder instead of sending.
+  // A line that spells a command opens the command finder instead of sending.
   const { data: channels } = useChannels()
-  const [cursor, setCursor] = useState(0)
   const [hidden, setHidden] = useState(false)
-  const [handover, setHandover] = useState<{ agent: string; model: string | null; effort: EffortLevel } | null>(null)
-  const line = !mode && !ntOn && detail && !running && !hidden ? readCommand(composerText) : null
+  // The agent's own commands answer on the surface the conversation is on, and
+  // are only discovered once a line starts naming one.
+  const context = !ntOn && !channel.native && lastSes && operations?.source
+    ? { agent_id: lastSes.agent, address: operations.source, conversation_id: lastSes.conversationId }
+    : null
+  const catalog = useCommandCatalog(composerText.startsWith('/') ? context : null)
+  const natives = context && catalog.data?.status === 'ready'
+    ? catalog.data.descriptors.map(nativeCommand).sort((a, b) => a.name.localeCompare(b.name))
+    : []
+  const commands = [...COMMANDS, ...natives]
+  const line = !mode && !ntOn && detail && !running && !hidden ? readCommand(composerText, commands) : null
+  const agentName = lastSes?.agent ?? 'agent'
   const waiting = eligibility.isError ? eligibility.error.message : 'Checking available destinations…'
-  const closed = {
+  const nativeNote = !lastSes ? null
+    : channel.native ? 'Native commands aren’t supported in synced sessions yet. Only gateway commands are available here.'
+      : !context ? waiting
+        : catalog.isError ? catalog.error.message
+          : !catalog.data || catalog.data.status === 'loading' ? `discovering ${agentName} commands…`
+            : catalog.data.message ?? (catalog.data.limitations.join(' · ') || null)
+  // `/effort` moves this conversation along the scale its route claims.
+  const { data: agents } = useAgents(line !== null)
+  const owner = agents?.find((one) => one.id === lastSes?.agent)
+  const sessionRoute = owner?.routes.find((one) => one.model === (lastSes?.model ?? owner.default_model))
+  const scale = routeEffort(sessionRoute, lastSes?.effort ?? 'auto')
+  const defaultLevel = routeEffort(sessionRoute, 'auto').effort
+  const closed: Partial<Record<GatewayOp, string>> = {
     summon: operations ? operations.summon.reason ?? undefined : waiting,
     teleport: operations ? operations.teleport.reason ?? undefined : waiting,
+    effort: !lastSes ? 'This thread has no conversation to set it on.'
+      : !agents ? 'Reading the levels this route takes…'
+        : sessionRoute?.claim.efforts.length ? undefined : `${lastSes.route} takes no effort levels.`,
   }
   const surfaces = channelRows(
     channels ?? [], operations?.teleport.destinations ?? [], selChannel,
     operations?.teleport.routes ?? {}, carrierless, operations?.barred ?? {},
   ).filter((row) => !row.barred)
   const surfaceValue = (row: DestinationRow) => (row.open ? `${row.key}/` : row.key)
-  const offered: Argument[] = line?.phase !== 'argument' || closed[line.command.name] ? []
-    : line.command.name === 'summon'
-      ? summonRoutes
-          .filter((one, index) => summonRoutes.findIndex((other) => other.agent_id === one.agent_id) === index)
-          .map((one) => ({ value: one.agent_id, about: one.claim.ability }))
-      : surfaces.map((row) => ({ value: surfaceValue(row), about: row.sub }))
-  const matches = line?.phase === 'argument' ? matching(line.typed, offered) : []
-  const at = Math.max(0, Math.min(cursor, (line?.phase === 'name' ? line.matches.length : matches.length) - 1))
-  // The agent under the cursor, and the model and effort picked for it so far.
-  const agent = line?.phase === 'argument' && line.command.name === 'summon' ? matches[at]?.argument.value : undefined
-  const held = handover?.agent === agent ? handover : null
+  const agentOptions = summonRoutes
+    .filter((one, index) => summonRoutes.findIndex((other) => other.agent_id === one.agent_id) === index)
+    .map((one) => ({ value: one.agent_id, about: one.claim.ability }))
+  const typedArguments = line?.phase === 'argument' ? commandArguments(line).values : {}
+  const agent = 'agent' in typedArguments ? matching(typedArguments.agent, agentOptions)[0]?.argument.value : undefined
   const agentRoutes = summonRoutes.filter((one) => one.agent_id === agent)
-  const agentRoute = pickRoute(agentRoutes, agent ?? null, held?.model ?? null)
-  const agentEffort = routeEffort(agentRoute, held?.effort ?? 'auto')
+  const modelOptions = agentRoutes.map((one) => ({ value: one.model, about: one.claim.ability }))
+  const model = typedArguments.model ? matching(typedArguments.model, modelOptions)[0]?.argument.value : undefined
+  const agentRoute = pickRoute(agentRoutes, agent ?? null, model ?? (form.agent === agent ? form.model : null))
+  const agentScale = routeEffort(agentRoute, 'auto')
+  const choices: Record<string, Argument[]> = {
+    agent: agentOptions,
+    model: modelOptions,
+    effort: [agentScale.effort, ...agentScale.efforts.filter((one) => one !== agentScale.effort)]
+      .map((value) => ({ value, about: value === agentScale.effort ? 'model default' : `${value} reasoning` })),
+    level: [defaultLevel, ...scale.efforts.filter((one) => one !== defaultLevel)]
+      .map((value) => ({ value, about: value === defaultLevel ? 'model default' : `${value} reasoning` })),
+    destination: surfaces.map((row) => ({ value: surfaceValue(row), about: row.sub })),
+  }
+  const defaults = { effort: agentScale.effort, level: defaultLevel }
+  const args = line?.phase === 'argument' ? commandArguments(line, choices, defaults) : null
+  const offered = args?.offered ?? []
+  const matches = args?.matches ?? []
+  const agentEffort = routeEffort(agentRoute, args?.values.effort ?? 'auto')
+  const surface = surfaces.find((one) => surfaceValue(one) === args?.values.destination)
+  const destinations = useAddresses(selThreadId, surface?.open?.channel, surface?.open?.inside)
+  const argumentReason = args?.invalid.length ? `No matching value for ${args.invalid.join(', ')}.`
+    : surface?.open && (destinations.isError || (destinations.data?.length === 0
+    && !operations?.teleport.destinations.some((one) => one.channel_tentacle_id === surface.open?.channel)))
+    ? destinationReason(destinations.error, destinationLevel(surface.open.channel, 0).many) : undefined
+  // An omitted effort uses the model's default, including when resetting a conversation.
+  const levelling = line?.phase === 'argument' && !line.command.native && line.command.name === 'effort' && !closed.effort
+  const level = args?.values.level || defaultLevel
+  const changeDraft = (next: string) => {
+    setHidden(false)
+    if (commandInput) setGatewayMode(null)
+    if (mode) return
+    const command = readCommand(next, COMMANDS)
+    if (command?.phase !== 'argument') return
+    if (!command.command.native && command.command.name === 'summon') {
+      const picked = commandArguments(command, { agent: agentOptions }).values.agent
+      if (!picked) return
+      const models = summonRoutes.filter((one) => one.agent_id === picked).map((one) => ({ value: one.model, about: one.claim.ability }))
+      const typedModel = commandArguments(command).values.model
+      const model = typedModel ? matching(typedModel, models)[0]?.argument.value : undefined
+      const pickedRoute = pickRoute(summonRoutes, picked, model ?? (form.agent === picked ? form.model : null))
+      const supported = routeEffort(pickedRoute, 'auto')
+      const levels = [supported.effort, ...supported.efforts.filter((one) => one !== supported.effort)]
+      const selected = commandArguments(command, { ...choices, effort: levels.map((value) => ({ value, about: '' })) }, { effort: supported.effort }).values.effort
+      seedForm('summon', { agent: picked, effort: selected, model: pickedRoute?.model ?? null })
+    } else if (command.command.name === 'teleport') {
+      const picked = commandArguments(command, choices).values.destination
+      const surface = surfaces.find((one) => surfaceValue(one) === picked)
+      if (surface) seedForm('teleport', surface.address
+        ? { destination: { address: surface.address, path: [surface.label] }, crumbs: [], menu: null }
+        : { destination: null, crumbs: surface.open ? [surface.open] : [], menu: 'destination' })
+    }
+  }
   const write = (next: string) => {
     aui.composer.setText(next)
+    changeDraft(next)
     setCaretAt(next.length)
-    setCursor(0)
+  }
+  const openGateway = (action: GatewayAction, change: Partial<GatewayForm> = {}) => {
+    const missing = action === 'teleport' ? !change.destination : !change.agent
+    seedForm(action, { ...change, ...(missing ? { menu: action === 'teleport' ? 'destination' : 'route' } as const : {}) })
+    if (!missing) write('')
+    void eligibility.refetch()
+    setGatewayMode({ threadId: selThreadId, action })
+    draftInput.current?.focus()
   }
   const fillCommand = (index: number) => {
-    if (line?.phase === 'name') {
-      const { command } = line.matches[index]
-      write(`/${command.name}${command.takes && ' '}`)
-    } else if (line && matches[index]) write(`/${line.command.name} ${matches[index].argument.value}`)
+    if (line) write(completeCommand(line, matches, index))
   }
-  const runCommand = (index: number) => {
+  const runCommand = (index?: number) => {
     if (!line) return
-    const command = line.phase === 'name' ? line.matches[index].command : line.command
-    if (closed[command.name]) return
-    const needed = command.takes.startsWith('<')
-    if (line.phase === 'name' && needed) return fillCommand(index)
-    const picked = matches[index]?.argument
-    if (needed && !picked) return
-    write('')
-    if (command.name === 'summon') {
-      seedForm('summon', { agent: picked.value, ...(handover?.agent === picked.value ? { model: handover.model, effort: handover.effort } : {}) })
-    } else {
-      const surface = picked && surfaces.find((row) => surfaceValue(row) === picked.value)
-      seedForm('teleport', surface?.address
-        ? { destination: { address: surface.address, path: [surface.label] }, menu: null }
-        : surface?.open ? { crumbs: [surface.open] } : {})
+    const command = line.phase === 'name' ? line.matches[index ?? 0].command : line.command
+    if (!command.native && closed[command.name]) return
+    if (line.phase === 'name') fillCommand(index ?? 0)
+    if ((args?.flagName || index !== undefined) && command.parameters?.some((parameter) => parameter.flag && parameter.flag === matches[index ?? 0]?.argument.value)) return fillCommand(index ?? 0)
+    const selected = line.phase === 'argument' && index !== undefined
+      ? completeCommand(line, matches, index).slice(command.name.length + 2)
+      : line.phase === 'argument' ? line.typed : ''
+    const invocation = commandArguments({ phase: 'argument', command, typed: selected }, choices, defaults)
+    if (invocation.invalid.length) return
+    if (command.native) {
+      if (invocation.missing.length) return fillCommand(index ?? 0)
+      if (!context) return
+      write('')
+      return runNative(context, command.native, selected)
     }
-    void eligibility.refetch()
-    setGatewayMode({ threadId: selThreadId, action: command.name })
+    const values = invocation.values
+    if (command.name === 'summon') {
+      return openGateway('summon', values.agent
+        ? { agent: values.agent, effort: values.effort, model: values.model || (form.agent === values.agent ? form.model : null) }
+        : { menu: 'route' })
+    }
+    if (command.name === 'teleport') {
+      const surface = surfaces.find((row) => surfaceValue(row) === values.destination)
+      return openGateway('teleport', surface?.address
+        ? { destination: { address: surface.address, path: [surface.label] }, crumbs: [], menu: null }
+        : surface?.open ? { destination: null, crumbs: [surface.open], menu: 'destination' } : {})
+    }
+    if (command.name === 'effort') {
+      write('')
+      return void setEffort(!selected.trim() || values.level === 'auto' ? null : values.level)
+    }
+    if (command.name === 'new') {
+      write('')
+      return startNewThread()
+    }
   }
 
   const placeholder = ntOn
-    ? 'first directive — registers the thread and boots a session on send'
+    ? 'first directive — registers the thread on send'
     : isReview
       ? queue.length
         ? `add a directive — ${queue.length} note${queue.length > 1 ? 's' : ''} ride along`
@@ -583,9 +679,7 @@ export function Composer() {
       background: 'transparent',
       ...composerType,
       color: 'var(--fg-1)',
-      // The block in the mirror is the caret (the comp's terminal
-      // cursor); the native bar only returns if tracking is off.
-      caretColor: caretAt === null ? 'var(--color-accent)' : 'transparent',
+      caretColor: 'transparent',
     },
   } as const
 
@@ -597,16 +691,26 @@ export function Composer() {
             line={line}
             matches={matches}
             offered={offered.length}
-            cursor={at}
+            total={commands.length}
+            agent={agentName}
+            nativeNote={nativeNote}
+            argumentReason={argumentReason}
             closed={closed}
-            route={agent && agentRoute ? {
+            route={line.phase === 'argument' && agent && agentRoute ? {
               routes: agentRoutes,
               route: agentRoute,
               ...agentEffort,
-              onModel: (model) => setHandover({ agent, model, effort: agentEffort.effort }),
-              onEffort: (effort) => setHandover({ agent, model: agentRoute.model, effort }),
+              onModel: (model) => openGateway('summon', { agent, model, effort: agentEffort.effort, menu: 'route' }),
+              onEffort: (effort) => write(editArguments(line, { agent, effort })),
             } : null}
-            onCursor={setCursor}
+            effort={line.phase === 'argument' && levelling && lastSes ? {
+              supported: scale.efforts,
+              preset: sessionRoute?.claim.default_effort ?? null,
+              level,
+              current: scale.effort,
+              route: lastSes.route,
+              onEffort: (one) => write(editArguments(line, { level: one })),
+            } : null}
             onRun={runCommand}
             onDismiss={() => setHidden(true)}
             onSettled={() => draftInput.current?.focus()}
@@ -639,6 +743,25 @@ export function Composer() {
               ×
             </button>
           </div>
+        )}
+        {mode === 'summon' && (
+          <SummonRoute
+            routes={summonRoutes}
+            route={route}
+            efforts={efforts}
+            effort={effort}
+            open={form.menu === 'route'}
+            reason={availability?.reason}
+            onOpen={(open) => patchForm({ menu: open ? 'route' : null })}
+            onRoute={(agent, model) => {
+              patchForm({ agent, model, ...(commandInput ? { menu: null } : {}) })
+              if (commandInput) {
+                aui.composer.setText('')
+                draftInput.current?.focus()
+              }
+            }}
+            onEffort={(level) => patchForm({ effort: level })}
+          />
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: 'var(--trk-comp-head-pad, 7px 24px 6px)', borderBottom: '1px solid var(--trk-vline)' }}>
           <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>&gt;_</span>
@@ -706,49 +829,31 @@ export function Composer() {
           )}
           <ComposerPrimitive.Root style={{ display: 'block' }}>
             <span style={{ position: 'relative', display: 'block', overflow: 'hidden' }}>
-              {mode && copy ? (
-                <textarea
-                  ref={modeInput}
-                  // A command can open an op with its destination already picked.
-                  autoFocus={form.menu !== 'destination'}
-                  aria-label={copy.field}
-                  rows={copy.rows}
-                  maxLength={copy.max}
-                  placeholder={copy.placeholder}
-                  value={composerText}
-                  onChange={(event) => aui.composer.setText(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === 'Escape') {
-                      event.preventDefault()
-                      setGatewayMode(null)
-                    } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
-                      event.preventDefault()
-                      submitGateway()
-                    }
-                  }}
-                  {...input}
-                />
-              ) : (
-                <ComposerPrimitive.Input
-                  ref={draftInput}
-                  rows={2}
-                  placeholder={placeholder}
-                  onChange={() => {
-                    setCursor(0)
-                    setHidden(false)
-                  }}
-                  onKeyDown={(event) => {
-                    if (!line || event.nativeEvent.isComposing) return
-                    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') setCursor(Math.max(0, at + (event.key === 'ArrowDown' ? 1 : -1)))
-                    else if (event.key === 'Escape') setHidden(true)
-                    else if (event.key === 'Tab' && !event.shiftKey) fillCommand(at)
-                    else if (event.key === 'Enter' && !event.shiftKey) runCommand(at)
+              <ComposerPrimitive.Input
+                ref={draftInput}
+                aria-label={copy?.field ?? 'Directive'}
+                rows={copy?.rows ?? 2}
+                maxLength={copy?.max}
+                placeholder={copy?.placeholder ?? placeholder}
+                submitMode={mode || line ? 'none' : 'enter'}
+                cancelOnEscape={false}
+                onChange={(event) => changeDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.nativeEvent.isComposing) return
+                  if (mode) {
+                    if (event.key === 'Escape') setGatewayMode(null)
+                    else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) submitGateway()
                     else return
-                    event.preventDefault()
-                  }}
-                  {...input}
-                />
-              )}
+                  } else if (line) {
+                    if (event.key === 'Escape') setHidden(true)
+                    else if (event.key === 'Tab' && !event.shiftKey) fillCommand(0)
+                    else if (event.key === 'Enter' && !event.shiftKey) runCommand()
+                    else return
+                  } else return
+                  event.preventDefault()
+                }}
+                {...input}
+              />
               {caretAt !== null && (
                 <span
                   aria-hidden
@@ -764,46 +869,38 @@ export function Composer() {
                   }}
                 >
                   {composerText.slice(0, caretAt)}
-                  <span
-                    style={{
-                      display: 'inline-block',
-                      width: 8,
-                      height: 14,
-                      background: 'var(--color-accent)',
-                      verticalAlign: 'text-bottom',
-                      marginLeft: 1,
-                      animation: 'trkBlink 1.1s step-end infinite',
-                    }}
-                  />
-                  {line && caretAt === composerText.length && <span style={{ color: 'var(--fg-3)' }}>{completion(line, matches, at)}</span>}
+                  <span style={{ position: 'relative' }}>
+                    <span
+                      style={{
+                        position: 'absolute',
+                        left: 0,
+                        bottom: 0,
+                        width: '1ch',
+                        height: '1.2em',
+                        background: 'var(--color-accent)',
+                        animation: 'trkBlink 1.1s step-end infinite',
+                      }}
+                    />
+                  </span>
+                  {line && caretAt === composerText.length && <span style={{ color: 'var(--fg-3)' }}>{completion(line, matches, 0)}</span>}
                 </span>
               )}
             </span>
           </ComposerPrimitive.Root>
         </div>
-        <div className="trk-comp-hint" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, padding: '0 24px 5px', minWidth: 0 }}>
-          {line && (
-            <>
-              <span style={{ ...mono(10, 700), whiteSpace: 'pre', minWidth: 0, overflow: 'hidden' }}>
-                <span style={{ color: 'var(--color-accent)' }}>/{(line.phase === 'name' ? line.matches[at].command : line.command).name} </span>
-                {line.phase === 'name'
-                  ? <span style={{ color: 'var(--fg-3)', fontWeight: 400 }}>{line.matches[at].command.takes}</span>
-                  : <span style={{ color: 'var(--fg-1)' }}>{line.command.takes}</span>}
-              </span>
-              <span style={{ flex: 1 }} />
-            </>
-          )}
-          <span
-            role={copy && !blocked && exposed ? 'alert' : undefined}
-            style={{ ...mono(8), color: copy && !blocked && exposed ? 'var(--color-gold)' : 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}
-          >
-            {line ? 'runs in trunkline gateway'
-              : copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
-                : `↵ send · ⇧↵ newline · ${ntOn ? '' : '/ commands · '}⇧⇥ posture · **b** _i_ \`code\` \`\`\` fence`}
-          </span>
-        </div>
+        {!line && (
+          <div className="trk-comp-hint" style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 12, padding: '0 24px 5px', minWidth: 0 }}>
+            <span
+              role={copy && !blocked && exposed ? 'alert' : undefined}
+              style={{ ...mono(8), color: copy && !blocked && exposed ? 'var(--color-gold)' : 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}
+            >
+              {copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
+                : `↵ send · ⇧↵ newline${ntOn ? '' : ' · / commands'} · ⇧⇥ posture · **b** _i_ \`code\` \`\`\` fence`}
+            </span>
+          </div>
+        )}
         <div
-          // The gateway popovers rise from this row, so they stay inside it at any width.
+          // The destination picker rises from this row so it stays inside it at any width.
           style={{ position: 'relative', display: 'flex', alignItems: 'center', gap: 4, padding: 'var(--trk-comp-bar-pad, 3px 24px 4px 18px)', borderTop: '1px solid var(--trk-vline)' }}
         >
           <span className="trk-comp-tools" style={{ display: 'contents' }}>
@@ -827,7 +924,7 @@ export function Composer() {
           <span style={{ flex: 1 }} />
           {mode && copy ? (
             <span className="trk-gateway" style={{ display: 'contents' }}>
-              {mode === 'teleport' ? (
+              {mode === 'teleport' && (
                 <span
                   className="trk-gateway-carry"
                   title="same agent and model travel with the chat"
@@ -840,17 +937,6 @@ export function Composer() {
                   <span>{sesAgent || '—'}</span>
                   {sesModel && <><span>·</span><span>{sesModel}</span></>}
                 </span>
-              ) : (
-                <SummonRoute
-                  routes={summonRoutes}
-                  route={route}
-                  efforts={efforts}
-                  effort={effort}
-                  open={form.menu === 'route'}
-                  onOpen={(open) => patchForm({ menu: open ? 'route' : null })}
-                  onRoute={(agent, model) => patchForm({ agent, model })}
-                  onEffort={(level) => patchForm({ effort: level })}
-                />
               )}
               {mode === 'teleport' && availability && (
                 <>
@@ -869,7 +955,8 @@ export function Composer() {
                     onCrumbs={(crumbs) => patchForm({ crumbs })}
                     onSelect={(destination) => {
                       patchForm({ destination, menu: null })
-                      modeInput.current?.focus()
+                      if (commandInput) aui.composer.setText('')
+                      draftInput.current?.focus()
                     }}
                   />
                 </>
@@ -915,20 +1002,21 @@ export function Composer() {
               }}
             >
               <span style={{ color: 'var(--color-accent)' }}>{sesAgent || '—'}</span>
-              {/* A session nothing routed carries its runtime alone, and no read
-                  reports the effort a run went out at. */}
+              {/* A session nothing routed carries its runtime alone, and one with
+                  no effort set runs at whatever its runtime defaults to. */}
               {sesModel && (
                 <>
                   <span style={{ color: 'var(--fg-3)' }}>·</span>
                   <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{sesModel}</span>
                 </>
               )}
+              {lastSes?.effort && <span style={{ color: 'var(--fg-3)' }}>[{lastSes.effort}]</span>}
             </span>
           )}
           <span style={{ marginLeft: 8, flexShrink: 0 }}>
             <button
               type="button"
-              onClick={() => aui.composer.send()}
+              onClick={() => line ? runCommand() : aui.composer.send()}
               disabled={!canSend}
               className="hov-panel"
               style={{

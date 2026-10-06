@@ -47,9 +47,9 @@ export function ChatHeader() {
     teleport: threadReason ?? loadingReason ?? eligibility.data?.teleport.reason ?? undefined,
     summon: threadReason ?? loadingReason ?? eligibility.data?.summon.reason ?? undefined,
   }
-  const operation = choice && !unavailable[choice]
+  const operation = expanded ?? (choice && !unavailable[choice]
     ? choice
-    : operationOrder.find((value) => !unavailable[value]) ?? 'teleport'
+    : operationOrder.find((value) => !unavailable[value]) ?? 'teleport')
   const selected = operations[operation]
   const disabledReason = busyReason ?? unavailable[operation]
   const isDark = theme === 'dark' || (theme === 'auto' && sysDark)
@@ -188,7 +188,7 @@ export function ChatHeader() {
             id={menuId}
             role="group"
             aria-label="Thread operations"
-            className="lt-menu"
+            className="lt-menu trk-gateway-menu"
             data-open=""
             style={{
               position: 'absolute', right: 0, top: 'calc(100% + 6px)',

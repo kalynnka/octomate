@@ -74,16 +74,49 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   and Summon expand the composer instead of opening a dialog: the button, ×
   or Esc returns to chat with your draft kept, and ⌘↵ submits.
   Typing `/` in an existing thread's composer opens a command finder. The
-  gateway's commands come first — `/summon <agent>`, `/teleport [destination]`,
-  `/effort <level>` and `/new` — then the commands the thread's agent offers in
+  gateway's commands come first — `/summon <agent> [--model <model>] [--effort <effort>]`, `/teleport [destination]`,
+  `/effort [level]` and `/new` — then the commands the thread's agent offers in
   its own runtime, looked up the first time you type `/` in that conversation.
-  ↑↓ moves, ⇥ completes, ↵ runs and Esc dismisses it. `/summon` lists the
+  Synced native sessions support gateway commands only; their native commands
+  are not available in Trunkline yet. Type to narrow the suggestions; moving the
+  pointer over them does not change the selection. Arrow keys move the text
+  cursor. Tab completes, Enter selects or runs, and Esc dismisses the finder.
+  Accepting a partial name completes it: `/te` becomes `/teleport` when its menu opens.
+  Deleting the leading `/` returns to ordinary input. `/summon` lists the
   agents Summon offers, with the model and effort to hand over, and opens the
   Summon composer on the one you pick. `/teleport` lists the connected
   channels and opens Teleport on the one you pick, or on the destination
-  browser when you pick none. `/new` opens the composer for a new thread. An
-  agent's own command takes what you type after it, exactly as typed, and what
-  it answers streams into the message panel like a turn. A command that is
+  browser when you pick none. `/new` opens the composer for a new thread.
+  Clicking a Teleport or Summon option opens the same form as the header button,
+  keeping the chosen agent, model, effort or destination.
+  If the command still needs an agent or destination, its menu opens and the
+  command stays in the input until you choose one. Then enter the brief or
+  optional prompt. A destination that cannot be used shows the same reason in
+  the finder and its menu.
+  The form keeps these choices when closed and reopened on the same thread.
+  The agent/model picker expands above the input. Its model list scrolls,
+  while the effort slider stays below it. Effort uses a single slider, with
+  room for each advertised level.
+  The command finder shows up to six model candidates. Type `--model` followed
+  by part of a model name to fuzzy-filter them, or choose **Show all models**
+  to open the full picker. The selected model stays visible when it matches.
+  For example, `/summon claude --model sonnet --effort high` selects a matching
+  model at high effort. Both options are optional and can appear in either order.
+  Omitting model keeps the selected model or uses the first offered model;
+  omitting effort uses the selected model's default. Tab completes option names
+  and values, and moving the slider updates `--effort` in the command text.
+  `/effort` without a level restores the
+  current conversation's default effort.
+  In the agent/model and destination menus, Up/Down moves between choices,
+  Home/End jumps to the first or last, Enter selects, and Esc closes the menu.
+  In destination lists, Right opens a place and Left returns to its parent.
+  An agent's own command takes what you type after it, exactly as typed, and what
+  it answers streams into the message panel like a turn. Its input hint is
+  shown as advertised by the harness or skill; when it supplies no argument
+  structure, the harness decides which inputs are required. Tab completes
+  names and advertised choices without inserting placeholder text. A native
+  command that shares a gateway name appears as `/native:<name>`.
+  A command that is
   unavailable is dimmed and shows its reason, and when the agent's commands
   cannot be looked up the finder says why. A line that names no command is sent
   as an ordinary message.

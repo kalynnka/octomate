@@ -391,6 +391,20 @@ export type WireEvent =
   | RunErrorEvent
   | GatewayEvent
 
+/** How a command ended. Its feedback has already streamed as channel events,
+ *  so this only says the command is done — it is not shown again. */
+export type CommandOutcome =
+  | { status: 'completed'; segments: WireSegment[] }
+  | { status: 'unsupported' | 'unknown' | 'stale' | 'busy' | 'unavailable' | 'failed'; message: string }
+
+export interface CommandOutcomeEvent {
+  event_kind: 'command_outcome'
+  outcome: CommandOutcome
+}
+
+/** What a command's stream carries: the channel's run events, then its outcome. */
+export type CommandStreamEvent = WireEvent | CommandOutcomeEvent
+
 // ---- REST payloads ---------------------------------------------------------
 
 export interface ApiChannelInfo {
@@ -617,6 +631,9 @@ export interface ApiConversation {
   /** the agent's own approval vocabulary — `agent_tentacle_id` says which;
    *  null is nothing declared, and the agent's configured default decides */
   permission_mode: string | null
+  /** the level its runs ask for; null is nothing declared, and the runtime's
+   *  own default decides */
+  effort: EffortStep | null
   allowed_tools: string[]
   /** oldest first, by start time */
   runs: ApiAgentRun[]
@@ -727,3 +744,39 @@ export interface SummonBody {
 export type GatewayRequest =
   | { action: 'teleport'; body: TeleportBody }
   | { action: 'summon'; body: SummonBody }
+
+/** One command an agent's runtime offers (`CommandDescriptor`). */
+export interface ApiCommandDescriptor {
+  /** opaque; what an execution names, never shown */
+  id: string
+  name: string
+  description: string
+  /** the runtime's own free-form hint for the argument, when it gives one */
+  argument_hint: string | null
+  accepts_attachments: boolean | null
+}
+
+/** An agent's commands in one context, and how discovering them went. */
+export interface ApiCommandCatalog {
+  descriptors: ApiCommandDescriptor[]
+  status: 'ready' | 'loading' | 'unsupported' | 'unavailable' | 'failed'
+  /** why there is no catalog, when there is none */
+  message: string | null
+  limitations: string[]
+}
+
+/** Who a command is for: the agent, the surface it answers on, and the
+ *  conversation it runs in. */
+export interface CommandContextBody {
+  agent_id: string
+  address: ChannelAddress
+  conversation_id: string
+}
+
+export interface CommandExecuteBody extends CommandContextBody {
+  command_id: string
+  /** names this delivery; a retry reuses it */
+  delivery_id: string
+  /** raw, passed to the runtime as typed */
+  arguments: string
+}

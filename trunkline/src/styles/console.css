@@ -480,6 +480,38 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
     opacity: 1;
   }
 }
+@keyframes trkCover {
+  0%,
+  55% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes trkBar {
+  0% {
+    clip-path: inset(0 100% 0 0);
+  }
+  50%,
+  100% {
+    clip-path: inset(0 0 0 0);
+  }
+}
+@keyframes trkWait {
+  0%,
+  100% {
+    opacity: 0.45;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-trk-cover] {
+    display: none;
+  }
+}
 @keyframes trkFlash {
   0% {
     box-shadow: 0 0 0 2px var(--color-accent);
@@ -1073,4 +1105,13 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 .trk-gateway-effort { position: relative; display: block; height: 20px; margin: 0 7px; }
 .trk-gateway-effort input { position: absolute; inset: 0 -7px; width: calc(100% + 14px); height: 100%; margin: 0; opacity: 0; cursor: pointer; }
 .trk-gateway-effort:has(input:focus-visible) { outline: 1px solid var(--color-accent); outline-offset: 3px; }
+@keyframes trkGatewayPage {
+  from { opacity: 0; translate: var(--trk-gateway-page-x, 18px) 0; }
+  to { opacity: 1; translate: 0 0; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .trk-gateway-menu[data-open] { animation: lt-fade-up var(--motion-base) var(--ease-out); }
+  .trk-gateway-page { animation: trkGatewayPage var(--motion-base) var(--ease-out); }
+  .trk-gateway-page[data-direction="back"] { --trk-gateway-page-x: -18px; }
+}
 @media (prefers-reduced-motion: reduce) { .trk-composer-frame { transition: none; } }

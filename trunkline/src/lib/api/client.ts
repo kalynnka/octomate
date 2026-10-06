@@ -11,6 +11,7 @@ import { apiFetch, refuse } from './auth'
 import type {
   ApiAgentInfo,
   ApiChannelInfo,
+  ApiCommandCatalog,
   ApiConversation,
   ApiDeferredBatch,
   ApiMcp,
@@ -25,6 +26,9 @@ import type {
   ApiThreadMessage,
   BatchResponseBody,
   ChannelAddress,
+  CommandContextBody,
+  CommandExecuteBody,
+  CommandStreamEvent,
   DirectiveBody,
   GatewayEvent,
   GatewayRequest,
@@ -33,6 +37,7 @@ import type {
   OAuthFlowKind,
   WireEvent,
 } from './events'
+import type { EffortStep } from './types'
 
 export interface HealthState {
   ok: boolean
@@ -190,10 +195,10 @@ export const fetchThreadBatches = (id: string) =>
  * Read one SSE response frame-by-frame, invoking onEvent per `data:` payload.
  * Resolves when the stream closes; rejects on transport failure or non-2xx.
  */
-async function streamSse(
+async function streamSse<Event = WireEvent>(
   path: string,
   body: unknown,
-  onEvent: (event: WireEvent) => void,
+  onEvent: (event: Event) => void,
 ): Promise<void> {
   const res = await apiFetch(path, { method: 'POST', json: body })
   if (!res.ok) return refuse(res)
@@ -211,7 +216,7 @@ async function streamSse(
       buffer = buffer.slice(cut + 2)
       for (const line of frame.split('\n')) {
         if (!line.startsWith('data: ')) continue
-        onEvent(JSON.parse(line.slice(6)) as WireEvent)
+        onEvent(JSON.parse(line.slice(6)) as Event)
       }
     }
   }
@@ -235,6 +240,30 @@ export function resolveBatch(
   onEvent: (event: WireEvent) => void,
 ): Promise<void> {
   return streamSse(`/api/trunkline/batches/${batchId}/resolve`, body, onEvent)
+}
+
+/** The commands an agent offers in one conversation. Discovery starts no turn. */
+export async function fetchCommandCatalog(context: CommandContextBody): Promise<ApiCommandCatalog> {
+  const res = await apiFetch('/api/commands/catalog', { method: 'POST', json: context })
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<ApiCommandCatalog>
+}
+
+/** Run one command and stream what it says on the channel, then its outcome. */
+export function streamCommand(
+  body: CommandExecuteBody,
+  onEvent: (event: CommandStreamEvent) => void,
+): Promise<void> {
+  return streamSse('/api/commands/execute', body, onEvent)
+}
+
+export async function patchEffort(conversationId: string, effort: EffortStep | null): Promise<ApiConversation> {
+  const res = await apiFetch(`/api/trunkline/conversations/${encodeURIComponent(conversationId)}/effort`, {
+    method: 'PATCH',
+    json: { effort },
+  })
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<ApiConversation>
 }
 
 export async function fetchThreadOperations(threadId: string): Promise<ThreadOperations> {

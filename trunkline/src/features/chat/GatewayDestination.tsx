@@ -4,7 +4,7 @@ import { ApiError } from '@/lib/api/auth'
 import { useAddresses, useChannels } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
 import { ellipsis, label, mono } from '@/components/text'
-import { addressRow, channelRows, level, sameAddress, type Crumb, type Destination, type DestinationRow } from './gateway'
+import { addressRow, channelRows, destinationReason, level, navigateGatewayMenu, sameAddress, type Crumb, type Destination, type DestinationRow } from './gateway'
 
 const tint = (share: number) => `color-mix(in srgb, var(--color-accent) ${share}%, transparent)`
 
@@ -31,6 +31,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
   onSelect: (destination: Destination) => void
 }) {
   const [filter, setFilter] = useState('')
+  const [direction, setDirection] = useState<'forward' | 'back'>('forward')
   const trigger = useRef<HTMLButtonElement>(null)
   const menuId = useId()
   const { data: channels } = useChannels()
@@ -52,6 +53,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
   const needle = filter.trim().toLowerCase()
   const shown = rows.filter((row) => !needle || row.label.toLowerCase().includes(needle))
   const go = (next: Crumb[]) => {
+    setDirection(next.length < crumbs.length ? 'back' : 'forward')
     onCrumbs(next)
     setFilter('')
   }
@@ -78,6 +80,11 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
         aria-controls={open ? menuId : undefined}
         title="destination"
         onClick={() => onOpen(!open)}
+        onKeyDown={(event) => {
+          if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return
+          event.preventDefault()
+          onOpen(true)
+        }}
         className="hov-border"
         style={{
           ...label(8, '.06em'), background: 'var(--surface-raised)', border: '1px solid var(--color-teal)',
@@ -97,12 +104,19 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
           id={menuId}
           role="group"
           aria-label="Destinations"
-          className="lt-menu"
+          className="lt-menu trk-gateway-menu"
           data-open=""
+          onKeyDown={(event) => {
+            navigateGatewayMenu(event)
+            if (event.target instanceof HTMLButtonElement && event.key === 'ArrowLeft' && at) {
+              event.preventDefault()
+              go(crumbs.slice(0, -1))
+            }
+          }}
           style={{
             position: 'absolute', bottom: 'calc(100% + 6px)', right: 12, width: 348, maxWidth: 'calc(100% - 24px)',
             zIndex: 80, background: 'var(--surface-raised)', border: '1px solid var(--line-color)',
-            boxShadow: 'var(--shadow-soft)', display: 'flex', flexDirection: 'column',
+            boxShadow: 'var(--shadow-soft)', display: 'flex', flexDirection: 'column', overflow: 'hidden',
           }}
         >
           <span style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '7px 10px', borderBottom: '1px solid var(--line-divider)', flexShrink: 0 }}>
@@ -149,6 +163,7 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
               {loading ? noun : `${rows.length} ${rows.length === 1 ? kind.one : noun}`}
             </span>
           </span>
+          <span key={JSON.stringify(crumbs)} className="trk-gateway-page" data-direction={direction} style={{ display: 'flex', flexDirection: 'column', minHeight: 0 }}>
           {loading && <span className="lt-scanbar" style={{ display: 'block', height: 2 }} />}
           <label className="trk-gateway-filter" style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '6px 12px', borderBottom: '1px solid var(--line-color)', flexShrink: 0 }}>
             <span aria-hidden="true" style={{ ...mono(9), color: 'var(--fg-3)' }}>⌕</span>
@@ -169,12 +184,18 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
                 <button
                   key={row.key}
                   type="button"
+                  data-gateway-option=""
                   disabled={Boolean(row.barred)}
                   aria-pressed={row.address ? on : undefined}
                   title={row.barred ? undefined : row.open ? `Open ${row.label}` : 'Land here'}
                   onClick={() => {
                     if (row.open) return go([...crumbs, row.open])
                     if (row.address) onSelect({ address: row.address, path: [...crumbs.map((crumb) => crumb.label), row.label] })
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key !== 'ArrowRight' || !row.open) return
+                    event.preventDefault()
+                    go([...crumbs, row.open])
                   }}
                   className={row.barred ? undefined : 'hov-wash'}
                   style={{
@@ -221,14 +242,14 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
             )}
             {listing.isError && refused && (
               <span role="status" style={{ display: 'block', padding: '10px 12px', ...mono(9), color: 'var(--fg-3)', lineHeight: 1.5 }}>
-                {listing.error.message}
+                {destinationReason(listing.error, noun)}
               </span>
             )}
             {listing.isError && !refused && (
               <span role="alert" style={{ display: 'flex', alignItems: 'center', gap: 9, padding: '10px 12px', borderBottom: '1px solid var(--line-color)' }}>
                 <span aria-hidden="true" style={{ ...mono(9, 700), color: 'var(--color-red)' }}>!</span>
                 <span style={{ flex: 1, ...mono(9), color: 'var(--fg-2)', lineHeight: 1.5 }}>
-                  Couldn't load {noun} — {listing.error.message}
+                  {destinationReason(listing.error, noun)}
                 </span>
                 <button
                   type="button"
@@ -245,9 +266,10 @@ export function DestinationPicker({ threadId, sourceChannel, suggestions, routes
             )}
             {!loading && !listing.isError && shown.length === 0 && (
               <span role="status" style={{ display: 'block', padding: 12, ...mono(9), color: 'var(--fg-3)' }}>
-                {needle ? `No loaded ${noun} match — clear the filter.` : `No ${noun} to list here.`}
+                {needle ? `No loaded ${noun} match — clear the filter.` : destinationReason(null, noun)}
               </span>
             )}
+          </span>
           </span>
           <span style={{ display: 'block', padding: '7px 12px', flexShrink: 0, ...mono(7.5), color: 'var(--fg-3)', letterSpacing: '.04em', lineHeight: 1.5, ...ellipsis }}>
             {selection ? `→ ${selection.path.join(' / ')}` : 'pick a destination · levels load from the gateway as you open them'}

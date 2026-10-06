@@ -9,6 +9,7 @@ import { create } from 'zustand'
 import type {
   AskAnswer,
   DocLine,
+  EffortStep,
   LedgerItem,
   QueueChip,
   ReviewComment,
@@ -16,8 +17,16 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
-import { fetchThreads, streamGateway } from '@/lib/api/client'
-import type { BatchResponseBody, ChannelAddress, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
+import { fetchThreads, streamCommand, streamGateway } from '@/lib/api/client'
+import type {
+  ApiCommandDescriptor,
+  BatchResponseBody,
+  ChannelAddress,
+  CommandContextBody,
+  CommandStreamEvent,
+  GatewayEvent,
+  GatewayRequest,
+} from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
@@ -233,6 +242,10 @@ export interface ConsoleActions {
   cyclePermissionMode(): Promise<void>
   /** choose a mode for the draft or persist it on the current conversation */
   setPermissionMode(mode: string): Promise<void>
+  /** set the level the current conversation's runs ask for; null = the runtime's default */
+  setEffort(effort: EffortStep | null): Promise<void>
+  /** run one of the agent's own commands and stream what it says into the ledger */
+  runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string): void
   closeNtMenu(): void
   sendNewThread(text: string): void
   /** drop what the last operator left open — the next one boots into their own */
@@ -461,7 +474,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
    */
   const runLive = async (
     from: string,
-    request: (onEvent: (event: WireEvent) => void) => Promise<void>,
+    request: (onEvent: (event: CommandStreamEvent) => void) => Promise<void>,
     // What a stream that sent nothing back says; null says nothing.
     quietClose: string | null = 'stream closed without a result',
   ) => {
@@ -493,14 +506,16 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       },
     })
     let fold = turnFold()
-    const feed = (event: WireEvent) => {
+    const feed = (event: CommandStreamEvent) => {
       received++
-      if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
+      if (event.event_kind === 'run_result' || event.event_kind === 'run_error' || event.event_kind === 'command_outcome') {
+        terminal = true
+      }
       fold.feed(event)
     }
     // Opening the thread a run started in; what streams meanwhile waits for it.
     let following: Promise<void> | undefined
-    const held: WireEvent[] = []
+    const held: CommandStreamEvent[] = []
     const follow = async (address: ChannelAddress) => {
       const landed = await landedThread(selId, address)
       if (landed && alive()) {
@@ -1346,6 +1361,48 @@ export const useConsole = create<ConsoleState>()((set, get) => {
               },
             },
       )
+    },
+    async setEffort(effort: EffortStep | null) {
+      const s = get()
+      const session = s.detail?.sessions.at(-1)
+      if (s.running || !session) return
+      const stored = await api.setEffort(session.conversationId, effort).catch((err: unknown) => {
+        actions.reportThreadError(s.selThreadId, `effort not set — ${err instanceof Error ? err.message : String(err)}`)
+        return null
+      })
+      if (stored === null || get().selThreadId !== s.selThreadId) return
+      set((x) =>
+        x.detail === null
+          ? {}
+          : {
+              detail: {
+                ...x.detail,
+                sessions: x.detail.sessions.map((each) =>
+                  each.conversationId === session.conversationId ? { ...each, effort: stored.effort } : each,
+                ),
+              },
+              notices: [
+                ...x.notices,
+                { kind: 'notice', uid: nextUid(), text: `effort → ${stored.effort ?? 'auto'} · ${session.route}`, tone: 'info' },
+              ],
+            },
+      )
+      scrollChatBottom(true)
+    },
+    runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
+      const s = get()
+      if (s.running) return
+      set({ running: true, composer: '' })
+      push({ kind: 'user', t: nowClock(), who: operator(), text: `/${command.name}${args && ` ${args}`}` } as LedgerItem)
+      const body = {
+        ...context,
+        command_id: command.id,
+        // Opaque to the relay, which only dedupes on it; getRandomValues, unlike
+        // randomUUID, is there on a plain-http origin too.
+        delivery_id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+        arguments: args,
+      }
+      void runLive(s.selThreadId, (onEvent) => streamCommand(body, onEvent), 'command closed without an outcome')
     },
     sendNewThread(text: string) {
       const s = get()

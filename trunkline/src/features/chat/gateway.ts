@@ -2,15 +2,47 @@
  * What the composer holds while it is expanded for a gateway op, and how that
  * becomes the request. Kept out of the components so it reads without them.
  */
-import { useState } from 'react'
+import { useState, type KeyboardEvent } from 'react'
 import type { ApiAgentRoute, ChannelAddress, GatewayRequest } from '@/lib/api/events'
 import type { ChannelMeta } from '@/lib/api/types'
+import { ApiError } from '@/lib/api/auth'
+import { COMMANDS, readCommand } from './commands'
 
 export type GatewayAction = GatewayRequest['action']
 
+/** Move focus between menu choices without taking text editing or range keys. */
+export function navigateGatewayMenu(event: KeyboardEvent<HTMLElement>) {
+  if (event.defaultPrevented || event.altKey || event.ctrlKey || event.metaKey) return
+  if (event.target instanceof HTMLInputElement && (event.target.type === 'range' || event.key === 'Home' || event.key === 'End')) return
+  if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+  const choices = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[data-gateway-option]:not(:disabled)')]
+  if (!choices.length) return
+  const at = choices.findIndex((choice) => choice === event.target)
+  const next = event.key === 'Home' ? 0 : event.key === 'End' ? choices.length - 1
+    : event.key === 'ArrowDown' ? (at + 1) % choices.length
+      : (at <= 0 ? choices.length : at) - 1
+  event.preventDefault()
+  event.stopPropagation()
+  choices[next].focus()
+}
+
+/** A slash command still being completed must not become an operation's prompt. */
+export function isGatewayCommand(text: string, action: GatewayAction): boolean {
+  const line = readCommand(text, COMMANDS)
+  return line?.phase === 'name'
+    ? line.matches.some((one) => one.command.name === action)
+    : line?.command.name === action
+}
+
+/** The same destination refusal or empty result in the finder and the menu. */
+export function destinationReason(error: Error | null, noun: string): string {
+  if (!error) return `No ${noun} to list here.`
+  return error instanceof ApiError && error.status === 409
+    ? error.message : `Couldn't load ${noun} — ${error.message}`
+}
+
 /** The effort scale as the slider draws it; `auto` leaves the agent its default. */
-export const EFFORT_SCALE = ['auto', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const
-export type EffortLevel = (typeof EFFORT_SCALE)[number]
+export type EffortLevel = string
 
 /** A picked address and the labels walked to reach it. */
 export interface Destination {
@@ -44,16 +76,19 @@ const blank = (action: GatewayAction | null): GatewayForm => ({
   menu: action === 'teleport' ? 'destination' : null,
 })
 
-/** The open op's draft: it outlives polling, and a new thread or op starts blank. */
+/** Both entry points share a draft, kept when closed until the thread or op changes. */
 export function useGatewayForm(threadId: string, action: GatewayAction | null) {
-  const key = action ? `${threadId}:${action}` : ''
-  const [held, setHeld] = useState({ key, form: blank(action) })
-  if (held.key !== key) setHeld({ key, form: blank(action) })
-  const form = held.key === key ? held.form : blank(action)
+  const [held, setHeld] = useState({ threadId, action, form: blank(action) })
+  const changed = held.threadId !== threadId || (action !== null && held.action !== action)
+  if (changed) setHeld({ threadId, action, form: blank(action) })
+  const form = changed ? blank(action) : held.form
   const patch = (change: Partial<GatewayForm>) => setHeld((now) => ({ ...now, form: { ...now.form, ...change } }))
   // What a command opens an op with; set in the same turn the composer switches to it.
   const seed = (next: GatewayAction, change: Partial<GatewayForm>) =>
-    setHeld({ key: `${threadId}:${next}`, form: { ...blank(next), ...change } })
+    setHeld((now) => ({
+      threadId, action: next,
+      form: { ...(now.threadId === threadId && now.action === next ? now.form : blank(next)), ...change },
+    }))
   return [form, patch, seed] as const
 }
 
@@ -62,26 +97,6 @@ export function pickRoute(routes: ApiAgentRoute[], agent: string | null, model: 
   return routes.find((one) => one.agent_id === agent && one.model === model)
     ?? routes.find((one) => one.agent_id === agent)
     ?? routes[0]
-}
-
-/** Where a slider move lands: the level asked for, else the next supported one
- *  in the direction of travel, else where it was. */
-export function stepEffort(from: EffortLevel, to: EffortLevel, supported: readonly EffortLevel[]): EffortLevel {
-  const direction = EFFORT_SCALE.indexOf(to) > EFFORT_SCALE.indexOf(from) ? 1 : -1
-  for (let at = EFFORT_SCALE.indexOf(to); at >= 0 && at < EFFORT_SCALE.length; at += direction) {
-    if (supported.includes(EFFORT_SCALE[at])) return EFFORT_SCALE[at]
-  }
-  return from
-}
-
-/** The level a new route keeps: the one held if it takes it, else its nearest. */
-export function nearestEffort(level: EffortLevel, supported: readonly EffortLevel[]): EffortLevel {
-  if (supported.includes(level)) return level
-  const held = EFFORT_SCALE.indexOf(level)
-  const distance = (one: EffortLevel) => Math.abs(EFFORT_SCALE.indexOf(one) - held)
-  return supported
-    .filter((one) => one !== 'auto')
-    .reduce<EffortLevel>((best, one) => (best === 'auto' || distance(one) < distance(best) ? one : best), 'auto')
 }
 
 /** One step into a channel: the channel itself, then each place opened in it. */
@@ -165,7 +180,7 @@ export function routeEffort(route: ApiAgentRoute | undefined, held: EffortLevel)
   const claimed = route?.claim.efforts ?? []
   const preset = route?.claim.default_effort ?? null
   const efforts: EffortLevel[] = preset ? claimed : ['auto', ...claimed]
-  return { efforts, effort: held === 'auto' && preset ? preset : nearestEffort(held, efforts) }
+  return { efforts, effort: efforts.includes(held) ? held : preset ?? 'auto' }
 }
 
 export function sameAddress(a: ChannelAddress, b: ChannelAddress): boolean {
@@ -184,6 +199,7 @@ export function gatewayRequest(
   action: GatewayAction,
   form: { text: string; destination: Destination | null; route: ApiAgentRoute | undefined; effort: EffortLevel },
 ): GatewayRequest | null {
+  if (isGatewayCommand(form.text, action)) return null
   const text = form.text.trim()
   if (action === 'teleport') {
     if (!form.destination) return null

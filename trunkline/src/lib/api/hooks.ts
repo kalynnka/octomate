@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { fetchApiKeys, fetchProfileAuthorizations } from './auth'
-import { fetchAddresses, fetchThreadOperations } from './client'
+import { fetchAddresses, fetchCommandCatalog, fetchThreadOperations } from './client'
+import type { CommandContextBody } from './events'
 import { api } from './index'
 
 export const useChannels = () =>
@@ -41,8 +42,9 @@ export const useProfileAuthorizations = () =>
   useQuery({ queryKey: ['profile-authorizations'], queryFn: fetchProfileAuthorizations })
 
 // Session counts and MCP authorizations can change while the control page is open.
-export const useAgents = () =>
-  useQuery({ queryKey: ['agents'], queryFn: api.agents, refetchInterval: 15_000 })
+// The composer reads the same entry for `/effort`, and only while its finder is.
+export const useAgents = (enabled = true) =>
+  useQuery({ queryKey: ['agents'], queryFn: api.agents, refetchInterval: 15_000, enabled })
 
 export const useProfile = () =>
   useQuery({ queryKey: ['profile'], queryFn: api.profile, refetchInterval: 15_000 })
@@ -65,6 +67,18 @@ export const useThreadOperations = (threadId: string, enabled: boolean) =>
     retry: false,
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
+  })
+
+/** The commands the selected agent offers for a conversation. Discovery that
+ *  was cut short answers `loading`, so that answer is asked again. */
+export const useCommandCatalog = (context: CommandContextBody | null) =>
+  useQuery({
+    queryKey: ['command-catalog', context?.agent_id, context?.conversation_id],
+    queryFn: () => fetchCommandCatalog(context!),
+    enabled: context !== null,
+    retry: false,
+    staleTime: 60_000,
+    refetchInterval: (query) => (query.state.data?.status === 'loading' ? 2_000 : false),
   })
 
 /** One level of a channel's destinations, fetched when that level is opened. */
