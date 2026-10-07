@@ -116,6 +116,7 @@ from octomate.telemetry import (
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.catalog import (
+    HOST_COMMANDS,
     ClaudeCommandDescriptor,
     claude_effort_adapter,
 )
@@ -681,7 +682,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         return CommandCatalog(
             context=context,
             status="ready",
-            descriptors=set(info.commands),
+            descriptors={
+                entry.model_copy(update={"unavailable_reason": HOST_COMMANDS[entry.id]})
+                if entry.id in HOST_COMMANDS
+                else entry
+                for entry in info.commands
+            },
             limitations=[
                 "Claude safe mode disables local commands, skills and plugins.",
             ],

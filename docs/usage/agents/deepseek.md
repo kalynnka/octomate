@@ -95,8 +95,8 @@ launch token: see [Hooks and MCP](../../installation/clients/deepseek.md).
 ## Runtime commands
 
 Command discovery reads the live registry for the conversation's native DSH
-session. It returns each command's name, description, input hint and attachment
-declaration, and preserves the effective definition's plugin identity. Scoped
+session. It returns each command's name, description and input hint, and preserves
+the effective definition's plugin identity. Scoped
 overrides come from DSH; Octomate keeps no command-name inventory.
 
 Discovery requires an existing native session and a running Remote connection.
@@ -125,9 +125,19 @@ conversation posture, so the next ordinary run keeps the new setting.
 
 All `/goal` operations are excluded from discovery and execution. Independently
 scheduled work after a command finishes is outside this command lifecycle.
-Command attachments are rejected before dispatch. Client-owned log export returns
-an unsupported result directing the user to DSH's web UI. Compaction runs in DSH;
+Command attachments are unavailable and rejected before dispatch. Client-owned
+log export is shown disabled, directing the user to DSH's web UI. Compaction runs in DSH;
 this proxy does not introduce a second compaction-history model.
+
+| Command, when advertised | Handling |
+|---|---|
+| `/compact` | DSH owns compaction; the command result reports its outcome. |
+| `/plan off` | Native control with direct feedback. |
+| `/plan <message>` | Native command followed by its immediate recorded agent run. |
+| `/permission` | Native control; permission events update Octomate's saved posture. |
+| Session log export | Disabled for DSH's export plugin; use its web UI. A different plugin with the same display name keeps its own behavior. |
+| `/goal` | Omitted; independently scheduled continuation is not integrated. |
+| Other registry commands | Native execution with direct feedback or an immediate recorded run. |
 
 ## Not yet
 

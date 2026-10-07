@@ -756,6 +756,7 @@ export interface ApiCommandDescriptor {
   /** the runtime's own free-form hint for the argument, when it gives one */
   argument_hint: string | null
   requires_conversation: boolean
+  unavailable_reason: string | null
   accepts_attachments: boolean | null
 }
 

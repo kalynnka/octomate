@@ -456,7 +456,17 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         return CommandCatalog(
             context=context,
             status="ready",
-            descriptors=set(await self.ink.list_commands(conversation.external_id)),
+            descriptors={
+                entry.model_copy(
+                    update={
+                        "accepts_attachments": False,
+                        "unavailable_reason": "Download session logs in the DSH web UI."
+                        if entry.definition_id == "@deepseek-ai/dsh-session-log-export"
+                        else entry.unavailable_reason,
+                    }
+                )
+                for entry in await self.ink.list_commands(conversation.external_id)
+            },
         )
 
     async def execute_command(
@@ -488,11 +498,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if not isinstance(descriptor, DeepseekCommandDescriptor):
             yield CommandError(
                 status="stale", message="This command changed; refresh commands."
-            )
-            return
-        if descriptor.definition_id == "@deepseek-ai/dsh-session-log-export":
-            yield CommandError(
-                status="unsupported", message="Download session logs in the DSH web UI."
             )
             return
         if not self.ink.running:

@@ -8,6 +8,17 @@ from octomate.schemas.commands import CommandDescriptor
 
 claude_effort_adapter = TypeAdapter(ClaudeEffort)
 
+# Only annotate commands actually returned by initialize; SDK and terminal
+# command surfaces differ. Session-local settings would be reset on the next run.
+HOST_COMMANDS: dict[str, str] = {
+    "model": "Use Octomate's agent/model picker when starting a conversation.",
+    "effort": "Use /effort to save the conversation's reasoning effort.",
+    "permissions": "Use Octomate's permission control to save the conversation's mode.",
+    "plan": "Use Octomate's permission control to select plan mode.",
+    "fork": "Forking requires an independent Octomate conversation and is not available as a command yet.",
+    "resume": "Select the conversation in Octomate instead of changing its native session.",
+}
+
 
 class ClaudeCommandDescriptor(CommandDescriptor, frozen=True):
     """A native initialize command normalized for the shared catalog."""

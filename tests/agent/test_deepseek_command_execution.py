@@ -407,7 +407,7 @@ async def test_client_owned_export_is_refused_before_dispatch(
     signal = replace(signal, invocation=CommandInvocation(command_id="export"))
     outcome = await app.kick(signal)
     assert isinstance(outcome, CommandError)
-    assert outcome.status == "unsupported"
+    assert outcome.status == "unavailable"
     assert not calls_of("commands/execute")
 
 

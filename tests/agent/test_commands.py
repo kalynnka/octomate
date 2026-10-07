@@ -82,6 +82,24 @@ def test_conversation_requirement_defaults_to_true_and_survives_serialization() 
     assert len({scoped, direct}) == 2
 
 
+def test_disabled_command_reason_survives_serialization() -> None:
+    descriptor = CommandDescriptor(
+        id="builtin:review",
+        name="review",
+        description="Review changes",
+        unavailable_reason="Native review mode is not supported here yet.",
+    )
+    assert (
+        CommandDescriptor.model_validate_json(descriptor.model_dump_json())
+        == descriptor
+    )
+    assert len({descriptor, descriptor.model_copy()}) == 1
+    with pytest.raises(ValidationError):
+        CommandDescriptor(
+            id="review", name="review", description="Review", unavailable_reason=""
+        )
+
+
 def test_flat_catalog_retains_conversation_context_on_wire(
     context: CommandContext,
 ) -> None:

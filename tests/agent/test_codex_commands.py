@@ -27,6 +27,7 @@ from octomate.schemas.commands import CommandCatalog, CommandContext, CommandDes
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
 from octomate.types.json import JsonObject
 from tests.agent.test_model_discovery import codex_model
@@ -206,12 +207,15 @@ async def test_native_metadata_and_duplicate_names(
     )
     catalog = await agent.discover_commands(context)
     assert catalog.status == "ready"
-    assert len(catalog.descriptors) == 2
-    assert {item.id for item in catalog.descriptors} == {
+    skills = {
+        item for item in catalog.descriptors if isinstance(item, CodexCommandDescriptor)
+    }
+    assert len(catalog.descriptors) == len(APP_COMMANDS) + 2
+    assert {item.id for item in skills} == {
         "skill:/repo/review/SKILL.md",
         "skill:/user/review/SKILL.md",
     }
-    for item in catalog.descriptors:
+    for item in skills:
         assert isinstance(item, CodexCommandDescriptor)
         assert item.name == "review"
         assert item.description == "Native description\nwith details."
@@ -247,15 +251,37 @@ async def test_workspace_is_never_created(
     catalog = await agent.discover_commands(
         replace(context, cwd=cwd if missing else None)
     )
-    assert catalog.status == "unavailable"
+    assert catalog.status == "ready"
+    assert {entry.id for entry in catalog.descriptors} == {
+        entry.id for entry in APP_COMMANDS
+    }
+    assert catalog.limitations == [
+        "Skills are discoverable after a conversation workspace exists."
+    ]
     assert not cwd.exists()
     inspector[0].request.assert_not_awaited()
     inspector[0].start.assert_awaited_once()
 
 
+def test_app_commands_explain_refusals_and_exclude_goals_and_cli_actions() -> None:
+    descriptors = {item.name: item for item in APP_COMMANDS}
+    assert {
+        "review",
+        "compact",
+        "status",
+        "reasoning",
+        "ide-context",
+        "pet",
+    } <= descriptors.keys()
+    assert not {"goal", "quit", "exit", "statusline", "keymap"} & descriptors.keys()
+    assert {
+        name for name, item in descriptors.items() if item.unavailable_reason is None
+    } == {"plan", "init", "status", "mcp", "reasoning"}
+    assert not descriptors["status"].requires_conversation
+
+
 @pytest.mark.parametrize(
-    ("skills", "errors", "status"),
-    [(False, False, "ready"), (True, True, "ready"), (False, True, "failed")],
+    ("skills", "errors"), [(False, False), (True, True), (False, True)]
 )
 async def test_empty_and_partial_discovery_are_distinct(
     agent: CodexTentacle,
@@ -263,7 +289,6 @@ async def test_empty_and_partial_discovery_are_distinct(
     inspector: tuple[AsyncMock, asyncio.Queue[Notification | CodexError]],
     skills: bool,
     errors: bool,
-    status: str,
 ) -> None:
     client, _ = inspector
     client.request.return_value = SkillsListResponse(
@@ -294,9 +319,15 @@ async def test_empty_and_partial_discovery_are_distinct(
         ]
     )
     catalog = await agent.discover_commands(context)
-    assert catalog.status == status
-    assert bool(catalog.descriptors) == skills
-    assert len(catalog.limitations) == (2 if errors else 1)
+    assert catalog.status == "ready"
+    assert {entry.id for entry in APP_COMMANDS} <= {
+        entry.id for entry in catalog.descriptors
+    }
+    assert (
+        any(isinstance(item, CodexCommandDescriptor) for item in catalog.descriptors)
+        == skills
+    )
+    assert len(catalog.limitations) == (1 if errors else 0)
     if errors:
         assert catalog.limitations[-1] == "/broken/SKILL.md: Invalid frontmatter"
 
@@ -362,20 +393,30 @@ async def test_disconnect_invalidates_without_restarting_the_client(
     client.initialize.assert_awaited_once()
 
 
-@pytest.mark.parametrize(
-    "error", [MethodNotFoundError(-32601, "unsupported"), CodexError("private details")]
-)
+async def test_missing_skills_rpc_keeps_known_app_commands(
+    agent: CodexTentacle,
+    context: CommandContext,
+    inspector: tuple[AsyncMock, asyncio.Queue[Notification | CodexError]],
+) -> None:
+    inspector[0].request.side_effect = MethodNotFoundError(-32601, "unsupported")
+    catalog = await agent.discover_commands(context)
+    assert catalog.status == "ready"
+    assert {entry.id for entry in catalog.descriptors} == {
+        entry.id for entry in APP_COMMANDS
+    }
+    assert catalog.limitations == [
+        "This Codex runtime does not support skill discovery."
+    ]
+
+
 async def test_errors_do_not_become_empty_catalogs(
     agent: CodexTentacle,
     context: CommandContext,
     inspector: tuple[AsyncMock, asyncio.Queue[Notification | CodexError]],
-    error: CodexError,
 ) -> None:
-    inspector[0].request.side_effect = error
+    inspector[0].request.side_effect = CodexError("private details")
     catalog = await agent.discover_commands(context)
-    assert catalog.status == (
-        "unsupported" if isinstance(error, MethodNotFoundError) else "failed"
-    )
+    assert catalog.status == "failed"
     assert catalog.message
     assert "private details" not in catalog.message
 

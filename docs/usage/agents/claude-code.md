@@ -84,9 +84,20 @@ once. Attachments are not supported.
 
 `/clear` updates the conversation's resumable session ID from the SDK's final
 result. `/compact` leaves summarization to Claude. Neither command deletes or
-rewrites Octomate's recorded history. Native settings commands affect their SDK
-session; they do not change Octomate's saved model or permission settings, which
-are applied again on the next turn.
+rewrites Octomate's recorded history.
+
+Only commands advertised by the connected SDK appear. Some need shared Octomate
+controls instead of a change confined to one SDK connection:
+
+| Command, when advertised | Handling |
+|---|---|
+| `/context`, `/compact`, `/clear` | Native execution; direct feedback is recorded without inventing a model run. `/clear` keeps Octomate's history and adopts Claude's new session ID. |
+| `/model` | Disabled; use the agent/model picker when starting a conversation. |
+| `/effort` | Native entry disabled; use the gateway `/effort` to save the selection. |
+| `/permissions`, `/plan` | Disabled; use the conversation's permission control, including its plan mode. |
+| `/fork`, `/resume` | Disabled; changing native sessions must preserve Octomate's conversation ownership. Select an existing conversation in Octomate to resume it. |
+| `/goal` | Omitted; automatic continuation is not integrated. |
+| Other advertised commands and skills | Native execution with their raw arguments; real agent activity uses the normal recorded stream. Safe mode still limits which skills appear. |
 
 ## Approvals and questions
 

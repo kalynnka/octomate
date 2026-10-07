@@ -83,22 +83,57 @@ are carried on start and on resume.
 
 ## Runtime commands
 
-The command catalog discovers enabled skills through Codex's `skills/list` API.
-It preserves native names and descriptions, and identifies skills by their paths,
-so two skills with the same name remain distinct. Codex does not expose a general
-CLI slash-command catalog through this API.
+The command finder lists Codex's app and IDE commands even before the first
+message. The matrix below covers built-in commands that need special handling or
+are unavailable. **Disabled** means the command is visible but cannot execute;
+**omitted** means it is not listed. Planned handling is not available yet.
 
-Discovery requires an existing conversation workspace. Before one exists, the
-catalog reports unavailable; inspection does not create a workspace, start a
-Codex thread or send a prompt. It uses the tentacle's shared app-server, including
-its configuration overrides and change notifications.
+| Command | Available now | Handling or alternative |
+|---|---|---|
+| `/approve` | Disabled | Planned: approve a selected recent automatic-review denial for a retry. Any retry run must be recorded and delivered through Octomate. |
+| `/compact` | Disabled | Planned: compact the existing Codex conversation and report completion after the work finishes. |
+| `/plan [on\|off]` | Available after a driven run | Enter Codex planning mode, or leave it with `off`. Keeps the selected model and effort. Changing mode starts no run; the next prompt uses the mode. |
+| `/review` | Disabled | Planned: run Codex's built-in review, with its output recorded and delivered like other agent runs. |
+| `/init` | Available in a conversation | Ask Codex to create or update `AGENTS.md` in the conversation's workspace through a recorded agent run. This can write files and follows the conversation's approvals. |
+| `/status` | Available, including before a conversation exists | Show Octomate's conversation, workspace, model, effort and permission selections. Does not start a run. Native token usage and account rate limits are not included yet. |
+| `/mcp` | Available after a driven run | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
+| `/reasoning [level]` | Available in a conversation | Save the same effort selection as `/effort`, validated against the selected model. Omit the level to restore the default. Use `/effort` before the first message. |
+| `/fork` | Disabled | Planned: create an independent Octomate thread and conversation with copied history and settings, preserving the source. |
+| `/model` | Disabled | Use Trunkline's agent/model picker when starting a conversation. Planned: open that shared control from the command. |
+| `/project` | Disabled | Use Trunkline's project selector. Planned: open the same selector from the command. |
+| `/task` | Disabled | Use `/new` and leave the project unselected. Planned: start a conversation through Octomate's new-thread flow. |
+| `/worktree` | Disabled | Workspace creation belongs to Octomate's [workspace lifecycle](../workspaces.md). Selecting a new worktree through this command is planned. |
+| `/local` | Disabled | Driven runs already use the conversation's local workspace. Execution location is managed by Octomate. |
+| `/fast` | Disabled | Planned: offer fast execution only when the selected model and runtime support it. |
+| `/memories` | Disabled | Planned: expose memory controls only when supported by the runtime. |
+| `/personality` | Disabled | Planned: expose response-style controls only when supported by the model and runtime. |
+| `/cloud` | Disabled | Cloud execution is not integrated. |
+| `/cloud-environment` | Disabled | Cloud environment selection is not integrated. |
+| `/ide-context` | Disabled | Automatic editor context belongs to the Codex IDE extension. |
+| `/feedback` | Disabled | Use Codex's feedback dialog. |
+| `/pet` | Disabled | Manage desktop pets in the Codex app. |
+| `/side` | Disabled | Temporary side conversations are not supported here. |
+| `/goal` | Omitted | Goal execution and automatic continuation are deferred. |
+| CLI-only commands | Omitted | This catalog covers app and IDE commands. |
+
+This matrix concerns driven conversations. Synced native sessions remain
+read-only; use an available [gateway operation](../channels/trunkline.md) to
+continue elsewhere.
+
+Planning and MCP inspection require the conversation to be loaded in the current
+Codex runtime. After a runtime restart, send a message to resume it first.
+
+Enabled skills appear alongside those actions once a conversation workspace
+exists. Inspection does not create a workspace, start a Codex thread or send a
+prompt. Skills keep their native names and descriptions; a skill sharing a name
+with a disabled built-in remains selectable.
 
 The host caches the catalog until explicit refresh, context changes or eviction.
 A `skills/changed` notification or runtime disconnect invalidates the agent's
 catalogs. Preparing a driven turn invalidates that conversation's catalog as well.
 Refresh rescans Codex's own skills cache; use it for changes the runtime has not
-reported. Native skill-loading errors appear in catalog limitations. If errors
-leave no enabled skills, discovery reports failed instead of an empty success.
+reported. Skill-loading errors appear alongside the known app commands so the
+finder explains why skills are missing.
 
 Explicit skill execution refreshes discovery for the selected conversation and
 resolves the skill from that catalog. Disabled, removed or out-of-scope skills are
@@ -152,6 +187,5 @@ for where new turns land and the limits for older history.
 
 ## Not yet
 
-- **Native CLI slash commands** have no discovery or execution API in this adapter.
 - **Structured output** rides the turn's output schema; there is no retry loop.
 - **Images in a prompt** are dropped.

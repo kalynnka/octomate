@@ -156,6 +156,49 @@ async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
     assert len(factory.call_args_list) == 1
 
 
+async def test_host_settings_are_disabled_only_when_advertised(
+    agent: ClaudeCodeTentacle,
+    context: CommandContext,
+    client: AsyncMock,
+    payload: JsonObject,
+) -> None:
+    client.get_server_info.return_value = {
+        **payload,
+        "commands": [
+            {"name": name, "description": f"Native {name}"}
+            for name in (
+                "model",
+                "effort",
+                "plan",
+                "permissions",
+                "fork",
+                "resume",
+                "context",
+                "clear",
+                "plugin:review",
+            )
+        ],
+    }
+    catalog = await agent.discover_commands(context)
+    descriptors = {entry.id: entry for entry in catalog.descriptors}
+    assert set(descriptors) == {
+        "model",
+        "effort",
+        "plan",
+        "permissions",
+        "fork",
+        "resume",
+        "context",
+        "clear",
+        "plugin:review",
+    }
+    assert {
+        name for name, entry in descriptors.items() if entry.unavailable_reason
+    } == {"model", "effort", "plan", "permissions", "fork", "resume"}
+    assert descriptors["clear"].description == "Native clear"
+    client.query.assert_not_called()
+
+
 @pytest.mark.parametrize("has_path", [False, True])
 async def test_probe_never_prepares_a_missing_workspace(
     agent: ClaudeCodeTentacle,

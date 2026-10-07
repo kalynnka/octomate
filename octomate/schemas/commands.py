@@ -75,7 +75,7 @@ class CommandContext:
 
 
 class CommandDescriptor(BaseModel, frozen=True):
-    """The fields channels consume for any invocable runtime entry.
+    """The fields channels consume for runtime commands and skills.
 
     Tentacles subclass this model for typed runtime metadata. Catalog serialization
     preserves those fields, but channels depend only on this base. Rehydrate an
@@ -99,6 +99,13 @@ class CommandDescriptor(BaseModel, frozen=True):
         "a direct outcome before a conversation exists, without creating a thread, "
         "run or delivery receipt. An adapter must not start an agent run in that context.",
     )
+    unavailable_reason: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Why a known command cannot execute through this adapter. "
+        "Null means available, subject to context requirements. Channels display "
+        "disabled entries with this reason; the host refuses their execution.",
+    )
     accepts_attachments: bool | None = Field(
         default=None,
         description="Whether attached input is supported; null means unspecified. "
@@ -114,7 +121,7 @@ class CommandCatalog(BaseModel):
     )
     descriptors: set[SerializeAsAny[CommandDescriptor]] = Field(
         default_factory=set,
-        description="Unique invocable runtime entries, with no ordering guarantee. Runtime-specific "
+        description="Unique known runtime entries, with no ordering guarantee. Runtime-specific "
         "descriptor subclasses retain their additional fields; empty unless ready.",
     )
     status: Literal["ready", "loading", "unsupported", "unavailable", "failed"] = Field(

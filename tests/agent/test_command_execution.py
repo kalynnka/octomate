@@ -322,6 +322,31 @@ async def test_current_catalog_state_controls_execution(
         assert await session.count(ThreadCommand) == 0
 
 
+@pytest.mark.parametrize("has_conversation", [True, False])
+async def test_disabled_command_is_refused_before_dispatch_or_receipt(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    has_conversation: bool,
+) -> None:
+    reason = "Native review mode is not supported here yet."
+    agent.descriptors = {
+        CommandDescriptor(
+            id="review", name="review", description="Review", unavailable_reason=reason
+        )
+    }
+    if not has_conversation:
+        context = replace(context, conversation=None)
+    async with app.commands.validate(
+        agent, context, CommandInvocation(command_id="review"), delivery_id="disabled"
+    ) as result:
+        assert result == CommandError(status="unavailable", message=reason)
+    assert not agent.invocations
+    assert not app.gateway.sessions
+    async with async_session() as session:
+        assert await session.count(ThreadCommand) == 0
+
+
 @pytest.mark.parametrize("accepts", [None, False])
 async def test_execution_requires_declared_attachment_support(
     app: Octomate, agent: ExecutingAgent, context: CommandContext, accepts: bool | None

@@ -350,6 +350,10 @@ class CommandManager(Manager):
                 yield CommandError(
                     status="unknown", message="This command is no longer available."
                 )
+            elif descriptor.unavailable_reason is not None:
+                yield CommandError(
+                    status="unavailable", message=descriptor.unavailable_reason
+                )
             elif descriptor.requires_conversation and conversation_id is None:
                 yield CommandError(
                     status="unavailable",

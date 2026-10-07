@@ -530,7 +530,8 @@ export function Composer() {
         : null
   const catalog = useCommandCatalog(composerText.startsWith('/') ? context : null)
   const natives = context && catalog.data?.status === 'ready'
-    ? catalog.data.descriptors.map((one) => nativeCommand(one, Boolean(context.conversation_id))).sort((a, b) => a.name.localeCompare(b.name))
+    ? catalog.data.descriptors.map((one) => nativeCommand(one, Boolean(context.conversation_id)))
+      .sort((a, b) => a.name.localeCompare(b.name) || Number(Boolean(a.unavailable)) - Number(Boolean(b.unavailable)))
     : []
   const commands = [...COMMANDS, ...natives]
   const line = !mode && (ntOn || detail) && !running && !hidden ? readCommand(composerText, commands) : null

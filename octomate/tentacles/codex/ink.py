@@ -23,14 +23,18 @@ from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApproval,
     AskForApprovalValue,
+    CollaborationMode,
     ConfigReadResponse,
     IdleThreadStatus,
+    ListMcpServerStatusResponse,
+    ModeKind,
     Model,
     ModelListResponse,
     NotLoadedThreadStatus,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
+    Settings,
     SkillsListEntry,
     SkillsListResponse,
     ThreadClosedNotification,
@@ -142,6 +146,7 @@ class CodexInk:
                     invalidate_commands(self.agent_id)
                 if isinstance(notification.payload, ThreadClosedNotification):
                     self.thread_bindings.pop(notification.payload.thread_id, None)
+                    invalidate_commands(self.agent_id)
         except CodexError:
             if self.notification_task is not None:
                 logger.warning("Codex runtime disconnected", exc_info=True)
@@ -437,6 +442,51 @@ class CodexInk:
             },
             response_model=ThreadSettingsUpdateResponse,
         )
+
+    async def set_plan_mode(
+        self,
+        thread_id: str,
+        *,
+        enabled: bool,
+        model: str,
+        effort: ReasoningEffort | None,
+    ) -> None:
+        """Queue the native collaboration preset without submitting a turn.
+
+        Null developer instructions select Codex's own preset. Model and effort
+        are explicit because collaborationMode replaces that complete setting.
+        """
+        mode = CollaborationMode(
+            mode=ModeKind.plan if enabled else ModeKind.default,
+            settings=Settings(model=model, reasoning_effort=effort),
+        )
+        await self.client._client.request(
+            "thread/settings/update",
+            {
+                "threadId": thread_id,
+                "collaborationMode": mode.model_dump(mode="json"),
+            },
+            response_model=ThreadSettingsUpdateResponse,
+        )
+
+    async def mcp_status(self, thread_id: str) -> str:
+        """Inspect only this thread's MCP connections, including paginated servers."""
+        lines: list[str] = []
+        cursor: str | None = None
+        while True:
+            page = await self.client._client.request(
+                "mcpServerStatus/list",
+                {"threadId": thread_id, "cursor": cursor},
+                response_model=ListMcpServerStatusResponse,
+            )
+            lines.extend(
+                f"{server.name}: {len(server.tools)} tools, "
+                f"{len(server.resources)} resources; auth {server.auth_status.value}"
+                for server in page.data
+            )
+            cursor = page.next_cursor
+            if cursor is None:
+                return "\n".join(lines) or "No MCP servers are connected."
 
     async def start_turn(
         self,

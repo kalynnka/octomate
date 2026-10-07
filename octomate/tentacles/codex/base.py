@@ -88,10 +88,10 @@ from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
-    CommandDescriptor,
     CommandError,
     CommandInvocation,
     CommandOutcome,
+    CommandResult,
 )
 from octomate.schemas.conversation import (
     ChannelAddress,
@@ -105,6 +105,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.files import Jsonl
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -119,6 +120,7 @@ from octomate.tentacles.codex.adapter import (
     CodexRunAccumulator,
     json_object_adapter,
 )
+from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.ink import CodexInk
@@ -719,22 +721,42 @@ class CodexTentacle(AgentTentacle[str, None]):
             raise
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
-        """Inspect enabled skills without preparing a workspace or starting a turn."""
+        """List app actions and inspect skills without preparing a workspace or turn."""
+        conversation = context.conversation
+        bound = (
+            conversation is not None
+            and conversation.external_id is not None
+            and (binding := self.ink.thread_bindings.get(conversation.external_id))
+            is not None
+            and binding[0] == conversation.id
+        )
+        catalog = CommandCatalog(
+            context=context,
+            status="ready",
+            descriptors={
+                descriptor.model_copy(
+                    update={
+                        "unavailable_reason": "Run this conversation in Codex before using this command."
+                    }
+                )
+                if descriptor.name in {"plan", "mcp"} and not bound
+                else descriptor
+                for descriptor in APP_COMMANDS
+            },
+        )
         if context.cwd is None or not await anyio.Path(context.cwd).is_dir():
-            return CommandCatalog(
-                context=context,
-                status="unavailable",
-                message="Codex skill discovery requires an existing conversation workspace.",
+            catalog.limitations.append(
+                "Skills are discoverable after a conversation workspace exists."
             )
+            return catalog
         try:
             entry = await self.ink.skills(context.cwd)
         except MethodNotFoundError:
-            return CommandCatalog(
-                context=context,
-                status="unsupported",
-                message="This Codex runtime does not support skills/list.",
+            catalog.limitations.append(
+                "This Codex runtime does not support skill discovery."
             )
-        descriptors: set[CommandDescriptor] = {
+            return catalog
+        catalog.descriptors.update(
             CodexCommandDescriptor(
                 id=f"skill:{skill.path.root}",
                 name=skill.name,
@@ -745,20 +767,11 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             for skill in entry.skills
             if skill.enabled
-        }
-        return CommandCatalog(
-            context=context,
-            status="failed" if entry.errors and not descriptors else "ready",
-            descriptors=descriptors,
-            message="Codex could not load skills for this workspace."
-            if entry.errors and not descriptors
-            else None,
-            limitations=[
-                # TODO: Add CLI-only commands separately from app operations.
-                "Codex exposes skills, not a general CLI slash-command catalog.",
-                *(f"{error.path}: {error.message}" for error in entry.errors),
-            ],
         )
+        catalog.limitations.extend(
+            f"{error.path}: {error.message}" for error in entry.errors
+        )
+        return catalog
 
     async def execute_command(
         self,
@@ -768,30 +781,55 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[str], None]:
-        """Run a discovered skill in the selected conversation using SDK input."""
+        """Dispatch controls directly and stream only commands that start a run."""
         conversation = context.conversation
-        if conversation is None:
-            raise ValueError("command execution requires a conversation")
         catalog = await self.discover_commands(context)
-        descriptors = {
-            descriptor.id: descriptor
-            for descriptor in catalog.descriptors
-            if isinstance(descriptor, CodexCommandDescriptor)
-        }
+        descriptors = {descriptor.id: descriptor for descriptor in catalog.descriptors}
         descriptor = descriptors.get(invocation.command_id)
         if descriptor is None:
             yield CommandError(
                 status="stale",
-                message="This skill is no longer available; refresh commands.",
+                message="This command is no longer available; refresh commands.",
             )
             return
-        inputs: list[InputItem] = [
-            SkillInput(name=descriptor.name, path=str(descriptor.path))
-        ]
-        prompt = f"/{descriptor.name}"
-        if invocation.arguments:
-            inputs.append(TextInput(invocation.arguments))
-            prompt += f" {invocation.arguments}"
+        if descriptor.id in {
+            "builtin:status",
+            "builtin:mcp",
+            "builtin:plan",
+            "builtin:reasoning",
+        }:
+            yield await self.command_control(context, invocation)
+            return
+        if conversation is None:
+            raise ValueError("an agent command run requires a conversation")
+        if isinstance(descriptor, CodexCommandDescriptor):
+            inputs: list[InputItem] = [
+                SkillInput(name=descriptor.name, path=str(descriptor.path))
+            ]
+            prompt = f"/{descriptor.name}"
+            if invocation.arguments:
+                inputs.append(TextInput(invocation.arguments))
+                prompt += f" {invocation.arguments}"
+        elif descriptor.id == "builtin:init":
+            if invocation.arguments.strip():
+                yield CommandError(
+                    status="unsupported", message="/init takes no arguments."
+                )
+                return
+            prompt = (
+                "Inspect this workspace and create or update AGENTS.md with concise, "
+                "accurate instructions for agents working in this project. Use the "
+                "repository's actual build, test and style conventions. Preserve "
+                "existing project instructions that remain applicable."
+            )
+            inputs = [TextInput(prompt)]
+        else:
+            yield CommandError(
+                status="unavailable",
+                message=descriptor.unavailable_reason
+                or "This command is not supported.",
+            )
+            return
         async with contextlib.aclosing(
             self.observe_run(
                 self._iter_events(
@@ -809,6 +847,75 @@ class CodexTentacle(AgentTentacle[str, None]):
         ) as events:
             async for event in events:
                 yield event
+
+    async def command_control(
+        self, context: CommandContext, invocation: CommandInvocation
+    ) -> CommandOutcome:
+        """Apply native controls or Octomate-owned effort without a model run."""
+        argument = invocation.arguments.strip()
+        conversation = context.conversation
+        if invocation.command_id == "builtin:status":
+            if argument:
+                return CommandError(
+                    status="unsupported", message="/status takes no arguments."
+                )
+            effort = (conversation.effort if conversation else None) or (
+                self.config.effort.value if self.config.effort is not None else None
+            )
+            text = (
+                f"Agent: {self.id}\nModel: {context.model or self.default_model or 'runtime default'}\n"
+                f"Permissions: {context.permission_mode or self.default_permission_mode}\n"
+                f"Effort: {effort or 'runtime default'}\n"
+                f"Conversation: {conversation.id if conversation else 'not created'}\n"
+                f"Workspace: {context.cwd or 'not created'}"
+            )
+            return CommandResult(segments=[TextSegment(data={"text": text})])
+        if conversation is None:
+            raise ValueError("this command requires a conversation")
+        if invocation.command_id == "builtin:reasoning":
+            effort = argument or None
+            if effort is not None:
+                try:
+                    self.check_effort(context.model, effort)
+                except ValueError as error:
+                    return CommandError(status="unsupported", message=str(error))
+            await self.conversations.set_effort(conversation, effort)
+            text = f"Reasoning effort: {effort or 'default'}."
+            return CommandResult(segments=[TextSegment(data={"text": text})])
+        thread_id = conversation.external_id
+        binding = self.ink.thread_bindings.get(thread_id) if thread_id else None
+        if thread_id is None or binding is None or binding[0] != conversation.id:
+            return CommandError(
+                status="unavailable",
+                message="Run this conversation in Codex before using this command.",
+            )
+        if invocation.command_id == "builtin:mcp":
+            if argument:
+                return CommandError(
+                    status="unsupported", message="/mcp takes no arguments."
+                )
+            text = await self.ink.mcp_status(thread_id)
+            return CommandResult(segments=[TextSegment(data={"text": text})])
+        if argument not in {"", "on", "off"}:
+            return CommandError(status="unsupported", message="Use /plan [on|off].")
+        selected = self.resolve_model(context.model or self.default_model)
+        if selected is None:
+            return CommandError(
+                status="unavailable",
+                message="Select a model before changing planning mode.",
+            )
+        model = self.models[selected]
+        effort = await self.resolve_effort(conversation, model=selected)
+        await self.ink.set_plan_mode(
+            thread_id,
+            enabled=argument != "off",
+            model=model.model_name if isinstance(model, Model) else model,
+            effort=ReasoningEffort(effort)
+            if effort is not None
+            else self.config.effort,
+        )
+        text = f"Planning mode {'disabled' if argument == 'off' else 'enabled'} for subsequent turns."
+        return CommandResult(segments=[TextSegment(data={"text": text})])
 
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
         """Reuse one MCP key per user, replacing it when its lifetime expires."""

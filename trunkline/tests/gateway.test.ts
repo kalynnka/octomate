@@ -39,9 +39,10 @@ const routes: ApiAgentRoute[] = [
   { agent_id: 'claude', model: 'sonnet', claim: { ability: 'Code review', efforts: ['low', 'high'], default_effort: null } },
   { agent_id: 'claude', model: 'haiku', claim: { ability: 'Quick answers', efforts: [], default_effort: null } },
 ]
-const compact: ApiCommandDescriptor = { id: 'claude:compact', name: 'compact', description: 'Summarize the conversation to free context.', argument_hint: '[instructions]', requires_conversation: true, accepts_attachments: null }
-const cost: ApiCommandDescriptor = { id: 'claude:cost', name: 'cost', description: 'Token usage and spend for this session.', argument_hint: null, requires_conversation: true, accepts_attachments: null }
-const status: ApiCommandDescriptor = { id: 'runtime:status', name: 'status', description: 'Runtime status.', argument_hint: null, requires_conversation: false, accepts_attachments: null }
+const compact: ApiCommandDescriptor = { id: 'claude:compact', name: 'compact', description: 'Summarize the conversation to free context.', argument_hint: '[instructions]', requires_conversation: true, unavailable_reason: null, accepts_attachments: null }
+const cost: ApiCommandDescriptor = { id: 'claude:cost', name: 'cost', description: 'Token usage and spend for this session.', argument_hint: null, requires_conversation: true, unavailable_reason: null, accepts_attachments: null }
+const status: ApiCommandDescriptor = { id: 'runtime:status', name: 'status', description: 'Runtime status.', argument_hint: null, requires_conversation: false, unavailable_reason: null, accepts_attachments: null }
+const blockedCommand: ApiCommandDescriptor = { ...status, id: 'runtime:blocked', name: 'blocked', unavailable_reason: 'Open this operation in the native app.' }
 const request: GatewayRequest = { action: 'teleport', body: { destination: room, hint: 'Continue here' } }
 const gateway: GatewayEvent = { event_kind: 'gateway', action: 'teleport', announcement: 'Continue here', destination: {
   channel_tentacle_id: 'lark', chat_type: 'thread', chat_id: 'account', channel_thread_id: 'platform-id', user_id: 'owner', shared: false,
@@ -747,10 +748,20 @@ test('a command requiring a conversation preserves the new composer draft', () =
   assert.deepEqual(useConsole.getState().live, [])
 })
 
+test('a disabled runtime command preserves the draft without making a request', () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('must not execute') })
+  useConsole.setState({ ntOn: true, composer: '/blocked' })
+  useConsole.getState().actions.runCommand({ agent_id: 'claude', address: fresh }, blockedCommand, '')
+  assert.equal(fetch.mock.callCount(), 0)
+  assert.equal(useConsole.getState().composer, '/blocked')
+  assert.equal(useConsole.getState().running, false)
+})
+
 for (const [text, disabled, model, permission] of [
   ['/status', false, null, null],
   ['/status', false, 'sonnet', 'default'],
   ['/compact', true, null, null],
+  ['/blocked', true, null, null],
   ['/summon', true, null, null],
   ['/effort high', false, 'sonnet', null],
 ] as const) {
@@ -765,7 +776,8 @@ for (const [text, disabled, model, permission] of [
     queryClient.setQueryData(['routes'], { routes: [{ id: `claude:${model ?? ''}`, agent: 'claude', model }] })
     queryClient.setQueryData(['agents'], [{ id: 'claude', routes, default_model: 'sonnet' }])
     const context = { agent_id: 'claude', address: fresh, model, permission_mode: permission }
-    queryClient.setQueryData(['command-catalog', 'claude', context], { descriptors: [status, compact], status: 'ready', message: null, limitations: [] })
+    const disabledStatus = { ...status, id: 'builtin:status', unavailable_reason: 'Native status is not supported here.' }
+    queryClient.setQueryData(['command-catalog', 'claude', context], { descriptors: [disabledStatus, status, compact, blockedCommand], status: 'ready', message: null, limitations: [] })
     function NewComposer() {
       const runtime = useTrunklineRuntime()
       runtime.thread.composer.setText(text)
@@ -776,6 +788,7 @@ for (const [text, disabled, model, permission] of [
       assert.equal(/<button[^>]*disabled=""[^>]*>Send ↵<\/button>/.test(html), disabled)
       if (text === '/status') assert.match(html, /Runtime status/)
       if (text === '/compact') assert.match(html, /This command requires an existing conversation/)
+      if (text === '/blocked') assert.match(html, /Open this operation in the native app/)
       if (text === '/summon') assert.match(html, /Start a conversation before handing it to another agent/)
       if (text.startsWith('/effort')) assert.match(html, /type="range"/)
     } finally {

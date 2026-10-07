@@ -213,6 +213,7 @@ Channels use only these `CommandDescriptor` fields:
 | `argument_hint` | Show a free-form input hint when supplied; never parse it as an argument schema. |
 | `accepts_attachments` | Offer attachments only for `true`. `false` means unsupported; `None` means unspecified. |
 | `requires_conversation` | Require a conversation unless the adapter explicitly permits a direct result before one exists. |
+| `unavailable_reason` | Show a known command disabled with its explanation. The host refuses it before dispatch or a delivery receipt. |
 
 Extend `CommandDescriptor` with typed attributes in the owning tentacle's schema
 module. Descriptors are frozen and hashable. Extension fields must also be hashable:
@@ -228,6 +229,47 @@ Claude aliases or a DSH definition ID belong on their respective descriptor
 subclasses in the same way. Map the runtime's invocation identity to the common
 `id`; channels must not construct a runtime path or slash line from the display
 name. Keep all standard fields' meanings unchanged when extending the model.
+
+Known commands that the adapter cannot execute can remain visible as disabled
+entries with a reason. Channels show that reason and the host refuses execution
+before invoking the adapter or recording a delivery.
+
+### Audit command ownership
+
+For a new tentacle, inspect the SDK or protocol's actual command surface first.
+Do not assume that commands in a terminal, desktop app and headless SDK are the
+same. Keep a source reference and representative discovery and result fixtures.
+Use dynamic discovery where offered; maintain an explicit client-action catalog
+only for runtimes, such as Codex, whose app actions have no command registry.
+
+Check each special command against these cases before enabling it:
+
+| Case | Implementation requirement |
+|---|---|
+| Native inspection or state change | Use the native control API or command endpoint. Return direct feedback without creating a model run. An acknowledgement of queued work is not proof of completion. |
+| Agent activity | Use the tentacle's existing recorded run stream and approval bridge through the Reflex command entry. Leave the ReAct core unchanged. Keep the workspace and subscription alive until the actual native work ends. |
+| Octomate-owned selection or identity | Reuse the owner of model, effort, permission, project, thread or conversation state. A native-only setting that the next run overwrites is not a working control. Forks must create independent host and native histories. |
+| Unsupported client feature | Keep the known command visible with a specific unavailable reason and an existing alternative where possible. Do not advertise it as executable before its handler works. |
+
+An existing workspace, native session or channel thread is a prerequisite only
+when the operation needs it. Discovery creates none of them. A direct inspection
+may work before a conversation exists; a command that starts real agent activity
+needs an owned conversation. Synced native transcripts remain read-only.
+
+Preserve upstream identities and resolve plugin overrides through the runtime.
+Use a stable definition ID for special handling when the protocol provides one,
+rather than capturing every plugin with the same display name. Advertise only
+capabilities the adapter implements, including attachments. Never dispatch an
+unrecognized slash string as a fallback prompt.
+
+Add a command matrix to the tentacle's usage page covering supported special
+handling, disabled entries and omissions. Describe current behavior separately
+from planned handlers. Test direct results without runs, real streamed runs,
+refusals without dispatch, settings surviving the next run, scoped discovery,
+and same-name plugin or skill collisions. Goal commands stay excluded until their
+continuation lifecycle is integrated.
+
+### Catalog and execution lifecycle
 
 Construct catalogs with these concrete descriptor instances. The `descriptors` field
 is a set: identical descriptors deduplicate, conflicting definitions with the same

@@ -1404,7 +1404,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
       const s = get()
       if (s.running || s.detail?.kind === 'native_thread') return
-      if (!context.conversation_id && command.requires_conversation !== false) return
+      if (command.unavailable_reason || (!context.conversation_id && command.requires_conversation !== false)) return
       set({ running: true, composer: '' })
       push({ kind: 'user', t: nowClock(), who: operator(), text: `/${command.name}${args && ` ${args}`}` } as LedgerItem)
       const body = {

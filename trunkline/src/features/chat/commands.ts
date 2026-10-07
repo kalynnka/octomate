@@ -41,8 +41,8 @@ export function nativeCommand(descriptor: ApiCommandDescriptor, hasConversation 
   return {
     name: COMMANDS.some((one) => one.name === descriptor.name) ? `native:${descriptor.name}` : descriptor.name,
     description: descriptor.description,
-    unavailable: !hasConversation && descriptor.requires_conversation !== false
-      ? 'This command requires an existing conversation.' : undefined,
+    unavailable: descriptor.unavailable_reason ?? (!hasConversation && descriptor.requires_conversation !== false
+      ? 'This command requires an existing conversation.' : undefined),
     native: descriptor,
   }
 }

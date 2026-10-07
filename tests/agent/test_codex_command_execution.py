@@ -11,6 +11,7 @@ from openai_codex import SkillInput, TextInput
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
+    ListMcpServerStatusResponse,
     ReasoningEffort,
     SkillsListEntry,
     TurnCompletedNotification,
@@ -24,7 +25,12 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.config import ChannelConfig
 from octomate.config.agents import CodexConfig
-from octomate.schemas.commands import CommandContext, CommandError, CommandInvocation
+from octomate.schemas.commands import (
+    CommandContext,
+    CommandError,
+    CommandInvocation,
+    CommandResult,
+)
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.thread import ThreadCommand
 from octomate.schemas.triage import Claim
@@ -157,7 +163,11 @@ async def test_runs_apply_saved_effort(
     await agent.conversations.set_effort(conversation, effort)
     if command:
         catalog = await agent.discover_commands(context)
-        invocation = CommandInvocation(command_id=next(iter(catalog.descriptors)).id)
+        invocation = CommandInvocation(
+            command_id=next(
+                item for item in catalog.descriptors if item.id.startswith("skill:")
+            ).id
+        )
         async for _ in agent.execute_command(context, invocation):
             pass
     else:
@@ -215,7 +225,11 @@ async def test_command_rejects_effort_unsupported_by_current_model(
     context = replace(context, model=model)
     await agent.conversations.set_effort(conversation, "high")
     catalog = await agent.discover_commands(context)
-    invocation = CommandInvocation(command_id=next(iter(catalog.descriptors)).id)
+    invocation = CommandInvocation(
+        command_id=next(
+            item for item in catalog.descriptors if item.id.startswith("skill:")
+        ).id
+    )
     with pytest.raises(ValueError, match="does not take effort 'high'"):
         async for _ in agent.execute_command(context, invocation):
             pass
@@ -237,7 +251,9 @@ async def test_skill_turn_preserves_input_context_and_records_outcome(
         await agent.octomate.conversations.set_external_id(conversation, "prior-thread")
         FakeCodex.script = text_script("reviewed", thread_id="prior-thread")
     catalog = await agent.discover_commands(context)
-    descriptor = next(iter(catalog.descriptors))
+    descriptor = next(
+        item for item in catalog.descriptors if item.id.startswith("skill:")
+    )
     invocation = CommandInvocation(command_id=descriptor.id, arguments=arguments)
     async with AsyncExitStack() as stack:
         validated = await stack.enter_async_context(
@@ -288,7 +304,9 @@ async def test_skill_execution_rejects_stale_or_undiscovered_paths(
 ) -> None:
     agent, context, skills = execution
     catalog = await agent.discover_commands(context)
-    descriptor = next(iter(catalog.descriptors))
+    descriptor = next(
+        item for item in catalog.descriptors if item.id.startswith("skill:")
+    )
     entry = skills.return_value
     assert isinstance(entry, SkillsListEntry)
     command_id = descriptor.id
@@ -319,7 +337,9 @@ async def test_detached_skill_stream_drains_before_releasing_the_command_guard(
     conversation = context.conversation
     assert conversation is not None
     catalog = await agent.discover_commands(context)
-    descriptor = next(iter(catalog.descriptors))
+    descriptor = next(
+        item for item in catalog.descriptors if item.id.startswith("skill:")
+    )
     observed, detach, finish = asyncio.Event(), asyncio.Event(), asyncio.Event()
 
     async def gated_stream(turn: FakeTurn) -> AsyncIterator[Notification]:
@@ -526,3 +546,209 @@ async def test_rejected_codex_permission_update_does_not_save_the_selection(
         await agent.set_permission_mode(conversation, "full_access")
     stored = await agent.conversations.get(conversation.id)
     assert stored.permission_mode is None
+
+
+async def test_status_before_a_conversation_does_not_start_codex(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    context = replace(context, conversation=None, cwd=None)
+    events = [
+        event
+        async for event in agent.execute_command(
+            context, CommandInvocation(command_id="builtin:status")
+        )
+    ]
+    assert len(events) == 1
+    assert isinstance(events[0], CommandResult)
+    assert "Conversation: not created" in events[0].model_dump_json()
+    assert not FakeCodex.thread_calls
+    assert not FakeCodex.turn_calls
+
+
+@pytest.mark.parametrize("argument", ["", "high", "invalid"])
+async def test_reasoning_saves_host_effort_without_a_run(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], argument: str
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    model = next(iter(agent.models))
+    agent.claims = {model: Claim(ability="Test", efforts=("high",))}
+    agent.routes = agent.build_routes()
+    await agent.conversations.set_effort(conversation, "high")
+    events = [
+        event
+        async for event in agent.execute_command(
+            replace(context, model=model),
+            CommandInvocation(command_id="builtin:reasoning", arguments=argument),
+        )
+    ]
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.effort == (argument or None if argument != "invalid" else "high")
+    assert isinstance(
+        events[0], CommandError if argument == "invalid" else CommandResult
+    )
+    assert not FakeCodex.turn_calls
+    assert not FakeCodex.thread_calls
+    assert not await stored.runs
+
+
+@pytest.mark.parametrize(
+    ("argument", "mode"), [("", "plan"), ("on", "plan"), ("off", "default")]
+)
+async def test_plan_uses_native_preset_preserving_model_and_effort(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], argument: str, mode: str
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    model = next(iter(agent.models))
+    agent.claims = {model: Claim(ability="Test", efforts=("high",))}
+    agent.routes = agent.build_routes()
+    await agent.conversations.set_effort(conversation, "high")
+    await agent.conversations.set_external_id(conversation, "existing")
+    agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    events = [
+        event
+        async for event in agent.execute_command(
+            replace(context, model=model),
+            CommandInvocation(command_id="builtin:plan", arguments=argument),
+        )
+    ]
+    assert isinstance(events[0], CommandResult)
+    request.assert_awaited_once_with(
+        "thread/settings/update",
+        {
+            "threadId": "existing",
+            "collaborationMode": {
+                "mode": mode,
+                "settings": {
+                    "model": "test-model",
+                    "reasoning_effort": "high",
+                    "developer_instructions": None,
+                },
+            },
+        },
+        response_model=ThreadSettingsUpdateResponse,
+    )
+    assert not FakeCodex.turn_calls
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.effort == "high"
+    assert stored.permission_mode is None
+    assert not await stored.runs
+
+
+@pytest.mark.parametrize("command", ["plan", "mcp"])
+async def test_native_controls_are_disabled_without_an_owned_runtime_thread(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], command: str
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "existing")
+    agent.ink.thread_bindings["existing"] = (uuid7(), None)
+    invocation = CommandInvocation(command_id=f"builtin:{command}")
+    async with agent.commands.validate(
+        agent, context, invocation, delivery_id="unbound"
+    ) as outcome:
+        assert isinstance(outcome, CommandError)
+        assert outcome.status == "unavailable"
+    assert (
+        await agent.threads.find_message(conversation.thread_id, "unbound", "inbound")
+        is None
+    )
+    assert not FakeCodex.thread_calls
+    assert not FakeCodex.turn_calls
+
+
+async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "existing")
+    agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    request.side_effect = [
+        ListMcpServerStatusResponse.model_validate(
+            {
+                "data": [
+                    {
+                        "name": "gateway",
+                        "authStatus": "bearerToken",
+                        "tools": {},
+                        "resources": [],
+                        "resourceTemplates": [],
+                    }
+                ],
+                "nextCursor": "page-2",
+            }
+        ),
+        ListMcpServerStatusResponse(data=[]),
+    ]
+    events = [
+        event
+        async for event in agent.execute_command(
+            context, CommandInvocation(command_id="builtin:mcp")
+        )
+    ]
+    assert isinstance(events[0], CommandResult)
+    assert "gateway: 0 tools" in events[0].model_dump_json()
+    assert [call.args[1] for call in request.await_args_list] == [
+        {"threadId": "existing", "cursor": None},
+        {"threadId": "existing", "cursor": "page-2"},
+    ]
+    assert not FakeCodex.turn_calls
+
+
+async def test_init_streams_and_records_one_real_run(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    events = [
+        event
+        async for event in agent.execute_command(
+            context, CommandInvocation(command_id="builtin:init")
+        )
+    ]
+    assert isinstance(events[-1], AgentRunResultEvent)
+    [call] = FakeCodex.turn_calls
+    assert isinstance(call.prompt, list)
+    assert isinstance(call.prompt[0], TextInput)
+    assert "AGENTS.md" in call.prompt[0].text
+    stored = await agent.conversations.get(conversation.id)
+    assert len(await stored.runs) == 1
+
+
+@pytest.mark.parametrize("command", ["status", "mcp", "plan", "init"])
+async def test_builtin_arguments_are_rejected_without_native_effects(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], command: str
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "existing")
+    agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    events = [
+        event
+        async for event in agent.execute_command(
+            context,
+            CommandInvocation(command_id=f"builtin:{command}", arguments="unexpected"),
+        )
+    ]
+    assert isinstance(events[0], CommandError)
+    assert events[0].status == "unsupported"
+    request.assert_not_awaited()
+    assert not FakeCodex.turn_calls

@@ -85,7 +85,7 @@ async def test_catalog_preserves_native_metadata_without_prompting(
     assert descriptors["compact"].argument_hint is None
     assert not descriptors["compact"].accepts_attachments
     assert descriptors["plan"].argument_hint == "[off|message]"
-    assert descriptors["plan"].accepts_attachments
+    assert not descriptors["plan"].accepts_attachments
     assert descriptors["review"].argument_hint == "[target]"
     assert not descriptors["review"].accepts_attachments
     plan = descriptors["plan"]
@@ -146,6 +146,34 @@ async def test_empty_registry_is_ready(
     catalog = await agent.discover_commands(context)
     assert catalog.status == "ready"
     assert not catalog.descriptors
+
+
+@pytest.mark.parametrize(
+    "definition", ["@deepseek-ai/dsh-session-log-export", "plugin:export", None]
+)
+async def test_export_restriction_follows_plugin_identity(
+    agent: DeepseekTentacle,
+    client: AsyncMock,
+    context: CommandContext,
+    definition: str | None,
+) -> None:
+    client.remote.return_value = OkResult(
+        value=[
+            {
+                "name": "export",
+                "definitionId": definition,
+                "description": "Export",
+                "input": {"attachments": True},
+            }
+        ]
+    )
+    catalog = await agent.discover_commands(context)
+    [descriptor] = catalog.descriptors
+    assert bool(descriptor.unavailable_reason) == (
+        definition == "@deepseek-ai/dsh-session-log-export"
+    )
+    assert not descriptor.accepts_attachments
+    client.follow.assert_not_called()
 
 
 async def test_connection_startup_replaces_unavailable_catalog_and_shutdown_expires_it(
