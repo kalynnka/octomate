@@ -493,33 +493,81 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         destination: ThreadKey,
         *,
         sender: UserProfile,
+        model: AgentRouteModelName | None = None,
     ) -> Thread:
-        """Fork an owner's uploaded native history onto a new surface, as a
-        conversation this tentacle drives. The import is the runtime's own
-        `fork_transcript`; the checks and the thread around it are every runtime's."""
+        """Fork owned native or driven history onto an independent surface.
+
+        Native imports use `fork_transcript`. Driven forks use `fork_session` and
+        copy the history, settings and project workspace, retaining the source
+        session. The caller opens the destination and holds the runtime's turn
+        guard while forking a driven conversation.
+        """
         owner_id = sender.user_id
         if owner_id is None:
-            raise ValueError("A native fork requires a registered owner")
-        if source.agent_tentacle_id != self.native_id or source.subagent_id:
-            raise ValueError("Only a root native session of this runtime can be forked")
+            raise ValueError("A fork requires a registered owner")
+        source = await self.conversations.get(source.id)
+        if (
+            source.agent_tentacle_id not in {self.id, self.native_id}
+            or source.subagent_id
+        ):
+            raise ValueError("Only a root conversation of this runtime can be forked")
+        driven = source.agent_tentacle_id == self.id
         threads = self.threads
-        source_thread = await threads.get(
-            source.thread_id, with_messages=False, user_id=owner_id
-        )
+        source_thread = await threads.get(source.thread_id, with_messages=False)
         if source_thread is None:
             raise FileNotFoundError("No conversation")
-        if source.transcript_file_id is None:
-            raise ValueError("The session transcript has not been uploaded yet")
-        await self.files.get(source.transcript_file_id, owner_id=owner_id)
+        surface = await threads.get(
+            source_thread.parent_thread_id or source_thread.id,
+            with_messages=False,
+            user_id=owner_id,
+        )
+        if surface is None:
+            raise FileNotFoundError("No conversation")
+        if not driven:
+            if source.transcript_file_id is None:
+                raise ValueError("The session transcript has not been uploaded yet")
+            await self.files.get(source.transcript_file_id, owner_id=owner_id)
         project = await self.projects.of(source_thread)
-        if project is not None and not await anyio.Path(project.root).is_dir():
+        if (
+            not driven
+            and project is not None
+            and not await anyio.Path(project.root).is_dir()
+        ):
             project = None
         thread = await threads.ensure(destination, project=project)
+        if thread.id == source_thread.id:
+            raise ValueError("A fork requires an independent destination thread")
         target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
-        cwd = self.workspaces.open(thread.id, project).path
-        await self.fork_transcript(source, target, owner_id=owner_id, cwd=cwd)
+        workspace = self.workspaces.open(thread.id, project)
+        if driven:
+            await self.workspaces.carry(source_thread, thread)
+            async with workspace:
+                external_id = await self.fork_session(source, cwd=workspace.path)
+            if source.external_id is not None and (
+                external_id is None or external_id == source.external_id
+            ):
+                raise ValueError("The runtime did not create an independent session.")
+            await self.conversations.fork(
+                source, target, external_id=external_id, model_name=model
+            )
+            await threads.record_handoff(
+                thread,
+                to_agent_tentacle_id=self.id,
+                to_model=model,
+                source_conversation_id=source.id,
+                target_conversation_id=target.id,
+            )
+        else:
+            await self.fork_transcript(
+                source, target, owner_id=owner_id, cwd=workspace.path
+            )
         return await threads.record_fork(
-            source, thread, sender=sender, title=source_thread.title
+            source,
+            thread,
+            sender=sender,
+            title=f"Fork of {source_thread.title or 'conversation'}"
+            if driven
+            else source_thread.title,
         )
 
     async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:

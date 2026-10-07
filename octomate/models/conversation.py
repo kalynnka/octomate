@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
 from sqlalchemy import ARRAY, JSON, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
@@ -154,3 +155,8 @@ class Conversation(Base, TransmuterProxiedMixin):
         viewonly=True,
         lazy="selectin",
     )
+
+    @hybrid_property
+    def latest_run(self) -> AgentRun | None:
+        """The last run in the ordered history, or None before the first run."""
+        return self.runs[-1] if self.runs else None

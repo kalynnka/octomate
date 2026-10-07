@@ -178,5 +178,10 @@ class Conversation(BaseTransmuter):
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
     @property
+    def latest_run(self) -> AgentRun | ExternalAgentRun | None:
+        """The last run in the loaded, ordered history, or None before the first run."""
+        return self.runs[-1] if self.runs else None
+
+    @property
     def key(self) -> ConversationKey:
         return ConversationKey(self.thread_id, self.agent_tentacle_id, self.subagent_id)

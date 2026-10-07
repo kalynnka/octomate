@@ -25,12 +25,17 @@ from openai_codex.generated.v2_all import (
     AskForApproval,
     AskForApprovalValue,
     CollaborationMode,
+    CommandGuardianApprovalReviewAction,
     ConfigReadResponse,
+    ExecveGuardianApprovalReviewAction,
+    GuardianApprovalReviewStatus,
     IdleThreadStatus,
+    ItemGuardianApprovalReviewCompletedNotification,
     ListMcpServerStatusResponse,
     ModeKind,
     Model,
     ModelListResponse,
+    NetworkAccessGuardianApprovalReviewAction,
     NotLoadedThreadStatus,
     Personality,
     ReasoningEffort,
@@ -39,6 +44,7 @@ from openai_codex.generated.v2_all import (
     Settings,
     SkillsListEntry,
     SkillsListResponse,
+    ThreadApproveGuardianDeniedActionResponse,
     ThreadClosedNotification,
     ThreadForkParams,
     ThreadResumeParams,
@@ -47,10 +53,12 @@ from openai_codex.generated.v2_all import (
     TurnStartParams,
 )
 from pydantic import SecretStr, TypeAdapter
+from pydantic.alias_generators import to_snake
 
 from octomate.config.agents import CodexConfig
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.telemetry import octomate_trace_environment
+from octomate.tentacles.codex.adapter import json_object_adapter
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.tentacles.codex.schemas import (
     CodexModelCatalog,
@@ -404,6 +412,45 @@ class CodexInk:
         if forked.thread.id == thread_id:
             raise ValueError("Codex fork returned the source thread id")
         return forked.thread.id
+
+    async def approve_denied_action(
+        self, thread_id: str, denial: ItemGuardianApprovalReviewCompletedNotification
+    ) -> None:
+        """Record an explicit approval; the caller starts the subsequent retry turn.
+
+        This RPC accepts a legacy GuardianAssessmentEvent, whose action tags and
+        field names use snake_case rather than the v2 notification's camelCase.
+        """
+        if (
+            denial.thread_id != thread_id
+            or denial.review.status != GuardianApprovalReviewStatus.denied
+        ):
+            raise ValueError("Approval requires a denial from this native thread.")
+        action = json_object_adapter.validate_python(
+            denial.action.model_dump(mode="json", by_alias=False, exclude_none=True)
+        )
+        action["type"] = to_snake(denial.action.root.type)
+        native_action = denial.action.root
+        if isinstance(
+            native_action,
+            CommandGuardianApprovalReviewAction | ExecveGuardianApprovalReviewAction,
+        ):
+            action["source"] = native_action.source.name
+        if isinstance(native_action, NetworkAccessGuardianApprovalReviewAction):
+            action["protocol"] = native_action.protocol.name
+        await self.client._client.request(
+            "thread/approveGuardianDeniedAction",
+            {
+                "threadId": thread_id,
+                "event": {
+                    "id": denial.review_id,
+                    "turn_id": denial.turn_id,
+                    "status": "denied",
+                    "action": action,
+                },
+            },
+            response_model=ThreadApproveGuardianDeniedActionResponse,
+        )
 
     async def set_permission_mode(
         self,

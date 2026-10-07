@@ -815,6 +815,17 @@ class CodexRunAccumulator:
                     )
                 )
 
+        if self.messages and self.pending_events:
+            message = self.messages[-1]
+            metadata = dict(message.metadata or {})
+            events = metadata.get("events", [])
+            if not isinstance(events, list):
+                raise ValueError("Codex message events must be a list")
+            message.metadata = {
+                **metadata,
+                **codex_metadata([*events, *self.take_message_events([])]),
+            }
+
     def take_message_events(self, events: list[JsonValue]) -> list[JsonValue]:
         message_events = [*self.pending_events, *events]
         self.pending_events = []

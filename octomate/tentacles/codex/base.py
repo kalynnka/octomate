@@ -15,7 +15,7 @@ import os
 import uuid
 from collections.abc import AsyncGenerator, Generator, Sequence
 from contextvars import Context, copy_context
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import cached_property, partial
 from pathlib import Path
@@ -47,6 +47,8 @@ from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import MethodNotFoundError
 from openai_codex.generated.v2_all import (
     BaseBranchReviewTarget,
+    GuardianApprovalReviewStatus,
+    ItemGuardianApprovalReviewCompletedNotification,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
@@ -85,6 +87,7 @@ from octomate.capabilities.harness.deferred import DeferredSuspender, Interjecti
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
@@ -118,7 +121,9 @@ from octomate.telemetry import (
     codex_logfire,
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
+from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.codex.adapter import (
+    CODEX_METADATA_SOURCE,
     CODEX_PROVIDER_NAME,
     CodexRunAccumulator,
     json_object_adapter,
@@ -802,12 +807,14 @@ class CodexTentacle(AgentTentacle[str, None]):
             "builtin:plan",
             "builtin:reasoning",
             "builtin:compact",
+            "builtin:fork",
         }:
             yield await self.command_control(context, invocation)
             return
         if conversation is None:
             raise ValueError("an agent command run requires a conversation")
         review: ReviewTarget | None = None
+        approval: ItemGuardianApprovalReviewCompletedNotification | None = None
         if isinstance(descriptor, CodexCommandDescriptor):
             inputs: list[InputItem] = [
                 SkillInput(name=descriptor.name, path=str(descriptor.path))
@@ -828,6 +835,20 @@ class CodexTentacle(AgentTentacle[str, None]):
                 "repository's actual build, test and style conventions. Preserve "
                 "existing project instructions that remain applicable."
             )
+            inputs = [TextInput(prompt)]
+        elif descriptor.id == "builtin:approve":
+            review_id = invocation.arguments.strip()
+            if any(char.isspace() for char in review_id):
+                yield CommandError(
+                    status="unsupported", message="Use /approve [review-id]."
+                )
+                return
+            try:
+                approval = await self.command_approval(conversation, review_id)
+            except ValueError as error:
+                yield CommandError(status="unavailable", message=str(error))
+                return
+            prompt = "Retry the action I just explicitly approved from the preceding automatic review."
             inputs = [TextInput(prompt)]
         elif descriptor.id == "builtin:review":
             branch = invocation.arguments.strip()
@@ -859,6 +880,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                     prompt,
                     native_input=inputs,
                     review=review,
+                    approval=approval,
                     conversation_address=context.address,
                     thread_id=conversation.thread_id,
                     conversation_id=conversation.id,
@@ -898,6 +920,55 @@ class CodexTentacle(AgentTentacle[str, None]):
             return CommandResult(segments=[TextSegment(data={"text": text})])
         if conversation is None:
             raise ValueError("this command requires a conversation")
+        if invocation.command_id == "builtin:fork":
+            if argument:
+                return CommandError(
+                    status="unsupported", message="/fork takes no arguments."
+                )
+            if conversation.external_id is None:
+                return CommandError(
+                    status="unavailable",
+                    message="Run this conversation before forking it.",
+                )
+            async with self.conversation_locks.hold(str(conversation.id)):
+                profile = await self.users.profile(
+                    context.address.channel_tentacle_id, context.address.user_id
+                )
+                channel = self.octomate.tentacles[context.address.channel_tentacle_id]
+                if profile is None or profile.user_id != context.user_id:
+                    raise ValueError("The source conversation is no longer available.")
+                if not isinstance(channel, ChannelTentacle):
+                    raise ValueError(
+                        "Forking requires a channel that can open a thread."
+                    )
+                source_thread = await self.threads.get(
+                    conversation.thread_id, with_messages=False
+                )
+                if source_thread is None:
+                    raise FileNotFoundError("No conversation")
+                parent = replace(context.address, channel_thread_id=None)
+                if parent.chat_type == "thread" and not isinstance(
+                    channel.config, TrunklineChannelConfig
+                ):
+                    parent = replace(parent, chat_type="group")
+                destination = await channel.start_thread(
+                    parent, f"Fork of {source_thread.title or 'conversation'}"
+                )
+                target = await self.fork(
+                    conversation,
+                    ThreadKey.from_address(destination),
+                    sender=profile,
+                    model=context.model,
+                )
+            return CommandResult(
+                segments=[
+                    TextSegment(
+                        data={
+                            "text": f"Created {target.title} ({target.id}). Select the new thread to continue; this conversation is unchanged."
+                        }
+                    )
+                ]
+            )
         if invocation.command_id == "builtin:reasoning":
             effort = argument or None
             if effort is not None:
@@ -965,6 +1036,58 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         text = f"Planning mode {'disabled' if argument == 'off' else 'enabled'} for subsequent turns."
         return CommandResult(segments=[TextSegment(data={"text": text})])
+
+    async def command_approval(
+        self, conversation: Conversation, review_id: str
+    ) -> ItemGuardianApprovalReviewCompletedNotification:
+        """Select a recorded denial from the latest run, inside command validation.
+
+        A later run invalidates prior denials. Copied history cannot authorize a
+        fork's actions: both the native session and turn must match the saved run.
+        Multiple denials require an explicit review ID.
+        """
+        conversation = await self.conversations.get(conversation.id)
+        run = conversation.latest_run
+        if run is None or run.native_session_id != conversation.external_id:
+            raise ValueError(
+                "No automatic-review denial is available from the latest run."
+            )
+        events = (
+            event
+            for message in run.messages
+            if (metadata := message.metadata) is not None
+            and metadata.get("source") == CODEX_METADATA_SOURCE
+            and isinstance(recorded := metadata.get("events"), list)
+            for event in recorded
+            if isinstance(event, dict)
+            and event.get("method") == "item/autoApprovalReview/completed"
+        )
+        denials: dict[str, ItemGuardianApprovalReviewCompletedNotification] = {}
+        for event in events:
+            review = ItemGuardianApprovalReviewCompletedNotification.model_validate(
+                event["payload"]
+            )
+            if (
+                review.thread_id == conversation.external_id
+                and review.turn_id == run.native_turn_id
+                and review.review.status == GuardianApprovalReviewStatus.denied
+            ):
+                denials[review.review_id] = review
+        if review_id:
+            if review_id not in denials:
+                raise ValueError(
+                    "That review is not a denial from this conversation's latest run."
+                )
+            return denials[review_id]
+        if len(denials) == 1:
+            return next(iter(denials.values()))
+        if not denials:
+            raise ValueError(
+                "No automatic-review denial is available from the latest run."
+            )
+        raise ValueError(
+            "Choose a denial with /approve <review-id>: " + ", ".join(denials)
+        )
 
     async def runtime_api_key(self, user_id: uuid.UUID | None) -> IssuedApiKey | None:
         """Reuse one MCP key per user, replacing it when its lifetime expires."""
@@ -1414,6 +1537,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_suspender: DeferredSuspender | None = None,
         native_input: list[InputItem] | None = None,
         review: ReviewTarget | None = None,
+        approval: ItemGuardianApprovalReviewCompletedNotification | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         sdk_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
@@ -1587,6 +1711,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 interjections=interjections,
             )
             resources.callback(self.bridge_contexts.pop, codex_thread_id, None)
+            if approval is not None:
+                await self.ink.approve_denied_action(codex_thread_id, approval)
             turn = await self.ink.start_turn(
                 codex_thread,
                 native_input if native_input is not None else prompt_text,

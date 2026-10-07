@@ -9,6 +9,7 @@ from unittest.mock import Mock
 
 import pytest
 import sqlalchemy.exc
+from arcanus.materia.sqlalchemy import lazyload
 from pydantic import UUID7
 from pydantic_ai.messages import (
     ModelRequest as RawModelRequest,
@@ -85,6 +86,86 @@ async def test_latest_model_selects_one_reported_run_in_its_conversation() -> No
         model_name="other",
     )
     assert await manager.latest_model(conversation.id) == "latest"
+
+
+async def test_latest_run_uses_each_conversations_ordered_history(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = ConversationManager()
+    thread_id = await _thread()
+    driven = await manager.ensure(thread_id, agent_tentacle_id="codex")
+    external = await manager.ensure(thread_id, agent_tentacle_id="claude-native")
+    empty = await manager.ensure(thread_id, agent_tentacle_id="inkling")
+    same_time = datetime(2026, 1, 2, tzinfo=UTC)
+    first_id, latest_id, backfill_id = (str(uuid7()) for _ in range(3))
+    for run_id, timestamp in (
+        (first_id, same_time),
+        (latest_id, same_time),
+        (backfill_id, datetime(2026, 1, 1, tzinfo=UTC)),
+    ):
+        await manager.record_agent_run(
+            driven,
+            run_id=run_id,
+            messages=[RawModelResponse(parts=[TextPart(run_id)], timestamp=timestamp)],
+        )
+    native_id = str(uuid7())
+    await manager.record_external_run(
+        external,
+        run_id=native_id,
+        messages=[RawModelResponse(parts=[TextPart("native")])],
+        native_session_id="session",
+        end_offset=42,
+    )
+
+    queries = Mock()
+    event.listen(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+    try:
+        async with async_session() as session:
+            rows = await session.list(
+                Conversation,
+                limit=None,
+                options=[
+                    lazyload(Conversation["messages"]),
+                ],
+                expressions=[Conversation["thread_id"] == thread_id],
+            )
+        latest = {row.id: row.latest_run for row in rows}
+        run = latest[driven.id]
+        assert run is not None
+        assert run.id == latest_id
+        assert run.messages[0].parts == [TextPart(latest_id)]
+        native = latest[external.id]
+        assert isinstance(native, ExternalAgentRun)
+        assert native.end_offset == 42
+        assert native.messages[0].parts == [TextPart("native")]
+        assert latest[empty.id] is None
+    finally:
+        event.remove(in_memory_engine.sync_engine, "before_cursor_execute", queries)
+
+    assert queries.call_count == 3
+    assert set(queries.call_args_list[-1].args[3]) == {
+        first_id,
+        latest_id,
+        backfill_id,
+        native_id,
+    }
+
+
+async def test_latest_run_follows_the_loaded_runs() -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await _thread(), agent_tentacle_id="codex")
+    assert conversation.latest_run is None
+    first_id, latest_id = (str(uuid7()) for _ in range(2))
+    for run_id in (first_id, latest_id):
+        await manager.record_agent_run(
+            conversation,
+            run_id=run_id,
+            messages=[RawModelResponse(parts=[TextPart(run_id)])],
+        )
+
+    loaded = await manager.get(conversation.id)
+    assert [run.id for run in loaded.runs] == [first_id, latest_id]
+    assert loaded.latest_run is loaded.runs[-1]
 
 
 async def test_ensure_is_idempotent() -> None:

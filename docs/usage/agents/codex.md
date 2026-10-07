@@ -90,7 +90,7 @@ are unavailable. **Disabled** means the command is visible but cannot execute;
 
 | Command | Available now | Handling or alternative |
 |---|---|---|
-| `/approve` | Disabled | Planned: approve a selected recent automatic-review denial for a retry. Any retry run must be recorded and delivered through Octomate. |
+| `/approve [review-id]` | Available after an automatic-review denial | Approve a denied action from the latest run and retry it through a streamed, recorded run. Omit the ID when there is one denial; multiple denials require choosing an ID. Keeps the conversation's permission mode. |
 | `/compact` | Available after a driven run | Compact the existing Codex context. Reports success only after compaction finishes; keeps the visible conversation history. Takes no arguments. |
 | `/plan [on\|off]` | Available after a driven run | Enter Codex planning mode, or leave it with `off`. Keeps the selected model and effort. Changing mode starts no run; the next prompt uses the mode. |
 | `/review [branch]` | Available in a conversation | Run Codex's built-in review of uncommitted changes, or changes against the named branch, in the conversation's workspace. Streams and records the review like other agent runs. |
@@ -98,7 +98,7 @@ are unavailable. **Disabled** means the command is visible but cannot execute;
 | `/status` | Available, including before a conversation exists | Show Octomate's conversation, workspace, model, effort and permission selections. Does not start a run. Native token usage and account rate limits are not included yet. |
 | `/mcp` | Available after a driven run | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
 | `/reasoning [level]` | Available in a conversation | Save the same effort selection as `/effort`, validated against the selected model. Omit the level to restore the default. Use `/effort` before the first message. |
-| `/fork` | Disabled | Planned: create an independent Octomate thread and conversation with copied history and settings, preserving the source. |
+| `/fork` | Available after a driven run | Create an independent thread on the same channel with copied history, model, effort and permissions. Preserves the source and starts no agent run. Requires a channel that can open a new thread. |
 | `/model` | Disabled | Use Trunkline's agent/model picker when starting a conversation. Planned: open that shared control from the command. |
 | `/project` | Disabled | Use Trunkline's project selector. Planned: open the same selector from the command. |
 | `/task` | Disabled | Use `/new` and leave the project unselected. Planned: start a conversation through Octomate's new-thread flow. |
@@ -122,6 +122,14 @@ continue elsewhere.
 
 Planning, compaction and MCP inspection require the conversation to be loaded in the current
 Codex runtime. After a runtime restart, send a message to resume it first.
+
+An approval applies to a denial recorded in this conversation's latest run;
+older denials and denials copied into a fork cannot be retried with `/approve`.
+If the retry fails, its failure is reported through the normal run stream.
+
+After `/fork`, select the new thread to continue. A project-bound fork carries
+the project's workspace snapshot into its own workspace. Without a project,
+the conversation history is copied but the source working files are not.
 
 Enabled skills appear alongside those actions once a conversation workspace
 exists. Inspection does not create a workspace, start a Codex thread or send a

@@ -422,6 +422,10 @@ share:
 6. If the gateway recorded a teleport mid-run, interrupt the runtime and end the
    turn through the suspender with the teleport's deferral.
 
+To support forking a driven conversation, implement `fork_session` to create an
+independent native session. Call the base class's `fork` to carry the conversation
+onto a new channel thread; it shares the lifecycle used for native-history forks.
+
 ## Native ingest
 
 A runtime people also run by hand gets a hook router and a transcript stream.

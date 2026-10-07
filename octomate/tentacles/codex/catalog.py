@@ -16,11 +16,6 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
         unavailable_reason=reason,
     )
     for name, description, reason in (
-        (
-            "approve",
-            "Retry an action denied by automatic review.",
-            "Retrying Codex automatic-review denials is not supported here yet.",
-        ),
         ("cloud", "Run in the cloud.", "Cloud execution is not supported here."),
         (
             "cloud-environment",
@@ -33,11 +28,6 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             "Codex service-tier changes are not supported here yet.",
         ),
         ("feedback", "Send feedback to OpenAI.", "Use the feedback dialog in Codex."),
-        (
-            "fork",
-            "Copy this conversation.",
-            "Forking is not supported as a command here yet.",
-        ),
         (
             "ide-context",
             "Toggle automatic editor context.",
@@ -91,6 +81,17 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
     )
 ) | frozenset(
     {
+        CommandDescriptor(
+            id="builtin:approve",
+            name="approve",
+            description="Approve a denial from the latest run and retry it.",
+            argument_hint="[review-id]",
+        ),
+        CommandDescriptor(
+            id="builtin:fork",
+            name="fork",
+            description="Copy this conversation into an independent thread.",
+        ),
         CommandDescriptor(
             id="builtin:compact",
             name="compact",
