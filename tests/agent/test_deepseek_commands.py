@@ -81,7 +81,8 @@ async def test_catalog_preserves_native_metadata_without_prompting(
     catalog = await agent.discover_commands(context)
     assert catalog.status == "ready"
     descriptors = {entry.id: entry for entry in catalog.descriptors}
-    assert set(descriptors) == {"compact", "plan", "review"}
+    assert set(descriptors) == {"compact", "plan", "review", "fork"}
+    assert descriptors["fork"].unavailable_reason
     assert descriptors["compact"].argument_hint is None
     assert not descriptors["compact"].accepts_attachments
     assert descriptors["plan"].argument_hint == "[off|message]"
@@ -139,13 +140,37 @@ async def test_failed_discovery_never_reports_an_empty_ready_catalog(
     assert not catalog.descriptors
 
 
-async def test_empty_registry_is_ready(
+async def test_empty_registry_keeps_fork_visible_but_disabled(
     agent: DeepseekTentacle, client: AsyncMock, context: CommandContext
 ) -> None:
     client.remote.return_value = OkResult(value=[])
     catalog = await agent.discover_commands(context)
     assert catalog.status == "ready"
-    assert not catalog.descriptors
+    [descriptor] = catalog.descriptors
+    assert descriptor.name == "fork"
+    assert "workspace" in (descriptor.unavailable_reason or "")
+
+
+async def test_registry_cannot_enable_a_fork_without_workspace_relocation(
+    agent: DeepseekTentacle, client: AsyncMock, context: CommandContext
+) -> None:
+    client.remote.return_value = OkResult(
+        value=[
+            {
+                "name": "fork",
+                "definitionId": "plugin:fork",
+                "description": "Fork the native session",
+                "input": {"hint": "[title]"},
+            }
+        ]
+    )
+    catalog = await agent.discover_commands(context)
+    [descriptor] = catalog.descriptors
+    assert isinstance(descriptor, DeepseekCommandDescriptor)
+    assert descriptor.definition_id == "plugin:fork"
+    assert descriptor.description == "Fork the native session"
+    assert descriptor.argument_hint == "[title]"
+    assert "workspace" in (descriptor.unavailable_reason or "")
 
 
 @pytest.mark.parametrize(
@@ -168,7 +193,7 @@ async def test_export_restriction_follows_plugin_identity(
         ]
     )
     catalog = await agent.discover_commands(context)
-    [descriptor] = catalog.descriptors
+    descriptor = next(entry for entry in catalog.descriptors if entry.name == "export")
     assert bool(descriptor.unavailable_reason) == (
         definition == "@deepseek-ai/dsh-session-log-export"
     )
@@ -212,7 +237,7 @@ async def test_cache_keeps_scoped_overrides_and_native_session_changes_separate(
         ]
     )
     second = await agent.discover_commands(second_context)
-    descriptor = next(iter(second.descriptors))
+    descriptor = next(entry for entry in second.descriptors if entry.name == "plan")
     assert isinstance(descriptor, DeepseekCommandDescriptor)
     assert descriptor.definition_id is None
     assert descriptor.argument_hint == "[scope]"
@@ -258,7 +283,7 @@ async def test_registry_notifications_invalidate_without_eager_reprobing(
         client.remote.assert_awaited_once()
         changed = await agent.discover_commands(context)
         assert changed.status == "ready"
-        assert not changed.descriptors
+        assert {entry.name for entry in changed.descriptors} == {"fork"}
         assert client.remote.await_count == 2
         incoming.put_nowait(None)
         await asyncio.wait_for(pump, 1)

@@ -114,6 +114,7 @@ async def scenario(
             endpoint == "commands/execute"
             and isinstance(line, str)
             and line.startswith("/permission ")
+            and not agent.ink.subscribers
         ):
             FakeDeepseekApi.calls.append((endpoint, {"args": args}))
             return OkResult(
@@ -165,11 +166,26 @@ async def scenario(
 @pytest.mark.parametrize(
     "kind", ["success", "silent", "error", "unmatched", "remote_error"]
 )
+@pytest.mark.parametrize(
+    ("command", "arguments"),
+    [
+        ("plan", ""),
+        ("plan", "off"),
+        ("compact", ""),
+        ("feedback", '  useful feedback\nwith "quotes"  '),
+    ],
+)
 async def test_direct_results_are_recorded_once_without_a_model_run(
-    scenario: Scenario, kind: str
+    scenario: Scenario, kind: str, command: str, arguments: str
 ) -> None:
     app, _, _, signal = scenario
-    result: JsonObject = {"kind": "success", "text": "  Plan mode off.\n"}
+    FakeDeepseekApi.results["commands/list"] = OkResult(
+        value=[{"name": command, "description": "Native command"}]
+    )
+    signal = replace(
+        signal, invocation=CommandInvocation(command_id=command, arguments=arguments)
+    )
+    result: JsonObject = {"kind": "success", "text": "  Native feedback.\n"}
     if kind == "silent":
         result = {"kind": "success"}
     elif kind == "error":
@@ -197,7 +213,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
     )
     if isinstance(outcome, CommandResult):
         assert [str(segment) for segment in outcome.segments] == (
-            ["  Plan mode off.\n"] if kind == "success" else []
+            ["  Native feedback.\n"] if kind == "success" else []
         )
     assert calls_of("commands/execute") == [
         {
@@ -210,7 +226,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
         {
             "args": {
                 "agentId": "sess-1",
-                "line": f"/plan {signal.invocation.arguments}",
+                "line": f"/{command}" + (f" {arguments}" if arguments else ""),
                 "submittedAttachments": [],
             }
         },
@@ -358,6 +374,15 @@ async def test_permission_change_is_persisted_from_native_event(
     scenario: Scenario,
 ) -> None:
     app, _, _, signal = scenario
+    FakeDeepseekApi.results["commands/list"] = OkResult(
+        value=[{"name": "permission", "description": "Set permission preset"}]
+    )
+    signal = replace(
+        signal,
+        invocation=CommandInvocation(
+            command_id="permission", arguments="danger-full-access"
+        ),
+    )
     FakeDeepseekApi.turn_script = [
         {
             "type": "permission/preset",
@@ -372,6 +397,34 @@ async def test_permission_change_is_persisted_from_native_event(
     stored = await app.conversations.get(conversation.id)
     assert stored.permission_mode == "danger-full-access"
     assert not await stored.runs
+    assert calls_of("commands/execute")[-1] == {
+        "args": {
+            "agentId": "sess-1",
+            "line": "/permission danger-full-access",
+            "submittedAttachments": [],
+        }
+    }
+
+
+@pytest.mark.parametrize("advertised", [False, True])
+async def test_fork_is_refused_before_any_runtime_operation(
+    scenario: Scenario, advertised: bool
+) -> None:
+    app, _, _, signal = scenario
+    FakeDeepseekApi.results["commands/list"] = OkResult(
+        value=[{"name": "fork", "description": "Fork this session"}]
+        if advertised
+        else []
+    )
+    signal = replace(signal, invocation=CommandInvocation(command_id="fork"))
+    outcome = await app.kick(signal)
+    assert isinstance(outcome, CommandError)
+    assert outcome.status == "unavailable"
+    assert "workspace" in outcome.message
+    assert not calls_of("commands/execute")
+    assert not calls_of("session/fork")
+    assert not calls_of("session/create")
+    assert len(await app.threads.list_threads(user_id=signal.context.user_id)) == 1
 
 
 @pytest.mark.parametrize("arguments", ["", "build it", "pause", "resume", "clear"])

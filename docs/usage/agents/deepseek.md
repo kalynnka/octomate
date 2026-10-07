@@ -96,8 +96,10 @@ launch token: see [Hooks and MCP](../../installation/clients/deepseek.md).
 
 Command discovery reads the live registry for the conversation's native DSH
 session. It returns each command's name, description and input hint, and preserves
-the effective definition's plugin identity. Scoped
-overrides come from DSH; Octomate keeps no command-name inventory.
+the effective definition's plugin identity. Scoped overrides come from DSH.
+Octomate also lists `/fork` as unavailable because DSH cannot yet relocate its
+copy into an independent Octomate workspace. A registry-provided `/fork` stays
+disabled for the same reason.
 
 Discovery requires an existing native session and a running Remote connection.
 It creates no session and submits no prompt. Catalogs refresh after registry-change
@@ -132,12 +134,18 @@ this proxy does not introduce a second compaction-history model.
 | Command, when advertised | Handling |
 |---|---|
 | `/compact` | DSH owns compaction; the command result reports its outcome. |
+| `/plan` | Enters native plan mode without starting a model turn. |
 | `/plan off` | Native control with direct feedback. |
 | `/plan <message>` | Native command followed by its immediate recorded agent run. |
 | `/permission` | Native control; permission events update Octomate's saved posture. |
+| `/feedback <text>` | Records feedback in DSH and returns its acknowledgement without a model turn. |
+| `/fork` | Disabled until a copied session can use an independent Octomate workspace. |
 | Session log export | Disabled for DSH's export plugin; use its web UI. A different plugin with the same display name keeps its own behavior. |
 | `/goal` | Omitted; independently scheduled continuation is not integrated. |
 | Other registry commands | Native execution with direct feedback or an immediate recorded run. |
+
+Plan mode is DSH's own session state, separate from the permission preset.
+Leaving plan mode does not change the conversation's saved permissions.
 
 ## Not yet
 

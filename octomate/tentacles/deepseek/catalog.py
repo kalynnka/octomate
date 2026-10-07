@@ -32,4 +32,12 @@ class DeepseekCommandDescriptor(CommandDescriptor, frozen=True):
     )
 
 
+FORK_COMMAND: DeepseekCommandDescriptor = DeepseekCommandDescriptor(
+    id="fork",
+    name="fork",
+    description="Copy this conversation into an independent thread.",
+    unavailable_reason="DSH cannot relocate a fork into an independent Octomate workspace yet.",
+)
+
+
 command_descriptors_adapter = TypeAdapter(list[DeepseekCommandDescriptor])

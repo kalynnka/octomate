@@ -93,7 +93,7 @@ from octomate.tentacles.deepseek.adapter import (
     DEEPSEEK_PROVIDER_NAME,
     DeepseekRunAccumulator,
 )
-from octomate.tentacles.deepseek.catalog import DeepseekCommandDescriptor
+from octomate.tentacles.deepseek.catalog import FORK_COMMAND, DeepseekCommandDescriptor
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.hooks import DeepseekHookInput
 from octomate.tentacles.deepseek.ingest import DeepseekHookIngest
@@ -454,6 +454,13 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 status="unavailable",
                 message="The DSH Remote connection is not running.",
             )
+        descriptors = {
+            entry.id: entry
+            for entry in await self.ink.list_commands(conversation.external_id)
+        }
+        descriptors["fork"] = descriptors.get("fork", FORK_COMMAND).model_copy(
+            update={"unavailable_reason": FORK_COMMAND.unavailable_reason}
+        )
         return CommandCatalog(
             context=context,
             status="ready",
@@ -466,7 +473,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         else entry.unavailable_reason,
                     }
                 )
-                for entry in await self.ink.list_commands(conversation.external_id)
+                for entry in descriptors.values()
             },
         )
 
