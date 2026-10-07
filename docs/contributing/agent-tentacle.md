@@ -214,6 +214,7 @@ Channels use only these `CommandDescriptor` fields:
 | `accepts_attachments` | Offer attachments only for `true`. `false` means unsupported; `None` means unspecified. |
 | `requires_conversation` | Require a conversation unless the adapter explicitly permits a direct result before one exists. |
 | `unavailable_reason` | Show a known command disabled with its explanation. The host refuses it before dispatch or a delivery receipt. |
+| `unavailable_kind` | Distinguish a missing context prerequisite from a command the adapter does not implement. A channel can still supply its own handling. |
 
 Extend `CommandDescriptor` with typed attributes in the owning tentacle's schema
 module. Descriptors are frozen and hashable. Extension fields must also be hashable:

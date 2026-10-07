@@ -88,6 +88,7 @@ def test_disabled_command_reason_survives_serialization() -> None:
         name="review",
         description="Review changes",
         unavailable_reason="Native review mode is not supported here yet.",
+        unavailable_kind="unsupported",
     )
     assert (
         CommandDescriptor.model_validate_json(descriptor.model_dump_json())

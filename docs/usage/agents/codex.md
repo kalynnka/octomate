@@ -91,12 +91,12 @@ are unavailable. **Disabled** means the command is visible but cannot execute;
 | Command | Available now | Handling or alternative |
 |---|---|---|
 | `/approve [review-id]` | Available after an automatic-review denial | Approve a denied action from the latest run and retry it through a streamed, recorded run. Omit the ID when there is one denial; multiple denials require choosing an ID. Keeps the conversation's permission mode. |
-| `/compact` | Available after a driven run | Compact the existing Codex context. Reports success only after compaction finishes; keeps the visible conversation history. Takes no arguments. |
-| `/plan [on\|off]` | Available after a driven run | Enter Codex planning mode, or leave it with `off`. Keeps the selected model and effort. Changing mode starts no run; the next prompt uses the mode. |
+| `/compact` | Available in an existing Codex session | Compact the existing Codex context. Reports success only after compaction finishes; keeps the visible conversation history. Takes no arguments. |
+| `/plan [on\|off]` | Available in an existing Codex session | Enter Codex planning mode, or leave it with `off`. Keeps the selected model and effort. Changing mode starts no run; the next prompt uses the mode. |
 | `/review [branch]` | Available in a conversation | Run Codex's built-in review of uncommitted changes, or changes against the named branch, in the conversation's workspace. Streams and records the review like other agent runs. |
 | `/init` | Available in a conversation | Ask Codex to create or update `AGENTS.md` in the conversation's workspace through a recorded agent run. This can write files and follows the conversation's approvals. |
 | `/status` | Available, including before a conversation exists | Show Octomate's conversation, workspace, model, effort and permission selections. Does not start a run. Native token usage and account rate limits are not included yet. |
-| `/mcp` | Available after a driven run | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
+| `/mcp` | Available in an existing Codex session | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
 | `/reasoning [level]` | Available in a conversation | Save the same effort selection as `/effort`, validated against the selected model. Omit the level to restore the default. Use `/effort` before the first message. |
 | `/fork` | Available after a driven run | Create an independent thread on the same channel with copied history, model, effort and permissions. Preserves the source and starts no agent run. Requires a channel that can open a new thread. |
 | `/model` | Available in Trunkline | Open the shared agent/model picker for a new conversation. From an existing thread, open a new composer; the existing conversation is unchanged. |
@@ -124,8 +124,9 @@ The four Trunkline controls take no arguments. They reuse the same selections as
 the buttons and create no thread, workspace or agent run until you send a prompt.
 They cannot be executed through the command API or an IM command entrypoint.
 
-Planning, compaction and MCP inspection require the conversation to be loaded in the current
-Codex runtime. After a runtime restart, send a message to resume it first.
+Planning, compaction and MCP inspection work in existing driven sessions, including
+forks. After a runtime restart, the command resumes the saved session; no preliminary
+message is needed. A conversation with no Codex session yet needs its first run.
 
 An approval applies to a denial recorded in this conversation's latest run;
 older denials and denials copied into a fork cannot be retried with `/approve`.

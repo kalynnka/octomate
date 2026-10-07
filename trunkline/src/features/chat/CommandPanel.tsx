@@ -2,7 +2,7 @@ import { Fragment, useId, type CSSProperties } from 'react'
 import type { ApiAgentRoute } from '@/lib/api/events'
 import { ellipsis, label, mono } from '@/components/text'
 import { EffortSlider } from './GatewayRoute'
-import { commandArguments, commandHint, fuzzy, highlight, type ArgumentMatch, type CommandLine, type GatewayOp } from './commands'
+import { commandArguments, commandGroup, commandHint, fuzzy, highlight, type ArgumentMatch, type CommandLine, type GatewayOp } from './commands'
 import type { EffortLevel } from './gateway'
 
 const accent = (share: number) => `color-mix(in srgb, var(--color-accent) ${share}%, transparent)`
@@ -41,8 +41,8 @@ function Typed({ text, hits, base }: { text: string; hits: number[]; base: strin
 }
 
 /**
- * The command finder over the composer: the commands a line could still name,
- * the gateway's first and then the agent's own, then what an argument can be.
+ * The command finder over the composer, grouped by source and sorted by
+ * availability. Match indices preserve the typed command's selection.
  * The composer keeps the keyboard, so a press here leaves its focus alone; only
  * an effort range has to take it to drag.
  */
@@ -87,7 +87,9 @@ export function CommandPanel({ id, line, matches, offered, total, agent, nativeN
     : !command.parameters ? hint
       : input?.missing.length ? `Add ${input.missing.join(', ')} to continue.`
         : offered && input?.typed ? `no ${offers} matches "${input.typed}"` : '')
-  const showsNative = line.phase === 'name' && line.matches.some((one) => one.command.native)
+  const rows = naming ? line.matches.map((match, index) => ({ ...match, index, group: commandGroup(match.command, closed) }))
+    .sort((a, b) => Number(Boolean(a.command.native)) - Number(Boolean(b.command.native))
+      || a.group.order - b.group.order) : []
   const groupHead = (text: string, first: boolean) => (
     <span style={{ display: 'block', padding: '8px 24px 4px', ...heading, borderTop: first ? 'none' : '1px solid var(--line-divider)' }}>{text}</span>
   )
@@ -104,7 +106,6 @@ export function CommandPanel({ id, line, matches, offered, total, agent, nativeN
         display: 'flex', alignItems: 'center', gap: 9, padding: '7px 18px 7px 24px', color: 'var(--color-teal)',
         borderBottom: '1px solid var(--trk-vline)', background: 'color-mix(in srgb, var(--color-teal) 7%, transparent)',
       }}>
-        <span aria-hidden="true" style={{ ...mono(12, 700), lineHeight: 1 }}>/</span>
         <span style={{ ...label(9), whiteSpace: 'nowrap' }}>{naming ? 'Commands' : `/${command.name}`}</span>
         <span style={{ flex: 1, minWidth: 0, ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>
           {naming
@@ -128,12 +129,12 @@ export function CommandPanel({ id, line, matches, offered, total, agent, nativeN
       <div style={{ maxHeight: 176, overflowY: 'auto', overscrollBehavior: 'contain', borderBottom: '1px solid var(--trk-vline)' }}>
         {naming && (
           <div id={listId} role="listbox" aria-label="Commands">
-            {line.matches.map(({ command: one, hits }, index) => {
+            {rows.map(({ command: one, hits, index, group }, row) => {
               const shut = one.unavailable ?? (one.native ? undefined : closed[one.name])
-              const opens = index === 0 || Boolean(line.matches[index - 1].command.native) !== Boolean(one.native)
+              const opens = row === 0 || Boolean(rows[row - 1].command.native) !== Boolean(one.native)
               return (
                 <Fragment key={one.native ? `native:${one.native.id}` : `gateway:${one.name}`}>
-                  {opens && groupHead(one.native ? `${agent} · native` : 'Gateway', index === 0)}
+                  {opens && groupHead(one.native ? `${agent} · native` : 'Gateway', row === 0)}
                   <button
                     type="button"
                     id={`${listId}-${index}`}
@@ -154,7 +155,9 @@ export function CommandPanel({ id, line, matches, offered, total, agent, nativeN
                     </span>
                     <span style={{ ...mono(9), color: 'var(--fg-3)', whiteSpace: 'nowrap', flexShrink: 0 }}>{commandHint(one)}</span>
                     <span style={{ flex: 1, minWidth: 0, ...mono(8.5), color: 'var(--fg-3)', ...ellipsis }}>{one.description}</span>
-                    {shut && <span style={{ ...label(7.5, '.14em'), color: 'var(--fg-3)', whiteSpace: 'nowrap', flexShrink: 0 }}>unavailable</span>}
+                    <span style={{ ...label(7.5, '.14em'), color: 'var(--fg-3)', whiteSpace: 'nowrap', flexShrink: 0 }}>
+                      {one.control ? 'Trunkline · ' : ''}{group.label}
+                    </span>
                     <span aria-hidden="true" style={{ width: 12, flexShrink: 0, textAlign: 'right', ...mono(11), color: 'var(--fg-3)' }}>
                       {shut ? '' : '›'}
                     </span>
@@ -164,7 +167,7 @@ export function CommandPanel({ id, line, matches, offered, total, agent, nativeN
             })}
             {nativeNote && (
               <>
-                {!showsNative && groupHead(`${agent} · native`, false)}
+                {!rows.at(-1)?.command.native && groupHead(`${agent} · native`, rows.length === 0)}
                 <span role="status" style={{ display: 'block', padding: '5px 24px 7px', ...mono(8.5), color: 'var(--fg-3)', lineHeight: 1.6 }}>{nativeNote}</span>
               </>
             )}

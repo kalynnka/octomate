@@ -14,6 +14,7 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
         name=name,
         description=description,
         unavailable_reason=reason,
+        unavailable_kind="unsupported",
     )
     for name, description, reason in (
         ("cloud", "Run in the cloud.", "Cloud execution is not supported here."),
@@ -66,6 +67,7 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             name="model",
             description="Choose the conversation model.",
             unavailable_reason="Codex's app-server does not expose a model selection command.",
+            unavailable_kind="unsupported",
             requires_conversation=False,
         ),
         CommandDescriptor(
@@ -73,6 +75,7 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             name="project",
             description="Choose a project for a new conversation.",
             unavailable_reason="Codex's app-server does not expose a project selection command.",
+            unavailable_kind="unsupported",
             requires_conversation=False,
         ),
         CommandDescriptor(
@@ -80,6 +83,7 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             name="task",
             description="Start a conversation without a project.",
             unavailable_reason="Codex's app-server does not expose a task command.",
+            unavailable_kind="unsupported",
             requires_conversation=False,
         ),
         CommandDescriptor(
@@ -87,6 +91,7 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             name="worktree",
             description="Run in a new Git worktree.",
             unavailable_reason="Codex's app-server does not expose a worktree command.",
+            unavailable_kind="unsupported",
             requires_conversation=False,
         ),
         CommandDescriptor(

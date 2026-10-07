@@ -259,6 +259,11 @@ async def test_workspace_is_never_created(
         "Skills are discoverable after a conversation workspace exists."
     ]
     assert not cwd.exists()
+    descriptors = {entry.name: entry for entry in catalog.descriptors}
+    for name in ("plan", "mcp", "compact"):
+        assert descriptors[name].unavailable_reason
+        assert descriptors[name].unavailable_kind == "context"
+    assert descriptors["fast"].unavailable_kind == "unsupported"
     inspector[0].request.assert_not_awaited()
     inspector[0].start.assert_awaited_once()
 
@@ -288,6 +293,11 @@ def test_app_commands_explain_refusals_and_exclude_goals_and_cli_actions() -> No
         "fork",
     }
     assert not descriptors["status"].requires_conversation
+    assert all(
+        item.unavailable_kind == "unsupported"
+        for item in APP_COMMANDS
+        if item.unavailable_reason
+    )
     for name in ("model", "project", "task", "worktree"):
         assert descriptors[name].unavailable_reason is not None
         assert not descriptors[name].requires_conversation

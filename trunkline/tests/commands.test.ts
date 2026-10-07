@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { COMMANDS, commandArguments, commandHint, completeCommand, completion, editArguments, nativeCommand, readCommand, type Command, type CommandLine } from '../src/features/chat/commands.ts'
+import { COMMANDS, commandArguments, commandGroup, commandHint, completeCommand, completion, editArguments, nativeCommand, readCommand, type Command, type CommandLine } from '../src/features/chat/commands.ts'
 
 const native = (name: string, hint: string | null) => nativeCommand({
   id: `skill:${name}`, name, description: 'A runtime command', argument_hint: hint, requires_conversation: true, unavailable_reason: null, accepts_attachments: null,
@@ -66,11 +66,12 @@ test('native hints are shown verbatim without inventing constraints, choices or 
 })
 
 test('Trunkline decides how to handle advertised built-in identities without changing descriptors', () => {
-  const descriptor = { id: 'builtin:model', name: 'model', description: 'Choose the conversation model', argument_hint: null, requires_conversation: false, unavailable_reason: 'No runtime command endpoint.', accepts_attachments: null }
+  const descriptor = { id: 'builtin:model', name: 'model', description: 'Choose the conversation model', argument_hint: null, requires_conversation: false, unavailable_reason: 'No runtime command endpoint.', unavailable_kind: 'unsupported' as const, accepts_attachments: null }
   const command = nativeCommand(descriptor, false)
   assert.equal(command.control, 'model')
   assert.equal(descriptor.unavailable_reason, 'No runtime command endpoint.')
   assert.equal(command.unavailable, undefined)
+  assert.equal(commandGroup(command).label, 'Available')
   assert.deepEqual(command.parameters, [])
   assert.deepEqual(commandArguments(read('', command)).invalid, [])
   assert.deepEqual(commandArguments(read('extra', command)).invalid, ['extra arguments'])
@@ -79,6 +80,32 @@ test('Trunkline decides how to handle advertised built-in identities without cha
   const skill = nativeCommand({ ...descriptor, id: 'skill:model' }, false)
   assert.equal(skill.control, undefined)
   assert.equal(skill.unavailable, descriptor.unavailable_reason)
+  assert.equal(commandGroup(skill).label, 'Not supported yet')
+})
+
+test('available suggestions precede context-blocked and unsupported commands across sources', () => {
+  const descriptor = { id: 'builtin:cloud', name: 'cloud', description: 'Cloud', argument_hint: null, requires_conversation: true, unavailable_reason: 'Use another client.', unavailable_kind: 'unsupported' as const, accepts_attachments: null }
+  const cloud = nativeCommand(descriptor, false)
+  const scoped = nativeCommand({ ...descriptor, id: 'skill:review', name: 'review', unavailable_reason: null }, false)
+  const runtime = nativeCommand({ ...descriptor, id: 'skill:offline', name: 'offline', unavailable_reason: 'Runtime offline.', unavailable_kind: 'context' })
+  const ready = native('status', null)
+  const closed = { summon: 'Start a conversation first.', teleport: 'Choose a destination first.' }
+  const line = readCommand('/', [cloud, scoped, runtime, ...COMMANDS, ready], closed)
+  assert.equal(commandGroup(scoped).label, 'Unavailable here')
+  assert.equal(line?.phase, 'name')
+  if (line?.phase !== 'name') return
+  assert.deepEqual(line.matches.map(({ command }) => command.name), ['effort', 'new', 'status', 'review', 'offline', 'summon', 'teleport', 'cloud'])
+  assert.equal(completeCommand(line, [], 0), '/effort ')
+})
+
+test('an exact disabled name remains selected instead of executing a fuzzy available match', () => {
+  const closed = { summon: 'Start a conversation first.' }
+  const line = readCommand('/summon', [native('summon-helper', null), ...COMMANDS], closed)
+  assert.equal(line?.phase, 'name')
+  if (line?.phase !== 'name') return
+  assert.equal(line.matches[0].command.name, 'summon')
+  assert.equal(commandGroup(line.matches[0].command, closed).label, 'Unavailable here')
+  assert.equal(completeCommand(line, [], 0), '/summon ')
 })
 
 test('skills and namespaced native commands preserve raw multiline input', () => {

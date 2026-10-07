@@ -149,6 +149,7 @@ async def test_empty_registry_keeps_fork_visible_but_disabled(
     [descriptor] = catalog.descriptors
     assert descriptor.name == "fork"
     assert "workspace" in (descriptor.unavailable_reason or "")
+    assert descriptor.unavailable_kind == "unsupported"
 
 
 async def test_registry_cannot_enable_a_fork_without_workspace_relocation(
@@ -196,6 +197,11 @@ async def test_export_restriction_follows_plugin_identity(
     descriptor = next(entry for entry in catalog.descriptors if entry.name == "export")
     assert bool(descriptor.unavailable_reason) == (
         definition == "@deepseek-ai/dsh-session-log-export"
+    )
+    assert descriptor.unavailable_kind == (
+        "unsupported"
+        if definition == "@deepseek-ai/dsh-session-log-export"
+        else "context"
     )
     assert not descriptor.accepts_attachments
     client.follow.assert_not_called()

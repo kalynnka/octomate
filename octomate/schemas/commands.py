@@ -106,6 +106,13 @@ class CommandDescriptor(BaseModel, frozen=True):
         "Null means available, subject to context requirements. Channels display "
         "disabled entries with this reason; the host refuses their execution.",
     )
+    unavailable_kind: Literal["context", "unsupported"] = Field(
+        default="context",
+        description="Classifies unavailable_reason: context means a supported command "
+        "is blocked by the current session or configuration; unsupported means this "
+        "adapter does not implement it. Ignored when unavailable_reason is null. "
+        "Channels decide whether they provide their own handling.",
+    )
     accepts_attachments: bool | None = Field(
         default=None,
         description="Whether attached input is supported; null means unspecified. "

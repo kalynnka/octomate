@@ -37,6 +37,7 @@ FORK_COMMAND: DeepseekCommandDescriptor = DeepseekCommandDescriptor(
     name="fork",
     description="Copy this conversation into an independent thread.",
     unavailable_reason="DSH cannot relocate a fork into an independent Octomate workspace yet.",
+    unavailable_kind="unsupported",
 )
 
 

@@ -466,21 +466,26 @@ test('summon completes optional native effort names and defaults only when effor
   }
 })
 
-test('the command finder lists the ops, then the agents with the route one would get', () => {
-  const offeredCommands = [...commands.COMMANDS, commands.nativeCommand(compact), commands.nativeCommand(cost)]
+test('the command finder groups sources, marks availability and shows the route an argument would use', () => {
+  const offeredCommands = [...commands.COMMANDS, commands.nativeCommand(compact), commands.nativeCommand(cost),
+    commands.nativeCommand({ ...blockedCommand, unavailable_kind: 'unsupported' })]
   const panel = (text: string, props: Partial<Parameters<typeof CommandPanel>[0]> = {}) => renderToStaticMarkup(createElement(CommandPanel, {
-    line: commands.readCommand(text, offeredCommands)!, matches: [], offered: 0, total: offeredCommands.length, agent: 'claude',
+    line: commands.readCommand(text, offeredCommands, props.closed)!, matches: [], offered: 0, total: offeredCommands.length, agent: 'claude',
     nativeNote: null, closed: {}, route: null, effort: null,
     onRun() {}, onDismiss() {}, onSettled() {}, ...props,
   }))
   const naming = panel('/', { closed: { teleport: 'No connected channel runs this agent.' } })
-  assert.ok(naming.includes('6 of 6 · claude'))
-  assert.equal(naming.match(/role="option"/g)?.length, 6)
+  assert.ok(naming.includes('7 of 7 · claude'))
+  assert.equal(naming.match(/role="option"/g)?.length, 7)
   assert.match(naming, /aria-selected="false" aria-disabled="true" title="No connected channel runs this agent\."/)
-  assert.ok(naming.includes('>unavailable<'))
-  // The gateway's ops come first, then the agent's own under a heading of their own.
-  assert.ok(naming.indexOf('>Gateway<') < naming.indexOf('>claude · native<'))
-  assert.ok(naming.indexOf('>claude · native<') < naming.indexOf('Summarize the conversation'))
+  assert.ok(naming.indexOf('>Gateway</span>') < naming.indexOf('>Available<'))
+  assert.ok(naming.indexOf('>Available<') < naming.indexOf('>Unavailable here<'))
+  assert.ok(naming.indexOf('>Unavailable here<') < naming.indexOf('>claude · native</span>'))
+  assert.ok(naming.indexOf('>claude · native</span>') < naming.indexOf('Summarize the conversation'))
+  assert.ok(naming.indexOf('Summarize the conversation') < naming.indexOf('>Not supported yet<'))
+  assert.equal(naming.match(/>Available<\/span>/g)?.length, 5)
+  assert.match(naming, /role="option"[^>]*aria-disabled="true" title="Open this operation in the native app\."[^>]*>.*?>Not supported yet<\/span>/)
+  assert.equal(panel('/', { nativeNote: 'Skills require a workspace.' }).match(/>claude · native<\/span>/g)?.length, 1)
   assert.ok(!naming.includes('<kbd'))
   // With none of the agent's own matching, its heading still says how discovery went.
   assert.ok(panel('/su', { nativeNote: 'discovering claude commands…' }).includes('>claude · native</span><span role="status"'))

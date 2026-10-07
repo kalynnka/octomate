@@ -459,7 +459,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             for entry in await self.ink.list_commands(conversation.external_id)
         }
         descriptors["fork"] = descriptors.get("fork", FORK_COMMAND).model_copy(
-            update={"unavailable_reason": FORK_COMMAND.unavailable_reason}
+            update={
+                "unavailable_reason": FORK_COMMAND.unavailable_reason,
+                "unavailable_kind": "unsupported",
+            }
         )
         return CommandCatalog(
             context=context,
@@ -471,6 +474,9 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         "unavailable_reason": "Download session logs in the DSH web UI."
                         if entry.definition_id == "@deepseek-ai/dsh-session-log-export"
                         else entry.unavailable_reason,
+                        "unavailable_kind": "unsupported"
+                        if entry.definition_id == "@deepseek-ai/dsh-session-log-export"
+                        else entry.unavailable_kind,
                     }
                 )
                 for entry in descriptors.values()

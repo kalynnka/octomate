@@ -1,7 +1,7 @@
 /**
  * The composer's slash commands: what a line that starts with `/` asks for.
- * The gateway's own ops come first, then the commands the thread's agent offers
- * in its runtime; any other text is still a directive.
+ * Available commands come first, followed by context-blocked and unsupported
+ * commands; any other text is still a directive.
  */
 import type { ApiCommandDescriptor } from '@/lib/api/events'
 
@@ -59,6 +59,15 @@ export function nativeCommand(descriptor: ApiCommandDescriptor, hasConversation 
   }
 }
 
+/** Group by effective availability, including channel-owned controls and restrictions. */
+export function commandGroup(command: Command, closed: Partial<Record<GatewayOp, string>> = {}) {
+  const reason = command.unavailable ?? (command.native ? undefined : closed[command.name])
+  if (!reason) return { order: 0, label: 'Available' }
+  return command.native?.unavailable_reason && command.native.unavailable_kind === 'unsupported'
+    ? { order: 2, label: 'Not supported yet' }
+    : { order: 1, label: 'Unavailable here' }
+}
+
 /** One thing a command's argument can be. */
 export interface Argument {
   value: string
@@ -106,7 +115,7 @@ export function highlight(text: string, hits: number[]): { text: string; hit: bo
 
 /** The command a line spells out of `commands`, or null when the line is a
  *  directive. An agent's own command takes whatever follows it, as typed. */
-export function readCommand(text: string, commands: Command[]): CommandLine | null {
+export function readCommand(text: string, commands: Command[], closed: Partial<Record<GatewayOp, string>> = {}): CommandLine | null {
   if (!text.startsWith('/')) return null
   const space = text.search(/\s/)
   if (space < 0) {
@@ -115,7 +124,8 @@ export function readCommand(text: string, commands: Command[]): CommandLine | nu
       const hits = fuzzy(typed, command.name)
       return hits ? [{ command, hits }] : []
     })
-    matches.sort((a, b) => Number(b.command.name.toLowerCase() === typed.toLowerCase()) - Number(a.command.name.toLowerCase() === typed.toLowerCase()))
+    matches.sort((a, b) => Number(b.command.name.toLowerCase() === typed.toLowerCase()) - Number(a.command.name.toLowerCase() === typed.toLowerCase())
+      || commandGroup(a.command, closed).order - commandGroup(b.command, closed).order)
     return matches.length ? { phase: 'name', typed, matches } : null
   }
   const name = text.slice(1, space)

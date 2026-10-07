@@ -682,7 +682,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             return catalog
         catalog.descriptors.update(
-            entry.model_copy(update={"unavailable_reason": HOST_COMMANDS[entry.id]})
+            entry.model_copy(
+                update={
+                    "unavailable_reason": HOST_COMMANDS[entry.id],
+                    "unavailable_kind": "unsupported",
+                }
+            )
             if entry.id in HOST_COMMANDS
             else entry
             for entry in info.commands

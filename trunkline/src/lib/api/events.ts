@@ -757,6 +757,8 @@ export interface ApiCommandDescriptor {
   argument_hint: string | null
   requires_conversation: boolean
   unavailable_reason: string | null
+  /** Whether the reason describes missing context or unimplemented runtime support. */
+  unavailable_kind?: 'context' | 'unsupported'
   accepts_attachments: boolean | null
 }
 

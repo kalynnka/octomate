@@ -182,8 +182,15 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
+    source = await app.threads.get(case.source.thread_id)
+    assert source is not None
+    await app.threads.rename(source, "Native work")
     stored = await teleport_to_trunkline(case, client)
 
+    assert stored.title == "Fork of Native work"
+    original = await app.threads.get(source.id)
+    assert original is not None
+    assert original.title == "Native work"
     assert stored.chat_id == str(case.owner_id)
     assert stored.handoffs == []
     assert stored.active_agent_tentacle_id == case.tentacle.id

@@ -597,17 +597,22 @@ class CodexTentacle(AgentTentacle[str, None]):
         if source.transcript_file_id is None or source.external_id is None:
             raise ValueError("Native Codex history has not been uploaded")
         data = await self.files.read(source.transcript_file_id, owner_id=owner_id)
-        end = 0
+        runs = sorted(
+            (
+                run
+                for run in source.runs
+                if isinstance(run, ExternalAgentRun)
+                and run.native_session_id == source.external_id
+                and run.end_offset is not None
+                and 0 < run.end_offset <= len(data)
+            ),
+            key=lambda run: run.end_offset or 0,
+            reverse=True,
+        )
         completed_run: ExternalAgentRun | None = None
-        for run in source.runs:
-            if (
-                not isinstance(run, ExternalAgentRun)
-                or run.native_session_id != source.external_id
-                or run.end_offset is None
-                or not end < run.end_offset <= len(data)
-            ):
-                continue
+        for run in runs:
             offset = run.end_offset
+            assert offset is not None
             if data[offset - 1 : offset] != b"\n":
                 raise ValueError("Turn offset must end at a transcript line boundary")
             start = data.rfind(b"\n", 0, offset - 1) + 1
@@ -617,8 +622,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 and closing.payload.get("type") in {"task_complete", "turn_aborted"}
                 and closing.payload.get("turn_id") == run.id
             ):
-                end = offset
                 completed_run = run
+                break
         if completed_run is None:
             raise ValueError("No completed Codex turn has been fully uploaded")
         if completed_run.permission_mode is None:
@@ -732,13 +737,6 @@ class CodexTentacle(AgentTentacle[str, None]):
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """List app actions and inspect skills without preparing a workspace or turn."""
         conversation = context.conversation
-        bound = (
-            conversation is not None
-            and conversation.external_id is not None
-            and (binding := self.ink.thread_bindings.get(conversation.external_id))
-            is not None
-            and binding[0] == conversation.id
-        )
         catalog = CommandCatalog(
             context=context,
             status="ready",
@@ -748,7 +746,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                         "unavailable_reason": "Run this conversation in Codex before using this command."
                     }
                 )
-                if descriptor.name in {"plan", "mcp", "compact"} and not bound
+                if descriptor.name in {"plan", "mcp", "compact"}
+                and (conversation is None or conversation.external_id is None)
                 else descriptor
                 for descriptor in APP_COMMANDS
             },
@@ -980,60 +979,89 @@ class CodexTentacle(AgentTentacle[str, None]):
             text = f"Reasoning effort: {effort or 'default'}."
             return CommandResult(segments=[TextSegment(data={"text": text})])
         thread_id = conversation.external_id
-        binding = self.ink.thread_bindings.get(thread_id) if thread_id else None
-        if thread_id is None or binding is None or binding[0] != conversation.id:
+        if thread_id is None:
             return CommandError(
                 status="unavailable",
                 message="Run this conversation in Codex before using this command.",
             )
-        if invocation.command_id == "builtin:compact":
-            if argument:
-                return CommandError(
-                    status="unsupported", message="/compact takes no arguments."
-                )
-            project = await self.run_project(conversation.thread_id)
-            async with (
-                self.conversation_locks.hold(str(conversation.id)),
-                self.workspaces.open(conversation.thread_id, project),
-                self.driving(thread_id),
-            ):
-                turn = await self.ink.start_command(thread_id)
-                completed = await turn.run()
-            if completed.status != TurnStatus.completed:
-                return CommandError(
-                    status="failed",
-                    message=completed.error.message
-                    if completed.error
-                    else f"Codex compaction {completed.status.value}.",
-                )
-            return CommandResult(
-                segments=[TextSegment(data={"text": "Conversation context compacted."})]
+        if invocation.command_id in {"builtin:compact", "builtin:mcp"} and argument:
+            return CommandError(
+                status="unsupported",
+                message=f"/{invocation.command_id.removeprefix('builtin:')} takes no arguments.",
             )
-        if invocation.command_id == "builtin:mcp":
-            if argument:
-                return CommandError(
-                    status="unsupported", message="/mcp takes no arguments."
-                )
-            text = await self.ink.mcp_status(thread_id)
-            return CommandResult(segments=[TextSegment(data={"text": text})])
-        if argument not in {"", "on", "off"}:
+        if invocation.command_id == "builtin:plan" and argument not in {
+            "",
+            "on",
+            "off",
+        }:
             return CommandError(status="unsupported", message="Use /plan [on|off].")
         selected = self.resolve_model(context.model or self.default_model)
-        if selected is None:
-            return CommandError(
-                status="unavailable",
-                message="Select a model before changing planning mode.",
+        model = self.models[selected] if selected is not None else None
+        permission_mode = conversation.permission_mode or self.config.permission_mode
+        self.check_permission_mode(permission_mode)
+        project = await self.run_project(conversation.thread_id)
+        workspace = self.workspaces.open(conversation.thread_id, project)
+        async with (
+            self.conversation_locks.hold(str(conversation.id)),
+            workspace,
+            self.driving(thread_id),
+        ):
+            api_key = await self.runtime_api_key(context.user_id)
+            await self.ink.open_thread(
+                thread_id=thread_id,
+                conversation_id=conversation.id,
+                api_key_id=api_key.key.id if api_key is not None else None,
+                mcp_bearer=api_key.token if api_key is not None else None,
+                cwd=str(workspace.path),
+                approval_mode=ApprovalMode.auto_review
+                if permission_mode == "auto_review"
+                else ApprovalMode.deny_all
+                if permission_mode == "full_access"
+                else None,
+                base_instructions=self.config.base_instructions,
+                developer_instructions=self.config.developer_instructions,
+                ephemeral=self.config.ephemeral,
+                model=model.model_name if isinstance(model, Model) else model,
+                model_provider=self.provider if model is not None else None,
+                personality=Personality(self.config.personality)
+                if self.config.personality is not None
+                else None,
+                sandbox=Sandbox.full_access
+                if permission_mode == "full_access"
+                else Sandbox.workspace_write,
             )
-        model = self.models[selected]
-        effort = await self.resolve_effort(conversation, model=selected)
-        await self.ink.set_plan_mode(
-            thread_id,
-            enabled=argument != "off",
-            model=model.model_name if isinstance(model, Model) else model,
-            effort=ReasoningEffort(effort)
-            if effort is not None
-            else self.config.effort,
-        )
+            if invocation.command_id == "builtin:compact":
+                turn = await self.ink.start_command(thread_id)
+                completed = await turn.run()
+                if completed.status != TurnStatus.completed:
+                    return CommandError(
+                        status="failed",
+                        message=completed.error.message
+                        if completed.error
+                        else f"Codex compaction {completed.status.value}.",
+                    )
+                return CommandResult(
+                    segments=[
+                        TextSegment(data={"text": "Conversation context compacted."})
+                    ]
+                )
+            if invocation.command_id == "builtin:mcp":
+                text = await self.ink.mcp_status(thread_id)
+                return CommandResult(segments=[TextSegment(data={"text": text})])
+            if model is None:
+                return CommandError(
+                    status="unavailable",
+                    message="Select a model before changing planning mode.",
+                )
+            effort = await self.resolve_effort(conversation, model=selected)
+            await self.ink.set_plan_mode(
+                thread_id,
+                enabled=argument != "off",
+                model=model.model_name if isinstance(model, Model) else model,
+                effort=ReasoningEffort(effort)
+                if effort is not None
+                else self.config.effort,
+            )
         text = f"Planning mode {'disabled' if argument == 'off' else 'enabled'} for subsequent turns."
         return CommandResult(segments=[TextSegment(data={"text": text})])
 

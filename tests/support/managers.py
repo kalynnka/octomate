@@ -375,6 +375,10 @@ class FakeThreadManager(ThreadManager):
             None,
         )
 
+    async def rename(self, thread: Thread, title: str) -> Thread:
+        thread.title = title
+        return thread
+
     async def record_handoff(
         self,
         thread_or_address: Thread | ChannelAddress | ThreadKey,

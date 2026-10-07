@@ -52,11 +52,15 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Start a thread** with a message, picking an agent and model, and optionally a
   project and reasoning effort on the first message. The effort applies to the
   first run and stays selected for following turns; Auto leaves it to the agent.
+  In the agent/model picker, drag the effort slider or focus it and use ←→.
   A thread keeps its agent and model; a different
   pick on an owned thread is refused, because a mid-thread model switch busts the
   provider's cache. Hand off explicitly instead.
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions.
+- **Resize the input** by dragging the composer's top edge up or down. The chosen
+  height stays while you type or use commands. Double-click the edge to return to
+  automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.
 - **Answer approvals and questions**, for driven conversations on any channel.
   A batch's questions are one card with a page per question, sent together. A batch
   already resolved is refused rather than resumed twice.
@@ -76,9 +80,14 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   and Summon expand the composer instead of opening a dialog: the button, ×
   or Esc returns to chat with your draft kept, and ⌘↵ submits.
   Typing `/` in a new or existing thread's composer opens a command finder. The
-  gateway's commands come first — `/summon <agent> [--model <model>] [--effort <effort>]`, `/teleport [destination]`,
-  `/effort [level]` and `/new` — then the commands the thread's agent offers in
+  prompt arrow points up while the finder, Teleport or Summon is expanded. The
+  gateway offers `/summon <agent> [--model <model>] [--effort <effort>]`, `/teleport [destination]`,
+  `/effort [level]` and `/new`, alongside the commands the thread's agent offers in
   its own runtime, looked up when you type `/` for the selected agent and settings.
+  The finder groups commands by source: **Gateway**, then the agent's native
+  commands. Within each group, rows are marked and ordered **Available**,
+  **Unavailable here** (a prerequisite is missing), then **Not supported yet**.
+  Disabled commands explain what prevents their use.
   Before the first message, commands that need a conversation stay unavailable
   and explain why. Commands the agent makes available without a conversation
   show their direct feedback in the message panel without opening a thread; this
@@ -95,6 +104,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Summon composer on the one you pick. `/teleport` lists the connected
   channels and opens Teleport on the one you pick, or on the destination
   browser when you pick none. `/new` opens the composer for a new thread.
+  Submitting `/teleport trunkline` moves directly to a new Trunkline thread.
+  A destination that still needs a server or channel choice opens its menu instead.
   Codex's `/model` and `/project` open the same model and project pickers as the
   buttons. From an existing conversation, they open a new composer and leave
   that conversation unchanged. `/task` opens a projectless composer; `/worktree`
@@ -190,7 +201,11 @@ A native Codex or Claude Code session teleports with its latest fully uploaded
 turn, keeping its model and permissions. Native DeepSeek sessions, and driven
 agents that cannot fork their session, cannot teleport yet. The thread a move
 lands in shows up in your thread list and is about the same project as the one it
-left.
+left. A new destination starts with the title **Fork of …**, keeping the source
+title unchanged. Copying the original chat ledger into the destination is not
+supported yet; the agent's conversation context is carried over.
+The continuation notice appears in the destination; the source Trunkline thread
+gets no extra chat message.
 
 The console's HTTP API, its request bodies and the events it streams are in the
 [API reference](../../api/tentacles/trunkline.md).

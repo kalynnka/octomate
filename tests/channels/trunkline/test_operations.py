@@ -123,16 +123,23 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     assert updated.latest_handoff.source_conversation_id is not None
 
 
-@pytest.mark.parametrize("explicit_parent", [False, True])
+@pytest.mark.parametrize("destination_kind", ["dm", "group", "trunkline"])
 async def test_teleport_creates_independent_owned_destination(
     case: Case,
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
-    explicit_parent: bool,
+    destination_kind: str,
 ) -> None:
     destination = asdict(ChannelAddress("far", "dm", "", "alice"))
-    if explicit_parent:
+    if destination_kind == "group":
         destination.update(chat_type="group", chat_id="another-room", shared=True)
+    elif destination_kind == "trunkline":
+        destination = asdict(
+            ChannelAddress(
+                "trunkline", "thread", str(case.owner.id), str(case.owner.id)
+            )
+        )
+    await case.app.threads.rename(case.thread, "Radio check")
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
     case.agent.models["opus"] = "picked-model"
     await case.app.conversations.record_agent_run(
@@ -161,8 +168,11 @@ async def test_teleport_creates_independent_owned_destination(
         if line.startswith("data: ")
     ]
     event = next(frame for frame in frames if frame["event_kind"] == "gateway")
-    assert event["destination"]["channel_tentacle_id"] == "far"
-    if explicit_parent:
+    assert (
+        event["destination"]["channel_tentacle_id"]
+        == destination["channel_tentacle_id"]
+    )
+    if destination_kind == "group":
         assert event["destination"]["chat_id"] == "another-room"
         assert event["destination"]["shared"]
         assert case.far.opened_dms == []
@@ -170,8 +180,19 @@ async def test_teleport_creates_independent_owned_destination(
     assert case.agent.turns == []
     assert case.agent.streams == []
     threads = await case.app.threads.list_threads(user_id=case.owner.id)
-    landed = next(thread for thread in threads if thread.channel_tentacle_id == "far")
+    landed = next(thread for thread in threads if thread.id != case.thread.id)
     assert landed.id != case.thread.id
+    assert landed.title == "Fork of Radio check"
+    original = await case.app.threads.get(case.thread.id)
+    assert original is not None
+    assert original.title == "Radio check"
+    source_messages = await client.get(
+        f"/api/trunkline/threads/{case.thread.id}/messages"
+    )
+    assert source_messages.status_code == 200
+    assert [message["message_text"] for message in source_messages.json()] == [
+        "Original history"
+    ]
     copied = (await case.app.conversations.for_thread(landed.id))[0]
     assert copied.id != source.id
     assert copied.permission_mode == "default"
@@ -180,9 +201,13 @@ async def test_teleport_creates_independent_owned_destination(
     # The landing is still recorded, on the model the conversation ran.
     stored = await case.app.threads.get(landed.id)
     assert stored is not None
+    assert [
+        (message.actor_kind, message.message_text) for message in stored.messages
+    ] == [("system", "Work here")]
     assert stored.latest_handoff is not None
     assert stored.latest_handoff.to_agent_tentacle_id == "first"
     assert stored.latest_handoff.to_model == "opus"
+    assert stored.latest_handoff.source_conversation_id == source.id
     assert (await case.app.conversations.get(source.id)).thread_id == case.thread.id
 
 

@@ -616,6 +616,7 @@ async def test_plan_uses_native_preset_preserving_model_and_effort(
     await agent.conversations.set_effort(conversation, "high")
     await agent.conversations.set_external_id(conversation, "existing")
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    FakeCodex.loaded_threads.add("existing")
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()
@@ -649,15 +650,13 @@ async def test_plan_uses_native_preset_preserving_model_and_effort(
     assert not await stored.runs
 
 
-@pytest.mark.parametrize("command", ["plan", "mcp"])
-async def test_native_controls_are_disabled_without_an_owned_runtime_thread(
+@pytest.mark.parametrize("command", ["plan", "mcp", "compact"])
+async def test_native_controls_are_disabled_without_a_saved_runtime_thread(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock], command: str
 ) -> None:
     agent, context, _ = execution
     conversation = context.conversation
     assert conversation is not None
-    await agent.conversations.set_external_id(conversation, "existing")
-    agent.ink.thread_bindings["existing"] = (uuid7(), None)
     invocation = CommandInvocation(command_id=f"builtin:{command}")
     async with agent.commands.validate(
         agent, context, invocation, delivery_id="unbound"
@@ -672,6 +671,63 @@ async def test_native_controls_are_disabled_without_an_owned_runtime_thread(
     assert not FakeCodex.turn_calls
 
 
+@pytest.mark.parametrize("command", ["plan", "mcp", "compact"])
+@pytest.mark.parametrize("binding", ["missing", "foreign", "unloaded"])
+async def test_native_controls_resume_saved_threads_without_an_agent_run(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    binding: str,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "existing")
+    if binding == "foreign":
+        FakeCodex.loaded_threads.add("existing")
+        agent.ink.thread_bindings["existing"] = (uuid7(), None)
+    elif binding == "unloaded":
+        agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    handle = AsyncMock(spec=AsyncTurnHandle)
+    handle.run.return_value = await _collect_async_turn_result(
+        FakeTurn().stream(), turn_id="turn-1"
+    )
+    monkeypatch.setattr(agent.ink, "start_command", AsyncMock(return_value=handle))
+    monkeypatch.setattr(agent.ink, "mcp_status", AsyncMock(return_value="MCP ready"))
+
+    catalog = await agent.discover_commands(context)
+    descriptor = next(item for item in catalog.descriptors if item.name == command)
+    assert descriptor.unavailable_reason is None
+    assert not FakeCodex.read_calls
+    assert not FakeCodex.thread_calls
+    invocation = CommandInvocation(command_id=descriptor.id)
+    async with agent.commands.validate(
+        agent, context, invocation, delivery_id="resumed-control"
+    ) as validated:
+        assert isinstance(validated, tuple)
+        async with agent.commands.execute(
+            agent, context, invocation, validated, delivery_id="resumed-control"
+        ) as outcome:
+            assert isinstance(outcome, CommandResult)
+    [resumed] = FakeCodex.thread_calls
+    assert resumed.kind == "resume"
+    assert resumed.thread_id == "existing"
+    assert resumed.cwd == str(context.cwd)
+    assert resumed.model == "test-model"
+    assert resumed.approval_mode == ApprovalMode.auto_review
+    assert resumed.sandbox == Sandbox.workspace_write
+    assert agent.ink.thread_bindings["existing"] == (conversation.id, None)
+    assert not FakeCodex.turn_calls
+    stored = await agent.conversations.get(conversation.id)
+    assert stored.external_id == "existing"
+    assert not await stored.runs
+    receipt = await agent.threads.find_message(
+        conversation.thread_id, "resumed-control", "inbound"
+    )
+    assert isinstance(receipt, ThreadCommand)
+    assert receipt.outcome == outcome
+
+
 async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
 ) -> None:
@@ -680,6 +736,7 @@ async def test_mcp_inspection_is_thread_scoped_and_reads_all_pages(
     assert conversation is not None
     await agent.conversations.set_external_id(conversation, "existing")
     agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    FakeCodex.loaded_threads.add("existing")
     request = agent.ink.client._client.request
     assert isinstance(request, AsyncMock)
     request.reset_mock()

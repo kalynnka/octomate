@@ -10,7 +10,7 @@ import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
 import { CommandPanel } from './CommandPanel'
 import { DestinationPicker } from './GatewayDestination'
-import { SummonRoute } from './GatewayRoute'
+import { EffortSlider, SummonRoute } from './GatewayRoute'
 import { COMMANDS, commandArguments, completeCommand, completion, editArguments, matching, nativeCommand, readCommand, type Argument, type GatewayOp } from './commands'
 import { channelRows, destinationReason, gatewayRequest, isGatewayCommand, level as destinationLevel, modelRoute, navigateGatewayMenu, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type GatewayAction, type GatewayForm } from './gateway'
 
@@ -139,7 +139,8 @@ function RouteSelector() {
               position: 'absolute',
               bottom: 'calc(100% + 6px)',
               right: 0,
-              width: 302,
+              width: 360,
+              maxWidth: 'calc(100vw / var(--trk-zoom) - 48px)',
               maxHeight: '60vh',
               overflowY: 'auto',
               // Above the strip's ntMenu click-away overlay (zIndex 75), like
@@ -244,35 +245,13 @@ function RouteSelector() {
                 </span>
               )
             })}
-            <span style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '9px 12px', background: 'var(--surface-sunken)' }}>
-              <span style={{ ...fieldLabel, color: 'var(--fg-2)' }}>Effort</span>
-              <span style={{ ...mono(8), color: 'var(--fg-3)' }}>({nativeEffort.effort})</span>
-              <span style={{ flex: 1 }} />
-              <span style={{ display: 'inline-flex', gap: 5, alignItems: 'center' }}>
-                {nativeEffort.efforts.map((v, i) => {
-                  const cur = nativeEffort.efforts.indexOf(nativeEffort.effort)
-                  const onStep = cur >= i
-                  return (
-                    <span
-                      key={v}
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        setNtRoute({ ntEffort: v })
-                      }}
-                      title={`effort_${v}`}
-                      className="hov-border-accent"
-                      style={{
-                        width: 9,
-                        height: 9,
-                        boxSizing: 'border-box',
-                        border: `1px solid ${onStep ? 'var(--color-accent)' : 'var(--line-divider)'}`,
-                        background: onStep ? 'var(--color-accent)' : 'transparent',
-                        cursor: 'pointer',
-                      }}
-                    />
-                  )
-                })}
-              </span>
+            <span style={{ display: 'block', background: 'var(--surface-sunken)' }}>
+              <EffortSlider
+                supported={nativeEffort.efforts}
+                preset={effortRoute?.claim.default_effort ?? null}
+                effort={nativeEffort.effort}
+                onEffort={(ntEffort) => setNtRoute({ ntEffort })}
+              />
             </span>
           </span>
         )}
@@ -495,6 +474,8 @@ export function Composer() {
   const [form, patchForm, seedForm] = useGatewayForm(selThreadId, mode)
   const commandInput = mode !== null && isGatewayCommand(composerText, mode)
   const draftInput = useRef<HTMLTextAreaElement>(null)
+  const [inputRows, setInputRows] = useState<number | null>(null)
+  const inputDrag = useRef<{ pointer: number; y: number; rows: number; lineHeight: number; max: number } | null>(null)
   // Summon hands this conversation over where it is, to an agent its channel runs.
   const summonRoutes = Object.values(operations?.summon.routes ?? {}).flat()
   const route = pickRoute(summonRoutes, form.agent, form.model)
@@ -558,7 +539,6 @@ export function Composer() {
       .sort((a, b) => a.name.localeCompare(b.name) || Number(Boolean(a.unavailable)) - Number(Boolean(b.unavailable)))
     : []
   const commands = [...COMMANDS, ...natives]
-  const line = !mode && (ntOn || detail) && !running && !hidden ? readCommand(composerText, commands) : null
   const agentName = ntOn ? ntAgent : lastSes?.agent ?? 'agent'
   const waiting = eligibility.isError ? eligibility.error.message : 'Checking available destinations…'
   const nativeNote = !ntOn && !lastSes ? null
@@ -583,6 +563,7 @@ export function Composer() {
         : !sessionRoute ? 'The runtime model is not available in the model catalog.'
           : sessionRoute.claim.efforts.length ? undefined : `${agentName} takes no effort levels.`,
   }
+  const line = !mode && (ntOn || detail) && !running && !hidden ? readCommand(composerText, commands, closed) : null
   const pickedCommand = line?.phase === 'name' ? line.matches[0]?.command : line?.command
   const commandReason = pickedCommand?.unavailable ?? (pickedCommand && !pickedCommand.native ? closed[pickedCommand.name] : undefined)
   const canSubmit = canSend && !commandReason && (!nativeReadOnly || Boolean(pickedCommand && !pickedCommand.native))
@@ -691,6 +672,15 @@ export function Composer() {
     }
     if (command.name === 'teleport') {
       const surface = surfaces.find((row) => surfaceValue(row) === values.destination)
+      if (surface?.address && index === undefined) {
+        const request = gatewayRequest('teleport', {
+          text: '', destination: { address: surface.address, path: [surface.label] }, route: undefined, effort: 'auto',
+        })
+        if (request) {
+          write('')
+          return void gateway(selThreadId, request)
+        }
+      }
       return openGateway('teleport', surface?.address
         ? { destination: { address: surface.address, path: [surface.label] }, crumbs: [], menu: null }
         : surface?.open ? { destination: null, crumbs: [surface.open], menu: 'destination' } : {})
@@ -735,7 +725,43 @@ export function Composer() {
 
   return (
     <div className="lt-fade-in" style={{ flexShrink: 0 }}>
-      <div className="trk-composer-frame" style={{ borderTop: `2px solid ${mode || line ? 'var(--color-teal)' : 'var(--trk-bracket)'}` }}>
+      <div className="trk-composer-frame" style={{ position: 'relative', borderTop: `2px solid ${mode || line ? 'var(--color-teal)' : 'var(--trk-bracket)'}` }}>
+        <button
+          type="button"
+          className="trk-composer-resize"
+          aria-label="Resize input area"
+          title="Drag to resize input · ↑↓ adjust · double-click to reset"
+          onPointerDown={(event) => {
+            const input = draftInput.current
+            if (!input || !event.isPrimary || event.button !== 0) return
+            const zoom = Number(getComputedStyle(document.documentElement).zoom) || 1
+            const lineHeight = parseFloat(getComputedStyle(input).lineHeight) * zoom
+            inputDrag.current = {
+              pointer: event.pointerId, y: event.clientY,
+              rows: input.getBoundingClientRect().height / lineHeight,
+              lineHeight, max: Math.max(2, window.innerHeight * 0.4 / lineHeight),
+            }
+            event.preventDefault()
+            event.currentTarget.setPointerCapture(event.pointerId)
+          }}
+          onPointerMove={(event) => {
+            const drag = inputDrag.current
+            if (!drag || drag.pointer !== event.pointerId) return
+            setInputRows(Math.max(2, Math.min(drag.max, drag.rows + (drag.y - event.clientY) / drag.lineHeight)))
+          }}
+          onLostPointerCapture={() => { inputDrag.current = null }}
+          onDoubleClick={() => setInputRows(null)}
+          onKeyDown={(event) => {
+            if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return
+            const input = draftInput.current
+            if (!input) return
+            event.preventDefault()
+            const zoom = Number(getComputedStyle(document.documentElement).zoom) || 1
+            const lineHeight = parseFloat(getComputedStyle(input).lineHeight) * zoom
+            const rows = input.getBoundingClientRect().height / lineHeight
+            setInputRows(Math.max(2, Math.min(window.innerHeight * 0.4 / lineHeight, rows + (event.key === 'ArrowUp' ? 1 : -1))))
+          }}
+        />
         {line && (
           <CommandPanel
             id={commandsId}
@@ -815,7 +841,7 @@ export function Composer() {
           />
         )}
         <div style={{ display: 'flex', alignItems: 'center', gap: 9, padding: 'var(--trk-comp-head-pad, 7px 24px 6px)', borderBottom: '1px solid var(--trk-vline)' }}>
-          <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>&gt;_</span>
+          <span style={{ ...mono(13, 700), color: 'var(--color-accent)', lineHeight: 1 }}>{mode || line ? '^' : '>_'}</span>
           <span style={{ ...mono(10.5), ...ellipsis, minWidth: 0 }}>
             <span style={{ fontWeight: 700, color: 'var(--color-accent)' }}>{username}@trunkline</span>
             <span style={{ color: 'var(--info-strong)' }}>:{routeChip}</span>{' '}
@@ -882,6 +908,8 @@ export function Composer() {
             <span style={{ position: 'relative', display: 'block', overflow: 'hidden' }}>
               <ComposerPrimitive.Input
                 ref={draftInput}
+                className="trk-composer-input"
+                data-resized={inputRows !== null ? '' : undefined}
                 role={commandChoices ? 'combobox' : undefined}
                 aria-expanded={commandChoices ? true : undefined}
                 aria-autocomplete={commandChoices ? 'list' : undefined}
@@ -889,6 +917,8 @@ export function Composer() {
                 aria-activedescendant={commandChoices ? `${commandsId}-0` : undefined}
                 aria-label={copy?.field ?? 'Directive'}
                 rows={copy?.rows ?? 2}
+                minRows={inputRows ?? copy?.rows ?? 2}
+                maxRows={inputRows ?? undefined}
                 maxLength={copy?.max}
                 placeholder={copy?.placeholder ?? placeholder}
                 submitMode={mode || line || nativeReadOnly ? 'none' : 'enter'}

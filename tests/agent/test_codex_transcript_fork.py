@@ -459,6 +459,34 @@ async def test_fork_requires_a_matching_terminal_event(
     )
 
 
+async def test_latest_completed_turn_does_not_validate_stale_older_offsets(
+    case: ForkCase,
+) -> None:
+    source = case.source.model_copy(
+        update={
+            "runs": [
+                ExternalAgentRun(
+                    id=str(uuid7()),
+                    conversation_id=case.source.id,
+                    native_session_id=case.source.external_id,
+                    model_name="other-model",
+                    permission_mode="full_access",
+                    end_offset=len(case.prefix) - 1,
+                ),
+                *case.source.runs,
+            ]
+        }
+    )
+    data, completed = await case.tentacle.read_fork_transcript(
+        source, owner_id=case.owner_id
+    )
+    completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
+    assert completed.id == completed_id
+    assert completed.end_offset == len(case.prefix)
+    assert completed.permission_mode == "auto_review"
+    assert data == case.prefix + case.pending
+
+
 async def test_fork_rejects_an_offset_inside_a_line(
     case: ForkCase, tmp_path: Path
 ) -> None:
