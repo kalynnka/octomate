@@ -567,11 +567,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                 with contextlib.suppress(Exception):
                     await websocket.close()
 
-    @property
-    def default_model(self) -> None:
-        # Omission lets Codex resolve settings and an existing thread's selection.
-        return None
-
     async def fork_session(
         self, conversation: Conversation, *, cwd: Path, last_turn_id: str | None = None
     ) -> str:
@@ -759,6 +754,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             if entry.errors and not descriptors
             else None,
             limitations=[
+                # TODO: Add CLI-only commands separately from app operations.
                 "Codex exposes skills, not a general CLI slash-command catalog.",
                 *(f"{error.path}: {error.message}" for error in entry.errors),
             ],
@@ -851,11 +847,11 @@ class CodexTentacle(AgentTentacle[str, None]):
                 await auth.revoke_api_key(issued.key.user_id, issued.key.id)
 
     async def discover_models(self) -> None:
-        provider, catalog, configured_effort = await self.ink.models()
+        catalog = await self.ink.models()
         models: dict[str, Model | str] = {}
         claims: dict[str, Claim] = {}
-        for model in catalog:
-            key = f"{provider}:{model.model}"
+        for model in catalog.models:
+            key = f"{catalog.provider}:{model.model}"
             configured = self.config.claims.get(key)
             efforts = tuple(
                 option.reasoning_effort.value
@@ -863,7 +859,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             default = (
                 self.config.effort
-                or configured_effort
+                or catalog.configured_effort
                 or model.default_reasoning_effort
             ).value
             models[key] = model.model
@@ -874,7 +870,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                 next((effort for effort in efforts if effort == default), None),
             )
         self.set_model_catalog(models, claims)
-        self.provider = provider
+        self.default_model = (
+            f"{catalog.provider}:{catalog.default_model}"
+            if catalog.default_model is not None
+            else None
+        )
+        self.provider = catalog.provider
 
     async def __aenter__(self) -> CodexTentacle:
         await self.ink.start(
@@ -1376,7 +1377,9 @@ class CodexTentacle(AgentTentacle[str, None]):
             conversation = await self.conversations.get(
                 conversation.id, with_history=False
             )
-            effort = self.resolve_effort(conversation, model=sdk_model, effort=effort)
+            effort = await self.resolve_effort(
+                conversation, model=sdk_model, effort=effort
+            )
             turn_effort = (
                 ReasoningEffort(effort) if effort is not None else self.config.effort
             )

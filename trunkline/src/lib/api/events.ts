@@ -688,6 +688,8 @@ export type ApiPermissionModes = Record<string, ApiAgentPostures>
 
 export interface DirectiveBody {
   text: string
+  /** Native effort selection for the first run; omission leaves the runtime default. */
+  effort?: string
   message_id?: string
   model?: string
   /** a project name from /projects; honored on a thread's first directive only,

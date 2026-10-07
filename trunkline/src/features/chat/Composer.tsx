@@ -11,7 +11,7 @@ import { CommandPanel } from './CommandPanel'
 import { DestinationPicker } from './GatewayDestination'
 import { SummonRoute } from './GatewayRoute'
 import { COMMANDS, commandArguments, completeCommand, completion, editArguments, matching, nativeCommand, readCommand, type Argument, type GatewayOp } from './commands'
-import { channelRows, destinationReason, gatewayRequest, isGatewayCommand, level as destinationLevel, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type GatewayAction, type GatewayForm } from './gateway'
+import { channelRows, destinationReason, gatewayRequest, isGatewayCommand, level as destinationLevel, modelRoute, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type GatewayAction, type GatewayForm } from './gateway'
 
 // What the composer becomes for each gateway op; `max` is the relay's own cap.
 const GATEWAY_MODES = {
@@ -56,12 +56,14 @@ interface RouteGroup {
 function RouteSelector() {
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
+  const ntRouteId = useConsole((s) => s.ntRouteId)
   const ntEffort = useConsole((s) => s.ntEffort)
   const ntMenu = useConsole((s) => s.ntMenu)
   const { setNtMenu, setNtRoute } = useConsole((s) => s.actions)
   const { data: routesData } = useRoutes()
-  const { data: agents } = useAgents()
-  const effortRoute = agents?.find((agent) => agent.id === ntAgent)?.routes.find((route) => route.model === ntModel)
+  const { data: agents } = useAgents(true, false)
+  const selectedModel = routesData?.routes.find((route) => route.id === ntRouteId)?.model ?? null
+  const effortRoute = modelRoute(agents?.find((agent) => agent.id === ntAgent), selectedModel)
   const nativeEffort = routeEffort(effortRoute, ntEffort)
   const groups: RouteGroup[] = useMemo(() => {
     const byAgent = new Map<string, { id: string | null; model: string }[]>()
@@ -526,9 +528,9 @@ export function Composer() {
           : !catalog.data || catalog.data.status === 'loading' ? `discovering ${agentName} commands…`
             : catalog.data.message ?? (catalog.data.limitations.join(' · ') || null)
   // `/effort` moves this conversation along the scale its route claims.
-  const { data: agents } = useAgents(line !== null)
+  const { data: agents } = useAgents(true, false)
   const owner = agents?.find((one) => one.id === lastSes?.agent)
-  const sessionRoute = owner?.routes.find((one) => one.model === (lastSes?.model ?? owner.default_model))
+  const sessionRoute = modelRoute(owner, lastSes?.model ?? null)
   const scale = routeEffort(sessionRoute, lastSes?.effort ?? 'auto')
   const defaultLevel = routeEffort(sessionRoute, 'auto').effort
   const closed: Partial<Record<GatewayOp, string>> = {
@@ -536,7 +538,8 @@ export function Composer() {
     teleport: operations ? operations.teleport.reason ?? undefined : waiting,
     effort: !lastSes ? 'This thread has no conversation to set it on.'
       : !agents ? 'Reading the levels this route takes…'
-        : sessionRoute?.claim.efforts.length ? undefined : `${lastSes.route} takes no effort levels.`,
+        : !sessionRoute ? 'The runtime model is not available in the model catalog.'
+          : sessionRoute.claim.efforts.length ? undefined : `${lastSes.route} takes no effort levels.`,
   }
   const surfaces = channelRows(
     channels ?? [], operations?.teleport.destinations ?? [], selChannel,

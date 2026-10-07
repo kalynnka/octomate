@@ -13,6 +13,7 @@ from fastapi import UploadFile
 from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
+from sqlalchemy import select
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
@@ -38,6 +39,19 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
     `(thread_id, agent_tentacle_id, subagent_id)`: every sender in a group thread
     keys to the same owning agent's conversation, regardless of who woke it.
     """
+
+    async def latest_model(self, conversation_id: UUID7) -> str | None:
+        """Read the last reported model without loading the conversation's history."""
+        async with async_session() as session:
+            return await session.scalar(
+                select(AgentRun["model_name"])
+                .where(
+                    AgentRun["conversation_id"] == conversation_id,
+                    AgentRun["model_name"].is_not(None),
+                )
+                .order_by(AgentRun["started_at"].desc(), AgentRun["id"].desc())
+                .limit(1)
+            )
 
     async def ensure(
         self,

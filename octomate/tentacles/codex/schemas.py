@@ -1,11 +1,21 @@
-"""Codex command metadata and native protocol extensions."""
+"""Codex model and command metadata and native protocol extensions."""
 
 from pathlib import Path
+from typing import NamedTuple
 
-from openai_codex.generated.v2_all import SkillScope
+from openai_codex.generated.v2_all import Model, ReasoningEffort, SkillScope
 from pydantic import BaseModel, Field
 
 from octomate.schemas.commands import CommandDescriptor
+
+
+class CodexModelCatalog(NamedTuple):
+    """Visible native models and the configured provider and defaults."""
+
+    provider: str
+    models: list[Model]
+    default_model: str | None
+    configured_effort: ReasoningEffort | None
 
 
 class ThreadSettingsUpdateResponse(BaseModel):

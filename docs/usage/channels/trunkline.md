@@ -50,7 +50,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 ## What you can do there
 
 - **Start a thread** with a message, picking an agent and model, and optionally a
-  project on the first message. A thread keeps its agent and model; a different
+  project and reasoning effort on the first message. The effort applies to the
+  first run and stays selected for following turns; Auto leaves it to the agent.
+  A thread keeps its agent and model; a different
   pick on an owned thread is refused, because a mid-thread model switch busts the
   provider's cache. Hand off explicitly instead.
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the

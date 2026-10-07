@@ -46,7 +46,10 @@ from octomate.config.agents import CodexConfig
 from octomate.mcp.gateway import CONVERSATION_HEADER
 from octomate.telemetry import octomate_trace_environment
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
-from octomate.tentacles.codex.schemas import ThreadSettingsUpdateResponse
+from octomate.tentacles.codex.schemas import (
+    CodexModelCatalog,
+    ThreadSettingsUpdateResponse,
+)
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
@@ -158,7 +161,7 @@ class CodexInk:
             raise ValueError("Codex returned skills for another workspace")
         return entry
 
-    async def models(self) -> tuple[str, list[Model], ReasoningEffort | None]:
+    async def models(self) -> CodexModelCatalog:
         """Read the configured provider and all advertised, visible models."""
         settings = await self.client._client.request(
             "config/read",
@@ -180,7 +183,15 @@ class CodexInk:
                 break
         if not models:
             raise ValueError("Codex advertised no available models")
-        return provider, models, settings.config.model_reasoning_effort
+        default_model = settings.config.model or next(
+            (model.model for model in models if model.is_default), None
+        )
+        return CodexModelCatalog(
+            provider=provider,
+            models=models,
+            default_model=default_model,
+            configured_effort=settings.config.model_reasoning_effort,
+        )
 
     async def open_thread(
         self,

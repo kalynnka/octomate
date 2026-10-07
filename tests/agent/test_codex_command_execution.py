@@ -17,8 +17,9 @@ from openai_codex.generated.v2_all import (
 )
 from openai_codex.models import Notification
 from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.messages import UserPromptPart
+from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
+from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import ChannelConfig
@@ -123,12 +124,14 @@ async def execution(
 
 
 @pytest.mark.parametrize("command", [False, True])
+@pytest.mark.parametrize("model_selection", ["qualified", "bare", "default"])
 @pytest.mark.parametrize(
     "effort", [None, "high", "none", "max", "ultra", "future-effort"]
 )
 async def test_runs_apply_saved_effort(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
     command: bool,
+    model_selection: str,
     effort: str | None,
 ) -> None:
     agent, context, _ = execution
@@ -142,7 +145,14 @@ async def test_runs_apply_saved_effort(
         )
     }
     agent.routes = agent.build_routes()
-    context = replace(context, model=model)
+    selected = (
+        model
+        if model_selection == "qualified"
+        else model.partition(":")[2]
+        if model_selection == "bare"
+        else None
+    )
+    context = replace(context, model=selected)
     await agent.conversations.set_effort(conversation, "high")
     await agent.conversations.set_effort(conversation, effort)
     if command:
@@ -156,11 +166,41 @@ async def test_runs_apply_saved_effort(
             conversation_address=context.address,
             conversation_id=conversation.id,
             thread_id=conversation.thread_id,
-            model=model,
+            model=selected,
         )
     assert FakeCodex.turn_calls[-1].effort == (
         ReasoningEffort(effort) if effort is not None else None
     )
+    if model_selection == "default":
+        assert FakeCodex.turn_calls[-1].model is None
+
+
+async def test_effort_uses_last_reported_model_instead_of_new_session_default(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    agent.set_model_catalog(
+        {"openai:test-model": "test-model", "openai:previous": "previous"},
+        {
+            "openai:test-model": Claim("Default", efforts=("low",)),
+            "openai:previous": Claim("Previous", efforts=("high",)),
+        },
+    )
+    await agent.conversations.record_agent_run(
+        conversation,
+        str(uuid7()),
+        [ModelRequest(parts=[UserPromptPart("previous")])],
+        model_name="previous",
+    )
+    await agent.conversations.record_agent_run(
+        conversation, str(uuid7()), [ModelRequest(parts=[UserPromptPart("unknown")])]
+    )
+    await agent.conversations.set_effort(conversation, "high")
+    assert await agent.resolve_effort(conversation, model=None) == "high"
+    with pytest.raises(ValueError, match="does not take effort 'high'"):
+        await agent.resolve_effort(conversation, model="openai:test-model")
 
 
 async def test_command_rejects_effort_unsupported_by_current_model(

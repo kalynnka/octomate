@@ -82,8 +82,10 @@ async def test_claude_uses_native_metadata_before_config(
     )
 
     async with tentacle:
-        assert tentacle.default_model is None
+        assert tentacle.default_model == f"{prefix}:default"
+        assert tentacle.resolve_model() is None
         assert tentacle.models[f"{prefix}:default"] == "default"
+        assert tentacle.info.default_model == f"{prefix}:default"
         assert tentacle.claims[f"{prefix}:future-model"] == Claim(
             "From the harness", efforts=("low", "high", "max")
         )
@@ -230,8 +232,13 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
             f"{prefix}:recommended": "recommended",
             f"{prefix}:future-model": "future-model",
         }
-        assert tentacle.default_model is None
+        assert tentacle.default_model == f"{prefix}:{configured_model or 'recommended'}"
         assert tentacle.provider == prefix
+        assert (
+            tentacle.info.default_model
+            == f"{prefix}:{configured_model or 'recommended'}"
+        )
+        assert tentacle.resolve_model() is None
         assert tentacle.claims[f"{prefix}:future-model"] == Claim(
             "Native description",
             efforts=("none", "high", "max", "ultra", "future-effort"),
@@ -374,7 +381,9 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
     )
     async with tentacle:
         assert set(tentacle.models) == {"first:future-model", "second:future-model"}
-        assert tentacle.default_model is None
+        assert tentacle.info.default_model == "second:future-model"
+        assert tentacle.default_model == "second:future-model"
+        assert tentacle.resolve_model() is None
         assert tentacle.claims["first:future-model"] == Claim(
             "Native ability", efforts=("low", "max", "plugin-effort")
         )
@@ -514,13 +523,17 @@ async def test_harness_catalogs_expose_all_models_and_native_defaults(
 ) -> None:
     tentacle = harness
     assert tentacle.routes == []
+    assert tentacle.default_model is None
     async with tentacle:
         names = ["source:included", "source:excluded"]
         assert list(tentacle.models) == names
         assert list(tentacle.claims) == names
         assert [route.model for route in tentacle.routes] == names
         assert tentacle.routes is tentacle.routes
-        assert tentacle.default_model is None
+        assert tentacle.default_model == (
+            None if tentacle.id == "claude" else "source:excluded"
+        )
+        assert tentacle.resolve_model() is None
         tentacle.octomate.connect(tentacle)
         channel = TrunklineTentacle(
             "console",

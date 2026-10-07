@@ -12,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic_ai.messages import ModelMessage, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.settings import ThinkingLevel
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -658,6 +660,58 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
     assert refused.status_code == 422
     assert "not one of inkling's modes" in refused.json()["detail"]
     assert unknown.status_code == 404
+
+
+@pytest.mark.parametrize("effort", [None, "high", "invalid"])
+async def test_first_directive_applies_effort_to_its_first_run(
+    in_memory_engine: AsyncEngine, effort: str | None
+) -> None:
+    seen: list[ThinkingLevel | None] = []
+
+    async def respond(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        seen.append(info.model_request_parameters.thinking)
+        yield "done"
+
+    agent: Agent[None, InklingOutput] = Agent(
+        FunctionModel(
+            stream_function=respond,
+            model_name="scripted",
+            profile=ModelProfile(supports_thinking=True),
+        ),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    octomate = Octomate()
+    await _register(octomate, agent)
+    inkling = octomate.agents["inkling"]
+    inkling.claims = {RECEPTION_MODEL: Claim("Test", efforts=("high",))}
+    inkling.routes = inkling.build_routes()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate),
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        response = await client.post(
+            "/api/trunkline/threads/first-effort/messages",
+            json={
+                "text": "hello",
+                "model": f"inkling:{RECEPTION_MODEL}",
+                "effort": effort,
+            },
+        )
+        assert response.status_code == (422 if effort == "invalid" else 200)
+        if effort == "invalid":
+            assert seen == []
+            return
+        [thread] = (await client.get("/api/trunkline/threads")).json()
+        [conversation] = (
+            await client.get(f"/api/trunkline/threads/{thread['id']}/conversations")
+        ).json()
+    assert seen == [effort]
+    assert conversation["effort"] == effort
 
 
 async def test_an_effort_set_mid_thread_stays_on_the_row_until_cleared(

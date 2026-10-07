@@ -633,11 +633,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         await self.deferred_actions.resolve_batch(response)
         return batch, response
 
-    @property
-    def default_model(self) -> None:
-        # Omitting --model preserves Claude's own settings and resume selection.
-        return None
-
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """Initialize a non-persisting SDK client in the resolved workspace.
 
@@ -776,6 +771,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
         self.set_model_catalog(models, claims)
         self.model_aliases = aliases
+        self.default_model = aliases.get("default")
 
     def served_model(self, name: str) -> str | None:
         """An entry by its own name, by a name Claude Code itself uses (`opus`,
@@ -862,7 +858,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 agent_tentacle_id=self.id,
                 with_history=False,
             )
-        effort = self.resolve_effort(conversation, model=cli_model, effort=effort)
+        effort = await self.resolve_effort(conversation, model=cli_model, effort=effort)
         if deferred_tool_results is not None:
             # A resumed run. The CLI takes no tool result back, so the graph's
             # resolution of the deferral is this turn's prompt, ledgered as one.

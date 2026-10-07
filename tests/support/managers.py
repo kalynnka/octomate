@@ -171,6 +171,13 @@ class FakeConversationManager(ConversationManager):
     )
     parent_links: list[tuple[str, str | None, str | None]] = field(default_factory=list)
 
+    async def latest_model(self, conversation_id: UUID7) -> str | None:
+        conversation = await self.get(conversation_id)
+        return next(
+            (run.model_name for run in reversed(conversation.runs) if run.model_name),
+            None,
+        )
+
     async def ensure(
         self,
         thread_id: UUID7,

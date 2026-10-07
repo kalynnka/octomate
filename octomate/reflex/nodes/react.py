@@ -105,7 +105,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             conversation = await ctx.deps.conversation_manager.get(
                 state.conversation_id, with_history=False
             )
-            effort = agent.resolve_effort(conversation, model=model)
+            effort = await agent.resolve_effort(conversation, model=model)
         if state.user_profile is not None:
             await runtime.prepare_user(
                 ctx,

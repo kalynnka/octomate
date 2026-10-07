@@ -28,6 +28,10 @@ The app-server supplies the catalog: every non-hidden model with its supported
 reasoning efforts, keyed as `<provider>:<model>`, `openai` unless the Codex config
 names another provider.
 
+Trunkline offers the default model's effort levels before the first message,
+including when you leave the model at Harness default. Existing conversations
+use their selected or last reported model's levels.
+
 Octomate loads this catalog at startup using the SDK's bundled Codex runtime,
 unless `runtime.codex_bin` selects another executable. Updating a separate Codex
 CLI or IDE extension does not update the bundled runtime. Restart Octomate after

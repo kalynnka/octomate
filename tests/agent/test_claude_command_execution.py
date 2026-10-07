@@ -145,7 +145,7 @@ async def execution(
             address=KEY,
             cwd=workspace.path,
             conversation=conversation,
-            model=agent.resolve_model(None),
+            model=agent.resolve_model(),
             permission_mode=agent.default_permission_mode,
         )
         try:

@@ -136,6 +136,11 @@ class DirectiveBody(BaseModel):
         "thread's is switched through PATCH /conversations/{id}/permission-mode. "
         "Null asks for no change, and never clears a posture already stored.",
     )
+    effort: str | None = Field(
+        default=None,
+        description="An effort level advertised by the selected model, stored before "
+        "the first run. Null leaves the conversation's selection unchanged.",
+    )
 
 
 class TeleportBody(TypedDict):
@@ -492,6 +497,7 @@ def build_trunkline_router(
             model=body.model,
             project=body.project,
             permission_mode=body.permission_mode,
+            effort=body.effort,
         )
         try:
             return await channel.handle_directive(directive)
@@ -574,7 +580,9 @@ def build_trunkline_router(
         if effort is not None:
             surface = await threads.surface(thread)
             try:
-                agent.check_effort(agent.resolve_model(surface.active_model), effort)
+                await agent.resolve_effort(
+                    conversation, model=surface.active_model, effort=effort
+                )
             except ValueError as error:
                 raise HTTPException(status_code=422, detail=str(error)) from error
         return await conversations.set_effort(conversation, effort)

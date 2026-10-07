@@ -261,19 +261,20 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> None:
         self.routes = []
 
-    @property
+    @cached_property
     def default_model(self) -> str | None:
-        """Inkling's configured first model; harnesses override with native defaults."""
-        return next(iter(self.models), None)
+        """Configured first model, replaced by discovery with the harness's default."""
+        return next(iter(self.models), None) if self.native_id is None else None
 
     def resolve_model(
-        self, model: AgentRouteModelName | None
+        self, model: AgentRouteModelName | None = None
     ) -> AgentRouteModelName | None:
         """Resolve a default, exact model or unambiguous provider-less name."""
         if not self.models:
             raise ValueError(f"agent {self.id!r} has no available model catalog")
         if model is None:
-            return self.default_model
+            # Native harnesses retain their settings and resumed model selection.
+            return self.default_model if self.native_id is None else None
         served = self.served_model(model)
         if served is not None:
             return served
@@ -310,6 +311,11 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
 
     def check_effort(self, model: AgentRouteModelName | None, effort: str) -> None:
         """Reject a level the route for `model` does not claim."""
+        model = self.resolve_model(model or self.default_model)
+        if model is None:
+            raise ValueError(
+                "The runtime's model is unknown; select a model to set effort"
+            )
         route = next((route for route in self.routes if route.model == model), None)
         efforts = route.claim.efforts if route is not None else ()
         if effort not in efforts:
@@ -318,20 +324,26 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 f"{'/'.join(efforts) or 'none'}"
             )
 
-    def resolve_effort(
+    async def resolve_effort(
         self,
         conversation: Conversation,
         *,
         model: AgentRouteModelName | None,
         effort: str | None = None,
     ) -> str | None:
-        """Prefer the run's effort; otherwise validate the conversation's selection
-        against the current route before passing it to the runtime.
+        """Validate the run's override or stored effort against its selected model.
+
+        With no explicit model, use the conversation's last reported model, then
+        the harness's catalog default for a conversation that has not run yet.
         """
-        if effort is not None or conversation.effort is None:
-            return effort
-        self.check_effort(self.resolve_model(model), conversation.effort)
-        return conversation.effort
+        selected = effort if effort is not None else conversation.effort
+        if selected is None:
+            return None
+        effective_model = model or await self.conversations.latest_model(
+            conversation.id
+        )
+        self.check_effort(effective_model, selected)
+        return selected
 
     async def set_permission_mode(
         self, conversation: Conversation, mode: str | None

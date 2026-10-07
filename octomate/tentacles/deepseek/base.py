@@ -438,11 +438,6 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         logger.info("dsh Remote API connected")
         return process
 
-    @property
-    def default_model(self) -> None:
-        # dsh owns both the live default and a resumed session's selection.
-        return None
-
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
         """Read the live session's registry without creating a session or turn."""
         conversation = context.conversation
@@ -520,7 +515,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             conversation = await self.conversations.get(
                 conversation.id, with_history=False
             )
-            effort = self.resolve_effort(conversation, model=context.model)
+            effort = await self.resolve_effort(conversation, model=context.model)
             permission_mode = (
                 conversation.permission_mode or self.config.permission_mode
             )
@@ -694,6 +689,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         if not models:
             raise ValueError("DeepSeek Harness advertised no available models")
         self.set_model_catalog(models, claims)
+        self.default_model = f"{catalog.default.provider}:{catalog.default.model}"
         self.default_provider = catalog.default.provider
 
     async def discover_permissions(self) -> None:
@@ -1045,7 +1041,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 conversation = await self.conversations.get(
                     conversation.id, with_history=False
                 )
-                effort = self.resolve_effort(
+                effort = await self.resolve_effort(
                     conversation, model=deepseek_model, effort=effort
                 )
                 permission_mode = (

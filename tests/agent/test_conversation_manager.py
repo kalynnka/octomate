@@ -63,6 +63,30 @@ async def test_record_agent_run_persists_only_explicit_settings(
     assert stored.permission_mode == "full_access"
 
 
+async def test_latest_model_selects_one_reported_run_in_its_conversation() -> None:
+    manager = ConversationManager()
+    thread_id = await _thread()
+    conversation = await manager.ensure(thread_id, agent_tentacle_id="codex")
+    assert await manager.latest_model(conversation.id) is None
+
+    for model in ("earlier", "latest", None):
+        await manager.record_agent_run(
+            conversation,
+            run_id=str(uuid7()),
+            messages=[RawModelResponse(parts=[TextPart("done")])],
+            model_name=model,
+        )
+
+    other = await manager.ensure(thread_id, agent_tentacle_id="claude")
+    await manager.record_agent_run(
+        other,
+        run_id=str(uuid7()),
+        messages=[RawModelResponse(parts=[TextPart("done")])],
+        model_name="other",
+    )
+    assert await manager.latest_model(conversation.id) == "latest"
+
+
 async def test_ensure_is_idempotent() -> None:
     service = ConversationManager()
     a = await service.ensure(await _thread(), agent_tentacle_id="inkling")

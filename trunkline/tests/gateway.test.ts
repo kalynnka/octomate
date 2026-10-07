@@ -5,7 +5,7 @@ import { createElement, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiAgentRoute, ApiCommandDescriptor, ApiThread, ChannelAddress, CommandStreamEvent, GatewayEvent, GatewayRequest, OperationAvailability, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
+import type { ApiAgentInfo, ApiAgentRoute, ApiCommandDescriptor, ApiThread, ChannelAddress, CommandStreamEvent, GatewayEvent, GatewayRequest, OperationAvailability, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
 
 let server: ViteDevServer
 let streamGateway: typeof import('../src/lib/api/client.ts').streamGateway
@@ -633,4 +633,39 @@ test('an effort set from the composer lands on the conversation and says so', as
   await useConsole.getState().actions.setEffort('xhigh')
   assert.equal(useConsole.getState().detail?.sessions[0].effort, 'high')
   assert.ok(useConsole.getState().notices.some((one) => one.tone === 'error' && one.text.includes('does not take effort')))
+})
+
+test('effort choices match the native default and unambiguous runtime model names', () => {
+  const route = { ...routes[0], agent_id: 'codex', model: 'openai:test-model' }
+  const agent: ApiAgentInfo = {
+    id: 'codex', description: '', gateway: true, default_model: route.model,
+    routes: [route], permission_modes: [], default_permission_mode: null,
+    driven_sessions: 0, native_sessions: 0,
+  }
+  for (const name of [null, 'test-model', 'openai:test-model']) {
+    assert.deepEqual(forms.modelRoute(agent, name)?.claim.efforts, ['low', 'high'])
+  }
+  assert.equal(forms.modelRoute(agent, 'unknown'), undefined)
+  assert.equal(forms.modelRoute({ ...agent, default_model: null }, null), undefined)
+  assert.equal(forms.modelRoute({ ...agent, routes: [route, { ...route, model: 'other:test-model' }] }, 'test-model'), undefined)
+})
+
+for (const effort of ['high', 'auto']) {
+  test(`the first message carries effort ${effort} without pinning the harness model`, async () => {
+    const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? sse(result) : Response.json([]))
+    useConsole.setState({ ntOn: true, ntStarted: false, ntEffort: effort, ntRouteId: 'codex:', ntProject: null, ntPermissionMode: null })
+    useConsole.getState().actions.sendNewThread('hello')
+    for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+    const sent = fetch.mock.calls.find((call) => call.arguments[1]?.method === 'POST')
+    assert.ok(sent)
+    const body = JSON.parse(String(sent.arguments[1]?.body))
+    assert.deepEqual(body, { text: 'hello', model: 'codex:', ...(effort === 'auto' ? {} : { effort }) })
+    assert.equal(useConsole.getState().running, false)
+  })
+}
+
+test('changing a model clears the previous models effort selection', () => {
+  useConsole.setState({ ntAgent: 'codex', ntModel: 'first', ntEffort: 'high' })
+  useConsole.getState().actions.setNtRoute({ ntModel: 'second' })
+  assert.equal(useConsole.getState().ntEffort, 'auto')
 })

@@ -41,10 +41,9 @@ export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: fetc
 export const useProfileAuthorizations = () =>
   useQuery({ queryKey: ['profile-authorizations'], queryFn: fetchProfileAuthorizations })
 
-// Session counts and MCP authorizations can change while the control page is open.
-// The composer reads the same entry for `/effort`, and only while its finder is.
-export const useAgents = (enabled = true) =>
-  useQuery({ queryKey: ['agents'], queryFn: api.agents, refetchInterval: 15_000, enabled })
+// The control page polls live counts; composers reuse its cached model capabilities.
+export const useAgents = (enabled = true, live = true) =>
+  useQuery({ queryKey: ['agents'], queryFn: api.agents, staleTime: 60_000, refetchInterval: live ? 15_000 : false, enabled })
 
 export const useProfile = () =>
   useQuery({ queryKey: ['profile'], queryFn: api.profile, refetchInterval: 15_000 })

@@ -3,7 +3,7 @@
  * becomes the request. Kept out of the components so it reads without them.
  */
 import { useState, type KeyboardEvent } from 'react'
-import type { ApiAgentRoute, ChannelAddress, GatewayRequest } from '@/lib/api/events'
+import type { ApiAgentInfo, ApiAgentRoute, ChannelAddress, GatewayRequest } from '@/lib/api/events'
 import type { ChannelMeta } from '@/lib/api/types'
 import { ApiError } from '@/lib/api/auth'
 import { COMMANDS, readCommand } from './commands'
@@ -97,6 +97,16 @@ export function pickRoute(routes: ApiAgentRoute[], agent: string | null, model: 
   return routes.find((one) => one.agent_id === agent && one.model === model)
     ?? routes.find((one) => one.agent_id === agent)
     ?? routes[0]
+}
+
+/** Match runtime model names to catalog capabilities without changing the selection. */
+export function modelRoute(agent: ApiAgentInfo | undefined, model: string | null) {
+  const name = model ?? agent?.default_model
+  if (!agent || !name) return undefined
+  const exact = agent.routes.find((route) => route.model === name)
+  if (exact || name.includes(':')) return exact
+  const matches = agent.routes.filter((route) => route.model.slice(route.model.indexOf(':') + 1) === name)
+  return matches.length === 1 ? matches[0] : undefined
 }
 
 /** One step into a channel: the channel itself, then each place opened in it. */

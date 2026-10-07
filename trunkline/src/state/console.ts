@@ -1275,6 +1275,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntTitle: '',
         ntProject: null,
         ntPermissionMode: null,
+        ntEffort: 'auto',
         ntMenu: null,
         live: [],
         running: false,
@@ -1297,7 +1298,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // A posture is one provider's word, so switching agents drops it rather
       // than sending Claude's vocabulary to Codex on the first directive.
       const dropped = patch.ntAgent !== undefined && patch.ntAgent !== get().ntAgent
-      set(dropped ? { ...patch, ntPermissionMode: null } : patch)
+      const modelChanged = patch.ntModel !== undefined && patch.ntModel !== get().ntModel
+      set({ ...(dropped || modelChanged ? { ntEffort: 'auto' } : {}), ...patch, ...(dropped ? { ntPermissionMode: null } : {}) })
     },
     setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }) {
       set((s) => ({ ntMenu: s.ntMenu === menu ? null : menu, ...(pos ? { ntMenuPos: pos } : {}) }))
@@ -1436,10 +1438,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // the console holds it until the thread is reopened and its conversation
       // starts answering for it.
       const posture = s.ntPermissionMode ?? undefined
+      const effort = !started && s.ntEffort !== 'auto' ? s.ntEffort : undefined
       void runLive(threadId, (onEvent) =>
         streamDirective(
           threadId,
-          { text: body, model: routeId, project, permission_mode: posture },
+          { text: body, model: routeId, project, permission_mode: posture, effort },
           onEvent,
         ),
       )
@@ -1512,7 +1515,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     ntAgent: 'claude',
     ntModel: 'opus-4.1',
     ntRouteId: null,
-    ntEffort: 'high',
+    ntEffort: 'auto',
     ntMenu: null,
     ntMenuPos: { top: 0, right: 0 },
     actions,

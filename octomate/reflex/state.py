@@ -327,7 +327,7 @@ class ReflexDeps:
         if not agent.models:
             raise ValueError(f"agent {agent_id!r} has no available model catalog")
         if model is None:
-            return AgentModelConfig(agent=agent_id, model=agent.default_model)
+            return AgentModelConfig(agent=agent_id, model=agent.resolve_model())
         served = agent.served_model(model)
         if served is None:
             raise ValueError(f"agent {agent_id!r} does not serve model {model!r}")

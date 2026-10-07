@@ -18,8 +18,9 @@ class AgentInfo(BaseModel):
         "project spells; the agent's own flag is the only switch."
     )
     default_model: AgentRouteModelName | None = Field(
-        description="What a directive naming no model runs on; null for an agent "
-        "whose catalog is empty."
+        description="The catalog model used to inspect a new conversation's default "
+        "capabilities; null when the harness has not reported its default. "
+        "Omitting a model at execution still leaves the harness's selection intact."
     )
     permission_modes: tuple[PermissionMode, ...] = Field(
         description="Selectable permission modes in the agent's own vocabulary."
