@@ -21,6 +21,7 @@ from openai_codex.generated.v2_all import (
     DynamicToolCallStatus,
     DynamicToolCallThreadItem,
     ErrorNotification,
+    ExitedReviewModeThreadItem,
     FileChangeOutputDeltaNotification,
     FileChangePatchUpdatedNotification,
     FileChangeThreadItem,
@@ -584,7 +585,7 @@ class CodexRunAccumulator:
         self.thread_id = payload.thread_id
         self.turn_id = payload.turn_id
         item = payload.item.root
-        if isinstance(item, AgentMessageThreadItem):
+        if isinstance(item, AgentMessageThreadItem | ExitedReviewModeThreadItem):
             yield from self.complete_agent_message(item, event)
         elif isinstance(item, ReasoningThreadItem):
             yield from self.complete_reasoning(item, event)
@@ -614,22 +615,31 @@ class CodexRunAccumulator:
             self.pending_events.append(event)
 
     def complete_agent_message(
-        self, item: AgentMessageThreadItem, event: JsonObject
+        self,
+        item: AgentMessageThreadItem | ExitedReviewModeThreadItem,
+        event: JsonObject,
     ) -> Iterator[StreamEvents[str]]:
+        text = (
+            item.review if isinstance(item, ExitedReviewModeThreadItem) else item.text
+        )
         state = self.streaming_parts.pop(item.id, None)
         if state is None or not isinstance(state.part, TextPart):
             part = TextPart(
-                content=item.text,
+                content=text,
                 id=item.id,
                 provider_name=CODEX_PROVIDER_NAME,
             )
             state = StreamingPartState(index=self.take_part_index(), part=part)
             yield PartStartEvent(index=state.index, part=part)
         else:
-            state.part.content = item.text
+            state.part.content = text
         state.events.append(event)
-        if item.phase == MessagePhase.final_answer or item.phase is None:
-            self.result_text = item.text
+        if (
+            isinstance(item, ExitedReviewModeThreadItem)
+            or item.phase == MessagePhase.final_answer
+            or item.phase is None
+        ):
+            self.result_text = text
         yield PartEndEvent(index=state.index, part=state.part)
         self.messages.append(
             ModelResponse(

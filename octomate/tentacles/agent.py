@@ -58,6 +58,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
+from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -185,7 +186,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         task = asyncio.create_task(collect())
         self.run_tasks.add(task)
         observed_end = False
-        cancelled = False
         try:
             async with receive:
                 async for event in receive:
@@ -195,14 +195,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 raise error
         finally:
             receive.close()
-            # AnyIO scopes repeatedly cancel at checkpoints; asyncio callers can
-            # also cancel more than once. Neither may cancel the collector.
-            with anyio.CancelScope(shield=True):
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        cancelled = True
+            cancelled = await drain_task(task)
             self.run_tasks.discard(task)
             if not observed_end:
                 for error in errors:

@@ -118,6 +118,7 @@ from octomate.tentacles.deepseek.wire import (
 from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject, JsonValue
+from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -739,14 +740,8 @@ class DeepseekTentacle(AgentTentacle[str, None]):
     ) -> None:
         await super().__aexit__(exc_type, exc_value, traceback)
         self.commands.invalidate(agent_id=self.id)
-        cancelled = False
         with anyio.CancelScope(shield=True):
-            draining = asyncio.gather(*self.run_tasks)
-            while not draining.done():
-                try:
-                    await asyncio.shield(draining)
-                except asyncio.CancelledError:
-                    cancelled = True
+            cancelled = await drain_task(asyncio.gather(*self.run_tasks))
             self.session_ingest.shutdown()
             await self.session_tailer.shutdown()
             await self.ink.__aexit__(exc_type, exc_value, traceback)

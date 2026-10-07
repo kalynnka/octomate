@@ -276,7 +276,7 @@ def test_app_commands_explain_refusals_and_exclude_goals_and_cli_actions() -> No
     assert not {"goal", "quit", "exit", "statusline", "keymap"} & descriptors.keys()
     assert {
         name for name, item in descriptors.items() if item.unavailable_reason is None
-    } == {"plan", "init", "status", "mcp", "reasoning"}
+    } == {"plan", "init", "status", "mcp", "reasoning", "compact", "review"}
     assert not descriptors["status"].requires_conversation
 
 

@@ -91,9 +91,9 @@ are unavailable. **Disabled** means the command is visible but cannot execute;
 | Command | Available now | Handling or alternative |
 |---|---|---|
 | `/approve` | Disabled | Planned: approve a selected recent automatic-review denial for a retry. Any retry run must be recorded and delivered through Octomate. |
-| `/compact` | Disabled | Planned: compact the existing Codex conversation and report completion after the work finishes. |
+| `/compact` | Available after a driven run | Compact the existing Codex context. Reports success only after compaction finishes; keeps the visible conversation history. Takes no arguments. |
 | `/plan [on\|off]` | Available after a driven run | Enter Codex planning mode, or leave it with `off`. Keeps the selected model and effort. Changing mode starts no run; the next prompt uses the mode. |
-| `/review` | Disabled | Planned: run Codex's built-in review, with its output recorded and delivered like other agent runs. |
+| `/review [branch]` | Available in a conversation | Run Codex's built-in review of uncommitted changes, or changes against the named branch, in the conversation's workspace. Streams and records the review like other agent runs. |
 | `/init` | Available in a conversation | Ask Codex to create or update `AGENTS.md` in the conversation's workspace through a recorded agent run. This can write files and follows the conversation's approvals. |
 | `/status` | Available, including before a conversation exists | Show Octomate's conversation, workspace, model, effort and permission selections. Does not start a run. Native token usage and account rate limits are not included yet. |
 | `/mcp` | Available after a driven run | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
@@ -120,7 +120,7 @@ This matrix concerns driven conversations. Synced native sessions remain
 read-only; use an available [gateway operation](../channels/trunkline.md) to
 continue elsewhere.
 
-Planning and MCP inspection require the conversation to be loaded in the current
+Planning, compaction and MCP inspection require the conversation to be loaded in the current
 Codex runtime. After a runtime restart, send a message to resume it first.
 
 Enabled skills appear alongside those actions once a conversation workspace

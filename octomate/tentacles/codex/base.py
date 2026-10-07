@@ -46,11 +46,14 @@ from openai_codex import AsyncThread, AsyncTurnHandle, InputItem, SkillInput, Te
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import MethodNotFoundError
 from openai_codex.generated.v2_all import (
+    BaseBranchReviewTarget,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
     ReasoningSummaryValue,
+    ReviewTarget,
     TurnStatus,
+    UncommittedChangesReviewTarget,
 )
 from openai_codex.models import Notification
 from pydantic import UUID7, TypeAdapter, ValidationError
@@ -131,6 +134,7 @@ from octomate.tentacles.hooks import hook_guard, hook_sender
 from octomate.tentacles.locks import SessionLocks
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
+from octomate.utils import drain_task
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -739,7 +743,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                         "unavailable_reason": "Run this conversation in Codex before using this command."
                     }
                 )
-                if descriptor.name in {"plan", "mcp"} and not bound
+                if descriptor.name in {"plan", "mcp", "compact"} and not bound
                 else descriptor
                 for descriptor in APP_COMMANDS
             },
@@ -797,11 +801,13 @@ class CodexTentacle(AgentTentacle[str, None]):
             "builtin:mcp",
             "builtin:plan",
             "builtin:reasoning",
+            "builtin:compact",
         }:
             yield await self.command_control(context, invocation)
             return
         if conversation is None:
             raise ValueError("an agent command run requires a conversation")
+        review: ReviewTarget | None = None
         if isinstance(descriptor, CodexCommandDescriptor):
             inputs: list[InputItem] = [
                 SkillInput(name=descriptor.name, path=str(descriptor.path))
@@ -823,6 +829,22 @@ class CodexTentacle(AgentTentacle[str, None]):
                 "existing project instructions that remain applicable."
             )
             inputs = [TextInput(prompt)]
+        elif descriptor.id == "builtin:review":
+            branch = invocation.arguments.strip()
+            if branch and (
+                branch.startswith("-") or any(char.isspace() for char in branch)
+            ):
+                yield CommandError(
+                    status="unsupported", message="Use /review [branch]."
+                )
+                return
+            review = ReviewTarget(
+                BaseBranchReviewTarget(type="baseBranch", branch=branch)
+                if branch
+                else UncommittedChangesReviewTarget(type="uncommittedChanges")
+            )
+            prompt = f"/review {branch}" if branch else "/review"
+            inputs = []
         else:
             yield CommandError(
                 status="unavailable",
@@ -830,16 +852,20 @@ class CodexTentacle(AgentTentacle[str, None]):
                 or "This command is not supported.",
             )
             return
+        selected_model = self.resolve_model(context.model)
         async with contextlib.aclosing(
             self.observe_run(
                 self._iter_events(
                     prompt,
                     native_input=inputs,
+                    review=review,
                     conversation_address=context.address,
                     thread_id=conversation.thread_id,
                     conversation_id=conversation.id,
                     run_name=descriptor.name,
-                    model=context.model,
+                    model=self.models[selected_model]
+                    if selected_model is not None
+                    else None,
                     deferred_suspender=deferred_suspender,
                     capabilities=capabilities,
                 )
@@ -888,6 +914,29 @@ class CodexTentacle(AgentTentacle[str, None]):
             return CommandError(
                 status="unavailable",
                 message="Run this conversation in Codex before using this command.",
+            )
+        if invocation.command_id == "builtin:compact":
+            if argument:
+                return CommandError(
+                    status="unsupported", message="/compact takes no arguments."
+                )
+            project = await self.run_project(conversation.thread_id)
+            async with (
+                self.conversation_locks.hold(str(conversation.id)),
+                self.workspaces.open(conversation.thread_id, project),
+                self.driving(thread_id),
+            ):
+                turn = await self.ink.start_command(thread_id)
+                completed = await turn.run()
+            if completed.status != TurnStatus.completed:
+                return CommandError(
+                    status="failed",
+                    message=completed.error.message
+                    if completed.error
+                    else f"Codex compaction {completed.status.value}.",
+                )
+            return CommandResult(
+                segments=[TextSegment(data={"text": "Conversation context compacted."})]
             )
         if invocation.command_id == "builtin:mcp":
             if argument:
@@ -1005,14 +1054,8 @@ class CodexTentacle(AgentTentacle[str, None]):
         traceback: TracebackType | None = None,
     ) -> None:
         await super().__aexit__(exc_type, exc_value, traceback)
-        cancelled = False
         with anyio.CancelScope(shield=True):
-            draining = asyncio.gather(*self.run_tasks)
-            while not draining.done():
-                try:
-                    await asyncio.shield(draining)
-                except asyncio.CancelledError:
-                    cancelled = True
+            cancelled = await drain_task(asyncio.gather(*self.run_tasks))
             await self.session_tailer.shutdown()
             await self.ink.close()
             self.bridge_contexts.clear()
@@ -1370,6 +1413,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         native_input: list[InputItem] | None = None,
+        review: ReviewTarget | None = None,
     ) -> AsyncGenerator[ReactStreamEvent[str], None]:
         sdk_model = model.model_name if isinstance(model, Model) else model
         if thread_id is None:
@@ -1554,6 +1598,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 output_schema=output_schema,
                 personality=personality,
                 summary=summary,
+                review=review,
             )
             resources.enter_context(self.track_turn(conversation.id, turn))
             # Closed with the turn's other resources, so its reader never outlives it.

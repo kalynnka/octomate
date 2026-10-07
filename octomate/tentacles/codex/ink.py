@@ -8,12 +8,13 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 
 import anyio
 from httpx import URL
 from octomate_protocol.gateway import GatewayTool, gateway_tool
-from openai_codex import AsyncCodex, AsyncThread, AsyncTurnHandle, InputItem
+from openai_codex import AsyncThread, AsyncTurnHandle, InputItem
 from openai_codex._approval_mode import _approval_mode_settings
 from openai_codex._inputs import _normalize_run_input, _to_wire_input
 from openai_codex._sandbox import _sandbox_mode, _sandbox_policy
@@ -34,6 +35,7 @@ from openai_codex.generated.v2_all import (
     Personality,
     ReasoningEffort,
     ReasoningSummary,
+    ReviewTarget,
     Settings,
     SkillsListEntry,
     SkillsListResponse,
@@ -55,6 +57,7 @@ from octomate.tentacles.codex.schemas import (
     ThreadSettingsUpdateResponse,
 )
 from octomate.types.json import JsonObject
+from octomate.utils import acquire_in_thread
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +78,7 @@ class CodexInk:
     Conversation lookup and persistence remain with the tentacle.
     """
 
-    client: AsyncCodex
+    client: SharedCodex
     agent_id: str
     mcp_url: URL
     notification_task: asyncio.Task[None] | None
@@ -488,6 +491,18 @@ class CodexInk:
             if cursor is None:
                 return "\n".join(lines) or "No MCP servers are connected."
 
+    async def start_command(
+        self, thread_id: str, review: ReviewTarget | None = None
+    ) -> AsyncTurnHandle:
+        """Retain command-start events and release an abandoned SDK subscription."""
+        started = await acquire_in_thread(
+            partial(self.client.transport.start_command, thread_id, review),
+            discard=lambda started: started.subscription.close(),
+        )
+        return AsyncTurnHandle(
+            self.client, thread_id, started.id, _subscription=started.subscription
+        )
+
     async def start_turn(
         self,
         thread: AsyncThread,
@@ -501,8 +516,44 @@ class CodexInk:
         output_schema: JsonObject | None,
         personality: Personality | None,
         summary: ReasoningSummary | None,
+        review: ReviewTarget | None = None,
     ) -> AsyncTurnHandle:
         # Apply both axes every turn, including on warm threads after a mode change.
+        if review is not None:
+            policy, reviewer = (
+                _approval_mode_settings(approval_mode)
+                if approval_mode is not None
+                else (
+                    AskForApproval(root=AskForApprovalValue.on_request),
+                    ApprovalsReviewer.user,
+                )
+            )
+            sandbox_policy = _sandbox_policy(sandbox)
+            # review/start inherits thread settings instead of accepting turn overrides.
+            await self.client._client.request(
+                "thread/settings/update",
+                {
+                    "threadId": thread.id,
+                    "cwd": cwd,
+                    "approvalPolicy": policy.model_dump(mode="json"),
+                    "approvalsReviewer": reviewer.value if reviewer else None,
+                    "sandboxPolicy": sandbox_policy.model_dump(
+                        mode="json", by_alias=True
+                    )
+                    if sandbox_policy is not None
+                    else None,
+                    "model": model,
+                    "effort": effort.value if effort is not None else None,
+                    "personality": personality.value
+                    if personality is not None
+                    else None,
+                    "summary": summary.model_dump(mode="json")
+                    if summary is not None
+                    else None,
+                },
+                response_model=ThreadSettingsUpdateResponse,
+            )
+            return await self.start_command(thread.id, review)
         if approval_mode is not None:
             return await thread.turn(
                 prompt,

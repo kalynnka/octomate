@@ -7,14 +7,18 @@ from dataclasses import replace
 from unittest.mock import AsyncMock
 
 import pytest
-from openai_codex import SkillInput, TextInput
+from openai_codex import AsyncTurnHandle, SkillInput, TextInput, TurnResult
+from openai_codex._run import _collect_async_turn_result
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
+    ItemCompletedNotification,
     ListMcpServerStatusResponse,
     ReasoningEffort,
+    ReviewTarget,
     SkillsListEntry,
     TurnCompletedNotification,
+    TurnStatus,
 )
 from openai_codex.models import Notification
 from pydantic_ai import AgentRunResultEvent
@@ -43,6 +47,7 @@ from tests.agent.test_codex_tentacle import (
     FakeCodex,
     FakeThread,
     FakeTurn,
+    failed_script,
     reset_fake_codex,
     text_script,
 )
@@ -183,6 +188,8 @@ async def test_runs_apply_saved_effort(
     )
     if model_selection == "default":
         assert FakeCodex.turn_calls[-1].model is None
+    elif command:
+        assert FakeCodex.turn_calls[-1].model == model.partition(":")[2]
 
 
 async def test_effort_uses_last_reported_model_instead_of_new_session_default(
@@ -729,7 +736,7 @@ async def test_init_streams_and_records_one_real_run(
     assert len(await stored.runs) == 1
 
 
-@pytest.mark.parametrize("command", ["status", "mcp", "plan", "init"])
+@pytest.mark.parametrize("command", ["status", "mcp", "plan", "init", "compact"])
 async def test_builtin_arguments_are_rejected_without_native_effects(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock], command: str
 ) -> None:
@@ -752,3 +759,167 @@ async def test_builtin_arguments_are_rejected_without_native_effects(
     assert events[0].status == "unsupported"
     request.assert_not_awaited()
     assert not FakeCodex.turn_calls
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "interrupted"])
+async def test_compact_waits_and_records_only_a_command_receipt(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    await agent.conversations.set_external_id(conversation, "existing")
+    agent.ink.thread_bindings["existing"] = (conversation.id, None)
+    entered, finish = asyncio.Event(), asyncio.Event()
+    reset_fake_codex(failed_script("Compaction failed", thread_id="existing"))
+    terminal = FakeCodex.script[0].payload
+    assert isinstance(terminal, TurnCompletedNotification)
+    terminal.turn.status = TurnStatus(status)
+    if status != "failed":
+        terminal.turn.error = None
+
+    async def compact() -> TurnResult:
+        entered.set()
+        await finish.wait()
+        return await _collect_async_turn_result(FakeTurn().stream(), turn_id="turn-1")
+
+    handle = AsyncMock(spec=AsyncTurnHandle)
+    handle.run.side_effect = compact
+    start = AsyncMock(return_value=handle)
+    monkeypatch.setattr(agent.ink, "start_command", start)
+
+    async def execute() -> CommandResult | CommandError:
+        invocation = CommandInvocation(command_id="builtin:compact")
+        async with AsyncExitStack() as stack:
+            validated = await stack.enter_async_context(
+                agent.commands.validate(
+                    agent,
+                    context,
+                    invocation,
+                    delivery_id="compact-1",
+                )
+            )
+            assert isinstance(validated, tuple)
+            outcome = await stack.enter_async_context(
+                agent.commands.execute(
+                    agent,
+                    context,
+                    invocation,
+                    validated,
+                    delivery_id="compact-1",
+                )
+            )
+            assert isinstance(outcome, CommandResult | CommandError)
+            return outcome
+
+    task = asyncio.create_task(execute())
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert not task.done()
+        receipt = await agent.threads.find_message(
+            conversation.thread_id, "compact-1", "inbound"
+        )
+        assert isinstance(receipt, ThreadCommand)
+        assert receipt.outcome is None
+    finally:
+        finish.set()
+    outcome = await asyncio.wait_for(task, 2)
+    assert outcome.status == ("completed" if status == "completed" else "failed")
+    start.assert_awaited_once_with("existing")
+    stored = await agent.conversations.get(conversation.id)
+    assert not await stored.runs
+    assert not FakeCodex.turn_calls
+    receipt = await agent.threads.find_message(
+        conversation.thread_id, "compact-1", "inbound"
+    )
+    assert isinstance(receipt, ThreadCommand)
+    assert receipt.outcome == outcome
+
+
+@pytest.mark.parametrize("branch", ["", "main"])
+async def test_review_streams_native_review_text_and_records_a_real_run(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    monkeypatch: pytest.MonkeyPatch,
+    branch: str,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    script = text_script("No issues found", thread_id="thread-new")
+    script[1] = Notification(
+        method="item/completed",
+        payload=ItemCompletedNotification.model_validate(
+            {
+                "item": {
+                    "id": "review-1",
+                    "type": "exitedReviewMode",
+                    "review": "No issues found",
+                },
+                "threadId": "thread-new",
+                "turnId": "turn-1",
+                "completedAtMs": 1,
+            }
+        ),
+    )
+    reset_fake_codex(script[1:])
+    start = AsyncMock(return_value=FakeTurn())
+    monkeypatch.setattr(agent.ink, "start_command", start)
+    model = next(iter(agent.models))
+    agent.claims = {model: Claim(ability="Review", efforts=("medium",))}
+    agent.routes = agent.build_routes()
+    context = replace(context, model=model)
+    await agent.conversations.set_effort(conversation, "medium")
+    events = [
+        event
+        async for event in agent.execute_command(
+            context,
+            CommandInvocation(command_id="builtin:review", arguments=branch),
+        )
+    ]
+    assert isinstance(events[-1], AgentRunResultEvent)
+    assert events[-1].result.output == "No issues found"
+    start.assert_awaited_once()
+    native_thread, target = start.call_args.args
+    assert native_thread == "thread-new"
+    assert isinstance(target, ReviewTarget)
+    assert target.model_dump() == (
+        {"type": "baseBranch", "branch": branch}
+        if branch
+        else {"type": "uncommittedChanges"}
+    )
+    assert not FakeCodex.turn_calls
+    stored = await agent.conversations.get(conversation.id)
+    [run] = await stored.runs
+    assert run.native_session_id == "thread-new"
+    assert run.native_turn_id == "turn-1"
+    assert run.name == "review"
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    settings = next(
+        call.args[1]
+        for call in request.await_args_list
+        if call.args[0] == "thread/settings/update"
+    )
+    assert settings["effort"] == "medium"
+    assert settings["model"] == model.partition(":")[2]
+    assert settings["approvalsReviewer"] == "auto_review"
+    assert settings["sandboxPolicy"]["type"] == "workspaceWrite"
+
+
+@pytest.mark.parametrize("argument", ["--unknown", "main extra"])
+async def test_review_rejects_invalid_targets_before_starting_a_run(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], argument: str
+) -> None:
+    agent, context, _ = execution
+    events = [
+        event
+        async for event in agent.execute_command(
+            context,
+            CommandInvocation(command_id="builtin:review", arguments=argument),
+        )
+    ]
+    assert isinstance(events[0], CommandError)
+    assert events[0].status == "unsupported"
+    assert not FakeCodex.thread_calls

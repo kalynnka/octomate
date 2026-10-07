@@ -28,11 +28,6 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             "Cloud environments are managed in Codex.",
         ),
         (
-            "compact",
-            "Compact the conversation context.",
-            "Codex context compaction is not supported here yet.",
-        ),
-        (
             "fast",
             "Toggle fast execution.",
             "Codex service-tier changes are not supported here yet.",
@@ -79,11 +74,6 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             "Use Trunkline's project selector.",
         ),
         (
-            "review",
-            "Review changes against a branch or the working tree.",
-            "Codex's built-in review mode is not supported here yet.",
-        ),
-        (
             "side",
             "Open a temporary side conversation.",
             "Side conversations are not supported here yet.",
@@ -101,6 +91,17 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
     )
 ) | frozenset(
     {
+        CommandDescriptor(
+            id="builtin:compact",
+            name="compact",
+            description="Compact the conversation context.",
+        ),
+        CommandDescriptor(
+            id="builtin:review",
+            name="review",
+            description="Review uncommitted changes, or changes against a branch.",
+            argument_hint="[branch]",
+        ),
         CommandDescriptor(
             id="builtin:init",
             name="init",
