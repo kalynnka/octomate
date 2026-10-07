@@ -1,4 +1,4 @@
-import { Fragment, type CSSProperties } from 'react'
+import { Fragment, useId, type CSSProperties } from 'react'
 import type { ApiAgentRoute } from '@/lib/api/events'
 import { ellipsis, label, mono } from '@/components/text'
 import { EffortSlider } from './GatewayRoute'
@@ -46,7 +46,8 @@ function Typed({ text, hits, base }: { text: string; hits: number[]; base: strin
  * The composer keeps the keyboard, so a press here leaves its focus alone; only
  * an effort range has to take it to drag.
  */
-export function CommandPanel({ line, matches, offered, total, agent, nativeNote, argumentReason, closed, route, effort, onRun, onDismiss, onSettled }: {
+export function CommandPanel({ id, line, matches, offered, total, agent, nativeNote, argumentReason, closed, route, effort, onRun, onDismiss, onSettled }: {
+  id?: string
   line: CommandLine
   /** the arguments what was typed could still become, out of `offered` */
   matches: ArgumentMatch[]
@@ -68,9 +69,11 @@ export function CommandPanel({ line, matches, offered, total, agent, nativeNote,
   /** Finish a pointer choice after its click has been handled. */
   onSettled: () => void
 }) {
+  const generatedId = useId()
+  const listId = id ?? generatedId
   const naming = line.phase === 'name'
   const command = naming ? line.matches[0].command : line.command
-  const where = command.native ? `${agent} · native` : GATEWAY
+  const where = command.control ? 'Trunkline control' : command.native ? `${agent} · native` : GATEWAY
   const picked = naming ? undefined : matches[0]?.argument
   const input = naming ? null : commandArguments(line)
   const modelQuery = input?.values.model ?? ''
@@ -124,15 +127,16 @@ export function CommandPanel({ line, matches, offered, total, agent, nativeNote,
       </div>
       <div style={{ maxHeight: 176, overflowY: 'auto', overscrollBehavior: 'contain', borderBottom: '1px solid var(--trk-vline)' }}>
         {naming && (
-          <div role="listbox" aria-label="Commands">
+          <div id={listId} role="listbox" aria-label="Commands">
             {line.matches.map(({ command: one, hits }, index) => {
               const shut = one.unavailable ?? (one.native ? undefined : closed[one.name])
               const opens = index === 0 || Boolean(line.matches[index - 1].command.native) !== Boolean(one.native)
               return (
-                <Fragment key={one.native?.id ?? one.name}>
+                <Fragment key={one.native ? `native:${one.native.id}` : `gateway:${one.name}`}>
                   {opens && groupHead(one.native ? `${agent} · native` : 'Gateway', index === 0)}
                   <button
                     type="button"
+                    id={`${listId}-${index}`}
                     role="option"
                     aria-selected={index === 0}
                     aria-disabled={Boolean(shut)}
@@ -174,12 +178,13 @@ export function CommandPanel({ line, matches, offered, total, agent, nativeNote,
         {!effort && !(route && input?.active?.control) && matches.length > 0 && (
           <div style={{ display: 'flex', alignItems: 'baseline', gap: 10, padding: '9px 24px' }}>
             <span style={{ width: 64, flexShrink: 0, ...heading }}>{offers}s</span>
-            <span role="listbox" aria-label={`${offers}s`} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, minWidth: 0 }}>
+            <span id={listId} role="listbox" aria-label={`${offers}s`} style={{ display: 'flex', flexWrap: 'wrap', gap: 4, minWidth: 0 }}>
               {matches.map(({ argument, hits }, index) => {
                 const on = index === 0
                 return (
                   <button
                     type="button"
+                    id={`${listId}-${index}`}
                     key={argument.value}
                     role="option"
                     aria-selected={on}

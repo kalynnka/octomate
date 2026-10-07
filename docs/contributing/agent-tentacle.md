@@ -162,8 +162,8 @@ presents any saved feedback through the channel. Agent activity is not replayed.
 Authentication and request-validation failures remain non-2xx JSON responses.
 The OpenAPI document uses version 3.2 and describes
 each SSE frame through `itemSchema`, with its JSON data contract in `contentSchema`.
-Trunkline execution supplies gateway capabilities and a deferred-action presenter
-through Reflex; IM HTTP execution does not yet supply them.
+Both Trunkline and IM HTTP execution receive gateway capabilities and a
+deferred-action presenter through Reflex.
 
 `prefix` filters command names case-insensitively without changing the cached
 catalog. A nonmatching prefix returns an empty ready catalog when discovery
@@ -239,7 +239,7 @@ before invoking the adapter or recording a delivery.
 For a new tentacle, inspect the SDK or protocol's actual command surface first.
 Do not assume that commands in a terminal, desktop app and headless SDK are the
 same. Keep a source reference and representative discovery and result fixtures.
-Use dynamic discovery where offered; maintain an explicit client-action catalog
+Use dynamic discovery where offered; maintain an explicit app-command catalog
 only for runtimes, such as Codex, whose app actions have no command registry.
 
 Check each special command against these cases before enabling it:
@@ -249,6 +249,7 @@ Check each special command against these cases before enabling it:
 | Native inspection or state change | Use the native control API or command endpoint. Return direct feedback without creating a model run. An acknowledgement of queued work is not proof of completion. |
 | Agent activity | Use the tentacle's existing recorded run stream and approval bridge through the Reflex command entry. Leave the ReAct core unchanged. Keep the workspace and subscription alive until the actual native work ends. |
 | Octomate-owned selection or identity | Reuse the owner of model, effort, permission, project, thread or conversation state. A native-only setting that the next run overwrites is not a working control. Forks must create independent host and native histories. |
+| Channel-owned control | Keep the descriptor neutral: report the native command's identity and runtime availability. Each channel decides whether to handle a known command through its own controls. Match built-in identities rather than skill names. Opening a picker must not send a runtime command or fabricate a thread or run. |
 | Unsupported client feature | Keep the known command visible with a specific unavailable reason and an existing alternative where possible. Do not advertise it as executable before its handler works. |
 
 An existing workspace, native session or channel thread is a prerequisite only

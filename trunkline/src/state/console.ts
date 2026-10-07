@@ -30,6 +30,7 @@ import type {
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
+import { COMMAND_CONTROLS } from '@/features/chat/commands'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
@@ -244,8 +245,8 @@ export interface ConsoleActions {
   setPermissionMode(mode: string): Promise<void>
   /** set the level the current conversation's runs ask for; null = the runtime's default */
   setEffort(effort: EffortStep | null): Promise<void>
-  /** run one of the agent's own commands and stream what it says into the ledger */
-  runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string): void
+  /** Open a shared client control, or stream a runtime command into the ledger. */
+  runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string): Promise<void>
   closeNtMenu(): void
   sendNewThread(text: string): void
   /** drop what the last operator left open — the next one boots into their own */
@@ -1401,10 +1402,36 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       )
       scrollChatBottom(true)
     },
-    runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
+    async runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
       const s = get()
       if (s.running || s.detail?.kind === 'native_thread') return
-      if (command.unavailable_reason || (!context.conversation_id && command.requires_conversation !== false)) return
+      const control = COMMAND_CONTROLS.get(command.id)?.action
+      if (!control && (command.unavailable_reason || (!context.conversation_id && command.requires_conversation !== false))) return
+      if (control) {
+        if (args.trim()) return
+        const result = await queryClient.fetchQuery({ queryKey: ['routes'], queryFn: api.routes, staleTime: 60_000 }).catch((error: unknown) => {
+          actions.reportThreadError(s.selThreadId, `control unavailable — ${error instanceof Error ? error.message : String(error)}`)
+          return null
+        })
+        if (!result || get().selThreadId !== s.selThreadId || get().ntRouteId !== s.ntRouteId || get().running) return
+        const { routes } = result
+        const route = routes.find((one) => one.agent === context.agent_id && one.model === context.model)
+          ?? routes.find((one) => one.agent === context.agent_id)
+        if (!route) {
+          actions.reportThreadError(s.selThreadId, `No Trunkline route is available for ${context.agent_id}.`)
+          return
+        }
+        const project = s.ntOn ? s.ntProject : s.detail?.project?.name ?? null
+        if (!s.ntOn || s.ntStarted || control === 'new_thread') actions.startNewThread()
+        set({
+          ntMenu: control === 'model' ? 'sel' : control === 'new_thread' ? null : 'proj',
+          ntProject: control === 'new_thread' ? null : project,
+          ntAgent: route.agent,
+          ntModel: route.model ?? 'Harness default',
+          ntRouteId: route.id,
+        })
+        return
+      }
       set({ running: true, composer: '' })
       push({ kind: 'user', t: nowClock(), who: operator(), text: `/${command.name}${args && ` ${args}`}` } as LedgerItem)
       const body = {

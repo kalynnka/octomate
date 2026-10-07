@@ -23,9 +23,11 @@ export type Command = {
   parameters?: CommandParameter[]
   description: string
   unavailable?: string
+  /** Trunkline's handling of a known built-in, separate from runtime metadata. */
+  control?: 'model' | 'project' | 'new_thread' | 'worktree'
 } & (
   | { name: GatewayOp; native?: undefined }
-  /** the agent's own command, run in its runtime rather than by the gateway */
+  /** The original runtime descriptor, including when Trunkline supplies a control. */
   | { name: string; native: ApiCommandDescriptor }
 )
 
@@ -36,12 +38,22 @@ export const COMMANDS: Command[] = [
   { name: 'new', parameters: [], description: 'Open a fresh thread on this surface.' },
 ]
 
+/** Only these advertised built-in identities open Trunkline controls; skill names do not. */
+export const COMMAND_CONTROLS = new Map<string, { action: NonNullable<Command['control']>; description: string }>([
+  ['builtin:model', { action: 'model', description: 'Choose a model for a new conversation.' }],
+  ['builtin:project', { action: 'project', description: 'Choose a project for a new conversation.' }],
+  ['builtin:task', { action: 'new_thread', description: 'Start a conversation without a project.' }],
+  ['builtin:worktree', { action: 'worktree', description: 'Choose a project for a new conversation in its own workspace.' }],
+])
+
 /** An agent's own command, read the way the finder reads a gateway op. */
 export function nativeCommand(descriptor: ApiCommandDescriptor, hasConversation = true): Command {
+  const control = COMMAND_CONTROLS.get(descriptor.id)
   return {
     name: COMMANDS.some((one) => one.name === descriptor.name) ? `native:${descriptor.name}` : descriptor.name,
-    description: descriptor.description,
-    unavailable: descriptor.unavailable_reason ?? (!hasConversation && descriptor.requires_conversation !== false
+    description: control?.description ?? descriptor.description,
+    ...(control ? { control: control.action, parameters: [] } : {}),
+    unavailable: control ? undefined : descriptor.unavailable_reason ?? (!hasConversation && descriptor.requires_conversation !== false
       ? 'This command requires an existing conversation.' : undefined),
     native: descriptor,
   }

@@ -33,6 +33,7 @@ from octomate.schemas.segments import FileData, FileSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
+from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
@@ -343,6 +344,34 @@ async def test_disabled_command_is_refused_before_dispatch_or_receipt(
         assert result == CommandError(status="unavailable", message=reason)
     assert not agent.invocations
     assert not app.gateway.sessions
+    async with async_session() as session:
+        assert await session.count(ThreadCommand) == 0
+
+
+@pytest.mark.parametrize("has_conversation", [True, False])
+@pytest.mark.parametrize("command_name", ["model", "project", "task", "worktree"])
+async def test_app_only_codex_commands_are_not_dispatched_or_recorded(
+    app: Octomate,
+    agent: ExecutingAgent,
+    context: CommandContext,
+    has_conversation: bool,
+    command_name: str,
+) -> None:
+    descriptor = next(item for item in APP_COMMANDS if item.name == command_name)
+    agent.descriptors = {descriptor}
+    if not has_conversation:
+        context = replace(context, conversation=None)
+    async with app.commands.validate(
+        agent,
+        context,
+        CommandInvocation(command_id=descriptor.id),
+        delivery_id="app-command",
+    ) as result:
+        assert descriptor.unavailable_reason is not None
+        assert result == CommandError(
+            status="unavailable", message=descriptor.unavailable_reason
+        )
+    assert not agent.invocations
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
 

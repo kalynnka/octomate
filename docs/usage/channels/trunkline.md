@@ -95,6 +95,11 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Summon composer on the one you pick. `/teleport` lists the connected
   channels and opens Teleport on the one you pick, or on the destination
   browser when you pick none. `/new` opens the composer for a new thread.
+  Codex's `/model` and `/project` open the same model and project pickers as the
+  buttons. From an existing conversation, they open a new composer and leave
+  that conversation unchanged. `/task` opens a projectless composer; `/worktree`
+  opens the project picker for a new conversation with its own workspace.
+  These controls take no arguments and create nothing until the first prompt.
   Clicking a Teleport or Summon option opens the same form as the header button,
   keeping the chosen agent, model, effort or destination.
   If the command still needs an agent or destination, its menu opens and the

@@ -1,6 +1,8 @@
+import { useEffect, useRef } from 'react'
 import { useProjects } from '@/lib/api/hooks'
 import { useConsole } from '@/state/console'
 import { ellipsis, label, mono } from '@/components/text'
+import { navigateGatewayMenu } from './gateway'
 
 /**
  * The strip above a new trunkline thread: where its work will live.
@@ -15,6 +17,8 @@ import { ellipsis, label, mono } from '@/components/text'
  * still opened would be a control that silently does nothing.
  */
 export function NewThreadStrip() {
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLSpanElement>(null)
   const ntProject = useConsole((s) => s.ntProject)
   const ntStarted = useConsole((s) => s.ntStarted)
   const ntMenu = useConsole((s) => s.ntMenu)
@@ -28,6 +32,9 @@ export function NewThreadStrip() {
   const { data: projects } = useProjects()
   const chosen = projects?.find((project) => project.name === ntProject)
   const open = ntMenu === 'proj' && !ntStarted
+  useEffect(() => {
+    if (open) menu.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus()
+  }, [open])
   return (
     <div
       id="trk-ntstrip"
@@ -55,11 +62,21 @@ export function NewThreadStrip() {
       >
         ⌗
       </span>
-      <span style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
+      <span onKeyDown={(event) => {
+        if (event.key !== 'Escape' || !open) return
+        event.stopPropagation()
+        closeNtMenu()
+        trigger.current?.focus()
+      }} style={{ position: 'relative', display: 'inline-flex', flexShrink: 0 }}>
         {open && (
           <span onClick={() => setNtMenu('proj')} style={{ position: 'fixed', inset: 0, zIndex: 75 }} />
         )}
-        <span
+        <button
+          ref={trigger}
+          type="button"
+          disabled={ntStarted}
+          aria-label="Project"
+          aria-expanded={open}
           onClick={ntStarted ? undefined : () => setNtMenu('proj')}
           title={
             ntStarted
@@ -89,9 +106,13 @@ export function NewThreadStrip() {
           {!ntStarted && (
             <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
           )}
-        </span>
+        </button>
         {open && (
           <span
+            ref={menu}
+            onKeyDown={navigateGatewayMenu}
+            role="group"
+            aria-label="Project choices"
             className="lt-menu"
             data-open=""
             style={{
@@ -150,7 +171,10 @@ function ProjectOption({
   onPick: () => void
 }) {
   return (
-    <span
+    <button
+      type="button"
+      data-gateway-option
+      aria-pressed={on}
       onClick={(e) => {
         e.stopPropagation()
         onPick()
@@ -163,11 +187,14 @@ function ProjectOption({
         padding: '8px 12px',
         cursor: 'pointer',
         background: on ? 'color-mix(in srgb, var(--color-accent) 7%, transparent)' : 'transparent',
+        border: 0,
+        textAlign: 'left',
+        flexShrink: 0,
         borderBottom: '1px solid var(--line-color)',
       }}
     >
       <span style={{ ...mono(10, 700), color: on ? 'var(--color-accent)' : 'var(--fg-1)' }}>{name}</span>
       <span style={{ ...mono(8), color: 'var(--fg-3)', lineHeight: 1.55, ...ellipsis }}>{root}</span>
-    </span>
+    </button>
   )
 }

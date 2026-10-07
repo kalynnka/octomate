@@ -12,7 +12,7 @@ import { CommandPanel } from './CommandPanel'
 import { DestinationPicker } from './GatewayDestination'
 import { SummonRoute } from './GatewayRoute'
 import { COMMANDS, commandArguments, completeCommand, completion, editArguments, matching, nativeCommand, readCommand, type Argument, type GatewayOp } from './commands'
-import { channelRows, destinationReason, gatewayRequest, isGatewayCommand, level as destinationLevel, modelRoute, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type GatewayAction, type GatewayForm } from './gateway'
+import { channelRows, destinationReason, gatewayRequest, isGatewayCommand, level as destinationLevel, modelRoute, navigateGatewayMenu, pickRoute, routeEffort, useGatewayForm, type DestinationRow, type GatewayAction, type GatewayForm } from './gateway'
 
 // What the composer becomes for each gateway op; `max` is the relay's own cap.
 const GATEWAY_MODES = {
@@ -55,12 +55,14 @@ interface RouteGroup {
 }
 
 function RouteSelector() {
+  const trigger = useRef<HTMLButtonElement>(null)
+  const menu = useRef<HTMLSpanElement>(null)
   const ntAgent = useConsole((s) => s.ntAgent)
   const ntModel = useConsole((s) => s.ntModel)
   const ntRouteId = useConsole((s) => s.ntRouteId)
   const ntEffort = useConsole((s) => s.ntEffort)
   const ntMenu = useConsole((s) => s.ntMenu)
-  const { setNtMenu, setNtRoute } = useConsole((s) => s.actions)
+  const { setNtMenu, setNtRoute, closeNtMenu } = useConsole((s) => s.actions)
   const { data: routesData } = useRoutes()
   const { data: agents } = useAgents(true, false)
   const selectedModel = routesData?.routes.find((route) => route.id === ntRouteId)?.model ?? null
@@ -81,13 +83,25 @@ function RouteSelector() {
     }))
   }, [routesData])
   const open = ntMenu === 'sel'
+  useEffect(() => {
+    if (open) menu.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus()
+  }, [open])
   return (
-    <span style={{ display: 'inline-flex', alignItems: 'center', marginRight: 2, minWidth: 0 }}>
+    <span onKeyDown={(event) => {
+      if (event.key !== 'Escape' || !open) return
+      event.stopPropagation()
+      closeNtMenu()
+      trigger.current?.focus()
+    }} style={{ display: 'inline-flex', alignItems: 'center', marginRight: 2, minWidth: 0 }}>
       <span style={{ position: 'relative', display: 'inline-flex', zIndex: 76, minWidth: 0 }}>
         {open && (
           <span onClick={() => setNtMenu('sel')} style={{ position: 'fixed', inset: 0, zIndex: 75 }} />
         )}
-        <span
+        <button
+          ref={trigger}
+          type="button"
+          aria-label="Agent, model and effort"
+          aria-expanded={open}
           onClick={() => setNtMenu('sel')}
           title="agent · model · effort — routes this session"
           className="hov-border"
@@ -112,9 +126,13 @@ function RouteSelector() {
           <span style={{ color: 'var(--fg-1)', minWidth: 0, ...ellipsis }}>{ntModel}</span>
           <span style={{ color: 'var(--fg-3)' }}>[{nativeEffort.effort}]</span>
           <span style={{ fontSize: 7, color: 'var(--fg-3)', lineHeight: 1, marginTop: 1 }}>▾</span>
-        </span>
+        </button>
         {open && (
           <span
+            ref={menu}
+            onKeyDown={navigateGatewayMenu}
+            role="group"
+            aria-label="Agent and model choices"
             className="lt-menu"
             data-open=""
             style={{
@@ -183,7 +201,8 @@ function RouteSelector() {
                   </span>
                   <span style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', gap: 3 }}>
                     <span style={{ display: 'flex', alignItems: 'baseline', gap: 7 }}>
-                      <span style={{ ...mono(10, 700), color: 'var(--fg-1)' }}>{ar.name}</span>
+                      <button type="button" data-gateway-option aria-label={`Agent ${ar.name}`} aria-pressed={on}
+                        style={{ ...mono(10, 700), color: 'var(--fg-1)', border: 0, padding: 0, background: 'transparent', cursor: 'pointer' }}>{ar.name}</button>
                       <span style={{ ...mono(8), color: 'var(--color-accent)' }}>{on ? ntModel : (ar.models[0]?.model ?? '')}</span>
                     </span>
                     <span style={{ ...mono(8), color: 'var(--fg-3)', lineHeight: 1.55, letterSpacing: '.02em' }}>{ar.desc}</span>
@@ -192,8 +211,12 @@ function RouteSelector() {
                         {ar.models.map((m) => {
                           const mOn = ntModel === m.model
                           return (
-                            <span
+                            <button
                               key={m.id}
+                              type="button"
+                              data-gateway-option
+                              aria-label={`Model ${m.model}`}
+                              aria-pressed={mOn}
                               onClick={(e) => {
                                 e.stopPropagation()
                                 setNtRoute({ ntModel: m.model, ntRouteId: m.id })
@@ -209,7 +232,7 @@ function RouteSelector() {
                               }}
                             >
                               {m.model}
-                            </span>
+                            </button>
                           )
                         })}
                       </span>
@@ -516,6 +539,7 @@ export function Composer() {
   const { data: routesData } = useRoutes()
   const newRoute = routesData?.routes.find((one) => one.id === ntRouteId)
   const [hidden, setHidden] = useState(false)
+  const commandsId = useId()
   // The agent's own commands answer on the surface the conversation is on, and
   // are only discovered once a line starts naming one.
   const context: CommandContextBody | null = nativeReadOnly ? null
@@ -542,7 +566,8 @@ export function Composer() {
       : !context ? ntOn ? 'Choose an agent to discover its commands.' : waiting
         : catalog.isError ? catalog.error.message
           : !catalog.data || catalog.data.status === 'loading' ? `discovering ${agentName} commands…`
-            : catalog.data.message ?? (catalog.data.limitations.join(' · ') || null)
+            : catalog.data.message ?? (catalog.data.limitations.join(' · ')
+              || (catalog.data.status === 'ready' && !catalog.data.descriptors.length ? 'No native commands are available in this context.' : null))
   // `/effort` moves this conversation along the scale its route claims.
   const { data: agents } = useAgents(true, false)
   const owner = agents?.find((one) => one.id === agentName)
@@ -599,6 +624,7 @@ export function Composer() {
   // An omitted effort uses the model's default, including when resetting a conversation.
   const levelling = line?.phase === 'argument' && !line.command.native && line.command.name === 'effort' && !closed.effort
   const level = args?.values.level || defaultLevel
+  const commandChoices = Boolean(line?.phase === 'name' || (matches.length && !levelling && !args?.active?.control))
   const changeDraft = (next: string) => {
     setHidden(false)
     if (commandInput) setGatewayMode(null)
@@ -655,7 +681,7 @@ export function Composer() {
       if (invocation.missing.length) return fillCommand(index ?? 0)
       if (!context) return
       write('')
-      return runNative(context, command.native, selected)
+      return void runNative(command.control ? { ...context, model: context.model ?? lastSes?.model } : context, command.native, selected)
     }
     const values = invocation.values
     if (command.name === 'summon') {
@@ -712,6 +738,7 @@ export function Composer() {
       <div className="trk-composer-frame" style={{ borderTop: `2px solid ${mode || line ? 'var(--color-teal)' : 'var(--trk-bracket)'}` }}>
         {line && (
           <CommandPanel
+            id={commandsId}
             line={line}
             matches={matches}
             offered={offered.length}
@@ -855,6 +882,11 @@ export function Composer() {
             <span style={{ position: 'relative', display: 'block', overflow: 'hidden' }}>
               <ComposerPrimitive.Input
                 ref={draftInput}
+                role={commandChoices ? 'combobox' : undefined}
+                aria-expanded={commandChoices ? true : undefined}
+                aria-autocomplete={commandChoices ? 'list' : undefined}
+                aria-controls={commandChoices ? commandsId : undefined}
+                aria-activedescendant={commandChoices ? `${commandsId}-0` : undefined}
                 aria-label={copy?.field ?? 'Directive'}
                 rows={copy?.rows ?? 2}
                 maxLength={copy?.max}

@@ -288,6 +288,9 @@ def test_app_commands_explain_refusals_and_exclude_goals_and_cli_actions() -> No
         "fork",
     }
     assert not descriptors["status"].requires_conversation
+    for name in ("model", "project", "task", "worktree"):
+        assert descriptors[name].unavailable_reason is not None
+        assert not descriptors[name].requires_conversation
 
 
 @pytest.mark.parametrize(

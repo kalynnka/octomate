@@ -748,6 +748,55 @@ test('a command requiring a conversation preserves the new composer draft', () =
   assert.deepEqual(useConsole.getState().live, [])
 })
 
+for (const action of ['model', 'project', 'new_thread', 'worktree'] as const) {
+  for (const existing of [false, true]) {
+    test(`${action} opens its shared control from ${existing ? 'an existing thread' : 'a draft'} without executing`, async () => {
+      const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('must not execute or create a thread') })
+      queryClient.setQueryData(['routes'], { routes: [{ id: 'claude:sonnet', agent: 'claude', model: 'sonnet' }] })
+      useConsole.setState({ ntOn: !existing, ntStarted: false, ntProject: 'sample', ntMenu: null, ntRouteId: null, composer: 'keep my draft', detail: existing ? {
+        key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [session], ledger: [], ctxK: 0,
+        usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null }, project: { name: 'sample', path: '/sample' },
+      } : null })
+      const name = action === 'new_thread' ? 'task' : action
+      await useConsole.getState().actions.runCommand({ agent_id: 'claude', address: here, model: 'sonnet' }, { ...status, id: `builtin:${name}`, name, unavailable_reason: 'No runtime command endpoint.' }, '')
+      const state = useConsole.getState()
+      assert.equal(state.ntOn, true)
+      assert.equal(state.ntStarted, false)
+      assert.equal(state.ntMenu, action === 'model' ? 'sel' : action === 'new_thread' ? null : 'proj')
+      assert.equal(state.ntProject, action === 'new_thread' ? null : 'sample')
+      assert.equal(state.ntRouteId, 'claude:sonnet')
+      assert.equal(state.ntModel, 'sonnet')
+      assert.equal(state.ntAgent, 'claude')
+      assert.equal(state.running, false)
+      assert.deepEqual(state.live, [])
+      assert.equal(fetch.mock.callCount(), 0)
+      if (!existing && action !== 'new_thread') assert.equal(state.composer, 'keep my draft')
+    })
+  }
+}
+
+test('a pending client control cannot reopen a composer after switching threads', async () => {
+  let resolve!: (response: Response) => void
+  mock.method(globalThis, 'fetch', () => new Promise<Response>((done) => { resolve = done }))
+  useConsole.setState({ ntOn: false, ntMenu: null, selThreadId: 'source', ntRouteId: null })
+  const pending = useConsole.getState().actions.runCommand({ agent_id: 'claude', address: here }, { ...status, id: 'builtin:project', name: 'project' }, '')
+  useConsole.setState({ selThreadId: 'another' })
+  resolve(Response.json([{ id: 'claude:sonnet', agent: 'claude', model: 'sonnet' }]))
+  await pending
+  assert.equal(useConsole.getState().selThreadId, 'another')
+  assert.equal(useConsole.getState().ntOn, false)
+  assert.equal(useConsole.getState().ntMenu, null)
+})
+
+test('a client control refuses a removed route instead of selecting another agent', async () => {
+  queryClient.setQueryData(['routes'], { routes: [{ id: 'codex:default', agent: 'codex', model: null }] })
+  useConsole.setState({ ntOn: false, ntMenu: null, selThreadId: 'source', ntRouteId: null })
+  await useConsole.getState().actions.runCommand({ agent_id: 'claude', address: here }, { ...status, id: 'builtin:project', name: 'project' }, '')
+  assert.equal(useConsole.getState().ntOn, false)
+  assert.equal(useConsole.getState().ntMenu, null)
+  assert.ok(useConsole.getState().notices.some((one) => one.text === 'No Trunkline route is available for claude.'))
+})
+
 test('a disabled runtime command preserves the draft without making a request', () => {
   const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('must not execute') })
   useConsole.setState({ ntOn: true, composer: '/blocked' })

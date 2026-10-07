@@ -44,11 +44,6 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             "Codex memory settings are not supported here yet.",
         ),
         (
-            "model",
-            "Choose the conversation model.",
-            "Use the agent/model picker when starting a conversation.",
-        ),
-        (
             "pet",
             "Show or hide the desktop pet.",
             "Desktop pets are managed in the Codex app.",
@@ -59,28 +54,41 @@ APP_COMMANDS: frozenset[CommandDescriptor] = frozenset(
             "Codex personality changes are not supported here yet.",
         ),
         (
-            "project",
-            "Choose a project for a new conversation.",
-            "Use Trunkline's project selector.",
-        ),
-        (
             "side",
             "Open a temporary side conversation.",
             "Side conversations are not supported here yet.",
         ),
-        (
-            "task",
-            "Start a conversation without a project.",
-            "Use /new to start a conversation.",
-        ),
-        (
-            "worktree",
-            "Run in a new Git worktree.",
-            "Worktree creation is not supported as a command here yet.",
-        ),
     )
 ) | frozenset(
     {
+        CommandDescriptor(
+            id="builtin:model",
+            name="model",
+            description="Choose the conversation model.",
+            unavailable_reason="Codex's app-server does not expose a model selection command.",
+            requires_conversation=False,
+        ),
+        CommandDescriptor(
+            id="builtin:project",
+            name="project",
+            description="Choose a project for a new conversation.",
+            unavailable_reason="Codex's app-server does not expose a project selection command.",
+            requires_conversation=False,
+        ),
+        CommandDescriptor(
+            id="builtin:task",
+            name="task",
+            description="Start a conversation without a project.",
+            unavailable_reason="Codex's app-server does not expose a task command.",
+            requires_conversation=False,
+        ),
+        CommandDescriptor(
+            id="builtin:worktree",
+            name="worktree",
+            description="Run in a new Git worktree.",
+            unavailable_reason="Codex's app-server does not expose a worktree command.",
+            requires_conversation=False,
+        ),
         CommandDescriptor(
             id="builtin:approve",
             name="approve",

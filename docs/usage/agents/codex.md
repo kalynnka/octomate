@@ -99,10 +99,10 @@ are unavailable. **Disabled** means the command is visible but cannot execute;
 | `/mcp` | Available after a driven run | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
 | `/reasoning [level]` | Available in a conversation | Save the same effort selection as `/effort`, validated against the selected model. Omit the level to restore the default. Use `/effort` before the first message. |
 | `/fork` | Available after a driven run | Create an independent thread on the same channel with copied history, model, effort and permissions. Preserves the source and starts no agent run. Requires a channel that can open a new thread. |
-| `/model` | Disabled | Use Trunkline's agent/model picker when starting a conversation. Planned: open that shared control from the command. |
-| `/project` | Disabled | Use Trunkline's project selector. Planned: open the same selector from the command. |
-| `/task` | Disabled | Use `/new` and leave the project unselected. Planned: start a conversation through Octomate's new-thread flow. |
-| `/worktree` | Disabled | Workspace creation belongs to Octomate's [workspace lifecycle](../workspaces.md). Selecting a new worktree through this command is planned. |
+| `/model` | Available in Trunkline | Open the shared agent/model picker for a new conversation. From an existing thread, open a new composer; the existing conversation is unchanged. |
+| `/project` | Available in Trunkline | Open the shared project picker for a new conversation. An existing thread keeps its project. |
+| `/task` | Available in Trunkline | Open a new, projectless composer with the selected agent and model. |
+| `/worktree` | Available in Trunkline | Open the project picker for a new conversation. The first prompt in the selected project creates its own managed workspace through Octomate's [workspace lifecycle](../workspaces.md). |
 | `/local` | Disabled | Driven runs already use the conversation's local workspace. Execution location is managed by Octomate. |
 | `/fast` | Disabled | Planned: offer fast execution only when the selected model and runtime support it. |
 | `/memories` | Disabled | Planned: expose memory controls only when supported by the runtime. |
@@ -119,6 +119,10 @@ are unavailable. **Disabled** means the command is visible but cannot execute;
 This matrix concerns driven conversations. Synced native sessions remain
 read-only; use an available [gateway operation](../channels/trunkline.md) to
 continue elsewhere.
+
+The four Trunkline controls take no arguments. They reuse the same selections as
+the buttons and create no thread, workspace or agent run until you send a prompt.
+They cannot be executed through the command API or an IM command entrypoint.
 
 Planning, compaction and MCP inspection require the conversation to be loaded in the current
 Codex runtime. After a runtime restart, send a message to resume it first.

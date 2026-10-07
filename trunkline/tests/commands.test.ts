@@ -65,6 +65,22 @@ test('native hints are shown verbatim without inventing constraints, choices or 
   }
 })
 
+test('Trunkline decides how to handle advertised built-in identities without changing descriptors', () => {
+  const descriptor = { id: 'builtin:model', name: 'model', description: 'Choose the conversation model', argument_hint: null, requires_conversation: false, unavailable_reason: 'No runtime command endpoint.', accepts_attachments: null }
+  const command = nativeCommand(descriptor, false)
+  assert.equal(command.control, 'model')
+  assert.equal(descriptor.unavailable_reason, 'No runtime command endpoint.')
+  assert.equal(command.unavailable, undefined)
+  assert.deepEqual(command.parameters, [])
+  assert.deepEqual(commandArguments(read('', command)).invalid, [])
+  assert.deepEqual(commandArguments(read('extra', command)).invalid, ['extra arguments'])
+  assert.equal(native('model', null).parameters, undefined)
+  assert.equal(native('model', null).control, undefined)
+  const skill = nativeCommand({ ...descriptor, id: 'skill:model' }, false)
+  assert.equal(skill.control, undefined)
+  assert.equal(skill.unavailable, descriptor.unavailable_reason)
+})
+
 test('skills and namespaced native commands preserve raw multiline input', () => {
   const skill = native('plugin:review', null)
   const input = '  --flag "keep  spaces"\nnext line\n'
