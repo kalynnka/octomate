@@ -6,6 +6,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import httpx
@@ -59,6 +60,7 @@ from octomate.schemas.commands import (
 )
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
+from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment, TextSegment
 from octomate.schemas.thread import Thread, ThreadCommand
 from octomate.schemas.user import User, UserProfile
@@ -206,6 +208,134 @@ async def test_composer_discovery_and_completion_create_no_rows_or_workspace(
     async with async_session() as session:
         assert await session.list(Thread, limit=None) == []
         assert await session.list(Conversation, limit=None) == []
+
+
+@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
+@pytest.mark.parametrize("behavior", ["direct", "raise", "stream_complete"])
+async def test_http_direct_command_before_conversation_creates_no_runtime_records(
+    app: Octomate,
+    agent: ExecutingAgent,
+    address: ChannelAddress,
+    user: User,
+    behavior: Literal["direct", "raise", "stream_complete"],
+) -> None:
+    agent.descriptors = {
+        CommandDescriptor(
+            id="status",
+            name="status",
+            description="Status",
+            requires_conversation=False,
+        )
+    }
+    agent.behavior = behavior
+    address = replace(address, channel_thread_id=None)
+    if address.channel_tentacle_id == "im":
+        await app.users.ensure_profile(
+            "im", UserProfile(channel_user_id=address.user_id, user_id=user.id)
+        )
+    async with async_session() as session:
+        profiles_before = await session.count(UserProfile)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/commands/execute",
+            headers={"X-Octomate-Request": "1"},
+            json={
+                "agent_id": agent.id,
+                "address": asdict(address),
+                "command_id": "status",
+                "delivery_id": "command-1",
+                "arguments": "  --raw=value  ",
+            },
+        )
+    events = command_events(response)
+    outcome = events[-1]
+    assert isinstance(outcome, CommandOutcomeEvent)
+    if behavior == "direct":
+        assert outcome.outcome == CommandResult(
+            segments=[TextSegment(data={"text": "Done"})]
+        )
+    else:
+        assert isinstance(outcome.outcome, CommandError)
+        assert outcome.outcome.status == "failed"
+    if behavior == "stream_complete":
+        assert isinstance(outcome.outcome, CommandError)
+        assert "without a conversation" in outcome.outcome.message
+    assert not any(isinstance(event, RunStartedEvent) for event in events)
+    assert agent.invocations == [
+        CommandInvocation(command_id="status", arguments="  --raw=value  ")
+    ]
+    assert not agent.receipts
+    assert not agent.turns
+    assert not app.gateway.sessions
+    assert not app.commands.catalogs
+    assert not app.workspaces.workspaces_dir.exists()
+    if behavior != "raise":
+        assert agent.stream_closed
+    async with async_session() as session:
+        assert await session.count(Thread) == 0
+        assert await session.count(Conversation) == 0
+        assert await session.count(AgentRun) == 0
+        assert await session.count(ThreadCommand) == 0
+        assert await session.count(UserProfile) == profiles_before
+
+
+@pytest.mark.parametrize(
+    ("address", "refusal"),
+    [
+        ("trunkline", "requires_conversation"),
+        ("trunkline", "unknown"),
+        ("trunkline", "foreign_user"),
+        ("trunkline", "foreign_chat"),
+        ("im", "unlinked"),
+    ],
+    indirect=["address"],
+)
+async def test_http_composer_execution_checks_scope_membership_and_identity(
+    app: Octomate,
+    agent: ExecutingAgent,
+    address: ChannelAddress,
+    refusal: str,
+) -> None:
+    agent.descriptors = {
+        CommandDescriptor(
+            id="status",
+            name="status",
+            description="Status",
+            requires_conversation=refusal == "requires_conversation",
+        )
+    }
+    address = replace(address, channel_thread_id=None)
+    if refusal == "foreign_user":
+        address = replace(address, user_id=str(uuid7()))
+    elif refusal == "foreign_chat":
+        address = replace(address, chat_id=str(uuid7()))
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/commands/execute",
+            headers={"X-Octomate-Request": "1"},
+            json={
+                "agent_id": agent.id,
+                "address": asdict(address),
+                "command_id": "missing" if refusal == "unknown" else "status",
+                "delivery_id": "command-1",
+            },
+        )
+    outcome = command_events(response)[-1]
+    assert isinstance(outcome, CommandOutcomeEvent)
+    assert isinstance(outcome.outcome, CommandError)
+    assert outcome.outcome.status == (
+        "unknown" if refusal == "unknown" else "unavailable"
+    )
+    assert not agent.invocations
+    assert not app.gateway.sessions
+    async with async_session() as session:
+        assert await session.count(Thread) == 0
+        assert await session.count(Conversation) == 0
+        assert await session.count(ThreadCommand) == 0
 
 
 async def test_http_catalog_preserves_extensions_and_omits_runtime_history(
@@ -593,6 +723,27 @@ async def test_subthread_uses_surface_model_but_its_own_workspace(
     assert result.context.cwd == app.workspaces.open(child.id, None).path
     assert result.context.conversation is not None
     assert result.context.conversation.id == child_conversation.id
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            "/api/commands/execute",
+            headers={"X-Octomate-Request": "1"},
+            json={
+                "agent_id": agent.id,
+                "address": asdict(address),
+                "conversation_id": str(child_conversation.id),
+                "command_id": "skill",
+                "delivery_id": "subthread-command",
+            },
+        )
+    outcome = command_events(response)[-1]
+    assert isinstance(outcome, CommandOutcomeEvent)
+    assert isinstance(outcome.outcome, CommandResult)
+    receipt = await app.threads.find_message(parent.id, "subthread-command", "inbound")
+    assert isinstance(receipt, ThreadCommand)
+    assert receipt.conversation_id == child_conversation.id
 
 
 async def test_existing_conversations_use_stored_model_and_permissions(

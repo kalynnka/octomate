@@ -448,6 +448,8 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         Resolve the opaque invocation id using this tentacle's current catalog.
         Execution behavior belongs to the invocation, not a fixed descriptor tag:
         a command may return a control result or run the agent depending on input.
+        If its descriptor permits execution without a conversation, it must yield
+        only a direct outcome in that context, without creating a session or run.
 
         Preserve invocation arguments verbatim. Never turn an unsupported or
         unknown invocation into a normal model prompt. Authorization, current

@@ -71,6 +71,17 @@ def test_empty_and_loading_catalogs_are_distinct(context: CommandContext) -> Non
     assert empty.status != loading.status
 
 
+def test_conversation_requirement_defaults_to_true_and_survives_serialization() -> None:
+    scoped = CommandDescriptor(id="review", name="review", description="Review")
+    direct = CommandDescriptor(
+        id="status", name="status", description="Status", requires_conversation=False
+    )
+    assert scoped.requires_conversation
+    assert not direct.requires_conversation
+    assert CommandDescriptor.model_validate_json(direct.model_dump_json()) == direct
+    assert len({scoped, direct}) == 2
+
+
 def test_flat_catalog_retains_conversation_context_on_wire(
     context: CommandContext,
 ) -> None:

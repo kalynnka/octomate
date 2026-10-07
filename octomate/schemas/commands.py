@@ -93,6 +93,12 @@ class CommandDescriptor(BaseModel, frozen=True):
     argument_hint: str | None = Field(
         default=None, description="Upstream free-form input hint, when provided."
     )
+    requires_conversation: bool = Field(
+        default=True,
+        description="Whether execution needs an existing conversation. False permits "
+        "a direct outcome before a conversation exists, without creating a thread, "
+        "run or delivery receipt. An adapter must not start an agent run in that context.",
+    )
     accepts_attachments: bool | None = Field(
         default=None,
         description="Whether attached input is supported; null means unspecified. "

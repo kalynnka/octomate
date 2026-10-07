@@ -139,10 +139,10 @@ session; clients cannot override them. The response omits conversation history,
 external session IDs and session tool grants. See `/docs` for the generated API.
 
 `POST /api/commands/execute` uses the same authentication and context fields, plus
-`command_id`, a stable `delivery_id`, and optional raw `arguments`. It requires an
-existing conversation and applies the execution access checks below. The server
-resolves the descriptor from a fresh catalog. Browser attachments are not supported
-yet; a nonempty `attachments` field is rejected before dispatch.
+`command_id`, a stable `delivery_id`, and optional raw `arguments`. The descriptor
+decides whether a conversation is required. The server applies the execution access
+checks below and resolves the descriptor from a fresh catalog. Browser attachments
+are not supported yet; a nonempty `attachments` field is rejected before dispatch.
 
 Execution responses use `text/event-stream`. Each SSE `data` field is a JSON
 [CommandStreamEvent][octomate.commands.CommandStreamEvent], identified by `event_kind`.
@@ -212,6 +212,7 @@ Channels use only these `CommandDescriptor` fields:
 | `description` | Show the upstream description. |
 | `argument_hint` | Show a free-form input hint when supplied; never parse it as an argument schema. |
 | `accepts_attachments` | Offer attachments only for `true`. `false` means unsupported; `None` means unspecified. |
+| `requires_conversation` | Require a conversation unless the adapter explicitly permits a direct result before one exists. |
 
 Extend `CommandDescriptor` with typed attributes in the owning tentacle's schema
 module. Descriptors are frozen and hashable. Extension fields must also be hashable:
@@ -267,28 +268,39 @@ these commands.
 
 Callers enter `commands.validate(agent, context, invocation, delivery_id=..., ...)`
 before execution. They supply context identifying the
-authenticated user and a stable, nonempty delivery ID. Execution requires
-that user's linked profile and access to the addressed chat surface. The selected
-agent must still be enabled on the channel and own the conversation's route;
+authenticated user and a stable, nonempty delivery ID. Execution on an existing
+conversation requires that user's linked profile and access to the addressed chat
+surface. IM execution also requires a linked profile before a conversation exists;
+a signed-in user's new Trunkline composer does not. The selected agent must still
+be enabled on the channel and own any selected conversation's route;
 subagent conversations are not execution targets. These checks run once after
 discovery, before dispatch or replay. A changed workspace, external session, model
 or approval posture returns `stale`; missing access returns `unavailable`.
 
-Execution requires an existing conversation, refreshes the runtime catalog, validates
-command membership and declared attachment support, and holds the conversation's turn guard through stream
-cleanup. Normal chat turns use the same guard even when gateway spells are disabled.
+Execution refreshes the runtime catalog and validates command membership and
+declared attachment support. Descriptors require a conversation by default.
+An adapter may opt out for a command that can return a direct outcome before one
+exists. In that context it must not start a run: the host closes and refuses an
+unexpected event stream. Such execution creates no thread, conversation, run or
+receipt, and delivery IDs do not deduplicate retries. It invalidates the agent's
+catalogs after cleanup.
+
+For existing conversations, execution holds the turn guard through stream cleanup.
+Normal chat turns use the same guard even when gateway spells are disabled.
 Busy conversations are refused immediately; execution never queues or retries.
 
 Validation yields either a refusal/replay outcome or
-`(surface, profile, descriptor)`. For the tuple, prepare user capabilities if needed, then
+`ValidatedCommand(surface, profile, descriptor)`. The surface is absent before a
+conversation exists; the profile can also be absent for a new Trunkline composer.
+For the validated command, prepare available user capabilities if needed, then
 enter `commands.execute(agent, context, invocation, validated, delivery_id=..., ...)`
 before leaving validation. The same turn guard spans both calls, and execution
 does not repeat validation. User setup errors propagate and release the guard;
 no receipt exists until execution starts, so that delivery can be retried.
 
-Before runtime dispatch, the manager commits a command receipt on the addressed
-chat surface. Its delivery ID must be unique among inbound messages on that surface;
-use the same ID when retrying the same request. After checking current access and
+For an existing conversation, before runtime dispatch the manager commits a command
+receipt on the addressed chat surface. Its delivery ID must be unique among inbound
+messages on that surface; use the same ID when retrying the same request. After checking current access and
 context, matching deliveries return their recorded outcome even if the command is
 no longer in the catalog. An ID belonging to another sender, conversation, agent
 or invocation is refused. A receipt without an outcome is also refused: its runtime

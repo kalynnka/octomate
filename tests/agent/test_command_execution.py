@@ -10,15 +10,14 @@ from unittest.mock import AsyncMock
 
 import pytest
 from pydantic_ai import AgentCapability
-from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.database import async_session
-from octomate.managers.commands import CommandManager
+from octomate.managers.commands import CommandManager, ValidatedCommand
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.commands import (
     CommandContext,
@@ -37,7 +36,7 @@ from octomate.tentacles.channel import ChannelOutput
 from octomate.types.permissions import PermissionMode
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
-from tests.support.managers import a_project, a_registry
+from tests.support.managers import RecordingSuspender, a_project, a_registry
 
 
 @dataclass
@@ -102,11 +101,6 @@ class ExecutingAgent(DiscoveringAgent):
             self.stream_closed = True
             if self.behavior == "stream_cleanup_error":
                 raise RuntimeError("private cleanup details")
-
-
-class Suspender:
-    async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
-        return None
 
 
 @pytest.fixture
@@ -175,7 +169,7 @@ async def test_direct_execution_preserves_input_and_invalidates_catalogs(
         validated = await stack.enter_async_context(
             manager.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         result = await stack.enter_async_context(
             manager.execute(
                 agent, context, invocation, validated, delivery_id="command-1"
@@ -218,7 +212,7 @@ async def test_execution_uses_injected_managers_without_an_agent_host(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         result = await stack.enter_async_context(
             app.commands.execute(
                 agent, context, invocation, validated, delivery_id="command-1"
@@ -241,12 +235,13 @@ async def test_validation_and_execution_share_guard_without_repeating_validation
     async with app.commands.validate(
         agent, context, invocation, delivery_id="command-1"
     ) as validated:
-        assert isinstance(validated, tuple)
-        surface, profile, descriptor = validated
+        assert isinstance(validated, ValidatedCommand)
         assert context.conversation is not None
-        assert surface.id == context.conversation.thread_id
-        assert profile.user_id == context.user_id
-        assert descriptor.id == invocation.command_id
+        assert validated.surface is not None
+        assert validated.profile is not None
+        assert validated.surface.id == context.conversation.thread_id
+        assert validated.profile.user_id == context.user_id
+        assert validated.descriptor.id == invocation.command_id
         assert context.conversation.id in app.gateway.sessions
         assert not agent.invocations
         async with async_session() as session:
@@ -280,7 +275,7 @@ async def test_direct_outcome_requires_a_result_and_successful_cleanup(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         result = await stack.enter_async_context(
             app.commands.execute(
                 agent, context, invocation, validated, delivery_id="command-1"
@@ -359,7 +354,7 @@ async def test_composer_execution_does_not_create_a_session(
     ) as result:
         assert isinstance(result, CommandError)
         assert result.status == "unavailable"
-    assert not agent.calls
+    assert len(agent.calls) == 1
     assert not agent.invocations
     assert not app.gateway.sessions
 
@@ -400,7 +395,7 @@ async def test_backend_failure_releases_guard_and_invalidates_catalog(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         stack.enter_context(
             pytest.raises(asyncio.CancelledError)
             if behavior == "cancel"
@@ -437,7 +432,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
         current_agent_id=agent.id,
         conversation_id=context.conversation.id,
     )
-    suspender = Suspender()
+    suspender = RecordingSuspender()
     capabilities: list[AgentCapability[None]] = []
     with pytest.raises(asyncio.CancelledError) if cancel else nullcontext():
         invocation = CommandInvocation(command_id="skill")
@@ -447,7 +442,7 @@ async def test_stream_owns_guard_until_cleanup_and_forwards_run_hooks(
                     agent, context, invocation, session=session, delivery_id="command-1"
                 )
             )
-            assert isinstance(validated, tuple)
+            assert isinstance(validated, ValidatedCommand)
             events = await stack.enter_async_context(
                 app.commands.execute(
                     agent,
@@ -561,7 +556,9 @@ async def test_execution_checks_access_and_selection_after_discovery(
     assert not app.gateway.sessions
 
 
-@pytest.mark.parametrize("selection", ["user", "address", "missing", "subagent"])
+@pytest.mark.parametrize(
+    "selection", ["user", "address", "other_surface", "missing", "subagent"]
+)
 async def test_execution_rejects_foreign_or_unavailable_conversations(
     app: Octomate, agent: ExecutingAgent, context: CommandContext, selection: str
 ) -> None:
@@ -581,6 +578,21 @@ async def test_execution_rejects_foreign_or_unavailable_conversations(
         context = replace(
             context, address=replace(context.address, channel_thread_id="other")
         )
+    elif selection == "other_surface":
+        address = replace(context.address, channel_thread_id="other")
+        await app.threads.record_inbound(
+            MessageEvent(
+                tentacle_id=address.channel_tentacle_id,
+                chat_id=address.chat_id,
+                chat_type=address.chat_type,
+                channel_thread_id=address.channel_thread_id,
+                user_id=address.user_id,
+                sender=UserProfile(
+                    channel_user_id=address.user_id, user_id=context.user_id
+                ),
+            )
+        )
+        context = replace(context, address=address)
     elif selection == "missing":
         context = replace(
             context,
@@ -614,7 +626,7 @@ async def test_delivery_replay_uses_the_ledger_after_manager_recreation(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         original = await stack.enter_async_context(
             app.commands.execute(
                 agent, context, invocation, validated, delivery_id="command-1"
@@ -662,7 +674,7 @@ async def test_concurrent_duplicate_is_busy_and_a_new_delivery_can_run(
                     agent, context, invocation, delivery_id=delivery_id
                 )
             )
-            if isinstance(validated, tuple):
+            if isinstance(validated, ValidatedCommand):
                 result = await stack.enter_async_context(
                     app.commands.execute(
                         agent, context, invocation, validated, delivery_id=delivery_id
@@ -696,7 +708,7 @@ async def test_delivery_id_cannot_be_reused_for_another_request(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         await stack.enter_async_context(
             app.commands.execute(
                 agent, context, invocation, validated, delivery_id="command-1"
@@ -729,7 +741,7 @@ async def test_replay_still_requires_current_access(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         await stack.enter_async_context(
             app.commands.execute(
                 agent, context, invocation, validated, delivery_id="command-1"
@@ -768,7 +780,7 @@ async def test_persistence_failure_never_repeats_runtime_effects(
                     agent, context, invocation, delivery_id="command-1"
                 )
             )
-            assert isinstance(validated, tuple)
+            assert isinstance(validated, ValidatedCommand)
             with pytest.raises(RuntimeError, match="storage"):
                 await stack.enter_async_context(
                     app.commands.execute(
@@ -806,7 +818,7 @@ async def test_stream_outcome_is_recorded_after_consumption_and_cleanup(
                     agent, context, invocation, delivery_id="command-1"
                 )
             )
-            assert isinstance(validated, tuple)
+            assert isinstance(validated, ValidatedCommand)
             events = await stack.enter_async_context(
                 app.commands.execute(
                     agent, context, invocation, validated, delivery_id="command-1"
@@ -855,7 +867,7 @@ async def test_recording_outcomes_does_not_mutate_the_callers_receipt(
         validated = await stack.enter_async_context(
             app.commands.validate(agent, context, invocation, delivery_id="command-1")
         )
-        assert isinstance(validated, tuple)
+        assert isinstance(validated, ValidatedCommand)
         result = await stack.enter_async_context(
             app.commands.execute(
                 agent, context, invocation, validated, delivery_id="command-1"

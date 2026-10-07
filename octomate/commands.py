@@ -274,7 +274,12 @@ async def execute_command(
         str, Body(min_length=1, description="The selected descriptor's opaque ID.")
     ],
     delivery_id: Annotated[
-        str, Body(min_length=1, description="Stable delivery ID; reuse for retries.")
+        str,
+        Body(
+            min_length=1,
+            description="Delivery ID. Existing conversations deduplicate matching retries; "
+            "executions without a conversation have no persisted receipt.",
+        ),
     ],
     arguments: Annotated[
         str, Body(description="Raw command arguments, preserved unchanged.")
@@ -287,7 +292,10 @@ async def execute_command(
         ),
     ] = None,
 ) -> CommandResponse:
-    """Execute explicit command intent against an existing conversation.
+    """Execute explicit command intent in the resolved context.
+
+    A descriptor may permit a direct result before a conversation exists. Such
+    execution creates no thread, conversation, run or receipt; it is not replayable.
 
     Every execution response is SSE. Each data field contains CommandStreamEvent
     JSON, identified by event_kind. Every channel executes through the Reflex

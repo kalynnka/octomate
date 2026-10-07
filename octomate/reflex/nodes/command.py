@@ -70,14 +70,14 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 if isinstance(validated, CommandResult | CommandError):
                     await runtime.present_command(suspender, validated)
                     return End(validated)
-                _, profile, _ = validated
-                await runtime.prepare_user(
-                    ctx,
-                    profile,
-                    session=session,
-                    suspender=suspender,
-                    capabilities=capabilities,
-                )
+                if validated.profile is not None:
+                    await runtime.prepare_user(
+                        ctx,
+                        validated.profile,
+                        session=session,
+                        suspender=suspender,
+                        capabilities=capabilities,
+                    )
                 output = await stack.enter_async_context(
                     agent.commands.execute(
                         agent,
