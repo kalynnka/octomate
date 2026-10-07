@@ -16,6 +16,7 @@ let forms: typeof import('../src/features/chat/gateway.ts')
 let commands: typeof import('../src/features/chat/commands.ts')
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
+let useAuth: typeof import('../src/state/auth.ts').useAuth
 let ChatHeader: typeof import('../src/features/chat/ChatHeader.tsx').ChatHeader
 let SummonRoute: typeof import('../src/features/chat/GatewayRoute.tsx').SummonRoute
 let DestinationPicker: typeof import('../src/features/chat/GatewayDestination.tsx').DestinationPicker
@@ -38,8 +39,9 @@ const routes: ApiAgentRoute[] = [
   { agent_id: 'claude', model: 'sonnet', claim: { ability: 'Code review', efforts: ['low', 'high'], default_effort: null } },
   { agent_id: 'claude', model: 'haiku', claim: { ability: 'Quick answers', efforts: [], default_effort: null } },
 ]
-const compact: ApiCommandDescriptor = { id: 'claude:compact', name: 'compact', description: 'Summarize the conversation to free context.', argument_hint: '[instructions]', accepts_attachments: null }
-const cost: ApiCommandDescriptor = { id: 'claude:cost', name: 'cost', description: 'Token usage and spend for this session.', argument_hint: null, accepts_attachments: null }
+const compact: ApiCommandDescriptor = { id: 'claude:compact', name: 'compact', description: 'Summarize the conversation to free context.', argument_hint: '[instructions]', requires_conversation: true, accepts_attachments: null }
+const cost: ApiCommandDescriptor = { id: 'claude:cost', name: 'cost', description: 'Token usage and spend for this session.', argument_hint: null, requires_conversation: true, accepts_attachments: null }
+const status: ApiCommandDescriptor = { id: 'runtime:status', name: 'status', description: 'Runtime status.', argument_hint: null, requires_conversation: false, accepts_attachments: null }
 const request: GatewayRequest = { action: 'teleport', body: { destination: room, hint: 'Continue here' } }
 const gateway: GatewayEvent = { event_kind: 'gateway', action: 'teleport', announcement: 'Continue here', destination: {
   channel_tentacle_id: 'lark', chat_type: 'thread', chat_id: 'account', channel_thread_id: 'platform-id', user_id: 'owner', shared: false,
@@ -58,6 +60,7 @@ before(async () => {
   commands = await server.ssrLoadModule('/src/features/chat/commands.ts') as typeof commands
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
+  ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
   ;({ ChatHeader } = await server.ssrLoadModule('/src/features/chat/ChatHeader.tsx'))
   ;({ SummonRoute } = await server.ssrLoadModule('/src/features/chat/GatewayRoute.tsx'))
   ;({ DestinationPicker } = await server.ssrLoadModule('/src/features/chat/GatewayDestination.tsx'))
@@ -695,6 +698,92 @@ test('an effort set from the composer lands on the conversation and says so', as
   assert.equal(useConsole.getState().detail?.sessions[0].effort, 'high')
   assert.ok(useConsole.getState().notices.some((one) => one.tone === 'error' && one.text.includes('does not take effort')))
 })
+
+test('effort in the new composer is local and an omitted level restores the default', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('must not write a conversation') })
+  useConsole.setState({ ntOn: true, ntStarted: false, ntEffort: 'auto', detail: null })
+  await useConsole.getState().actions.setEffort('high')
+  assert.equal(useConsole.getState().ntEffort, 'high')
+  await useConsole.getState().actions.setEffort(null)
+  assert.equal(useConsole.getState().ntEffort, 'auto')
+  assert.equal(useConsole.getState().ntStarted, false)
+  assert.equal(useConsole.getState().detail, null)
+  assert.equal(fetch.mock.callCount(), 0)
+})
+
+test('a direct command in the new composer keeps the thread unopened', async () => {
+  const reply: CommandStreamEvent = { event_kind: 'message_sent', segments: [{ type: 'text', data: { text: 'Ready' } }] }
+  const done: CommandStreamEvent = { event_kind: 'command_outcome', outcome: { status: 'completed', segments: [] } }
+  const fetch = mock.method(globalThis, 'fetch', async () => sse(reply, done))
+  useConsole.setState({ ntOn: true, ntStarted: false, selThreadId: 'THR-NEW', composer: '/status' })
+  const context = { agent_id: 'claude', address: fresh, model: null, permission_mode: null }
+  const key = ['command-catalog', context.agent_id, context]
+  queryClient.setQueryData(key, { descriptors: [status], status: 'ready', message: null, limitations: [] })
+  useConsole.getState().actions.runCommand(context, status, '  --raw=value  ')
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(fetch.mock.callCount(), 1)
+  const [url, init] = fetch.mock.calls[0].arguments
+  assert.equal(url, '/api/commands/execute')
+  const body = JSON.parse(String(init?.body))
+  assert.deepEqual({ ...body, delivery_id: undefined }, { ...context, command_id: status.id, arguments: '  --raw=value  ', delivery_id: undefined })
+  const state = useConsole.getState()
+  assert.equal(state.ntStarted, false)
+  assert.equal(state.ntOn, true)
+  assert.equal(state.selThreadId, 'THR-NEW')
+  assert.equal(state.detail, null)
+  assert.equal(state.running, false)
+  assert.deepEqual(state.live.map((one) => one.kind), ['user', 'agent'])
+  assert.equal(queryClient.getQueryState(key)?.isInvalidated, true)
+})
+
+test('a command requiring a conversation preserves the new composer draft', () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('must not execute') })
+  useConsole.setState({ ntOn: true, ntStarted: false, selThreadId: 'THR-NEW', composer: '/compact' })
+  useConsole.getState().actions.runCommand({ agent_id: 'claude', address: fresh }, compact, '')
+  assert.equal(fetch.mock.callCount(), 0)
+  assert.equal(useConsole.getState().composer, '/compact')
+  assert.equal(useConsole.getState().running, false)
+  assert.equal(useConsole.getState().ntStarted, false)
+  assert.deepEqual(useConsole.getState().live, [])
+})
+
+for (const [text, disabled, model, permission] of [
+  ['/status', false, null, null],
+  ['/status', false, 'sonnet', 'default'],
+  ['/compact', true, null, null],
+  ['/summon', true, null, null],
+  ['/effort high', false, 'sonnet', null],
+] as const) {
+  test(`new composer ${disabled ? 'disables' : 'allows'} ${text} with ${model ?? 'harness default'} and ${permission ?? 'default posture'}`, () => {
+    const initial = { ...useConsole.getInitialState() }
+    const initialUser = useAuth.getInitialState().user
+    Object.assign(useConsole.getInitialState(), {
+      ntOn: true, selThreadId: 'THR-NEW', selChannel: 'trunkline', detail: null,
+      ntAgent: 'claude', ntModel: model ?? 'Harness default', ntRouteId: `claude:${model ?? ''}`, ntPermissionMode: permission, ntEffort: 'auto',
+    })
+    useAuth.getInitialState().user = { id: 'owner', username: 'alice', name: 'Alice', nickname: null }
+    queryClient.setQueryData(['routes'], { routes: [{ id: `claude:${model ?? ''}`, agent: 'claude', model }] })
+    queryClient.setQueryData(['agents'], [{ id: 'claude', routes, default_model: 'sonnet' }])
+    const context = { agent_id: 'claude', address: fresh, model, permission_mode: permission }
+    queryClient.setQueryData(['command-catalog', 'claude', context], { descriptors: [status, compact], status: 'ready', message: null, limitations: [] })
+    function NewComposer() {
+      const runtime = useTrunklineRuntime()
+      runtime.thread.composer.setText(text)
+      return createElement(AssistantRuntimeProvider, { runtime }, createElement(Composer))
+    }
+    try {
+      const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(NewComposer)))
+      assert.equal(/<button[^>]*disabled=""[^>]*>Send ↵<\/button>/.test(html), disabled)
+      if (text === '/status') assert.match(html, /Runtime status/)
+      if (text === '/compact') assert.match(html, /This command requires an existing conversation/)
+      if (text === '/summon') assert.match(html, /Start a conversation before handing it to another agent/)
+      if (text.startsWith('/effort')) assert.match(html, /type="range"/)
+    } finally {
+      Object.assign(useConsole.getInitialState(), initial)
+      useAuth.getInitialState().user = initialUser
+    }
+  })
+}
 
 test('effort choices match the native default and unambiguous runtime model names', () => {
   const route = { ...routes[0], agent_id: 'codex', model: 'openai:test-model' }

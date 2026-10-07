@@ -4,6 +4,7 @@ import { ComposerPrimitive, useAui, useAuiState } from '@assistant-ui/react'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { useAddresses, useAgents, useChannels, useCommandCatalog, usePermissionModes, useRoutes, useThreadOperations } from '@/lib/api/hooks'
+import type { CommandContextBody } from '@/lib/api/events'
 import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
@@ -439,8 +440,11 @@ export function Composer() {
   const ntEffort = useConsole((s) => s.ntEffort)
   const running = useConsole((s) => s.running)
   const gatewayMode = useConsole((s) => s.gatewayMode)
+  const ntRouteId = useConsole((s) => s.ntRouteId)
+  const ntPermissionMode = useConsole((s) => s.ntPermissionMode)
   const { removeQueued, setGatewayMode, gateway, setEffort, startNewThread, runCommand: runNative } = useConsole((s) => s.actions)
   const username = useAuth((s) => s.user?.username ?? 'operator')
+  const userId = useAuth((s) => s.user?.id)
 
   const isReview = useConsole((s) => s.pvOpen)
   const lastSes = detail?.sessions[detail.sessions.length - 1]
@@ -509,43 +513,53 @@ export function Composer() {
 
   // A line that spells a command opens the command finder instead of sending.
   const { data: channels } = useChannels()
+  const { data: routesData } = useRoutes()
+  const newRoute = routesData?.routes.find((one) => one.id === ntRouteId)
   const [hidden, setHidden] = useState(false)
   // The agent's own commands answer on the surface the conversation is on, and
   // are only discovered once a line starts naming one.
-  const context = !ntOn && !nativeReadOnly && lastSes && operations?.source
-    ? { agent_id: lastSes.agent, address: operations.source, conversation_id: lastSes.conversationId }
-    : null
+  const context: CommandContextBody | null = nativeReadOnly ? null
+    : ntOn ? newRoute && userId ? {
+      agent_id: newRoute.agent,
+      address: { channel_tentacle_id: selChannel, chat_type: 'thread', chat_id: userId, user_id: userId, channel_thread_id: null, shared: false },
+      model: newRoute.model,
+      permission_mode: ntPermissionMode,
+    } : null
+      : lastSes && operations?.source
+        ? { agent_id: lastSes.agent, address: operations.source, conversation_id: lastSes.conversationId }
+        : null
   const catalog = useCommandCatalog(composerText.startsWith('/') ? context : null)
   const natives = context && catalog.data?.status === 'ready'
-    ? catalog.data.descriptors.map(nativeCommand).sort((a, b) => a.name.localeCompare(b.name))
+    ? catalog.data.descriptors.map((one) => nativeCommand(one, Boolean(context.conversation_id))).sort((a, b) => a.name.localeCompare(b.name))
     : []
   const commands = [...COMMANDS, ...natives]
-  const line = !mode && !ntOn && detail && !running && !hidden ? readCommand(composerText, commands) : null
-  const agentName = lastSes?.agent ?? 'agent'
+  const line = !mode && (ntOn || detail) && !running && !hidden ? readCommand(composerText, commands) : null
+  const agentName = ntOn ? ntAgent : lastSes?.agent ?? 'agent'
   const waiting = eligibility.isError ? eligibility.error.message : 'Checking available destinations…'
-  const nativeNote = !lastSes ? null
+  const nativeNote = !ntOn && !lastSes ? null
     : nativeReadOnly ? 'Synced native sessions are read-only. Only gateway operations are available here.'
-      : !context ? waiting
+      : !context ? ntOn ? 'Choose an agent to discover its commands.' : waiting
         : catalog.isError ? catalog.error.message
           : !catalog.data || catalog.data.status === 'loading' ? `discovering ${agentName} commands…`
             : catalog.data.message ?? (catalog.data.limitations.join(' · ') || null)
   // `/effort` moves this conversation along the scale its route claims.
   const { data: agents } = useAgents(true, false)
-  const owner = agents?.find((one) => one.id === lastSes?.agent)
-  const sessionRoute = modelRoute(owner, lastSes?.model ?? null)
-  const scale = routeEffort(sessionRoute, lastSes?.effort ?? 'auto')
+  const owner = agents?.find((one) => one.id === agentName)
+  const sessionRoute = modelRoute(owner, ntOn ? newRoute?.model ?? null : lastSes?.model ?? null)
+  const scale = routeEffort(sessionRoute, ntOn ? ntEffort : lastSes?.effort ?? 'auto')
   const defaultLevel = routeEffort(sessionRoute, 'auto').effort
   const closed: Partial<Record<GatewayOp, string>> = {
-    summon: operations ? operations.summon.reason ?? undefined : waiting,
-    teleport: operations ? operations.teleport.reason ?? undefined : waiting,
+    summon: ntOn ? 'Start a conversation before handing it to another agent.' : operations ? operations.summon.reason ?? undefined : waiting,
+    teleport: ntOn ? 'Start a conversation before moving it to another destination.' : operations ? operations.teleport.reason ?? undefined : waiting,
     effort: nativeReadOnly ? 'Synced native sessions are read-only.'
-      : !lastSes ? 'This thread has no conversation to set it on.'
+      : !ntOn && !lastSes ? 'This thread has no conversation to set it on.'
       : !agents ? 'Reading the levels this route takes…'
         : !sessionRoute ? 'The runtime model is not available in the model catalog.'
-          : sessionRoute.claim.efforts.length ? undefined : `${lastSes.route} takes no effort levels.`,
+          : sessionRoute.claim.efforts.length ? undefined : `${agentName} takes no effort levels.`,
   }
   const pickedCommand = line?.phase === 'name' ? line.matches[0]?.command : line?.command
-  const canSubmit = canSend && (!nativeReadOnly || Boolean(pickedCommand && !pickedCommand.native && !closed[pickedCommand.name]))
+  const commandReason = pickedCommand?.unavailable ?? (pickedCommand && !pickedCommand.native ? closed[pickedCommand.name] : undefined)
+  const canSubmit = canSend && !commandReason && (!nativeReadOnly || Boolean(pickedCommand && !pickedCommand.native))
   const surfaces = channelRows(
     channels ?? [], operations?.teleport.destinations ?? [], selChannel,
     operations?.teleport.routes ?? {}, carrierless, operations?.barred ?? {},
@@ -628,7 +642,7 @@ export function Composer() {
   const runCommand = (index?: number) => {
     if (!line) return
     const command = line.phase === 'name' ? line.matches[index ?? 0].command : line.command
-    if (!command.native && closed[command.name]) return
+    if (command.unavailable || (!command.native && closed[command.name])) return
     if (line.phase === 'name') fillCommand(index ?? 0)
     if ((args?.flagName || index !== undefined) && command.parameters?.some((parameter) => parameter.flag && parameter.flag === matches[index ?? 0]?.argument.value)) return fillCommand(index ?? 0)
     const selected = line.phase === 'argument' && index !== undefined
@@ -712,12 +726,12 @@ export function Composer() {
               onModel: (model) => openGateway('summon', { agent, model, effort: agentEffort.effort, menu: 'route' }),
               onEffort: (effort) => write(editArguments(line, { agent, effort })),
             } : null}
-            effort={line.phase === 'argument' && levelling && lastSes ? {
+            effort={line.phase === 'argument' && levelling ? {
               supported: scale.efforts,
               preset: sessionRoute?.claim.default_effort ?? null,
               level,
               current: scale.effort,
-              route: lastSes.route,
+              route: ntOn ? modelChip : lastSes?.route ?? agentName,
               onEffort: (one) => write(editArguments(line, { level: one })),
             } : null}
             onRun={runCommand}
@@ -904,7 +918,7 @@ export function Composer() {
               style={{ ...mono(8), color: copy && !blocked && exposed ? 'var(--color-gold)' : 'var(--fg-3)', letterSpacing: '.08em', textTransform: 'uppercase', ...ellipsis, minWidth: 0 }}
             >
               {copy ? (blocked ?? (exposed ? `▲ ${exposed}` : copy.hint))
-                : `↵ send · ⇧↵ newline${ntOn ? '' : ' · / commands'} · ⇧⇥ posture · **b** _i_ \`code\` \`\`\` fence`}
+                : '↵ send · ⇧↵ newline · / commands · ⇧⇥ posture · **b** _i_ `code` ``` fence'}
             </span>
           </div>
         )}
@@ -1027,7 +1041,7 @@ export function Composer() {
               type="button"
               onClick={() => line ? runCommand() : aui.composer.send()}
               disabled={!canSubmit}
-              title={nativeReadOnly && !canSubmit ? 'Synced native sessions are read-only. Use gateway operations to continue elsewhere.' : undefined}
+              title={commandReason ?? (nativeReadOnly && !canSubmit ? 'Synced native sessions are read-only. Use gateway operations to continue elsewhere.' : undefined)}
               className="hov-panel"
               style={{
                 display: 'inline-flex',

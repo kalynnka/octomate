@@ -75,10 +75,15 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   to the first available action. Disabled choices show their reason. Teleport
   and Summon expand the composer instead of opening a dialog: the button, ×
   or Esc returns to chat with your draft kept, and ⌘↵ submits.
-  Typing `/` in an existing thread's composer opens a command finder. The
+  Typing `/` in a new or existing thread's composer opens a command finder. The
   gateway's commands come first — `/summon <agent> [--model <model>] [--effort <effort>]`, `/teleport [destination]`,
   `/effort [level]` and `/new` — then the commands the thread's agent offers in
-  its own runtime, looked up the first time you type `/` in that conversation.
+  its own runtime, looked up when you type `/` for the selected agent and settings.
+  Before the first message, commands that need a conversation stay unavailable
+  and explain why. Commands the agent makes available without a conversation
+  show their direct feedback in the message panel without opening a thread; this
+  feedback is not saved in thread history. `/effort` sets the first message's
+  effort locally. Summon and Teleport require an existing conversation.
   Synced native sessions are read-only: messages, native commands, permission
   and effort changes, and approval answers are unavailable. Use an available
   gateway operation such as Teleport to continue elsewhere. Type to narrow the

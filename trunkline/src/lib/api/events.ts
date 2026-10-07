@@ -755,6 +755,7 @@ export interface ApiCommandDescriptor {
   description: string
   /** the runtime's own free-form hint for the argument, when it gives one */
   argument_hint: string | null
+  requires_conversation: boolean
   accepts_attachments: boolean | null
 }
 
@@ -772,7 +773,9 @@ export interface ApiCommandCatalog {
 export interface CommandContextBody {
   agent_id: string
   address: ChannelAddress
-  conversation_id: string
+  conversation_id?: string | null
+  model?: string | null
+  permission_mode?: string | null
 }
 
 export interface CommandExecuteBody extends CommandContextBody {

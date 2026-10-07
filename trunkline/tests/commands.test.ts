@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import { COMMANDS, commandArguments, commandHint, completeCommand, completion, editArguments, nativeCommand, readCommand, type Command, type CommandLine } from '../src/features/chat/commands.ts'
 
 const native = (name: string, hint: string | null) => nativeCommand({
-  id: `skill:${name}`, name, description: 'A runtime command', argument_hint: hint, accepts_attachments: null,
+  id: `skill:${name}`, name, description: 'A runtime command', argument_hint: hint, requires_conversation: true, accepts_attachments: null,
 })
 const deploy: Command = {
   ...native('deploy', null),

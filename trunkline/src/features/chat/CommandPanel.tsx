@@ -77,7 +77,7 @@ export function CommandPanel({ line, matches, offered, total, agent, nativeNote,
   const models = route ? [route.route, ...route.routes.filter((one) => one.model !== route.route.model)]
     .filter((one) => fuzzy(modelQuery, one.model) !== null) : []
   const hint = commandHint(command)
-  const reason = command.native ? undefined : closed[command.name]
+  const reason = command.unavailable ?? (command.native ? undefined : closed[command.name])
   const typed = naming ? '' : line.typed.trim()
   const offers = input?.active?.name ?? (offered ? 'option' : '')
   const note = naming ? '' : reason ?? argumentReason ?? (matches.length || effort ? ''
@@ -126,7 +126,7 @@ export function CommandPanel({ line, matches, offered, total, agent, nativeNote,
         {naming && (
           <div role="listbox" aria-label="Commands">
             {line.matches.map(({ command: one, hits }, index) => {
-              const shut = one.native ? undefined : closed[one.name]
+              const shut = one.unavailable ?? (one.native ? undefined : closed[one.name])
               const opens = index === 0 || Boolean(line.matches[index - 1].command.native) !== Boolean(one.native)
               return (
                 <Fragment key={one.native?.id ?? one.name}>
@@ -137,7 +137,7 @@ export function CommandPanel({ line, matches, offered, total, agent, nativeNote,
                     aria-selected={index === 0}
                     aria-disabled={Boolean(shut)}
                     title={shut ?? (one.parameters?.some((parameter) => parameter.required) ? `Add ${commandHint(one)}` : `Run /${one.name}`)}
-                    onClick={() => onRun(index)}
+                    onClick={() => { if (!shut) onRun(index) }}
                     style={{
                       width: '100%', border: 0, borderRadius: 0, textAlign: 'left', color: 'inherit',
                       display: 'flex', alignItems: 'center', gap: 10, padding: '5px 24px', opacity: shut ? 0.5 : 1,

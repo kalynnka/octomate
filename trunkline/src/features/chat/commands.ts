@@ -22,6 +22,7 @@ export type Command = {
   /** Explicit input structure, when known. A free-form runtime hint is not a schema. */
   parameters?: CommandParameter[]
   description: string
+  unavailable?: string
 } & (
   | { name: GatewayOp; native?: undefined }
   /** the agent's own command, run in its runtime rather than by the gateway */
@@ -36,10 +37,12 @@ export const COMMANDS: Command[] = [
 ]
 
 /** An agent's own command, read the way the finder reads a gateway op. */
-export function nativeCommand(descriptor: ApiCommandDescriptor): Command {
+export function nativeCommand(descriptor: ApiCommandDescriptor, hasConversation = true): Command {
   return {
     name: COMMANDS.some((one) => one.name === descriptor.name) ? `native:${descriptor.name}` : descriptor.name,
     description: descriptor.description,
+    unavailable: !hasConversation && descriptor.requires_conversation !== false
+      ? 'This command requires an existing conversation.' : undefined,
     native: descriptor,
   }
 }

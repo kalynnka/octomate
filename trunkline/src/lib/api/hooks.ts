@@ -68,11 +68,11 @@ export const useThreadOperations = (threadId: string, enabled: boolean) =>
     refetchOnReconnect: false,
   })
 
-/** The commands the selected agent offers for a conversation. Discovery that
+/** The commands the selected agent offers in the current context. Discovery that
  *  was cut short answers `loading`, so that answer is asked again. */
 export const useCommandCatalog = (context: CommandContextBody | null) =>
   useQuery({
-    queryKey: ['command-catalog', context?.agent_id, context?.conversation_id],
+    queryKey: ['command-catalog', context?.agent_id, context],
     queryFn: () => fetchCommandCatalog(context!),
     enabled: context !== null,
     retry: false,

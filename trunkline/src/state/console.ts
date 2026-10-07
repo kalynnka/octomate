@@ -1371,8 +1371,13 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     },
     async setEffort(effort: EffortStep | null) {
       const s = get()
+      if (s.running || s.detail?.kind === 'native_thread') return
+      if (s.ntOn) {
+        set({ ntEffort: effort ?? 'auto' })
+        return
+      }
       const session = s.detail?.sessions.at(-1)
-      if (s.running || !session || s.detail?.kind === 'native_thread') return
+      if (!session) return
       const stored = await api.setEffort(session.conversationId, effort).catch((err: unknown) => {
         actions.reportThreadError(s.selThreadId, `effort not set — ${err instanceof Error ? err.message : String(err)}`)
         return null
@@ -1399,6 +1404,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
       const s = get()
       if (s.running || s.detail?.kind === 'native_thread') return
+      if (!context.conversation_id && command.requires_conversation !== false) return
       set({ running: true, composer: '' })
       push({ kind: 'user', t: nowClock(), who: operator(), text: `/${command.name}${args && ` ${args}`}` } as LedgerItem)
       const body = {
@@ -1410,6 +1416,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         arguments: args,
       }
       void runLive(s.selThreadId, (onEvent) => streamCommand(body, onEvent), 'command closed without an outcome')
+        .finally(() => { void queryClient.invalidateQueries({ queryKey: ['command-catalog', context.agent_id] }) })
     },
     sendNewThread(text: string) {
       const s = get()
