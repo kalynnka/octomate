@@ -20,7 +20,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.transcript import transcripts_dir
 from tests.agent.test_claude_stream import AUTH, CLIENT_PATH, frames, hello_json
 from tests.agent.test_claude_stream import stream_client as a_stream_client
@@ -171,7 +171,7 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
         forked_from.append((session_id, directory, staged.read_bytes()))
         return SimpleNamespace(session_id="forked-session")
 
-    monkeypatch.setattr(claude_base, "fork_session", fork_session)
+    monkeypatch.setattr(claude_ink, "fork_session", fork_session)
     # The model the session's turns ran, as a transcript records it.
     tentacle.models = {"anthropic:claude-opus-4-8": "claude-opus-4-8"}
     await tentacle.validate_fork(source, sender=sender)

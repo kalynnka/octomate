@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import logging
 from collections.abc import AsyncGenerator, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import cached_property
 from io import BytesIO
 from pathlib import Path
@@ -36,7 +36,6 @@ from claude_agent_sdk import (
     PreToolUseHookInput,
     ResultMessage,
     ToolPermissionContext,
-    fork_session,
 )
 from claude_agent_sdk.types import Message, SystemPromptPreset
 from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
@@ -83,6 +82,7 @@ from octomate.capabilities.harness.deferred import DeferredSuspender, Interjecti
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, ClaudeCodeConfig
+from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -114,8 +114,10 @@ from octomate.telemetry import (
     octomate_trace_environment,
 )
 from octomate.tentacles.agent import AgentSpecInput, AgentTentacle
+from octomate.tentacles.channel import ChannelTentacle
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
 from octomate.tentacles.claude.catalog import (
+    CONTROL_COMMANDS,
     HOST_COMMANDS,
     ClaudeCommandDescriptor,
     claude_effort_adapter,
@@ -564,15 +566,15 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             staged.parent.mkdir(parents=True, exist_ok=True)
             staged.write_bytes(data)
             try:
-                forked = await asyncio.to_thread(
-                    fork_session, source.external_id, str(cwd)
+                external_id = await self.ink.fork_session(
+                    source.external_id, cwd=cwd, source_cwd=cwd
                 )
             finally:
                 staged.unlink()
             await conversations.fork(
                 source,
                 target,
-                external_id=forked.session_id,
+                external_id=external_id,
                 model_name=completed.model_name,
                 permission_mode=completed.permission_mode,
             )
@@ -582,8 +584,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         """Fork Claude's transcript without changing the source session."""
         if not conversation.external_id:
             raise ValueError("Cannot fork a Claude conversation without a session id")
-        forked = await asyncio.to_thread(fork_session, conversation.external_id)
-        return forked.session_id
+        return await self.ink.fork_session(conversation.external_id, cwd=cwd)
 
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         """Claude files a session under the cwd it ran in and resumes it only from
@@ -642,12 +643,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         or preparing the workspace. Octomate's SDK MCP server exposes tools only;
         there are no MCP prompts to add to this catalog.
         """
+        catalog = CommandCatalog(
+            context=context, status="ready", descriptors=set(CONTROL_COMMANDS.values())
+        )
         if context.cwd is None or not await anyio.Path(context.cwd).is_dir():
-            return CommandCatalog(
-                context=context,
-                status="unavailable",
-                message="Claude command discovery requires an existing workspace.",
+            catalog.limitations.append(
+                "Claude native command discovery requires an existing workspace."
             )
+            return catalog
         conversation = context.conversation
         project = (
             await self.run_project(conversation.thread_id)
@@ -674,24 +677,21 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 )
             )
         if info.commands is None:
-            return CommandCatalog(
-                context=context,
-                status="unsupported",
-                message="This Claude runtime does not expose command metadata.",
+            catalog.limitations.append(
+                "This Claude runtime does not expose native command metadata."
             )
-        return CommandCatalog(
-            context=context,
-            status="ready",
-            descriptors={
-                entry.model_copy(update={"unavailable_reason": HOST_COMMANDS[entry.id]})
-                if entry.id in HOST_COMMANDS
-                else entry
-                for entry in info.commands
-            },
-            limitations=[
-                "Claude safe mode disables local commands, skills and plugins.",
-            ],
+            return catalog
+        catalog.descriptors.update(
+            entry.model_copy(update={"unavailable_reason": HOST_COMMANDS[entry.id]})
+            if entry.id in HOST_COMMANDS
+            else entry
+            for entry in info.commands
+            if entry.id not in CONTROL_COMMANDS
         )
+        catalog.limitations.append(
+            "Claude safe mode disables local commands, skills and plugins."
+        )
+        return catalog
 
     async def execute_command(
         self,
@@ -717,6 +717,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 status="stale", message="This command changed; refresh commands."
             )
             return
+        if descriptor.id in CONTROL_COMMANDS:
+            yield await self.command_control(context, invocation)
+            return
         prompt = f"/{descriptor.name}"
         if invocation.arguments:
             prompt += f" {invocation.arguments}"
@@ -737,6 +740,66 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                     yield event
         except LookupError as error:
             yield CommandError(status="stale", message=str(error))
+
+    async def command_control(
+        self, context: CommandContext, invocation: CommandInvocation
+    ) -> CommandOutcome:
+        """Apply persistent planning permissions or fork without submitting a turn."""
+        conversation = context.conversation
+        assert conversation is not None
+        argument = invocation.arguments.strip()
+        if invocation.command_id == "plan":
+            if argument not in {"", "on", "off"}:
+                return CommandError(status="unsupported", message="Use /plan [on|off].")
+            mode = "default" if argument == "off" else "plan"
+            await self.set_permission_mode(conversation, mode)
+            return CommandResult(
+                segments=[TextSegment(data={"text": f"Permission mode: {mode}."})]
+            )
+        if argument:
+            return CommandError(
+                status="unsupported", message="/fork takes no arguments."
+            )
+        if conversation.external_id is None:
+            return CommandError(
+                status="unavailable", message="Run this conversation before forking it."
+            )
+        profile = await self.users.profile(
+            context.address.channel_tentacle_id, context.address.user_id
+        )
+        channel = self.octomate.tentacles[context.address.channel_tentacle_id]
+        if profile is None or profile.user_id != context.user_id:
+            raise ValueError("The source conversation is no longer available.")
+        if not isinstance(channel, ChannelTentacle):
+            raise ValueError("Forking requires a channel that can open a thread.")
+        source_thread = await self.threads.get(
+            conversation.thread_id, with_messages=False
+        )
+        if source_thread is None:
+            raise FileNotFoundError("No conversation")
+        parent = replace(context.address, channel_thread_id=None)
+        if parent.chat_type == "thread" and not isinstance(
+            channel.config, TrunklineChannelConfig
+        ):
+            parent = replace(parent, chat_type="group")
+        destination = await channel.start_thread(
+            parent, f"Fork of {source_thread.title or 'conversation'}"
+        )
+        target = await self.fork(
+            conversation,
+            ThreadKey.from_address(destination),
+            sender=profile,
+            model=context.model,
+        )
+        return CommandResult(
+            segments=[
+                TextSegment(
+                    data={
+                        "text": f"Created {target.title} ({target.id}). Select the new thread to continue; this conversation is unchanged."
+                    }
+                )
+            ]
+        )
 
     async def discover_models(self) -> None:
         session_id = str(uuid7())

@@ -14,8 +14,6 @@ HOST_COMMANDS: dict[str, str] = {
     "model": "Use Octomate's agent/model picker when starting a conversation.",
     "effort": "Use /effort to save the conversation's reasoning effort.",
     "permissions": "Use Octomate's permission control to save the conversation's mode.",
-    "plan": "Use Octomate's permission control to select plan mode.",
-    "fork": "Forking requires an independent Octomate conversation and is not available as a command yet.",
     "resume": "Select the conversation in Octomate instead of changing its native session.",
 }
 
@@ -36,6 +34,26 @@ class ClaudeCommandDescriptor(CommandDescriptor, frozen=True):
     aliases: tuple[str, ...] = Field(
         default=(), description="Additional command names advertised by Claude."
     )
+
+
+CONTROL_COMMANDS: dict[str, ClaudeCommandDescriptor] = {
+    command.id: command
+    for command in (
+        ClaudeCommandDescriptor(
+            id="plan",
+            name="plan",
+            description="Enter plan mode, or return to default permissions.",
+            argument_hint="[on|off]",
+            accepts_attachments=False,
+        ),
+        ClaudeCommandDescriptor(
+            id="fork",
+            name="fork",
+            description="Copy this conversation into an independent thread.",
+            accepts_attachments=False,
+        ),
+    )
+}
 
 
 class ClaudeModelInfo(BaseModel):

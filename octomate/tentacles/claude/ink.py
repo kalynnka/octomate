@@ -1,14 +1,22 @@
 """Claude SDK client lifecycle, initialization and native message streaming."""
 
+import asyncio
 import contextlib
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable
+from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient, PermissionMode
+from claude_agent_sdk import (
+    ClaudeAgentOptions,
+    ClaudeSDKClient,
+    PermissionMode,
+    fork_session,
+)
 from claude_agent_sdk.types import Message
 
 from octomate.tentacles.claude.catalog import ClaudeCommandDescriptor, ClaudeServerInfo
+from octomate.tentacles.claude.transcript import relocate_session
 
 
 class ClaudeInk:
@@ -24,6 +32,26 @@ class ClaudeInk:
 
     def __init__(self) -> None:
         self.live_clients = weakref.WeakValueDictionary()
+
+    async def fork_session(
+        self, session_id: str, *, cwd: Path, source_cwd: Path | None = None
+    ) -> str:
+        """Fork with the SDK, then file the copy where the destination resumes it.
+
+        The SDK's directory argument selects the source, not the destination.
+        Native imports stage their source in the destination directory already.
+        """
+
+        def fork() -> str:
+            forked = fork_session(
+                session_id,
+                directory=str(source_cwd) if source_cwd is not None else None,
+            )
+            if source_cwd != cwd:
+                relocate_session(forked.session_id, cwd=cwd)
+            return forked.session_id
+
+        return await asyncio.to_thread(fork)
 
     async def inspect(self, options: ClaudeAgentOptions) -> ClaudeServerInfo:
         """Read a fresh initialization snapshot without submitting a prompt."""

@@ -50,7 +50,7 @@ The selected name is passed to Claude unchanged.
 
 The command catalog reads Claude's SDK initialization metadata without sending a
 prompt. It preserves command names, descriptions and argument hints; aliases are
-retained as Claude-specific metadata. Discovery requires an existing workspace
+retained as Claude-specific metadata. Native discovery requires an existing workspace
 and uses its model, permission mode, project directories and saved session ID.
 It does not create the workspace or persist an inspection session.
 
@@ -67,10 +67,11 @@ expose. See the [SDK command guide](https://code.claude.com/docs/en/agent-sdk/sl
 The SDK caches initialization metadata per client. The host caches the catalog
 until refresh, context changes, eviction or invalidation when a driven turn starts
 or the tentacle starts or stops. Refresh opens a new inspection client to obtain a
-new runtime snapshot. Missing command metadata reports unsupported; an empty
-command list is a successful empty catalog.
+new runtime snapshot. Missing command metadata is reported as a discovery
+limitation; missing or empty native command lists still leave Octomate's `/plan`
+and `/fork` controls available.
 
-Explicit execution sends the selected native command through SDK `query()` with
+Native execution sends the selected command through SDK `query()` with
 the raw argument text and the conversation's saved session. The execution client
 checks its own initialization metadata before submitting the command; a removed
 or changed entry requires a refresh and is never sent as an ordinary prompt.
@@ -86,16 +87,25 @@ once. Attachments are not supported.
 result. `/compact` leaves summarization to Claude. Neither command deletes or
 rewrites Octomate's recorded history.
 
-Only commands advertised by the connected SDK appear. Some need shared Octomate
-controls instead of a change confined to one SDK connection:
+`/plan` and `/fork` are Octomate controls, available even when the SDK does not
+advertise them. `/plan` or `/plan on` saves plan mode; `/plan off` saves Claude's
+default permission mode for subsequent runs. During a run, use the conversation's
+permission control to change the active client.
+`/fork` copies a driven conversation, its settings and workspace into a new thread.
+Select that thread to continue; the source stays unchanged. Forking requires a
+saved Claude session and starts no agent turn.
 
-| Command, when advertised | Handling |
+Other commands appear when the connected SDK advertises them:
+
+| Command | Handling |
 |---|---|
 | `/context`, `/compact`, `/clear` | Native execution; direct feedback is recorded without inventing a model run. `/clear` keeps Octomate's history and adopts Claude's new session ID. |
 | `/model` | Disabled; use the agent/model picker when starting a conversation. |
 | `/effort` | Native entry disabled; use the gateway `/effort` to save the selection. |
-| `/permissions`, `/plan` | Disabled; use the conversation's permission control, including its plan mode. |
-| `/fork`, `/resume` | Disabled; changing native sessions must preserve Octomate's conversation ownership. Select an existing conversation in Octomate to resume it. |
+| `/plan [on\|off]` | Octomate saves the permission mode without submitting a prompt. |
+| `/fork` | Octomate creates an independent thread and Claude session with the copied history. |
+| `/permissions` | Disabled; use the conversation's permission control. |
+| `/resume` | Disabled; select an existing conversation in Octomate. |
 | `/goal` | Omitted; automatic continuation is not integrated. |
 | Other advertised commands and skills | Native execution with their raw arguments; real agent activity uses the normal recorded stream. Safe mode still limits which skills appear. |
 

@@ -147,7 +147,7 @@ async def test_probe_uses_context_and_preserves_driven_settings_without_a_query(
     client.__aexit__.side_effect = leave
     catalog = await agent.discover_commands(context)
     assert catalog.status == "ready"
-    assert len(catalog.descriptors) == 3
+    assert len(catalog.descriptors) == 5
     assert catalog.limitations
     assert agent.driven_sessions == {}
     client.query.assert_not_called()
@@ -194,7 +194,8 @@ async def test_host_settings_are_disabled_only_when_advertised(
     }
     assert {
         name for name, entry in descriptors.items() if entry.unavailable_reason
-    } == {"model", "effort", "plan", "permissions", "fork", "resume"}
+    } == {"model", "effort", "permissions", "resume"}
+    assert descriptors["plan"].argument_hint == "[on|off]"
     assert descriptors["clear"].description == "Native clear"
     client.query.assert_not_called()
 
@@ -211,7 +212,9 @@ async def test_probe_never_prepares_a_missing_workspace(
     catalog = await agent.discover_commands(
         replace(context, cwd=missing if has_path else None)
     )
-    assert catalog.status == "unavailable"
+    assert catalog.status == "ready"
+    assert {entry.id for entry in catalog.descriptors} == {"plan", "fork"}
+    assert catalog.limitations
     assert not missing.exists()
     client.__aenter__.assert_not_called()
 
@@ -229,10 +232,12 @@ async def test_absent_empty_and_malformed_catalogs_are_distinct(
     else:
         payload["commands"] = [*commands]
     catalog = await agent.discover_commands(context)
-    assert catalog.status == (
-        "unsupported" if commands is None else "failed" if commands else "ready"
+    assert catalog.status == ("failed" if commands else "ready")
+    assert {entry.id for entry in catalog.descriptors} == (
+        set() if commands else {"plan", "fork"}
     )
-    assert not catalog.descriptors
+    if commands is None:
+        assert catalog.limitations
     client.__aexit__.assert_awaited_once()
 
 
@@ -247,15 +252,19 @@ async def test_refresh_and_workspace_change_initialize_again(
     payload["commands"] = [
         {"name": "changed", "description": "Changed", "argumentHint": "raw"}
     ]
-    assert len((await agent.discover_commands(context)).descriptors) == 3
+    assert len((await agent.discover_commands(context)).descriptors) == 5
     refreshed = await agent.discover_commands(context, refresh=True)
-    assert {command.name for command in refreshed.descriptors} == {"changed"}
+    assert {command.name for command in refreshed.descriptors} == {
+        "changed",
+        "plan",
+        "fork",
+    }
     other = tmp_path / "other"
     other.mkdir()
     payload["commands"] = []
     catalog = await agent.discover_commands(replace(context, cwd=other))
     assert catalog.status == "ready"
-    assert not catalog.descriptors
+    assert {entry.id for entry in catalog.descriptors} == {"plan", "fork"}
     assert client.__aenter__.await_count == 3
     assert client.__aexit__.await_count == 3
     client.query.assert_not_called()
