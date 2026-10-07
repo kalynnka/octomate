@@ -7,6 +7,8 @@
  * the adapters without touching the UI.
  */
 
+import type { ApiThread } from './events'
+
 export type ChannelId = string
 
 export interface ChannelMeta {
@@ -316,6 +318,8 @@ export interface VsCodeTarget {
 
 export interface ThreadDetail {
   key: string
+  /** Persisted thread kind; native sessions are observed rather than driven. */
+  kind?: ApiThread['kind']
   /** true when this detail was hydrated from the live trunkline API */
   live?: boolean
   /** owning channel tentacle id (live threads) */

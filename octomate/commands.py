@@ -180,15 +180,17 @@ async def command_context(
             raise HTTPException(
                 status_code=404, detail="Command conversation is unavailable"
             ) from error
-        if conversation.agent_tentacle_id != agent.id:
-            raise HTTPException(
-                status_code=422,
-                detail="Command conversation belongs to another agent",
-            )
         thread = await threads.get(conversation.thread_id, with_messages=False)
         if thread is None:
             raise HTTPException(
                 status_code=404, detail="Command conversation is unavailable"
+            )
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
+        if conversation.agent_tentacle_id != agent.id:
+            raise HTTPException(
+                status_code=422,
+                detail="Command conversation belongs to another agent",
             )
         surface = await threads.surface(thread)
         model = surface.active_model

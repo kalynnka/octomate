@@ -279,7 +279,8 @@ function PermissionChip() {
   const agent = ntOn ? ntAgent : session?.agent
   const postures = agent ? vocabularies?.[agent] : undefined
   const vocabulary = postures?.modes ?? []
-  const switchable = vocabulary.length > 0
+  const nativeReadOnly = !ntOn && detail?.kind === 'native_thread'
+  const switchable = !nativeReadOnly && vocabulary.length > 0
   const declared = ntOn ? ntPermissionMode : (session?.mode ?? null)
   const mode = declared ?? postures?.default ?? null
   if (mode === null) return null
@@ -316,7 +317,7 @@ function PermissionChip() {
             right: Math.max(16, Math.min(window.innerWidth - rect.right, window.innerWidth - 318)),
           })
         }}
-        title={selected?.description ?? 'Permission mode — ⇧⇥ to switch'}
+        title={nativeReadOnly ? 'Synced native sessions are read-only.' : selected?.description ?? 'Permission mode — ⇧⇥ to switch'}
         className={switchable ? 'hov-border' : undefined}
         style={{
           ...label(8, '.06em'),
@@ -446,6 +447,7 @@ export function Composer() {
   // The channel list is the connected tentacles only, so a native channel is not
   // in it; its display name is the same table the sidebar reads.
   const channel = channelMeta(selChannel)
+  const nativeReadOnly = !ntOn && detail?.kind === 'native_thread'
   const routeChip = `${channel.label.toLowerCase()}/${detail?.key ?? selThreadId}`
   const modelChip = ntOn ? `${ntAgent} · ${ntModel}[${ntEffort}]` : (lastSes?.route ?? '')
   const [sesAgent, sesModel] = (lastSes?.route ?? '').split(' · ')
@@ -510,7 +512,7 @@ export function Composer() {
   const [hidden, setHidden] = useState(false)
   // The agent's own commands answer on the surface the conversation is on, and
   // are only discovered once a line starts naming one.
-  const context = !ntOn && !channel.native && lastSes && operations?.source
+  const context = !ntOn && !nativeReadOnly && lastSes && operations?.source
     ? { agent_id: lastSes.agent, address: operations.source, conversation_id: lastSes.conversationId }
     : null
   const catalog = useCommandCatalog(composerText.startsWith('/') ? context : null)
@@ -522,7 +524,7 @@ export function Composer() {
   const agentName = lastSes?.agent ?? 'agent'
   const waiting = eligibility.isError ? eligibility.error.message : 'Checking available destinations…'
   const nativeNote = !lastSes ? null
-    : channel.native ? 'Native commands aren’t supported in synced sessions yet. Only gateway commands are available here.'
+    : nativeReadOnly ? 'Synced native sessions are read-only. Only gateway operations are available here.'
       : !context ? waiting
         : catalog.isError ? catalog.error.message
           : !catalog.data || catalog.data.status === 'loading' ? `discovering ${agentName} commands…`
@@ -536,11 +538,14 @@ export function Composer() {
   const closed: Partial<Record<GatewayOp, string>> = {
     summon: operations ? operations.summon.reason ?? undefined : waiting,
     teleport: operations ? operations.teleport.reason ?? undefined : waiting,
-    effort: !lastSes ? 'This thread has no conversation to set it on.'
+    effort: nativeReadOnly ? 'Synced native sessions are read-only.'
+      : !lastSes ? 'This thread has no conversation to set it on.'
       : !agents ? 'Reading the levels this route takes…'
         : !sessionRoute ? 'The runtime model is not available in the model catalog.'
           : sessionRoute.claim.efforts.length ? undefined : `${lastSes.route} takes no effort levels.`,
   }
+  const pickedCommand = line?.phase === 'name' ? line.matches[0]?.command : line?.command
+  const canSubmit = canSend && (!nativeReadOnly || Boolean(pickedCommand && !pickedCommand.native && !closed[pickedCommand.name]))
   const surfaces = channelRows(
     channels ?? [], operations?.teleport.destinations ?? [], selChannel,
     operations?.teleport.routes ?? {}, carrierless, operations?.barred ?? {},
@@ -661,6 +666,7 @@ export function Composer() {
 
   const placeholder = ntOn
     ? 'first directive — registers the thread on send'
+    : nativeReadOnly ? 'synced session · read-only · / for gateway operations'
     : isReview
       ? queue.length
         ? `add a directive — ${queue.length} note${queue.length > 1 ? 's' : ''} ride along`
@@ -838,7 +844,7 @@ export function Composer() {
                 rows={copy?.rows ?? 2}
                 maxLength={copy?.max}
                 placeholder={copy?.placeholder ?? placeholder}
-                submitMode={mode || line ? 'none' : 'enter'}
+                submitMode={mode || line || nativeReadOnly ? 'none' : 'enter'}
                 cancelOnEscape={false}
                 onChange={(event) => changeDraft(event.target.value)}
                 onKeyDown={(event) => {
@@ -1020,7 +1026,8 @@ export function Composer() {
             <button
               type="button"
               onClick={() => line ? runCommand() : aui.composer.send()}
-              disabled={!canSend}
+              disabled={!canSubmit}
+              title={nativeReadOnly && !canSubmit ? 'Synced native sessions are read-only. Use gateway operations to continue elsewhere.' : undefined}
               className="hov-panel"
               style={{
                 display: 'inline-flex',
@@ -1031,8 +1038,8 @@ export function Composer() {
                 border: '1px solid var(--color-accent)',
                 background: 'var(--color-accent)',
                 color: '#fff',
-                cursor: canSend ? 'pointer' : 'default',
-                opacity: canSend ? 1 : 0.55,
+                cursor: canSubmit ? 'pointer' : 'default',
+                opacity: canSubmit ? 1 : 0.55,
                 transition: 'background var(--motion-fast) linear, color var(--motion-fast) linear',
               }}
             >

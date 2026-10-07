@@ -417,6 +417,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const { agent } = activeRoute(thread)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
+    kind: thread.kind,
     live: true,
     channel: thread.channel_tentacle_id,
     project:
@@ -436,7 +437,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     // Directives only go to the console's own channel; anything else is a
     // read-only view of that channel's thread.
     sendKey:
-      thread.channel_tentacle_id === 'trunkline'
+      thread.kind !== 'native_thread' && thread.channel_tentacle_id === 'trunkline'
         ? (thread.channel_thread_id ?? undefined)
         : undefined,
     msgCount: messages.length,

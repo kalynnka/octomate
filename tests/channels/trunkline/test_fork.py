@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import UploadFile
+from pydantic_ai import DeferredToolRequests
+from pydantic_ai.messages import ToolCallPart
 
 from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
@@ -82,6 +84,98 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Th
     stored = await app.threads.get(landed.id)
     assert stored is not None
     return stored
+
+
+@pytest.mark.parametrize(
+    ("operation", "clear"),
+    [
+        ("permission-mode", False),
+        ("permission-mode", True),
+        ("effort", False),
+        ("effort", True),
+        ("catalog", False),
+        ("execute", False),
+    ],
+)
+async def test_native_session_rejects_direct_operations(
+    case: ForkCase,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    clear: bool,
+) -> None:
+    app = case.tentacle.octomate
+    kick = AsyncMock()
+    monkeypatch.setattr(app, "kick", kick)
+    await app.conversations.set_permission_mode(case.source, "auto_review")
+    await app.conversations.set_effort(case.source, "high")
+    if operation in {"catalog", "execute"}:
+        response = await client.post(
+            f"/api/commands/{operation}",
+            json={
+                "agent_id": case.tentacle.id,
+                "conversation_id": str(case.source.id),
+                "address": {
+                    "channel_tentacle_id": "trunkline",
+                    "chat_type": "thread",
+                    "chat_id": str(case.owner_id),
+                    "user_id": str(case.owner_id),
+                },
+                "command_id": "skill",
+                "delivery_id": "native-command",
+            },
+        )
+    else:
+        response = await client.patch(
+            f"/api/trunkline/conversations/{case.source.id}/{operation}",
+            json={operation.replace("-", "_"): None if clear else "unsupported"},
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Synced native sessions are read-only."
+    stored = await app.conversations.get(case.source.id)
+    assert stored.permission_mode == "auto_review"
+    assert stored.effort == "high"
+    assert [run.id for run in stored.runs] == [run.id for run in case.source.runs]
+    assert (
+        await app.threads.find_message(
+            case.source.thread_id, "native-command", "inbound"
+        )
+        is None
+    )
+    kick.assert_not_awaited()
+    case.fork.assert_not_awaited()
+
+
+async def test_native_session_cannot_resolve_a_deferred_batch(
+    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = case.tentacle.octomate
+    kick = AsyncMock()
+    monkeypatch.setattr(app, "kick", kick)
+    thread = await app.threads.get(case.source.thread_id)
+    assert thread is not None
+    address = thread.key.address(str(case.owner_id))
+    batch = await app.deferred_actions.create_batch(
+        conversation=case.source,
+        agent_tentacle_id=case.source.agent_tentacle_id,
+        run_name="native",
+        source_address=address,
+        target_address=address,
+        target_mode="main",
+        decision=None,
+        requests=DeferredToolRequests(
+            approvals=[ToolCallPart(tool_name="test", args={}, tool_call_id="call")]
+        ),
+        response_mode="resume",
+    )
+    response = await client.post(
+        f"/api/trunkline/batches/{batch.id}/resolve",
+        json={"approvals": {str(next(iter(batch.approvals)).id): True}},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Synced native sessions are read-only."
+    assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
+    kick.assert_not_awaited()
 
 
 async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(

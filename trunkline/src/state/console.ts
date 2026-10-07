@@ -877,6 +877,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     /* ---------------------------------------------------- feelers -------- */
     resolveApproval(uid: string, verdict: 'approved' | 'dismissed') {
+      if (get().detail?.kind === 'native_thread') return
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
@@ -899,6 +900,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }
     },
     answerAsk(uid: string, answers: AskAnswer[], via: string) {
+      if (get().detail?.kind === 'native_thread') return
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
@@ -1142,6 +1144,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         actions.sendNewThread(text)
         return
       }
+      if (s.detail?.kind === 'native_thread') return
       if (s.detail?.live) {
         const live = text.trim()
         if (!live) return
@@ -1320,6 +1323,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
      * rather than driven) cycles to nothing at all.
      */
     async cyclePermissionMode() {
+      if (!get().ntOn && get().detail?.kind === 'native_thread') return
       const vocabularies = await queryClient.fetchQuery({
         queryKey: ['permission-modes'],
         queryFn: api.permissionModes,
@@ -1342,6 +1346,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         set({ ntPermissionMode: mode })
         return
       }
+      if (s.detail?.kind === 'native_thread') return
       const session = s.detail?.sessions.at(-1)
       if (!session) return
       await api.setPermissionMode(session.conversationId, mode)
@@ -1367,7 +1372,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     async setEffort(effort: EffortStep | null) {
       const s = get()
       const session = s.detail?.sessions.at(-1)
-      if (s.running || !session) return
+      if (s.running || !session || s.detail?.kind === 'native_thread') return
       const stored = await api.setEffort(session.conversationId, effort).catch((err: unknown) => {
         actions.reportThreadError(s.selThreadId, `effort not set — ${err instanceof Error ? err.message : String(err)}`)
         return null
@@ -1393,7 +1398,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     },
     runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
       const s = get()
-      if (s.running) return
+      if (s.running || s.detail?.kind === 'native_thread') return
       set({ running: true, composer: '' })
       push({ kind: 'user', t: nowClock(), who: operator(), text: `/${command.name}${args && ` ${args}`}` } as LedgerItem)
       const body = {

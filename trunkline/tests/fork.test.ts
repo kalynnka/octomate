@@ -29,6 +29,13 @@ before(async () => {
 })
 after(async () => { await server?.close() })
 
+test('native thread kind keeps a synced session read-only regardless of its channel name', () => {
+  const native: ApiThread = { ...thread, kind: 'native_thread', channel_tentacle_id: 'trunkline', channel_thread_id: 'key' }
+  const detail = liveThreadDetail({ thread: native, conversations: [], messages: [], project: null, batches: [] })
+  assert.equal(detail.kind, 'native_thread')
+  assert.equal(detail.sendKey, undefined)
+})
+
 test('an imported session displays its conversation agent without a handoff', () => {
   const imported: ApiThread = {
     ...thread, channel_tentacle_id: 'trunkline', active_agent_tentacle_id: 'codex',

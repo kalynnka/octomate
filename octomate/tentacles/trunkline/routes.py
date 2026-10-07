@@ -533,7 +533,9 @@ def build_trunkline_router(
             conversation = await conversations.get(conversation_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        await accessible_thread(conversation.thread_id, threads, user)
+        thread = await accessible_thread(conversation.thread_id, threads, user)
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
         try:
             agent = octomate.agents.get(conversation.agent_tentacle_id)
             if agent is None:
@@ -572,6 +574,8 @@ def build_trunkline_router(
             raise HTTPException(status_code=404, detail=str(error)) from error
         thread = await accessible_thread(conversation.thread_id, threads, user)
         agent = octomate.agents.get(conversation.agent_tentacle_id)
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
         if agent is None:
             raise HTTPException(
                 status_code=422,
@@ -620,7 +624,9 @@ def build_trunkline_router(
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         conversation = await conversations.get(batch.conversation_id)
-        await accessible_thread(conversation.thread_id, threads, user)
+        thread = await accessible_thread(conversation.thread_id, threads, user)
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")

@@ -57,8 +57,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   provider's cache. Hand off explicitly instead.
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions.
-- **Answer approvals and questions**, for any channel's thread. A batch's
-  questions are one card with a page per question, sent together. A batch
+- **Answer approvals and questions**, for driven conversations on any channel.
+  A batch's questions are one card with a page per question, sent together. A batch
   already resolved is refused rather than resumed twice.
 - **Switch a conversation's permission mode** among the agent's modes.
 - **Set a conversation's reasoning effort** with `/effort`: a scale of the levels
@@ -79,9 +79,10 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   gateway's commands come first — `/summon <agent> [--model <model>] [--effort <effort>]`, `/teleport [destination]`,
   `/effort [level]` and `/new` — then the commands the thread's agent offers in
   its own runtime, looked up the first time you type `/` in that conversation.
-  Synced native sessions support gateway commands only; their native commands
-  are not available in Trunkline yet. Type to narrow the suggestions; moving the
-  pointer over them does not change the selection. Arrow keys move the text
+  Synced native sessions are read-only: messages, native commands, permission
+  and effort changes, and approval answers are unavailable. Use an available
+  gateway operation such as Teleport to continue elsewhere. Type to narrow the
+  suggestions; moving the pointer over them does not change the selection. Arrow keys move the text
   cursor. Tab completes, Enter selects or runs, and Esc dismisses the finder.
   Accepting a partial name completes it: `/te` becomes `/teleport` when its menu opens.
   Deleting the leading `/` returns to ordinary input. `/summon` lists the

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url'
 import { createElement, useState } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { createServer, type ViteDevServer } from 'vite'
 import type { ApiAgentInfo, ApiAgentRoute, ApiCommandDescriptor, ApiThread, ChannelAddress, CommandStreamEvent, GatewayEvent, GatewayRequest, OperationAvailability, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
 
@@ -19,6 +20,8 @@ let ChatHeader: typeof import('../src/features/chat/ChatHeader.tsx').ChatHeader
 let SummonRoute: typeof import('../src/features/chat/GatewayRoute.tsx').SummonRoute
 let DestinationPicker: typeof import('../src/features/chat/GatewayDestination.tsx').DestinationPicker
 let CommandPanel: typeof import('../src/features/chat/CommandPanel.tsx').CommandPanel
+let Composer: typeof import('../src/features/chat/Composer.tsx').Composer
+let useTrunklineRuntime: typeof import('../src/features/chat/runtime.tsx').useTrunklineRuntime
 const globals = ['document', 'requestAnimationFrame'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const destination: ApiThread = {
   id: 'destination-id', kind: 'thread', chat_type: 'thread', chat_id: 'account',
@@ -59,11 +62,13 @@ before(async () => {
   ;({ SummonRoute } = await server.ssrLoadModule('/src/features/chat/GatewayRoute.tsx'))
   ;({ DestinationPicker } = await server.ssrLoadModule('/src/features/chat/GatewayDestination.tsx'))
   ;({ CommandPanel } = await server.ssrLoadModule('/src/features/chat/CommandPanel.tsx'))
+  ;({ Composer } = await server.ssrLoadModule('/src/features/chat/Composer.tsx'))
+  ;({ useTrunklineRuntime } = await server.ssrLoadModule('/src/features/chat/runtime.tsx'))
 })
 beforeEach(() => {
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
-  useConsole.setState({ selThreadId: 'source', ntOn: false, running: false, gatewayPending: null, gatewayMode: null, live: [], notices: [] })
+  useConsole.setState({ selThreadId: 'source', detail: null, ntOn: false, running: false, gatewayPending: null, gatewayMode: null, live: [], notices: [] })
 })
 afterEach(() => {
   mock.restoreAll()
@@ -595,6 +600,62 @@ const session = {
   n: 'S1', id: 'SES-0001', conversationId: 'conversation-id', route: 'claude · sonnet', agent: 'claude', model: 'sonnet',
   effort: null, mode: null, kind: 'entry' as const, t: '', reason: '', status: 'active', tone: 'accent' as const,
 }
+
+test('synced native sessions do not send, execute commands, or change settings', async () => {
+  const fetch = mock.method(globalThis, 'fetch', async () => { throw new Error('native session must stay read-only') })
+  useConsole.setState({ detail: {
+    key: 'source', kind: 'native_thread', live: true, sendKey: 'stale-key',
+    msgCount: 0, sessions: [session], ledger: [], ctxK: 0,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null },
+  }, composer: 'keep my draft' })
+  const actions = useConsole.getState().actions
+  actions.sendDirective('do not send')
+  actions.runCommand({ agent_id: 'claude', address: here, conversation_id: session.conversationId }, cost, '')
+  await actions.setEffort('high')
+  await actions.setPermissionMode('bypassPermissions')
+  await actions.cyclePermissionMode()
+  assert.equal(fetch.mock.callCount(), 0)
+  assert.equal(useConsole.getState().running, false)
+  assert.equal(useConsole.getState().composer, 'keep my draft')
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.deepEqual(useConsole.getState().detail?.sessions, [session])
+})
+
+for (const [text, disabled] of [['A message', true], ['/effort high', true], ['/teleport', false]] as const) {
+  test(`the native composer ${disabled ? 'blocks' : 'allows'} ${text}`, () => {
+    useConsole.getInitialState().selThreadId = 'source'
+    useConsole.getInitialState().detail = {
+      key: 'source', kind: 'native_thread', live: true,
+      msgCount: 0, sessions: [session], ledger: [], ctxK: 0,
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null },
+    }
+    queryClient.setQueryData(['permission-modes'], { claude: {
+      modes: [{ value: 'default', name: 'Ask', description: 'Ask for approval' }], default: 'default',
+    } })
+    queryClient.setQueryData(['thread-operations', 'source'], { ...options, teleport: inPlace })
+    function NativeComposer() {
+      const runtime = useTrunklineRuntime()
+      runtime.thread.composer.setText(text)
+      return createElement(AssistantRuntimeProvider, { runtime }, createElement(Composer))
+    }
+    const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(NativeComposer)))
+    assert.match(html, /placeholder="synced session · read-only · \/ for gateway operations"/)
+    assert.match(html, /<button[^>]*disabled=""[^>]*aria-label="Permission mode"/)
+    assert.equal(/<button[^>]*disabled=""[^>]*>Send ↵<\/button>/.test(html), disabled)
+  })
+}
+
+test('a synced native session can still use an eligible gateway operation', async () => {
+  useConsole.setState({ detail: {
+    key: 'source', kind: 'native_thread', live: true,
+    msgCount: 0, sessions: [session], ledger: [], ctxK: 0,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null },
+  } })
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(gateway, result) : Response.json([destination]))
+  const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+  await useConsole.getState().actions.gateway('source', request)
+  assert.deepEqual(select.mock.calls[0].arguments, ['lark', 'destination-id'])
+})
 
 test('an agent\'s own command streams its feedback into the ledger and ends on its outcome', async () => {
   const reply: CommandStreamEvent = { event_kind: 'message_sent', segments: [{ type: 'text', data: { text: 'session $1.84' } }] }
