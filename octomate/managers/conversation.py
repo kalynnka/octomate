@@ -307,8 +307,9 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         flight, which sees the prompt and the answer but nothing of the thinking and
         tool calls between them. It exists so a live turn is a whole
         conversation → run → messages chain rather than messages with nowhere to hang.
-        Recording over it replaces it wholesale, the transcript's full timeline
-        superseding the sketch once the turn closes.
+        Recording over it replaces its contents in place, the transcript's full
+        timeline superseding the sketch once the turn closes: the run keeps its row,
+        and with it every history that includes it.
         """
         if not messages:
             return None
@@ -317,22 +318,6 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         )
         if driven is not None:
             return None
-        async with async_session() as session:
-            stored = await session.one_or_none(
-                AgentRun, expressions=[AgentRun["id"] == run_id]
-            )
-            if stored is not None:
-                if (
-                    not isinstance(stored, ExternalAgentRun)
-                    or stored.end_offset is not None
-                ):
-                    return None
-                # Drop the provisional run whole — its messages cascade with it — rather
-                # than reconciling two message collections: the replacement is
-                # authoritative, and `model_messages.run_id` is NOT NULL, so leaving the
-                # sketch's rows to be orphaned would fail instead of deleting them.
-                await session.delete(stored)
-                await session.commit()
         run = ExternalAgentRun(
             id=run_id,
             conversation_id=conversation.id,
@@ -352,6 +337,34 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             end_offset=end_offset,
             last_line_uuid=last_line_uuid,
         )
+        async with async_session() as session:
+            stored = await session.one_or_none(
+                AgentRun, expressions=[AgentRun["id"] == run_id]
+            )
+            if stored is not None:
+                if (
+                    not isinstance(stored, ExternalAgentRun)
+                    or stored.end_offset is not None
+                ):
+                    return None
+                # `model_messages.run_id` is NOT NULL, so the sketch's messages are
+                # deleted rather than left behind by the merged collection.
+                sketch = list(stored.messages)
+                run = await session.merge(run)
+                for message in sketch:
+                    await session.delete(message)
+                owner = await session.get(
+                    Conversation,
+                    conversation.id,
+                    options=[
+                        noload(Conversation["runs"]),
+                        noload(Conversation["messages"]),
+                    ],
+                )
+                if owner is not None:
+                    owner.external_id = native_session_id
+                await session.commit()
+                return run
         return await self.persist_run(
             run, conversation_id=conversation.id, external_id=native_session_id
         )
