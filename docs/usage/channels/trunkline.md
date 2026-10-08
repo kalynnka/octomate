@@ -80,6 +80,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   to the first available action. Disabled choices show their reason. Teleport
   and Summon expand the composer instead of opening a dialog: the button, ×
   or Esc returns to chat with your draft kept, and ⌘↵ submits.
+  Choosing a complete Teleport destination moves the conversation immediately.
+  Enter any optional prompt before choosing the destination.
   Typing `/` in a new or existing thread's composer opens a command finder. The
   prompt arrow points up while the finder, Teleport or Summon is expanded. The
   gateway offers `/summon <agent> [--model <model>] [--effort <effort>]`, `/teleport [destination]`,
@@ -105,8 +107,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Deleting the leading `/` returns to ordinary input. `/summon` lists the
   agents Summon offers, with the model and effort to hand over, and opens the
   Summon composer on the one you pick. `/teleport` lists the connected
-  channels and opens Teleport on the one you pick, or on the destination
-  browser when you pick none. `/new` opens the composer for a new thread.
+  channels and teleports when you pick a complete destination, or opens the
+  destination browser when more choices are needed. `/new` opens the composer for a new thread.
   Submitting `/teleport trunkline` moves directly to a new Trunkline thread.
   A destination that still needs a server or channel choice opens its menu instead.
   Codex's `/model` and `/project` open the same model and project pickers as the
@@ -114,11 +116,11 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   that conversation unchanged. `/task` opens a projectless composer; `/worktree`
   opens the project picker for a new conversation with its own workspace.
   These controls take no arguments and create nothing until the first prompt.
-  Clicking a Teleport or Summon option opens the same form as the header button,
-  keeping the chosen agent, model, effort or destination.
+  Clicking a Summon option opens the same form as the header button,
+  keeping the chosen agent, model and effort.
   If the command still needs an agent or destination, its menu opens and the
-  command stays in the input until you choose one. Then enter the brief or
-  optional prompt. A destination that cannot be used shows the same reason in
+  command stays in the input until you choose one. For Summon, then enter the
+  brief. A destination that cannot be used shows the same reason in
   the finder and its menu.
   The form keeps these choices when closed and reopened on the same thread.
   The agent/model picker expands above the input. Its model list scrolls,
@@ -230,7 +232,9 @@ timeline on the right that groups each conversation's messages under the turns
 that drew them, each group folding on its own, a control rail for agents, MCP, profile,
 keys and settings, and a review panel for a workspace's changes. On desktop, hover
 over the channel rail to replace its initials with channel names and thread counts;
-moving away restores the initials. Teleport continuation notices use information blue.
+moving away restores the initials. Teleport continuation notices use information
+blue for the first line and gray for details, without trailing horizontal rules.
+Each paragraph has one bullet; wrapped lines stay within it.
 Ordinary chat runs stream over server-sent events; a browser that disconnects mid-run only stops
 watching, and the run finishes and records regardless.
 

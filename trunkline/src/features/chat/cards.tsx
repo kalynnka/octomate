@@ -1128,10 +1128,9 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
       )
     case 'system':
       return (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <i style={{ width: 6, height: 6, borderRadius: 9999, background: 'var(--info)', flexShrink: 0 }} />
-          <CapsLabel style={{ color: 'var(--info-strong)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minWidth: 0 }}>{item.text}</CapsLabel>
-          <span style={{ flex: 1, borderTop: '1px solid var(--info-border)' }} />
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 10 }}>
+          <i style={{ width: 6, height: 6, borderRadius: 9999, background: item.tone === 'info' ? 'var(--info)' : 'var(--fg-3)', flexShrink: 0 }} />
+          <CapsLabel style={{ color: item.tone === 'info' ? 'var(--info-strong)' : 'var(--fg-3)', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', minWidth: 0 }}>{item.text}</CapsLabel>
         </div>
       )
     case 'session-open':

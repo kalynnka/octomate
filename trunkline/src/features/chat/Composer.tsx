@@ -20,7 +20,7 @@ const GATEWAY_MODES = {
     title: 'Teleport',
     description: 'carry this chat to another destination with the same agent and history',
     placeholder: 'optional prompt — sent there as your next message…',
-    hint: '⌘↵ teleport · esc back to chat',
+    hint: 'pick a destination to teleport · esc back to chat',
     field: 'Prompt',
     icon: 'arrowRightLeft',
     rows: 2,
@@ -672,7 +672,7 @@ export function Composer() {
     }
     if (command.name === 'teleport') {
       const surface = surfaces.find((row) => surfaceValue(row) === values.destination)
-      if (surface?.address && index === undefined) {
+      if (surface?.address) {
         const request = gatewayRequest('teleport', {
           text: '', destination: { address: surface.address, path: [surface.label] }, route: undefined, effort: 'auto',
         })
@@ -1045,6 +1045,14 @@ export function Composer() {
                     onSelect={(destination) => {
                       patchForm({ destination, menu: null })
                       if (commandInput) aui.composer.setText('')
+                      const text = commandInput ? '' : composerText
+                      const request = gatewayRequest('teleport', { text, destination, route, effort })
+                      if (!running && !availability.reason && request
+                        && (!text.trim() || destination.address.channel_tentacle_id === 'trunkline')) {
+                        aui.composer.setText('')
+                        void gateway(selThreadId, request)
+                        return
+                      }
                       draftInput.current?.focus()
                     }}
                   />

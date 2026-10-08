@@ -43,7 +43,7 @@ test('an imported session displays its conversation agent without a handoff', ()
   assert.equal(liveThreadSummary(imported).agentLabel, 'codex')
 })
 
-test('an import notice of several lines reads as a system row per line', () => {
+test('an import notice keeps the address label and value in one system paragraph', () => {
   const notice: ApiThreadMessage = {
     kind: 'message', id: 'notice', thread_id: thread.id, platform_message_id: null,
     happened_at: '2026-09-29T00:00:00Z', direction: 'inbound', actor_kind: 'system',
@@ -53,8 +53,7 @@ test('an import notice of several lines reads as a system row per line', () => {
   const detail = liveThreadDetail({ thread, conversations: [], messages: [notice], project: null, batches: [] })
   assert.deepEqual(detail.ledger.flatMap((item) => (item.kind === 'system' ? [item.text] : [])), [
     'Forked from conversation native-session.',
-    'Current channel address:',
-    'trunkline/thread/owner/landed/owner.',
+    'Current channel address:\ntrunkline/thread/owner/landed/owner.',
   ])
 })
 

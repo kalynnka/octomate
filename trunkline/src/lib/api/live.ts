@@ -294,9 +294,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         },
       })
     } else if (message.actor_kind === 'system') {
-      // A system row is one line wide, so a notice of several lines is several rows.
-      for (const line of text.split('\n')) {
-        if (line.trim()) dated.push({ at, item: { kind: 'system', text: line.trim() } })
+      // Each paragraph gets one bullet; line breaks within it stay together.
+      for (const [index, paragraph] of text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).entries()) {
+        dated.push({ at, item: { kind: 'system', text: paragraph, tone: index === 0 ? 'info' : undefined } })
       }
     } else {
       dated.push({

@@ -145,7 +145,7 @@ export interface AskQuestion {
 
 export type LedgerItem =
   | { kind: 'divider'; uid: string; label: string }
-  | { kind: 'system'; uid: string; text: string }
+  | { kind: 'system'; uid: string; text: string; tone?: 'info' }
   | {
       kind: 'session-open'
       uid: string
