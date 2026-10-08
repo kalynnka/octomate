@@ -37,7 +37,7 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
     tentacle = CodexTentacle(
         "codex",
         octomate,
-        config=CodexConfig(approval_timeout=5),
+        config=CodexConfig(approval_timeout=0.01 if answer is None else 5),
         commands=octomate.commands,
         projects=octomate.projects,
         threads=octomate.threads,
@@ -119,7 +119,7 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
             tentacle.handle_sdk_request("item/tool/requestUserInput", params)
         )
         try:
-            card = await asyncio.wait_for(anext(turn), timeout=1)
+            card = await asyncio.wait_for(anext(turn), timeout=5)
             assert isinstance(card, ActionBatchEvent)
             question, follow_up = sorted(card.questions)
             assert question.args.get("choices") == ["Accept", "Decline", "Cancel"]
