@@ -120,7 +120,7 @@ class ThreadCall:
     sandbox: Sandbox | None
 
 
-def driven_headers(call: ThreadCall) -> dict[str, str]:
+def driven_headers(call: ThreadCall | ThreadStartParams) -> dict[str, str]:
     assert call.config is not None
     servers = call.config["mcp_servers"]
     assert isinstance(servers, dict)
@@ -2164,11 +2164,13 @@ async def a_kicker() -> UserProfile:
 
 @pytest.mark.parametrize("same_user", [False, True])
 @pytest.mark.parametrize("disconnect", [False, True])
+@pytest.mark.parametrize("start_first", [0, 1])
 async def test_shared_client_reuses_keys_per_user(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
     same_user: bool,
     disconnect: bool,
+    start_first: int,
 ) -> None:
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
@@ -2213,8 +2215,21 @@ async def test_shared_client_reuses_keys_per_user(
                 ),
             )
         )
+    first_started = list(principals)[start_first]
+    started = asyncio.Event()
+    runtime = tentacle.ink.client
+    assert isinstance(runtime, FakeCodex)
+
+    async def ordered_start(params: ThreadStartParams) -> SimpleNamespace:
+        if driven_headers(params)["X-Octomate-Conversation"] != first_started:
+            await asyncio.wait_for(started.wait(), 5)
+        result = await FakeCodex.thread_start(runtime, params)
+        started.set()
+        return result
+
+    monkeypatch.setattr(runtime._client, "thread_start", ordered_start)
     assert octomate.auth is not None
-    tokens: list[SecretStr] = []
+    tokens: dict[str, SecretStr] = {}
     async with tentacle:
         await asyncio.gather(
             *(
@@ -2223,18 +2238,25 @@ async def test_shared_client_reuses_keys_per_user(
             )
         )
         assert FakeCodex.builds == 1
+        assert (
+            driven_headers(FakeCodex.thread_calls[0])["X-Octomate-Conversation"]
+            == first_started
+        )
         for call in FakeCodex.thread_calls:
             headers = driven_headers(call)
+            conversation_id = headers["X-Octomate-Conversation"]
             token = SecretStr(headers["Authorization"].removeprefix("Bearer "))
-            tokens.append(token)
+            tokens[conversation_id] = token
             key = await octomate.auth.authenticate_api_key(token, scope="mcp")
             assert key is not None
-            assert key.user_id == principals[headers["X-Octomate-Conversation"]]
-        assert (tokens[0] == tokens[1]) is same_user
+            assert key.user_id == principals[conversation_id]
+        assert len(tokens) == 2
+        assert len(set(tokens.values())) == (1 if same_user else 2)
         assert len(tentacle.api_keys) == (1 if same_user else 2)
         assert len(await octomate.auth.list_api_keys(alice.id)) == 1
 
         first = await conversations.ensure(thread_ids[0], agent_tentacle_id="codex")
+        first_token = tokens[str(first.id)]
         assert first.external_id is not None
         FakeCodex.loaded_threads.remove(first.external_id)
         client = tentacle.ink.client
@@ -2248,11 +2270,12 @@ async def test_shared_client_reuses_keys_per_user(
         assert first.external_id not in tentacle.ink.thread_bindings
         assert len(tentacle.ink.thread_bindings) == 1
         assert (
-            await octomate.auth.authenticate_api_key(tokens[0], scope="mcp") is not None
+            await octomate.auth.authenticate_api_key(first_token, scope="mcp")
+            is not None
         )
         await tentacle.run("again", conversation_address=KEY, thread_id=thread_ids[0])
         assert driven_headers(FakeCodex.thread_calls[-1])["Authorization"] == (
-            f"Bearer {tokens[0].get_secret_value()}"
+            f"Bearer {first_token.get_secret_value()}"
         )
         if disconnect:
             client = tentacle.ink.client
@@ -2264,10 +2287,10 @@ async def test_shared_client_reuses_keys_per_user(
             assert not tentacle.ink.thread_bindings
             assert len(tentacle.api_keys) == (1 if same_user else 2)
             assert (
-                await octomate.auth.authenticate_api_key(tokens[0], scope="mcp")
+                await octomate.auth.authenticate_api_key(first_token, scope="mcp")
                 is not None
             )
-    for token in tokens:
+    for token in tokens.values():
         assert await octomate.auth.authenticate_api_key(token, scope="mcp") is None
     assert not tentacle.api_keys
     assert not tentacle.ink.thread_bindings
