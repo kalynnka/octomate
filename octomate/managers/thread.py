@@ -466,16 +466,21 @@ class ThreadManager(Manager, Locks[ThreadKey]):
     async def record_command_outcome(
         self, receipt_id: uuid.UUID, outcome: CommandOutcome
     ) -> None:
-        """Persist an outcome without mutating a caller's receipt snapshot."""
+        """Persist an outcome without mutating a caller's receipt snapshot. Under the
+        thread's lock, only the outcome and the thread's `updated_at` are written."""
         async with async_session() as session:
-            receipt = await session.get(ThreadCommand, receipt_id)
+            receipt = await session.get(
+                ThreadCommand, receipt_id, options=[noload("*")]
+            )
             if receipt is None:
                 raise ValueError(f"command receipt {receipt_id} does not exist")
-            receipt.outcome = outcome
-            thread = await session.get(Thread, receipt.thread_id)
-            if thread is not None:
+            thread = await session.get(Thread, receipt.thread_id, options=[noload("*")])
+            if thread is None:
+                raise ValueError(f"unknown thread {receipt.thread_id}")
+            async with self.lock(thread.key):
+                receipt.outcome = outcome
                 thread.updated_at = datetime.now(UTC)
-            await session.commit()
+                await session.commit()
 
     async def record_inbound(
         self,
@@ -614,18 +619,23 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         """Overrule a ledger row's clock after the fact: a transcript replay knows
         when a message really happened, while a row the live hooks wrote was stamped
         at receipt — a beat later than the transcript line, which is enough to sort a
-        run's work above the prompt that caused it."""
+        run's work above the prompt that caused it. Under the thread's lock, only the
+        row's `happened_at` is written."""
         if message.happened_at == happened_at:
             return message
-        message.happened_at = happened_at
         async with async_session() as session:
-            stored = await session.one_or_none(
-                ThreadMessage, expressions=[ThreadMessage["id"] == message.id]
-            )
-            if stored is None:
-                raise ValueError(f"thread message {message.id} does not exist")
-            stored.happened_at = happened_at
-            await session.commit()
+            thread = await session.get(Thread, message.thread_id, options=[noload("*")])
+            if thread is None:
+                raise ValueError(f"unknown thread {message.thread_id}")
+            async with self.lock(thread.key):
+                stored = await session.get(
+                    ThreadMessage, message.id, options=[noload("*")]
+                )
+                if stored is None:
+                    raise ValueError(f"thread message {message.id} does not exist")
+                stored.happened_at = happened_at
+                await session.commit()
+        message.happened_at = happened_at
         return message
 
     async def pending_prompt_messages(
