@@ -373,8 +373,8 @@ class MyAgentTentacle(AgentTentacle[str, None]):
     """Drives My Runtime, one process per conversation."""
 
     brand_color: ClassVar[Style | None] = Style(color="#abcdef", bold=True)
-    native_id: ClassVar[str | None] = None      # set when it serves a hook router
-    in_process: ClassVar[bool] = False          # true if a live run parks on a human answer
+    native_id: ClassVar[str | None] = None  # set when it serves a hook router
+    in_process: ClassVar[bool] = False  # true if a live run parks on a human answer
     description: str = "What this agent is for, shown to summoning agents."
 
     def __init__(self, id: str, octomate: Octomate, *, config: MyAgentConfig) -> None:
@@ -384,16 +384,18 @@ class MyAgentTentacle(AgentTentacle[str, None]):
         self.permission_modes = (PermissionMode(value="ask", name="Ask"), ...)
 
     async def discover_models(self) -> None:
-        models, claims = await self.probe_catalog()   # keyed provider:model
+        models, claims = await self.probe_catalog()  # keyed provider:model
         self.set_model_catalog(models, claims)
 
     async def __aenter__(self) -> Self:
         await self.discover_models()
-        return await super().__aenter__()        # builds the routes
+        return await super().__aenter__()  # builds the routes
 
     async def run(self, user_prompt=None, *, conversation_address, **kwargs):
         result = None
-        async with self.run_stream_events(user_prompt, conversation_address=conversation_address, **kwargs) as events:
+        async with self.run_stream_events(
+            user_prompt, conversation_address=conversation_address, **kwargs
+        ) as events:
             async for event in events:
                 if isinstance(event, AgentRunResultEvent):
                     result = event.result
@@ -402,7 +404,11 @@ class MyAgentTentacle(AgentTentacle[str, None]):
         return result
 
     def run_stream_events(self, user_prompt=None, *, conversation_address, **kwargs):
-        return ReactEventStream(self.iter_events(user_prompt, conversation_address=conversation_address, **kwargs))
+        return ReactEventStream(
+            self.iter_events(
+                user_prompt, conversation_address=conversation_address, **kwargs
+            )
+        )
 ```
 
 `iter_events` is where the runtime is driven. The pattern the harness tentacles

@@ -28,12 +28,16 @@ class MyServiceTentacle(OAuthMcpTentacle):
 
     def __init__(self, id: str, octomate: Octomate, *, config: MyServiceConfig) -> None:
         super().__init__(id=id, octomate=octomate)
-        octomate.oauth.register(OAuthConnector(
-            id=id,
-            mcp_url=self.upstream,
-            flows=[AuthorizationCodeFlow(...)],
-            callback_transport=DirectHttpOAuthCallbackTransport(config.callback_base_uri),
-        ))
+        octomate.oauth.register(
+            OAuthConnector(
+                id=id,
+                mcp_url=self.upstream,
+                flows=[AuthorizationCodeFlow(...)],
+                callback_transport=DirectHttpOAuthCallbackTransport(
+                    config.callback_base_uri
+                ),
+            )
+        )
 
     @property
     def serving(self) -> bool:

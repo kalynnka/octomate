@@ -43,13 +43,13 @@ class MyChromo(Chromo[MyRawEvent, MyOutboundMessage]):
     async def sip(self, raw: MyRawEvent) -> MessageEvent | None:
         return MessageEvent(
             message_id=raw.id,
-            channel_thread_id=raw.thread_id,      # the platform's thread id, or None
+            channel_thread_id=raw.thread_id,  # the platform's thread id, or None
             reply_id="",
             timestamp=raw.timestamp,
             user_id=raw.author_id,
             chat_id=raw.room_id,
             chat_type="thread" if raw.thread_id else "group",
-            shared=True,                          # can anyone besides the sender read this?
+            shared=True,  # can anyone besides the sender read this?
             segments=[TextSegment(data={"text": raw.body})],
             raw=raw.model_dump_json(),
         )
@@ -77,13 +77,21 @@ An `Ink[MessageT]` holds the platform client and does the I/O:
 
 ```python
 class MyInk(Ink[MyOutboundMessage]):
-    async def inspect(self) -> UserProfile: ...                 # the bot itself
+    async def inspect(self) -> UserProfile: ...  # the bot itself
     async def get_user_profile(self, user_id: str) -> UserProfile: ...
     async def upload_media(self, data: bytes) -> str | None: ...
-    async def download_image(self, seg: ImageSegment, message_id: str) -> DownloadedImage | None: ...
+    async def download_image(
+        self, seg: ImageSegment, message_id: str
+    ) -> DownloadedImage | None: ...
     async def send_message(
-        self, chat_id: str, chat_type: str, messages: list[MyOutboundMessage], *,
-        channel_thread_id: str, reply_to: str | None = None, reply_in_thread: bool = False,
+        self,
+        chat_id: str,
+        chat_type: str,
+        messages: list[MyOutboundMessage],
+        *,
+        channel_thread_id: str,
+        reply_to: str | None = None,
+        reply_in_thread: bool = False,
     ) -> IMMessageID | None: ...
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None: ...
 ```
@@ -103,19 +111,25 @@ class MyTentacle(ChannelTentacle[MyRawEvent, MyOutboundMessage]):
 
     brand_color: ClassVar[Style | None] = Style(color="#123456", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
-    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(sub_thread=True, direct_message=True)
+    surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
+        sub_thread=True, direct_message=True
+    )
 
     def __init__(self, id: str, octomate: Octomate, *, config: MyChannelConfig) -> None:
         self.ink = MyInk(config.bot_token)
         self.chromo = MyChromo()
-        super().__init__(id=id, octomate=octomate, ink=self.ink, chromo=self.chromo, config=config)
+        super().__init__(
+            id=id, octomate=octomate, ink=self.ink, chromo=self.chromo, config=config
+        )
 
     async def __aenter__(self) -> Self:
-        await super().__aenter__()        # enters the ink and resolves the bot's profile
+        await super().__aenter__()  # enters the ink and resolves the bot's profile
         # open the event socket; every inbound payload goes to self.ingest(raw)
         return self
 
-    async def start_sub_thread(self, address: ChannelAddress, hint_text: str) -> ChannelAddress:
+    async def start_sub_thread(
+        self, address: ChannelAddress, hint_text: str
+    ) -> ChannelAddress:
         # post hint_text, open a thread under it, return the thread's address
         ...
 ```
