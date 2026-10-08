@@ -384,8 +384,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 ],
             )
             if reloaded is not None:
-                # Arcanus's union collection treats a single model as an iterable.
-                reloaded.runs.extend([run])
+                reloaded.runs.append(run)
                 reloaded.external_id = external_id
             await session.commit()
         return run

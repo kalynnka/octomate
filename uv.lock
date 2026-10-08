@@ -222,14 +222,14 @@ wheels = [
 
 [[package]]
 name = "arcanus"
-version = "0.0.27"
+version = "0.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e3/1b/c8f49ca0484aabeb6bffe55e7fe3c9f7991af95434f10641d97549bc8cb6/arcanus-0.0.27.tar.gz", hash = "sha256:497ea71c88cb7d8bc30fc6af458a303954d0369ffaa0b70e56f26b369b8a534d", size = 347526, upload-time = "2026-08-31T13:27:52.612Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/47/35/5feabfd00e1de680c135cdc2fef4e1f836e59d8c4044689afaf177c1dcf5/arcanus-0.1.2.tar.gz", hash = "sha256:9283210164a1c36e4e85d36b895b2528e6d0e21441c0643be17343d2f248f396", size = 352198, upload-time = "2026-10-08T12:27:34.028Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/d4/f389d57f55d4d39c421dbea1871475e3c280311079c5c6ed43583ec52e0a/arcanus-0.0.27-py3-none-any.whl", hash = "sha256:60e07f56fca00be2d9b5eac90afa12b669899e33c84d24a77f87d8f6a0fbba73", size = 66385, upload-time = "2026-08-31T13:27:51.066Z" },
+    { url = "https://files.pythonhosted.org/packages/45/6f/c5364162e6c6bdd27798896e2abb26fe0d65c23a04a8fd739d03e8d3756b/arcanus-0.1.2-py3-none-any.whl", hash = "sha256:99564f04acf4974de4f44a96d8f8acec3a373ad05b939022d527e3e9f8715ad6", size = 67070, upload-time = "2026-10-08T12:27:32.537Z" },
 ]
 
 [[package]]
@@ -2026,7 +2026,7 @@ requires-dist = [
     { name = "aiosqlite", specifier = ">=0.22.1" },
     { name = "alembic", specifier = ">=1.15" },
     { name = "anyio", specifier = ">=4" },
-    { name = "arcanus", specifier = ">=0.0.27" },
+    { name = "arcanus", specifier = ">=0.1.2" },
     { name = "argon2-cffi", specifier = ">=25.1.0" },
     { name = "cachetools", specifier = ">=7.1.1,<8" },
     { name = "claude-agent-sdk", specifier = ">=0.2.163" },

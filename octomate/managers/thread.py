@@ -7,9 +7,9 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus.expression import Expression
-from arcanus.materia.sqlalchemy import noload, selectinload
+from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
-from sqlalchemy import ColumnElement, and_, inspect, or_, select
+from sqlalchemy import ColumnElement, and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
@@ -106,17 +106,17 @@ def in_history_of(senders: list[UUID7]) -> ColumnElement[bool]:
     """The messages in a person's history: everything shown by a thread that shows
     something one of `senders` said."""
     # Aliased, so the rows said here never correlate with the rows being shown.
-    ledgers = inspect(ThreadLedger, raiseerr=True).local_table.alias()
-    said = inspect(ThreadMessage, raiseerr=True).local_table.alias()
+    ledgers = aliased(ThreadLedger)
+    said = aliased(ThreadMessage)
     spoken_in = (
-        select(ledgers.c.thread_id)
-        .join(said, said.c.thread_id == ledgers.c.ledger_id)
+        select(ledgers["thread_id"])
+        .join(said, said["thread_id"] == ledgers["ledger_id"])
         .where(
             or_(
-                ledgers.c.cut_message_id.is_(None),
-                said.c.id <= ledgers.c.cut_message_id,
+                ledgers["cut_message_id"].is_(None),
+                said["id"] <= ledgers["cut_message_id"],
             ),
-            said.c.sender_id.in_(senders),
+            said["sender_id"].in_(senders),
         )
     )
     return shown_by(ThreadLedger["thread_id"].in_(spoken_in))
