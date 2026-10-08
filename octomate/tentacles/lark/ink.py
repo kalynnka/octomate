@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import io
 import logging
+from dataclasses import replace
 from typing import Self
 
 import httpx
@@ -23,7 +24,9 @@ from lark_oapi.api.im.v1 import (
     CreateImageRequestBody,
     CreateMessageRequest,
     CreateMessageRequestBody,
+    GetChatMembersRequest,
     GetMessageResourceRequest,
+    ListChatRequest,
     PatchMessageRequest,
     PatchMessageRequestBody,
     ReplyMessageRequest,
@@ -40,9 +43,13 @@ from lark_oapi.core.model import BaseRequest, Config, RawResponse, RequestOption
 from pydantic import SecretStr, TypeAdapter
 from uuid_utils.compat import uuid7
 
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import ImageSegment
 from octomate.telemetry import lark_logfire
-from octomate.tentacles.channel import DownloadedImage, Ink
+from octomate.tentacles.channel import (
+    DownloadedImage,
+    Ink,
+)
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.lark.schema import (
     LarkBotInfoResponse,
@@ -281,6 +288,106 @@ class LarkInk(Ink[LarkOutboundMessage]):
             return None
         data, file_name = result
         return DownloadedImage(data=data, file_name=file_name)
+
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
+        if source_address is not None:
+            if source_address.channel_thread_id or source_address.chat_type == "thread":
+                return []
+            return [source_address]
+        return [address]
+
+    async def list_addresses(
+        self,
+        address: ChannelAddress,
+        inside: str | None = None,
+        *,
+        private: bool = False,
+    ) -> list[ChannelAddress]:
+        """The bot's groups that the requester is in too, whose members read
+        whatever lands there; nothing in one to open. Lark lists a group's members
+        and never a member's groups, so listing asks each of the bot's groups."""
+        if inside is not None:
+            raise ValueError("A Lark group holds nothing to open.")
+        groups: dict[str, str] = {}
+        page_token = None
+        while True:
+            builder = ListChatRequest.builder().page_size(100)
+            if page_token:
+                builder = builder.page_token(page_token)
+            resp = await self.client.im.v1.chat.alist(builder.build())  # type: ignore[union-attr]
+            if not resp.success() or resp.data is None:
+                raise ValueError(
+                    f"Lark refused to list the bot's groups: {resp.code} {resp.msg}"
+                )
+            groups.update(
+                (chat.chat_id, chat.name or chat.chat_id)
+                for chat in resp.data.items or []
+                if chat.chat_id
+            )
+            if not resp.data.has_more:
+                break
+            page_token = resp.data.page_token
+        present = await asyncio.gather(
+            *(self.has_member(chat_id, address.user_id) for chat_id in groups)
+        )
+        return [
+            ChannelAddress(
+                channel_tentacle_id=address.channel_tentacle_id,
+                chat_type="group",
+                chat_id=chat_id,
+                user_id=address.user_id,
+                shared=True,
+                metadata={"name": name},
+            )
+            for (chat_id, name), here in zip(groups.items(), present, strict=True)
+            if here
+        ]
+
+    async def has_member(self, chat_id: str, user_id: str) -> bool:
+        """Whether `user_id` is in a group the bot is in, read a page of members
+        at a time. Lark refuses the listing for a group the bot is not in."""
+        page_token = None
+        while True:
+            builder = (
+                GetChatMembersRequest.builder()
+                .chat_id(chat_id)
+                .member_id_type("open_id")
+                .page_size(100)
+            )
+            if page_token:
+                builder = builder.page_token(page_token)
+            resp = await self.client.im.v1.chat_members.aget(builder.build())  # type: ignore[union-attr]
+            if not resp.success() or resp.data is None:
+                raise ValueError(
+                    f"Lark refused to list that group's members: {resp.code} {resp.msg}"
+                )
+            if any(member.member_id == user_id for member in resp.data.items or []):
+                return True
+            if not resp.data.has_more:
+                return False
+            page_token = resp.data.page_token
+
+    async def prepare_address(
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
+    ) -> ChannelAddress:
+        if address == source_address and address.chat_type in {"dm", "group"}:
+            return address
+        if address.chat_type == "dm" and not address.chat_id and not address.shared:
+            return address
+        if address.chat_type != "group" or not address.chat_id:
+            raise ValueError(
+                "Lark starts a thread in the current chat, in your one-to-one "
+                "chat, or in a group you and the bot are both in."
+            )
+        if not await self.has_member(address.chat_id, address.user_id):
+            raise ValueError("You are not in that Lark group.")
+        return replace(address, shared=True)
 
     async def open_dm(self, user_id: str, opener: str | None = None) -> str | None:
         """A user's own open_id is their 1:1 chat id, so nothing has to be opened."""

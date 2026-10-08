@@ -52,8 +52,10 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.messages import ModelRequest
 from octomate.schemas.runs import AgentRun as PersistedAgentRun
 from octomate.telemetry import react_logfire
+from octomate.types.permissions import AgentPermissionMode
 
 logger = logging.getLogger(__name__)
+
 # The events a react run streams: the normalized `StreamEvents` union (Pydantic AI
 # passthrough + output/display events + a suspended run's deferred-action batch)
 # plus the terminal result.
@@ -88,17 +90,22 @@ class RunPersistence:
     run_name: str
     cwd: Path | None
     binds_prompt_sources: bool
+    permission_mode: AgentPermissionMode | None
 
     async def record(
         self,
         run_id: str,
         messages: Sequence[PydanticModelMessage],
+        *,
+        model_name: str | None,
     ) -> PersistedAgentRun | None:
         recorded_run = await self.conversation_manager.record_agent_run(
             self.conversation,
             run_id=run_id,
             messages=messages,
             name=self.run_name,
+            model_name=model_name,
+            permission_mode=self.permission_mode,
             cwd=self.cwd,
         )
         if not self.state.source_thread_message_ids or not self.binds_prompt_sources:
@@ -136,9 +143,7 @@ class RunPersistence:
 
 
 @dataclass
-class PersistRunFailure[ReactDepsT](
-    AbstractCapability[ReactDepsT],
-):
+class PersistRunFailure[ReactDepsT](AbstractCapability[ReactDepsT]):
     persistence: RunPersistence
     previous_message_count: int
     recorded: bool = False
@@ -151,7 +156,11 @@ class PersistRunFailure[ReactDepsT](
             return
         if ctx.run_id is None:
             raise RuntimeError("failed agent run has no run_id")
-        await self.persistence.record(ctx.run_id, messages)
+        await self.persistence.record(
+            ctx.run_id,
+            messages,
+            model_name=ctx.model.model_name,
+        )
         self.recorded = True
 
     async def on_node_run_error(
@@ -176,9 +185,7 @@ class PersistRunFailure[ReactDepsT](
 
 
 @dataclass
-class PersistStreamRunFailure[ReactDepsT](
-    PersistRunFailure[ReactDepsT],
-):
+class PersistStreamRunFailure[ReactDepsT](PersistRunFailure[ReactDepsT]):
     async def wrap_run_event_stream(
         self,
         ctx: RunContext[ReactDepsT],
@@ -210,6 +217,8 @@ class ReactDeps[ReactOutputT, ReactDepsT]:
     # the run is in no project, since a react run has no directory of its own.
     cwd: DirectoryPath | None = None
     model: Model | KnownModelName | str | None = None
+    # The preset used when the conversation has no explicit override.
+    permission_mode: AgentPermissionMode | None = None
     instructions: AgentInstructions[ReactDepsT] = None
     model_settings: AgentModelSettings[ReactDepsT] | None = None
     usage_limits: UsageLimits | None = None
@@ -323,6 +332,8 @@ class RunAgent[ReactOutputT, ReactDepsT](
                 run_name=ctx.deps.run_name,
                 cwd=ctx.deps.cwd,
                 binds_prompt_sources=self.deferred_results is None,
+                permission_mode=conversation.permission_mode
+                or ctx.deps.permission_mode,
             )
             capabilities = [
                 (
@@ -427,7 +438,9 @@ class RunAgent[ReactOutputT, ReactDepsT](
             # Recording persists the turn, so the next RunAgent's ensure() picks
             # it up from the manager — no copy in state. Only the prompt turn
             # binds source messages; deferred resumes carry no new user request.
-            await persistence.record(result.run_id, new_messages)
+            await persistence.record(
+                result.run_id, new_messages, model_name=result.response.model_name
+            )
 
         if isinstance(result.output, DeferredToolRequests) and (
             ctx.deps.choose_resolvers is not None or ctx.deps.suspender is not None

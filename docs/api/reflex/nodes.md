@@ -6,7 +6,7 @@
 
 ::: octomate.reflex.nodes.react
 
-::: octomate.reflex.nodes.handoff
+::: octomate.reflex.nodes.summon
 
 ::: octomate.reflex.nodes.scheme
 

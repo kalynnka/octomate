@@ -9,6 +9,7 @@ them the parent row SQLite's foreign keys require.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -35,7 +36,11 @@ from octomate.schemas.conversation import (
     ChannelAddress,
     Conversation,
 )
-from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
+from octomate.schemas.deferred import (
+    DeferredActionBatch,
+    DeferredApproval,
+    DeferredQuestion,
+)
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment
@@ -225,6 +230,8 @@ class FakeConversationManager(ConversationManager):
         messages: Sequence[ModelMessage],
         *,
         name: str | None = None,
+        model_name: str | None = None,
+        permission_mode: AgentPermissionMode | None = None,
         cwd: Path | None = None,
         external_id: str | None = None,
         native_id: str | None = None,
@@ -240,6 +247,8 @@ class FakeConversationManager(ConversationManager):
                 conversation_id=fake.id,
                 name=name,
                 cwd=cwd,
+                model_name=model_name,
+                permission_mode=permission_mode,
                 native_id=native_id,
                 native_session_id=external_id,
                 native_turn_id=native_turn_id,
@@ -586,10 +595,28 @@ class RecordingWorkspaceManager(WorkspaceManager):
 
 @dataclass
 class RecordingSuspender:
-    """A `DeferredSuspender` that keeps what it was handed and presents nothing."""
+    """A `DeferredSuspender` that keeps what it was handed and presents nothing. A
+    live run that pauses on it gets `batch`, with its event for the run's stream."""
 
+    batch: FakePresentedBatch = field(default_factory=FakePresentedBatch)
+    # The agent whose run pauses here, as the graph's suspender records it.
+    agent_tentacle_id: str = "inkling"
     suspended: list[DeferredToolRequests] = field(default_factory=list)
+    paused: list[DeferredToolRequests] = field(default_factory=list)
+    # Set once a live run has paused, so a test can answer it.
+    put_up: asyncio.Event = field(default_factory=asyncio.Event)
 
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
+
+    async def pause(
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+        self.paused.append(requests)
+        self.batch.id = batch_id
+        self.batch.response_mode = "live"
+        self.batch.agent_tentacle_id = self.agent_tentacle_id
+        self.put_up.set()
+        batch = cast(DeferredActionBatch, self.batch)
+        return batch, ActionBatchEvent.from_batch(batch)

@@ -63,7 +63,7 @@ your token, so reinstall them with the same scope after a URL or token change.
 ## Verify both integrations
 
 Send one distinctive prompt in a fresh session. Its prompt and answer should appear
-as a thread in Trunkline. Then ask the agent to call `gateway_scry` with
+as a thread in Trunkline. Then ask the agent to call `gateway_inspect` with
 `reveal: "routes"`, which is read-only and proves the MCP entry.
 Seeing a prompt without its answer means collection is incomplete; inspect the
 tail and WebSocket connection. [Hooks and MCP](index.md) covers configuration

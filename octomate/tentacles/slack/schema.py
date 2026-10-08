@@ -91,8 +91,6 @@ class SlackApprovalActionValue(TypedDict):
 class SlackQuestionActionValue(TypedDict):
     batch_id: UUID7
     questions: Annotated[list[DeferredQuestion], Field(min_length=1)]
-    page: int
-    answers: dict[UUID7, str]
 
 
 class SlackApprovalBlockAction(TypedDict):
@@ -102,7 +100,7 @@ class SlackApprovalBlockAction(TypedDict):
 
 class SlackQuestionBlockAction(TypedDict):
     action_id: NonEmptyStr
-    value: NotRequired[Json[SlackQuestionActionValue]]
+    value: Json[SlackQuestionActionValue]
 
 
 class SlackPlainTextInputState(TypedDict, total=False):
@@ -114,7 +112,9 @@ class SlackChoiceOption(TypedDict):
 
 
 class SlackChoiceState(TypedDict, total=False):
+    # A radio list's pick, or a multi-select question's checked boxes.
     selected_option: SlackChoiceOption | None
+    selected_options: list[SlackChoiceOption]
 
 
 class SlackQuestionStateBlock(TypedDict, total=False):

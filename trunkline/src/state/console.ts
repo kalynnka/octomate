@@ -7,6 +7,7 @@
  */
 import { create } from 'zustand'
 import type {
+  AskAnswer,
   DocLine,
   LedgerItem,
   QueueChip,
@@ -15,7 +16,8 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
-import type { BatchResponseBody, WireEvent } from '@/lib/api/events'
+import { fetchThreads, streamGateway } from '@/lib/api/client'
+import type { BatchResponseBody, ChannelAddress, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
 import { useAuth } from '@/state/auth'
@@ -167,7 +169,7 @@ export const replayView = () => {
 }
 
 export interface ConsoleActions {
-  selectThread(chId: string, thId: string): Promise<void>
+  selectThread(chId: string, thId: string, direction?: 'up' | 'down'): Promise<void>
   loadOlder(): void
   onChatScroll(scrollTop: number): void
   setSysDark(dark: boolean): void
@@ -177,7 +179,8 @@ export interface ConsoleActions {
   setInterfaceSize(size: InterfaceSize): void
   toggleSidebar(): void
   toggleChannelPin(id: string): void
-  focusChannel(id: string, all: string[]): void
+  focusChannel(id: string): void
+  toggleChannel(id: string): void
   toggleControl(): void
   setControlSection(sec: ControlSection): void
   goChat(): void
@@ -190,11 +193,12 @@ export interface ConsoleActions {
   setRailDrag(key: RailKey | null): void
   toggleCardOpen(uid: string, def?: boolean): void
   toggleTimelineFold(id: string): void
-  toggleTeleMenu(): void
-  teleport(id: string, label: string, fromLabel: string): void
+  reportThreadError(threadId: string, message: string): void
+  gateway(threadId: string, request: GatewayRequest): Promise<void>
+  setGatewayMode(mode: ConsoleState['gatewayMode']): void
   vsOpen(): void
   resolveApproval(uid: string, verdict: 'approved' | 'dismissed'): void
-  answerAsk(uid: string, answer: string, via: string): void
+  answerAsk(uid: string, answers: AskAnswer[], via: string): void
   reviewTabs(): string[]
   togglePv(): void
   openFile(name: string): void
@@ -245,7 +249,7 @@ interface ConsoleState {
   running: boolean
   /** how many trailing ledger items are rendered; scroll-top reveals more */
   ledgerN: number
-  notices: string[]
+  notices: Extract<LedgerItem, { kind: 'notice' }>[]
 
   // theme
   theme: ThemeMode
@@ -255,6 +259,7 @@ interface ConsoleState {
   // panels
   sbFold: boolean
   chFold: Record<string, boolean>
+  channelFocusHistory: string[]
   chPins: string[]
   mgmtOpen: boolean
   mgmtSec: ControlSection
@@ -262,10 +267,9 @@ interface ConsoleState {
   widths: Partial<Record<RailKey, number>>
   railDrag: RailKey | null
 
-  // surfaces / teleport
-  surface: string
-  teleOpen: boolean
-  teleporting: boolean
+  gatewayPending: { threadId: string; action: GatewayRequest['action'] } | null
+  /** the gateway op the composer is expanded for, and the thread it was opened on */
+  gatewayMode: { threadId: string; action: GatewayRequest['action'] } | null
   vsLaunch: boolean
 
   // review panel
@@ -355,6 +359,8 @@ const operator = () => useAuth.getState().user?.name ?? 'operator'
 
 export const useConsole = create<ConsoleState>()((set, get) => {
   const prefs = loadChannelPrefs()
+  let threadSelection = 0
+  let threadTransition: ViewTransition | undefined
 
   const saveChannelPrefs = () => {
     const { chFold, chPins } = get()
@@ -431,19 +437,37 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // lifts when the last of them closes rather than the first.
   let openRuns = 0
 
+  /** Your thread at `address`, if your list holds it, with both ends' details refetched. */
+  const landedThread = async (from: string, address: ChannelAddress) => {
+    await queryClient.invalidateQueries({ queryKey: ['thread-detail', from] })
+    const landed = (await fetchThreads()).find((thread) =>
+      thread.channel_tentacle_id === address.channel_tentacle_id
+      && thread.chat_type === address.chat_type
+      && thread.chat_id === address.chat_id
+      && (thread.channel_thread_id ?? null) === (address.channel_thread_id ?? null),
+    )
+    if (landed) await queryClient.invalidateQueries({ queryKey: ['thread-detail', landed.id] })
+    return landed
+  }
+
   /**
    * Drive one live run: fold the SSE events into the live overlay, drop the
    * dispatch dots on the first real event, and settle `running` when the
    * stream ends. Once the user navigates away the fold goes permanently dead
    * (its cursors point at a wiped overlay) — the run keeps going server-side,
    * lands in the thread's ledger, and a re-select after it ends rehydrates.
+   * A turn the agent moved elsewhere opens where it landed, as an operation does:
+   * at once when a run starts there, else once the stream ends.
    */
   const runLive = async (
-    selId: string,
+    from: string,
     request: (onEvent: (event: WireEvent) => void) => Promise<void>,
-    quietClose = 'stream closed without a result',
+    // What a stream that sent nothing back says; null says nothing.
+    quietClose: string | null = 'stream closed without a result',
   ) => {
     openRuns++
+    // The thread the run streams into, until a run starts in another.
+    let selId = from
     let dead = false
     const alive = () => {
       if (!dead && get().selThreadId !== selId) dead = true
@@ -452,7 +476,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const dotsUid = push({ kind: 'dots', label: 'relay · dispatching' } as LedgerItem)
     const clearDots = () => set((s) => ({ live: s.live.filter((it) => it.uid !== dotsUid) }))
     let received = 0
-    const fold = new TurnFold({
+    let terminal = false
+    let landing: ChannelAddress | undefined
+    const turnFold = () => new TurnFold({
       push: (item) => {
         clearDots()
         if (!alive()) return 'stale'
@@ -466,18 +492,60 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (alive() && openRuns === 1) set({ running: false })
       },
     })
+    let fold = turnFold()
+    const feed = (event: WireEvent) => {
+      received++
+      if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
+      fold.feed(event)
+    }
+    // Opening the thread a run started in; what streams meanwhile waits for it.
+    let following: Promise<void> | undefined
+    const held: WireEvent[] = []
+    const follow = async (address: ChannelAddress) => {
+      const landed = await landedThread(selId, address)
+      if (landed && alive()) {
+        await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        selId = landed.id
+        set({ running: true })
+        fold = turnFold()
+      }
+      following = undefined
+      held.splice(0).forEach(feed)
+    }
     try {
       await request((event) => {
-        received++
-        fold.feed(event)
+        if (event.event_kind === 'gateway') {
+          landing = event.destination
+          return
+        }
+        if (following) {
+          held.push(event)
+          return
+        }
+        if (event.event_kind === 'custom' && event.name === 'run_started') {
+          const { channel_tentacle_id, channel_thread_id } = event.address
+          if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
+            following = follow(event.address)
+          }
+          return
+        }
+        feed(event)
       })
-      fold.abort(
-        received === 0
-          ? quietClose
-          : 'stream closed without a result — the run continues on the relay',
-      )
+      await following
+      const closing = received === 0
+        ? quietClose
+        : 'stream closed without a result — the run continues on the relay'
+      if (closing !== null) fold.abort(closing, received === 0 ? 'info' : 'warning')
+      if (landing && alive()) {
+        const landed = await landedThread(selId, landing)
+        if (landed && landed.id !== selId && alive()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+      }
+      return true
     } catch (err) {
-      fold.abort(`relay error — ${err instanceof Error ? err.message : String(err)}`)
+      const message = `relay error — ${err instanceof Error ? err.message : String(err)}`
+      if (terminal) actions.reportThreadError(selId, message)
+      else fold.abort(message, 'error')
+      return false
     } finally {
       openRuns--
       clearDots()
@@ -503,55 +571,84 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     void runLive(selId, (onEvent) => streamDirective(sendKey, { text }, onEvent))
   }
 
-  /** Resolve a deferred batch and stream the resumed run into the ledger. */
+  /** Resolve a deferred batch and stream the resumed run into the ledger. An
+   *  answer to a run still going streams nothing back; its card says it was sent. */
   const resolveLive = (batchId: string, body: BatchResponseBody) => {
     set({ running: true })
-    void runLive(
-      get().selThreadId,
-      (onEvent) => resolveBatch(batchId, body, onEvent),
-      'answer recorded — the resumed run reports on its home channel',
-    )
+    void runLive(get().selThreadId, (onEvent) => resolveBatch(batchId, body, onEvent), null)
   }
 
   const actions: ConsoleActions = {
     /* ---------------------------------------------------- selection ------ */
-    async selectThread(chId: string, thId: string) {
-      clearTurnTimers()
-      set((s) => ({
-        selChannel: chId,
-        selThreadId: thId,
-        detail: null,
-        live: [],
-        running: false,
-        ledgerN: LEDGER_PAGE,
-        notices: [],
-        ntOn: false,
-        ntMenu: null,
-        ntStarted: false,
-        ntRouteId: null,
-        teleOpen: false,
-        surface: ['trunkline', 'slack', 'lark', 'napcat'].includes(chId) ? chId : s.surface,
-        mgmtSec: '',
-        pvOpen: false,
-        sbFold: s.pvOpen ? false : s.sbFold,
-        tabs: null,
-        activeFile: 'REGISTRY_CUTOVER.md',
-        view: 'diff',
-        docs: null,
-        cmts: null,
-        cmtOpen: {},
-        sel: null,
-        draft: null,
-        queue: [],
-        open: { ...defaultOpen },
-        tlFold: {},
-        composer: '',
-      }))
-      const detail = await api.getThreadDetail(thId)
-      if (get().selThreadId !== thId) return
-      set({ detail })
-      scrollChatBottom()
-      replayView()
+    async selectThread(chId: string, thId: string, direction = 'down') {
+      const selection = ++threadSelection
+      threadTransition?.skipTransition()
+      const panel = document.getElementById('trk-chathead')?.closest('main')
+      panel?.style.removeProperty('view-transition-name')
+      const animate = panel && get().selThreadId !== thId && !get().mgmtSec
+        && typeof document.startViewTransition === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      const update = () => {
+        if (selection !== threadSelection) return
+        clearTurnTimers()
+        set((s) => ({
+          selChannel: chId,
+          selThreadId: thId,
+          detail: queryClient.getQueryData<ThreadDetail>(['thread-detail', thId]) ?? null,
+          live: [],
+          running: false,
+          ledgerN: LEDGER_PAGE,
+          notices: [],
+          gatewayMode: null,
+          ntOn: false,
+          ntMenu: null,
+          ntStarted: false,
+          ntRouteId: null,
+          mgmtSec: '',
+          pvOpen: false,
+          sbFold: s.pvOpen ? false : s.sbFold,
+          tabs: null,
+          activeFile: 'REGISTRY_CUTOVER.md',
+          view: 'diff',
+          docs: null,
+          cmts: null,
+          cmtOpen: {},
+          sel: null,
+          draft: null,
+          queue: [],
+          open: { ...defaultOpen },
+          tlFold: {},
+          composer: '',
+        }))
+        scrollChatBottom()
+        if (!animate) replayView()
+      }
+      const refresh = async () => {
+        const detail = await queryClient.fetchQuery({
+          queryKey: ['thread-detail', thId],
+          queryFn: () => api.getThreadDetail(thId),
+          staleTime: 0,
+          retry: false,
+        })
+        if (selection !== threadSelection || get().selThreadId !== thId) return
+        set({ detail })
+        scrollChatBottom()
+      }
+      if (!animate) {
+        update()
+        await refresh()
+        return
+      }
+      panel.style.viewTransitionName = direction === 'up' ? 'thread-lift' : 'thread-drop'
+      const transition = document.startViewTransition(update)
+      threadTransition = transition
+      try {
+        await Promise.all([transition.finished, transition.updateCallbackDone.then(refresh)])
+      } finally {
+        if (threadTransition === transition) {
+          threadTransition = undefined
+          panel.style.removeProperty('view-transition-name')
+        }
+      }
     },
 
     loadOlder() {
@@ -621,10 +718,22 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }))
       saveChannelPrefs()
     },
-    focusChannel(id: string, all: string[]) {
-      const fold: Record<string, boolean> = {}
-      for (const c of all) fold[c] = c !== id
-      set({ chFold: fold, sbFold: false })
+    focusChannel(id: string) {
+      set((s) => ({
+        chFold: { ...s.chFold, [id]: false },
+        channelFocusHistory: [...s.channelFocusHistory.filter((channel) => channel !== id), id],
+        sbFold: false,
+      }))
+      saveChannelPrefs()
+    },
+    toggleChannel(id: string) {
+      set((s) => ({
+        chFold: { ...s.chFold, [id]: !s.chFold[id] },
+        channelFocusHistory: [
+          ...s.channelFocusHistory.filter((channel) => channel !== id),
+          ...(s.chFold[id] ? [id] : []),
+        ],
+      }))
       saveChannelPrefs()
     },
     toggleControl() {
@@ -698,26 +807,34 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     },
 
     /* ---------------------------------------------------- surfaces ------- */
-    toggleTeleMenu: () => set((s) => ({ teleOpen: !s.teleOpen })),
-    teleport(id: string, label: string, fromLabel: string) {
+    reportThreadError(threadId, message) {
       const s = get()
-      if (id === s.surface) {
-        set({ teleOpen: false })
-        return
+      if (s.selThreadId !== threadId || s.ntOn) return
+      set({ notices: [...s.notices, { kind: 'notice', uid: nextUid(), text: message, tone: 'error' }] })
+      scrollChatBottom(true)
+    },
+    setGatewayMode: (mode) => set({ gatewayMode: mode }),
+    async gateway(threadId, request) {
+      if (get().gatewayPending || get().running || get().selThreadId !== threadId) return
+      set({ gatewayPending: { threadId, action: request.action }, gatewayMode: null, running: true })
+      try {
+        const result: { arrived?: GatewayEvent } = {}
+        const completed = await runLive(threadId, async (onEvent) => {
+          result.arrived = await streamGateway(threadId, request, onEvent)
+        })
+        if (!completed || !result.arrived) return
+        const landed = await landedThread(threadId, result.arrived.destination)
+        if (!landed) {
+          throw new Error(`${request.action} completed, but its destination is not visible in your thread list.`)
+        }
+        if (get().selThreadId === threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+      } catch (error) {
+        actions.reportThreadError(threadId, error instanceof Error ? error.message : String(error))
+      } finally {
+        set({ gatewayPending: null })
+        void queryClient.invalidateQueries({ queryKey: ['thread-operations', threadId] })
+        refreshThreads()
       }
-      set({ teleOpen: false, teleporting: true })
-      at(900, () => {
-        const hh = new Date().toLocaleTimeString('en-GB', { hour12: false }).slice(0, 5)
-        set((x) => ({
-          teleporting: false,
-          surface: id,
-          notices: [...x.notices, `teleport → ${label} — pointer card left in ${fromLabel} · ${hh}`],
-        }))
-        setTimeout(() => {
-          scrollChatBottom()
-          replayView()
-        }, 40)
-      })
     },
     /**
      * Open this thread's directory in VS Code, then reopen the native session
@@ -766,22 +883,28 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         })
       }
     },
-    answerAsk(uid: string, answer: string, via: string) {
+    answerAsk(uid: string, answers: AskAnswer[], via: string) {
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
       if (card?.kind !== 'ask' || card.state !== 'waiting') return
       const t = nowClock().slice(0, 5)
+      const questions = card.questions.map((q, index) => ({ ...q, answer: answers[index] }))
       const mark = (it: LedgerItem): LedgerItem =>
         it.uid === uid && it.kind === 'ask'
-          ? { ...it, state: 'answered' as const, answer, via, resolvedT: t }
+          ? { ...it, state: 'answered' as const, questions, via, resolvedT: t }
           : it
       set((s) => ({
         detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(mark) },
         live: s.live.map(mark),
       }))
-      if (card.batchId && card.actionId) {
-        resolveLive(card.batchId, { answers: { [card.actionId]: answer } })
+      // The whole batch in one response, so the run resumes once.
+      if (card.batchId) {
+        resolveLive(card.batchId, {
+          answers: Object.fromEntries(
+            questions.flatMap((q) => (q.actionId ? [[q.actionId, q.answer ?? '']] : [])),
+          ),
+        })
       }
     },
 
@@ -1013,6 +1136,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           push({
             kind: 'notice',
             text: `read-only view — this thread lives on ${s.detail.channel ?? 'another channel'}; reply there`,
+            tone: 'warning',
           } as LedgerItem)
         }
         return
@@ -1141,7 +1265,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         running: false,
         selChannel: 'trunkline',
         selThreadId: 'THR-NEW',
-        surface: 'trunkline',
         mgmtSec: '',
         pvOpen: false,
         sel: null,
@@ -1299,15 +1422,15 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     interfaceSize: loadInterfaceSize(),
     sbFold: false,
     chFold: prefs.fold,
+    channelFocusHistory: [],
     chPins: prefs.pins,
     mgmtOpen: false,
     mgmtSec: '',
     traceOn: null,
     widths: {},
     railDrag: null,
-    surface: 'trunkline',
-    teleOpen: false,
-    teleporting: false,
+    gatewayPending: null,
+    gatewayMode: null,
     vsLaunch: false,
     pvOpen: false,
     tabs: null,

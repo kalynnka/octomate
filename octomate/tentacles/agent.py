@@ -45,6 +45,8 @@ from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
+from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.triage import AgentRoute, Claim
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
@@ -228,6 +230,18 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         """Inkling's configured first model; harnesses override with native defaults."""
         return next(iter(self.models), None)
 
+    def served_model(self, name: str) -> str | None:
+        """The catalog entry a stored model name means: the entry itself, or, for
+        a name saved without its provider, the one entry it can be. None when this
+        agent serves no such model."""
+        if name in self.models:
+            return name
+        if name and ":" not in name:
+            matches = [key for key in self.models if key.partition(":")[2] == name]
+            if len(matches) == 1:
+                return matches[0]
+        return None
+
     # Whether the agent keeps a live in-process run that can park on a human
     # deferral (approval/question) and resume by delivering the response to its
     # waiter, instead of resuming durably through the triage graph. In-process
@@ -293,6 +307,90 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             else:
                 spoken.append("Approved." if verdict else "Denied.")
         return "\n\n".join(spoken)
+
+    async def fork(
+        self,
+        source: Conversation,
+        destination: ThreadKey,
+        *,
+        sender: UserProfile,
+    ) -> Thread:
+        """Fork an owner's uploaded native history onto a new surface, as a
+        conversation this tentacle drives. The import is the runtime's own
+        `fork_transcript`; the checks and the thread around it are every runtime's."""
+        owner_id = sender.user_id
+        if owner_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        if source.agent_tentacle_id != self.native_id or source.subagent_id:
+            raise ValueError("Only a root native session of this runtime can be forked")
+        threads = self.octomate.thread_manager
+        source_thread = await threads.get(
+            source.thread_id, with_messages=False, user_id=owner_id
+        )
+        if source_thread is None:
+            raise FileNotFoundError("No conversation")
+        if source.transcript_file_id is None:
+            raise ValueError("The session transcript has not been uploaded yet")
+        await self.octomate.files.get(source.transcript_file_id, owner_id=owner_id)
+        project = await self.octomate.projects.of(source_thread)
+        if project is not None and not await anyio.Path(project.root).is_dir():
+            project = None
+        thread = await threads.ensure(destination, project=project)
+        target = await self.octomate.conversations.ensure(
+            thread.id, agent_tentacle_id=self.id
+        )
+        cwd = self.octomate.workspaces.open(thread.id, project).path
+        await self.fork_transcript(source, target, owner_id=owner_id, cwd=cwd)
+        return await threads.record_fork(
+            source, thread, sender=sender, title=source_thread.title
+        )
+
+    async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
+        """Refuse unusable native history before a destination is created,
+        including a session last run on a model this agent does not serve."""
+        if sender.user_id is None:
+            raise ValueError("A native fork requires a registered owner")
+        _, completed = await self.read_fork_transcript(source, owner_id=sender.user_id)
+        model = completed.model_name
+        if model is not None and self.served_model(model) is None:
+            raise ValueError(
+                f"This session last ran {model!r}, which {self.id!r} does not offer "
+                "here; the server's runtime needs updating to continue it."
+            )
+
+    async def read_fork_transcript(
+        self, source: Conversation, *, owner_id: UUID7
+    ) -> tuple[bytes, ExternalAgentRun]:
+        """An owner's uploaded native history up to its latest whole turn, and that
+        turn — what a fork of it carries."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
+
+    async def fork_transcript(
+        self,
+        source: Conversation,
+        target: Conversation,
+        *,
+        owner_id: UUID7,
+        cwd: Path,
+    ) -> Conversation:
+        """Import an owner's native history into the empty `target`, as a session
+        this runtime resumes in `cwd`."""
+        raise NotImplementedError(
+            f"Agent {self.id!r} does not support conversation forking"
+        )
+
+    @property
+    def supports_session_fork(self) -> bool:
+        """Whether this harness implements independent runtime session creation."""
+        return type(self).fork_session is not AgentTentacle.fork_session
+
+    async def fork_session(
+        self, conversation: Conversation, *, cwd: Path
+    ) -> str | None:
+        """Fork the runtime session, or stop if this agent cannot fork safely."""
+        raise NotImplementedError(f"Agent {self.id!r} does not support session forking")
 
     async def relocate(self, conversation: Conversation, *, cwd: Path) -> None:
         """Relocate the runtime session behind `conversation` to `cwd`, where its next

@@ -12,7 +12,8 @@ create a self-built app and:
 2. **Permissions**, from what the bot calls: sending and receiving messages
    (`im:message`, and the group and one-to-one receive permissions), reading user
    profiles (`contact:user.base:readonly`), uploading and downloading images
-   (`im:resource`), and CardKit for streaming cards. The permission checker names
+   (`im:resource`), listing the bot's groups and their members
+   (`im:chat:readonly`), and CardKit for streaming cards. The permission checker names
    the exact scope when a call is refused.
 3. **Event subscriptions**: choose the long-connection mode and subscribe to
    `im.message.receive_v1` and `card.action.trigger`.
@@ -49,6 +50,14 @@ one-to-one chat with the bot or mention it in a group and verify a reply.
 A sub-thread is opened by sending the hint and replying under it. Lark identifies
 a thread reply by its root message id, which is what the continuation is keyed on.
 
+
+Teleport uses the current group or DM as the parent for a new sub-thread.
+It does not offer nested sub-threads inside an existing thread. Entry from another
+platform uses the linked account's one-to-one chat, or a group you and the bot are
+both in: browsing Lark lists those groups, and a thread opened in one is read by
+its members. Listing reads the members of every group the bot is in, so one group
+Lark refuses to read fails the whole listing.
+
 ## Rendering
 
 Everything is cards. The answer streams into a CardKit card with streaming mode on.
@@ -59,9 +68,10 @@ own with their response in folded panels. A card Lark refuses to render falls ba
 to a plain message carrying the raw text.
 
 Approvals are one card per action with Approve and Deny; the click toasts and the
-card is replaced with the resolution. Questions are one card for the batch, paged,
-with a button per choice, a text field, and Back, Next and Submit. Buttons carry
-enough state to keep working across a restart.
+card is replaced with the resolution. Questions are one card holding the whole
+batch: a dropdown for choices, which takes several picks when the question allows
+them, a text field, and one Submit. Nothing reaches Octomate until Submit is
+pressed, and Submit keeps working across a restart.
 
 ## Profile linking
 

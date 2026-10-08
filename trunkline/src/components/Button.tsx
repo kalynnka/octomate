@@ -8,10 +8,10 @@ const variantClass: Record<string, string> = {
 }
 
 const variantStyle: Record<string, CSSProperties> = {
-  outline: { background: 'transparent', color: 'var(--color-ink)', borderColor: 'var(--color-ink)' },
+  outline: { background: 'transparent', color: 'var(--fg-1)', borderColor: 'var(--color-ink)' },
   solid: { background: 'var(--panel)', color: 'var(--on-panel)', borderColor: 'var(--color-ink)' },
   accent: { background: 'var(--color-accent)', color: '#fff', borderColor: 'var(--color-accent)' },
-  ghost: { background: 'transparent', color: 'var(--color-ink)', borderColor: 'transparent' },
+  ghost: { background: 'transparent', color: 'var(--fg-1)', borderColor: 'transparent' },
 }
 
 /** Lonetrail Button — mono label chip with 150ms color-swap hover. */

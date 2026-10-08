@@ -223,7 +223,7 @@ def test_deferred_questions_sort_by_position() -> None:
     assert second > first
 
 
-def test_deferred_question_choices_are_limited_to_three() -> None:
+def test_deferred_question_choices_are_limited_to_five() -> None:
     with pytest.raises(ValidationError):
         DeferredQuestion(
             tool_name="ask_questions",
@@ -234,6 +234,8 @@ def test_deferred_question_choices_are_limited_to_three() -> None:
                     "Coral Reef",
                     "Kelp Forest",
                     "Open Ocean",
+                    "Twilight Zone",
+                    "Abyssal Plain",
                     "Deep Sea Trench",
                 ],
             },
@@ -266,6 +268,40 @@ async def test_resolve_batch_applies_answers_and_approvals(
     assert results.approvals["call_approval"] is True
 
 
+async def test_a_restart_expires_live_requests_and_keeps_suspended_ones(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    manager = DeferredActionManager()
+    waiting = await _create_batch("live")
+    answered = await _create_batch("live")
+    await manager.mark_batch(answered.id, "resolved")
+    suspended = await _create_batch("resume")
+
+    await manager.expire_live()
+
+    assert (await manager.get_batch(waiting.id)).status == "expired"
+    assert (await manager.get_batch(answered.id)).status == "resolved"
+    # A suspended run's batch resumes through the graph, which outlives a restart.
+    assert (await manager.get_batch(suspended.id)).status == "pending"
+
+
+async def test_a_multi_select_answer_is_kept_as_its_picks(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    created = await _create_batch()
+    question = next(iter(created.questions))
+
+    resolved = await DeferredActionManager().resolve_batch(
+        DeferredActionBatchResponse(
+            batch_id=created.id, answers={question.id: ["tonight", "tomorrow"]}
+        )
+    )
+
+    # Stored and handed back as a list, never as text to split again.
+    assert [action.result for action in resolved.questions] == [["tonight", "tomorrow"]]
+    assert resolved.build_results().calls["call_question"] == [["tonight", "tomorrow"]]
+
+
 async def test_mark_batch_sets_status_and_completed_at(
     in_memory_engine: AsyncEngine,
 ) -> None:
@@ -283,3 +319,34 @@ async def test_mark_action_presented_noops_for_unknown_action(
     in_memory_engine: AsyncEngine,
 ) -> None:
     await DeferredActionManager().mark_action_presented(uuid7(), "msg-1")
+
+
+async def test_an_approvals_card_description_comes_from_its_metadata(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    conversation = await ConversationManager().ensure(
+        await a_thread(), agent_tentacle_id="inkling"
+    )
+
+    batch = await DeferredActionManager().create_batch(
+        response_mode="resume",
+        conversation=conversation,
+        agent_tentacle_id="inkling",
+        run_name="react",
+        source_address=_key(),
+        target_address=_key(),
+        target_mode="main",
+        decision=None,
+        requests=DeferredToolRequests(
+            approvals=[
+                ToolCallPart(tool_name="teleport", args={}, tool_call_id="moved"),
+                ToolCallPart(tool_name="shell", args={}, tool_call_id="ran"),
+            ],
+            metadata={"moved": {"description": "Everyone there can read it."}},
+        ),
+    )
+
+    descriptions = {
+        approval.tool_call_id: approval.args.description for approval in batch.approvals
+    }
+    assert descriptions == {"moved": "Everyone there can read it.", "ran": ""}

@@ -53,6 +53,16 @@ def write_rollout(path: Path) -> None:
             "payload": {"type": "task_started", "turn_id": TURN_ID},
         },
         {
+            "timestamp": "2026-07-16T10:00:01Z",
+            "type": "turn_context",
+            "payload": {
+                "model": "gpt-6-luna",
+                "approval_policy": "on-request",
+                "approvals_reviewer": "auto_review",
+                "sandbox_policy": {"type": "workspace-write"},
+            },
+        },
+        {
             "timestamp": "2026-07-16T10:00:02Z",
             "type": "event_msg",
             "payload": {"type": "user_message", "message": "inspect it"},
@@ -191,11 +201,56 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     assert isinstance(run, ExternalAgentRun)
     assert run.id == TURN_ID
     assert run.end_offset == path.stat().st_size
+    assert run.model_name == "gpt-6-luna"
+    assert run.permission_mode == "auto_review"
     assert [message.message_text for message in run.messages] == [
         "inspect it",
         None,
         "done",
     ]
+    await tailer.shutdown()
+
+
+@pytest.mark.parametrize("supported", [True, False])
+async def test_turn_settings_are_captured_at_context_and_persisted_at_completion(
+    supported: bool,
+) -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    state, _ = await tailer.attach_remote(SESSION_ID, ROLLOUT_LABEL, SENDER)
+    offset = await feed_records(
+        tailer,
+        state,
+        [
+            event(1, "task_started", turn_id=TURN_ID),
+            {
+                "timestamp": "2026-07-16T10:00:02Z",
+                "type": "turn_context",
+                "payload": {
+                    "model": "gpt-6-luna",
+                    "approval_policy": "on-request",
+                    "approvals_reviewer": "auto_review",
+                    "sandbox_policy": {
+                        "type": "workspace-write" if supported else "read-only"
+                    },
+                },
+            },
+        ],
+    )
+    assert state.open_turn is not None
+    assert state.open_turn.model_name == "gpt-6-luna"
+    assert state.open_turn.permission_mode == ("auto_review" if supported else None)
+    assert state.conversation is not None
+    assert not (await octomate.conversations.get(state.conversation.id)).runs
+    await feed_records(
+        tailer,
+        state,
+        [answer_item(3, "done"), event(4, "task_complete", turn_id=TURN_ID)],
+        start=offset,
+    )
+    completed = await octomate.conversations.get(state.conversation.id)
+    assert completed.runs[-1].model_name == "gpt-6-luna"
+    assert completed.runs[-1].permission_mode == ("auto_review" if supported else None)
     await tailer.shutdown()
 
 

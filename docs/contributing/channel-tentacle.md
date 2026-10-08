@@ -117,6 +117,52 @@ gateway consults before offering a spell. Claim the SDK's loggers through
 an acknowledgement deadline, run `ingest` as a detached task; a turn parked on an
 approval must not hold the ack.
 
+Gateway moves use `ChannelAddress` throughout. Implement
+`Ink.suggest_addresses(address, source_address)` for optional discovery. The first
+address carries the connected channel and linked user; the source is the current
+conversation on this channel, or `None` when arriving from elsewhere. Return
+addresses without creating chats or posting. The gateway caches these suggestions
+per session; execution does not require discovery.
+
+Implement `Ink.list_addresses(address, inside)` when the platform's places can be
+browsed. It lists one level at a time, only when someone opens it: the top level
+when `inside` is `None`, otherwise what a listed address's `metadata["inside"]`
+names. Set `inside` on a place to open, such as a server, and leave it off an
+address a thread can land in. List only what the linked user can see; where a
+thread cannot land in one of those, say why in `metadata["barred"]` rather than
+leaving it out. The base implementation refuses, which the gateway reports as its
+reason. A listed address is a suggestion; execution still goes through
+`prepare_address`.
+
+What a channel knows for showing an address goes in `ChannelAddress.metadata`,
+never in a wrapper around it: `name`, `inside` and `barred` are shared, and a
+channel adds its own with a `TypedDict` extending `AddressMetadata` on its own
+`ChannelAddress` subclass, as `DiscordAddress` does for `server`. Metadata is
+excluded from equality and hashing, so a subclass with it is still the same
+address.
+
+Implement `Ink.prepare_address(address, source_address)` to validate one address
+and return its platform-verified form. Check the parent type, requester and bot
+access, and shared visibility. Refuse an unsupported address without opening a
+thread. The base implementation refuses. `ChannelTentacle.prepare_address` checks
+channel ownership and prevents nesting, then delegates platform work to Ink.
+The gateway verifies the address's user against the requesting user's linked
+identity through `thread_user_id(profile)`; Trunkline uses their registered
+Octomate identity.
+
+Slack and Lark support the current DM or group and the linked user's unresolved
+DM. Discord validates a text-channel address directly; its discovery lists only
+the source server's eligible channels, and its listing opens the servers you
+share with the bot, then one server's channels. Trunkline prepares an independent private
+thread. No target, location or landing wrapper is needed between these calls.
+
+`start_thread(address, hint)` creates a thread at the prepared address and returns
+its final address. The default resolves an empty DM `chat_id` through Ink before
+calling `start_sub_thread` once. Trunkline creates a top-level thread; Discord
+rechecks membership and permissions before opening. Keep client lookups,
+permissions and API calls in Ink. Refuse a failed open rather than returning an
+existing conversation. Both local and cross-channel gateway moves use this path.
+
 `ingest` is the base class's and does everything from decoding to kicking the
 graph, including the redelivery guard and the mention gate.
 
@@ -156,6 +202,9 @@ after `super().__init__`, keeping the defaults you do not replace.
   Refuse a press on a batch that is no longer pending.
 - **OAuth.** Subclass `OAuthFeeler` and implement `send`; the base decides the
   private address.
+- **Graph reports.** Present the events you are handed and never build one.
+  Override `Feelers.present` only to draw a move or a failed turn as something
+  other than a message.
 
 ## 7. Tests
 

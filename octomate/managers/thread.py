@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import noload, selectinload
 from pydantic import UUID7
 from sqlalchemy import and_, or_, select
@@ -14,7 +15,7 @@ from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.project import Project
@@ -62,6 +63,18 @@ class BindRefusal(ValueError):
     """A bind refused by policy — a thread that is not work, or one already bound —
     carrying the sentence a model may be told and correct from. A `ValueError`
     still, so nothing that never told the two apart changes."""
+
+
+def keyed(key: ThreadKey) -> list[Expression[bool]]:
+    """The row a key names. A sub-thread shares its chat room's address, so a key
+    names the thread nobody opened — the line the unique index draws."""
+    return [
+        Thread["channel_tentacle_id"] == key.channel_tentacle_id,
+        Thread["chat_type"] == key.chat_type,
+        Thread["chat_id"] == key.chat_id,
+        Thread["channel_thread_id"] == key.channel_thread_id,
+        Thread["parent_thread_id"].is_(None),
+    ]
 
 
 # What a listing can show of an opening line before it stops reading as a name.
@@ -123,15 +136,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         async with self.lock(key), async_session() as session:
             thread = await session.one_or_none(
                 Thread,
-                expressions=[
-                    Thread["channel_tentacle_id"] == key.channel_tentacle_id,
-                    Thread["chat_type"] == key.chat_type,
-                    Thread["chat_id"] == key.chat_id,
-                    Thread["channel_thread_id"] == key.channel_thread_id,
-                    # A sub-thread shares its chat room's address, so a key names
-                    # the thread nobody opened — the line the unique index draws.
-                    Thread["parent_thread_id"].is_(None),
-                ],
+                options=[selectinload(Thread["conversations"]).noload("*")],
+                expressions=keyed(key),
             )
             if thread is None:
                 thread = Thread(
@@ -299,13 +305,14 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
     async def get(
         self,
-        thread_id: UUID7,
+        thread_id: UUID7 | ThreadKey,
         *,
         with_messages: bool = True,
         user_id: UUID7 | None = None,
     ) -> Thread | None:
-        """The thread by primary key, or None — its handoffs with the row, its
-        ledger only when asked for.
+        """The thread by primary key, or by the key it is filed under, or None —
+        its handoffs with the row, its ledger only when asked for. A key never
+        creates one, unlike `ensure`.
 
         `with_messages=True` is the whole ledger, deliberately: it is what a reader
         rebuilding a thread wants, and it is unbounded in a room, so a caller after
@@ -321,8 +328,13 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if with_messages
             else []
         )
+        options.append(selectinload(Thread["conversations"]).noload("*"))
         async with async_session() as session:
-            expressions = [Thread["id"] == thread_id]
+            expressions = (
+                keyed(thread_id)
+                if isinstance(thread_id, ThreadKey)
+                else [Thread["id"] == thread_id]
+            )
             if user_id is not None:
                 expressions.append(
                     Thread["messages"].any(
@@ -367,6 +379,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             rows = await session.list(
                 Thread,
                 limit=limit,
+                options=[selectinload(Thread["conversations"]).noload("*")],
                 order_bys=[Thread["updated_at"].desc(), Thread["id"].desc()],
                 expressions=expressions,
             )
@@ -586,6 +599,48 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             stored.source_cursor_message_id = message_id
             await session.commit()
         thread.source_cursor_message_id = message_id
+        return thread
+
+    async def record_fork(
+        self,
+        source: Conversation,
+        target: Thread,
+        *,
+        sender: UserProfile,
+        title: str | None,
+    ) -> Thread:
+        """Publish a user-attributed system notice after a successful fork."""
+        profile = await self.users.ensure_profile(target.channel_tentacle_id, sender)
+        async with async_session() as session:
+            thread = await session.get(
+                Thread,
+                target.id,
+                options=[selectinload(Thread["conversations"]).noload("*")],
+            )
+            if thread is None:
+                raise ValueError(f"unknown thread {target.id}")
+            address = thread.key.address(profile.channel_user_id)
+            text = f"Forked from conversation {source.id}.\n\n"
+            if thread.project_id is None:
+                text += (
+                    "This fork has no server project. The source working directory "
+                    "and its files were not transferred.\n\n"
+                )
+            text += f"Current channel address:\n{address}."
+            notice = ThreadMessage(
+                thread_id=thread.id,
+                direction="inbound",
+                actor_kind="system",
+                user_id=profile.channel_user_id,
+                sender_id=profile.id,
+                segments=[TextSegment(data={"text": text})],
+                message_text=text,
+            )
+            session.add(notice)
+            thread.title = title
+            thread.updated_at = notice.happened_at
+            await thread.handoffs
+            await session.commit()
         return thread
 
     async def record_handoff(

@@ -44,6 +44,7 @@ from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
 from octomate.tentacles.codex.transcript import (
     RolloutLine,
     SessionMetadata,
+    TurnPermissions,
     payload_type,
     rollout_line_adapter,
     session_metadata_adapter,
@@ -82,6 +83,8 @@ class OpenTurn:
     end_offset: int
     timestamp: datetime
     source: str | None
+    model_name: str | None = None
+    permission_mode: str | None = None
     prompt: str = ""
     messages: list[ModelMessage] = field(default_factory=list)
     answer: str = ""
@@ -322,8 +325,6 @@ class CodexTranscriptTailer:
                 metadata.source if isinstance(metadata.source, str) else None
             )
             return
-        if line.type == "turn_context":
-            return
         if line.type == "event_msg" and kind == "task_started":
             turn_id = line.payload.get("turn_id")
             if not isinstance(turn_id, str) or not turn_id:
@@ -342,6 +343,9 @@ class CodexTranscriptTailer:
         if turn is None:
             return
         turn.end_offset = end
+        if line.type == "turn_context":
+            self.consume_turn_context(turn, line)
+            return
         if line.type == "event_msg":
             if kind == "user_message":
                 prompt = line.payload.get("message")
@@ -458,6 +462,9 @@ class CodexTranscriptTailer:
         if turn is None:
             return
         turn.end_offset = end
+        if line.type == "turn_context":
+            self.consume_turn_context(turn, line)
+            return
         if line.type == "event_msg":
             if kind == "token_count":
                 turn.usage = self.parse_usage(line.payload)
@@ -514,6 +521,8 @@ class CodexTranscriptTailer:
                     run_id=turn.turn_id,
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
+                    model_name=turn.model_name,
+                    permission_mode=turn.permission_mode,
                     cwd=Path(tail.cwd) if tail.cwd else None,
                     native_session_id=tail.thread_id,
                     source=turn.source,
@@ -564,6 +573,8 @@ class CodexTranscriptTailer:
                     run_id=turn.turn_id,
                     messages=turn.messages,
                     name=CODEX_NATIVE_ID,
+                    model_name=turn.model_name,
+                    permission_mode=turn.permission_mode,
                     cwd=Path(state.cwd) if state.cwd else None,
                     native_session_id=state.session_id,
                     source=turn.source,
@@ -695,6 +706,19 @@ class CodexTranscriptTailer:
                 "reasoning_output_tokens": values.get("reasoning_output_tokens", 0)
             },
         )
+
+    @staticmethod
+    def consume_turn_context(turn: OpenTurn, line: RolloutLine) -> None:
+        model = line.payload.get("model")
+        turn.model_name = model if isinstance(model, str) else None
+        try:
+            turn.permission_mode = TurnPermissions.model_validate(
+                line.payload
+            ).permission_mode
+        except ValueError:
+            # Keep ingesting history; an unknown preset makes this turn unforkable.
+            turn.permission_mode = None
+            logger.warning("Codex turn %s has unsupported permissions", turn.turn_id)
 
     @staticmethod
     def consume_response_item(turn: OpenTurn, line: RolloutLine) -> None:

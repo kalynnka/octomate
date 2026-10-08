@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
 from collections.abc import AsyncGenerator, Sequence
@@ -22,8 +21,8 @@ from pydantic_ai.messages import (
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.capabilities.harness.events import (
-    SubagentActivity,
     SubagentActivityStatus,
+    SubagentStartedEvent,
     TodoDeletedEvent,
     TodoEvent,
 )
@@ -211,7 +210,7 @@ class LarkRunStateCards(TimelineState):
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[LarkSubagentTimelineState]:
         state = LarkSubagentTimelineState(
             ink=self.ink,
@@ -584,11 +583,7 @@ class LarkTimelineFeeler(TimelineFeeler):
         )
         try:
             yield state
-        except asyncio.CancelledError:
-            await state.settle_subagents("cancelled")
-            raise
         finally:
-            await state.settle_subagents("failed")
             # consume() already fed any non-streamed final output via answer_delta,
             # so the result-fallback arg is None here.
             await state.finish(None)
@@ -601,7 +596,7 @@ class LarkSubagentTimelineState(SubagentTimelineState):
     and terminal status when it settles."""
 
     ink: LarkInk
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     chat_id: str
     chat_type: str
     channel_thread_id: str

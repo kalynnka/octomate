@@ -2,7 +2,7 @@ import MarkdownIt from 'markdown-it'
 
 // html stays off (the default): agent output is prose, not trusted markup —
 // any raw HTML in it renders as text. linkify turns bare URLs into links.
-const md = new MarkdownIt({ linkify: true })
+const md = new MarkdownIt({ linkify: true, breaks: true })
 
 // Links leave the console; open them beside it rather than over it.
 const renderLink =

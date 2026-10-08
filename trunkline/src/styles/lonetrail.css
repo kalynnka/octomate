@@ -112,6 +112,8 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-400-latin.woff2") format("woff2");
+  /* The Latin subset otherwise gives curly quotes a full CJK character width. */
+  font-feature-settings: "halt" 1;
   font-weight: 400;
   font-style: normal;
   font-display: swap;
@@ -128,6 +130,7 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-500-latin.woff2") format("woff2");
+  font-feature-settings: "halt" 1;
   font-weight: 500;
   font-style: normal;
   font-display: swap;
@@ -144,6 +147,7 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-700-latin.woff2") format("woff2");
+  font-feature-settings: "halt" 1;
   font-weight: 700;
   font-style: normal;
   font-display: swap;
@@ -160,6 +164,7 @@
 @font-face {
   font-family: "Noto Serif SC";
   src: url("/fonts/NotoSerifSC-900-latin.woff2") format("woff2");
+  font-feature-settings: "halt" 1;
   font-weight: 900;
   font-style: normal;
   font-display: swap;
@@ -238,7 +243,7 @@
   --surface-raised: var(--color-raised);      /* dropdowns, modals, popovers */
   --surface-sunken: var(--color-sunken);      /* inputs, code beds, meter tracks */
   --panel-dark-bg:  var(--color-sunken);      /* sidebar / panel surfaces — sunken paper */
-  --panel-dark-fg:  var(--color-ink);
+  --panel-dark-fg:  var(--fg-1);
   /* Short aliases for "panel" surfaces (avatars, tool bars, solid buttons,
      nav rail, tags). Light mode: SUNKEN PAPER with ink text — never a dark
      fill on paper. Dark mode: an ELEVATED dark surface with cream text. */
@@ -246,7 +251,7 @@
   --on-panel: var(--panel-dark-fg);
   --hover:    rgb(26 24 20 / 0.05);            /* subtle hover wash on paper */
 
-  --fg-1: var(--color-ink);     /* headings, primary text */
+  --fg-1: #4b4942;             /* headings, primary text */
   --fg-2: var(--color-muted);   /* body, summaries */
   --fg-3: var(--color-ghost);   /* captions, metadata, idle */
 
@@ -350,6 +355,7 @@
    the teal·gold·red stripe are brightened a step for contrast on dark.
    ========================================================================== */
 [data-theme="dark"] {
+  --fg-1: var(--color-ink);
   /* base palette — warm dark */
   --ce-ink:     236 228 212; /* @kind color */  /* #ECE4D4  now the PRIMARY TEXT (light on dark) */
   --ce-bg:       43 41 37; /* @kind color */    /* #2B2925 warm charcoal page */

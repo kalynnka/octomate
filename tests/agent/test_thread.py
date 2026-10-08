@@ -19,9 +19,10 @@ from octomate.models.messages import ModelMessage as ModelMessageModel
 from octomate.models.thread import MessageBinding as MessageBindingModel
 from octomate.models.thread import Thread as ThreadModel
 from octomate.models.thread import ThreadMessage as ThreadMessageModel
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import (
+    CODEX_NATIVE_ID,
     Handoff,
     MessageBinding,
     Thread,
@@ -29,6 +30,60 @@ from octomate.schemas.thread import (
     ThreadMessage,
 )
 from octomate.schemas.user import UserProfile
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        ThreadKey("slack", "dm", "alice"),
+        ThreadKey("slack", "group", "room"),
+        ThreadKey("slack", "thread", "room", "topic"),
+        ThreadKey(CODEX_NATIVE_ID, "thread", "session"),
+    ],
+)
+async def test_active_agent_uses_latest_root_conversation_or_handoff(
+    key: ThreadKey,
+) -> None:
+    thread = Thread(
+        channel_tentacle_id=key.channel_tentacle_id,
+        chat_type=key.chat_type,
+        chat_id=key.chat_id,
+        channel_thread_id=key.channel_thread_id,
+        kind=key.kind,
+    )
+    assert thread.active_agent_tentacle_id is None
+    older = Conversation(thread_id=thread.id, agent_tentacle_id="codex")
+    newer = Conversation(thread_id=thread.id, agent_tentacle_id="claude")
+    child = Conversation(
+        thread_id=thread.id,
+        agent_tentacle_id="inkling",
+        subagent_id="child",
+        parent_conversation_id=newer.id,
+    )
+    async with async_session() as session:
+        session.add(thread)
+        await session.flush()
+        session.add(newer)
+        session.add(older)
+        await session.flush()
+        session.add(child)
+        await session.commit()
+    async with async_session() as session:
+        stored = await session.get(
+            Thread,
+            thread.id,
+            options=[selectinload(Thread["conversations"]).noload("*")],
+        )
+        assert stored is not None
+    thread = stored
+    assert [conversation.id for conversation in thread.conversations] == [
+        older.id,
+        newer.id,
+        child.id,
+    ]
+    assert thread.active_agent_tentacle_id == "claude"
+    thread.handoffs.append(Handoff(thread_id=thread.id, to_agent_tentacle_id="codex"))
+    assert thread.active_agent_tentacle_id == "codex"
 
 
 @pytest.fixture(autouse=True)

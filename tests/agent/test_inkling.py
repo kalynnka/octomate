@@ -6,9 +6,10 @@ from __future__ import annotations
 import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
-from typing import TypeAlias, cast
+from typing import cast
 
 import pytest
+from pydantic import UUID7
 from pydantic_ai import (
     AgentRunResult,
     AgentRunResultEvent,
@@ -45,6 +46,11 @@ from octomate.capabilities.harness.react import (
 from octomate.capabilities.todos import TodoCapability
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.deferred import (
+    DeferredActionBatch,
+    DeferredActionCollection,
+    DeferredApproval,
+)
 from octomate.schemas.segments import MessageSegment, Segment
 from octomate.schemas.triage import TELEPORT_DEFER_KIND
 from octomate.tentacles.inkling import (
@@ -52,16 +58,17 @@ from octomate.tentacles.inkling import (
 )
 from octomate.tentacles.inkling.base import InklingDeferrals, InklingOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
-from octomate.types.permissions import AgentPermissionMode
+from octomate.types.permissions import AgentPermissionMode, InklingPermissionMode
 from tests.support.agents import (
     ScriptedOutput,
     ScriptedTurn,
     build_scripted_agent,
     emit_scripted_turn,
 )
+from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeConversation, FakeConversationManager
 
-InklingTestEvent: TypeAlias = ReactStreamEvent[ScriptedOutput]
+type InklingTestEvent = ReactStreamEvent[ScriptedOutput]
 
 
 def _inkling_agent() -> Agent[None, InklingOutput]:
@@ -88,6 +95,11 @@ class StubSuspender:
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
         self.suspended.append(requests)
         return None
+
+    async def pause(
+        self, requests: DeferredToolRequests, *, batch_id: UUID7
+    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+        raise AssertionError("an Inkling run suspends; it never pauses live")
 
 
 @dataclass
@@ -147,6 +159,32 @@ def _boom_agent() -> Agent[None, ScriptedOutput]:
         capabilities=[AskCapability()],
         system_prompt=SYSTEM_PROMPT,
     )
+
+
+@pytest.mark.parametrize("configured", ["default", "bypassPermissions"])
+@pytest.mark.parametrize("override", [None, "dontAsk"])
+async def test_run_records_its_model_and_effective_permission(
+    configured: InklingPermissionMode, override: InklingPermissionMode | None
+) -> None:
+    agent, _ = build_scripted_agent(["done"])
+    conversations = FakeConversationManager()
+    conversation = FakeConversation(
+        thread_id=_THREAD, agent_tentacle_id="inkling", permission_mode=override
+    )
+    conversations.store[(_THREAD, "inkling", "")] = conversation
+    tentacle = _tentacle(agent, conversations)
+    tentacle.permission_mode = configured
+
+    await tentacle.run(
+        "go",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+    )
+
+    [run] = conversation.runs
+    assert run.model_name == "scripted"
+    assert run.permission_mode == (override or configured)
 
 
 async def test_inkling_loop_emits_deferred_question_batch() -> None:
@@ -327,10 +365,20 @@ async def test_a_dont_ask_conversation_answers_its_own_questions() -> None:
     assert "do not want questions or approval prompts" in recorded
 
 
-async def test_a_teleport_reaches_the_suspender_under_a_bypassing_posture() -> None:
-    """A posture speaks about approvals and questions. A `teleport` is deferred the
-    same way but is neither — only the suspender performs one — so no posture may
-    answer it out from under the human. It defers again and lands there."""
+@pytest.mark.parametrize(
+    ("mode", "interactive", "approved"),
+    [
+        ("default", True, False),
+        ("default", True, True),
+        ("bypassPermissions", True, True),
+        ("dontAsk", True, False),
+        ("default", False, False),
+    ],
+)
+async def test_a_teleport_follows_the_approval_posture(
+    mode: InklingPermissionMode, interactive: bool, approved: bool
+) -> None:
+    """Teleport declares approval; the harness decides whether to ask or resolve it."""
     agent, _ = build_scripted_agent(
         [
             ScriptedTurn(
@@ -338,39 +386,81 @@ async def test_a_teleport_reaches_the_suspender_under_a_bypassing_posture() -> N
                 args={"hint": "carrying on over here"},
                 tool_call_id="call_tp_1",
             ),
+            "Staying here.",
         ]
     )
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "inkling", "")] = FakeConversation(
         thread_id=_THREAD,
         agent_tentacle_id="inkling",
-        permission_mode="bypassPermissions",
+        permission_mode=mode,
     )
     suspender = StubSuspender()
+    session = OctomateSession(
+        channel_routes={},
+        current_agent_id="inkling",
+        channels={"im": FakeChannelTentacle()},
+        conversation_address=ChannelAddress(
+            channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
+        ),
+    )
+    capabilities = [GatewayCapability(session=session)]
+    tentacle = _tentacle(agent, conversations)
 
-    await _tentacle(agent, conversations).run(
+    result = await tentacle.run(
         "take this elsewhere",
         conversation_address=_test_conversation_address(),
         thread_id=_THREAD,
         output_type=STR_OUTPUT,
         deferred_suspender=suspender,
-        capabilities=[
-            GatewayCapability(
-                session=OctomateSession(channel_routes={}, current_agent_id="inkling")
-            )
-        ],
+        capabilities=capabilities,
+        interactive=interactive,
     )
 
+    if not interactive or mode == "dontAsk":
+        assert result.output == "Staying here."
+        assert suspender.suspended == []
+        assert session.decision is None
+        return
+
     [suspended] = suspender.suspended
-    assert [call.tool_name for call in suspended.calls] == ["teleport"]
+    if mode == "bypassPermissions":
+        assert session.decision is not None
+        assert suspended.approvals == []
+        assert [call.tool_name for call in suspended.calls] == ["teleport"]
+        assert suspended.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
+        return
+
+    assert suspended.calls == []
+    assert [call.tool_name for call in suspended.approvals] == ["teleport"]
+    assert session.decision is None
+    [action] = DeferredActionCollection.validate_python(suspended)
+    assert isinstance(action, DeferredApproval)
+    assert action.args.tool_name == "teleport"
+    assert action.args.args["hint"] == "carrying on over here"
+
+    result = await tentacle.run(
+        None,
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        deferred_suspender=suspender,
+        capabilities=capabilities,
+        deferred_tool_results=DeferredToolResults(
+            approvals={"call_tp_1": approved}, metadata=suspended.metadata
+        ),
+    )
+    if approved:
+        assert session.decision is not None
+        assert isinstance(result.output, DeferredToolRequests)
+        assert result.output.metadata["call_tp_1"]["kind"] == TELEPORT_DEFER_KIND
+    else:
+        assert session.decision is None
+        assert result.output == "Staying here."
 
 
 async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
-    """A batch is answered together or not at all — the runner refuses results that
-    cover only some of its deferred calls. So a posture that has no opinion about the
-    teleport has none about the question beside it either, and the human gets both.
-    The teleport surviving is what matters; taking the question along is the price of
-    a batch being indivisible, and it is what `default` does with the pair anyway."""
+    """The normal approval flow presents the question and teleport approval together."""
 
     async def both(
         messages: list[ModelMessage], info: AgentInfo
@@ -395,7 +485,17 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
         capabilities=[
             AskCapability(),
             GatewayCapability(
-                session=OctomateSession(channel_routes={}, current_agent_id="inkling")
+                session=OctomateSession(
+                    channel_routes={},
+                    current_agent_id="inkling",
+                    channels={"im": FakeChannelTentacle()},
+                    conversation_address=ChannelAddress(
+                        channel_tentacle_id="im",
+                        chat_type="dm",
+                        chat_id="alice",
+                        user_id="alice",
+                    ),
+                )
             ),
         ],
         system_prompt=SYSTEM_PROMPT,
@@ -404,7 +504,7 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
     conversation = FakeConversation(
         thread_id=_THREAD,
         agent_tentacle_id="inkling",
-        permission_mode="bypassPermissions",
+        permission_mode="default",
     )
     conversations.store[(_THREAD, "inkling", "")] = conversation
     suspender = StubSuspender()
@@ -419,10 +519,8 @@ async def test_a_question_batched_with_a_teleport_suspends_whole() -> None:
 
     assert "approvals go through without one" not in str(conversation.messages)
     [suspended] = suspender.suspended
-    assert [call.tool_name for call in suspended.calls] == [
-        "ask_questions",
-        "teleport",
-    ]
+    assert [call.tool_name for call in suspended.calls] == ["ask_questions"]
+    assert [call.tool_name for call in suspended.approvals] == ["teleport"]
 
 
 @pytest.mark.parametrize(

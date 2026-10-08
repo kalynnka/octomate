@@ -33,7 +33,7 @@ from octomate.config import (
     SlackChannelConfig,
 )
 from octomate.config.base import CONFIG_FILES, DEFAULTS_DIR, config_home
-from octomate.config.channels import SLACK_MCP_SCOPES
+from octomate.config.channels import SLACK_MCP_SCOPES, TrunklineChannelConfig
 from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import DirectoryUpstream, Project
@@ -1223,3 +1223,13 @@ def test_configured_oauth_rejects_empty_or_duplicate_flows(duplicate: bool) -> N
     payload["flows"] = payload["flows"] * 2 if duplicate else []
     with pytest.raises(ValidationError):
         OAuthMcpConfig.model_validate(payload)
+
+
+def test_the_console_stream_cannot_be_turned_off() -> None:
+    """The console reads every reply off its stream, so a channel with it off would
+    answer nothing; the config refuses it rather than failing each reply."""
+    assert TrunklineChannelConfig(agents=["inkling"]).stream.enabled
+    with pytest.raises(ValidationError, match=r"stream\.enabled"):
+        TrunklineChannelConfig.model_validate(
+            {"agents": ["inkling"], "stream": {"enabled": False}}
+        )

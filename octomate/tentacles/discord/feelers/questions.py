@@ -10,7 +10,7 @@ import discord
 from pydantic import UUID7
 
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.deferred import DeferredQuestion
+from octomate.schemas.deferred import DeferredQuestion, QuestionAnswer
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.discord.feelers.actions import (
     DiscordActionUnavailable,
@@ -19,11 +19,18 @@ from octomate.tentacles.discord.feelers.actions import (
 )
 from octomate.tentacles.discord.ink import DiscordInk
 from octomate.tentacles.discord.schema import DiscordOutboundMessage
-from octomate.tentacles.feelers.deferred import QuestionFeeler, question_text
+from octomate.tentacles.feelers.deferred import (
+    QuestionFeeler,
+    answer_text,
+    question_text,
+)
 from octomate.tentacles.feelers.output import IMMessageID
 
 QUESTION_CHOICE_CUSTOM_ID_TEMPLATE = re.compile(
     r"om:q:c:(?P<batch>[0-9a-f]{32}):(?P<action>[0-9a-f]{32}):(?P<choice>\d+)"
+)
+QUESTION_PICKS_CUSTOM_ID_TEMPLATE = re.compile(
+    r"om:q:p:(?P<batch>[0-9a-f]{32}):(?P<action>[0-9a-f]{32})"
 )
 QUESTION_ANSWER_CUSTOM_ID_TEMPLATE = re.compile(
     r"om:q:a:(?P<batch>[0-9a-f]{32}):(?P<action>[0-9a-f]{32})"
@@ -107,6 +114,74 @@ class DiscordQuestionChoiceButton(
             await interaction.followup.send(str(error), ephemeral=True)
 
 
+class DiscordQuestionPicksSelect(
+    discord.ui.DynamicItem[discord.ui.Select[discord.ui.LayoutView]],
+    template=QUESTION_PICKS_CUSTOM_ID_TEMPLATE,
+):
+    """A persistent menu for a multi-select question; closing it records every
+    pick, by index into the choices."""
+
+    def __init__(
+        self,
+        batch_id: UUID7,
+        action_id: UUID7,
+        options: list[discord.SelectOption],
+        *,
+        disabled: bool = False,
+    ) -> None:
+        self.batch_id = batch_id
+        self.action_id = action_id
+        super().__init__(
+            discord.ui.Select(
+                custom_id=f"om:q:p:{batch_id.hex}:{action_id.hex}",
+                placeholder="Pick any",
+                max_values=len(options),
+                options=options,
+                disabled=disabled,
+            )
+        )
+
+    @classmethod
+    async def from_custom_id(
+        cls,
+        interaction: discord.Interaction[discord.Client],
+        item: discord.ui.Item[discord.ui.View],
+        match: re.Match[str],
+        /,
+    ) -> Self:
+        if not isinstance(item, discord.ui.Select):
+            raise TypeError("Discord question picks control is not a select menu")
+        return cls(
+            uuid.UUID(hex=match["batch"]),
+            uuid.UUID(hex=match["action"]),
+            item.options,
+            disabled=item.disabled,
+        )
+
+    async def callback(
+        self,
+        interaction: discord.Interaction[discord.Client],
+    ) -> None:
+        await interaction.response.defer()
+        router = DiscordComponentRouter.for_client(interaction.client)
+        try:
+            actions, answers = await router.save_question_answer(
+                batch_id=self.batch_id,
+                action_id=self.action_id,
+                answer=[
+                    DiscordChoiceAnswer(index=int(pick)) for pick in self.item.values
+                ],
+            )
+            page = next(
+                index
+                for index, action in enumerate(actions)
+                if action.id == self.action_id
+            )
+            await edit_question_page(interaction, actions, answers, page)
+        except DiscordActionUnavailable as error:
+            await interaction.followup.send(str(error), ephemeral=True)
+
+
 class DiscordQuestionAnswerButton(
     discord.ui.DynamicItem[discord.ui.Button[discord.ui.LayoutView]],
     template=QUESTION_ANSWER_CUSTOM_ID_TEMPLATE,
@@ -175,12 +250,13 @@ class DiscordQuestionAnswerButton(
                 ephemeral=True,
             )
             return
+        saved = answers.get(self.action_id)
         await interaction.response.send_modal(
             DiscordQuestionModal(
                 self.batch_id,
                 self.action_id,
                 question=question_text(action),
-                default=answers.get(self.action_id),
+                default=saved if isinstance(saved, str) else None,
             )
         )
 
@@ -253,7 +329,7 @@ class DiscordQuestionNavButton(
 
                 async def settle_message(
                     actions: list[DeferredQuestion],
-                    answers: dict[UUID7, str],
+                    answers: dict[UUID7, QuestionAnswer],
                 ) -> None:
                     await interaction.edit_original_response(
                         content=None,
@@ -364,7 +440,7 @@ class DiscordAskQuestionFeeler(QuestionFeeler):
 async def edit_question_page(
     interaction: discord.Interaction[discord.Client],
     actions: list[DeferredQuestion],
-    answers: dict[UUID7, str],
+    answers: dict[UUID7, QuestionAnswer],
     page: int,
 ) -> None:
     await interaction.edit_original_response(
@@ -376,7 +452,7 @@ async def edit_question_page(
 
 def question_page_content(
     actions: list[DeferredQuestion],
-    answers: dict[UUID7, str] | None = None,
+    answers: dict[UUID7, QuestionAnswer] | None = None,
     *,
     page: int = 0,
 ) -> str:
@@ -394,7 +470,7 @@ def question_page_content(
     if action.id in answers:
         answer_prefix = "\n\n**Answer:** "
         answer_limit = 2000 - len(body) - len(answer_prefix)
-        answer = answers[action.id]
+        answer = answer_text(answers[action.id])
         if len(answer) > answer_limit:
             answer = f"{answer[: answer_limit - 1]}…"
         body = f"{body}{answer_prefix}{answer}"
@@ -403,7 +479,7 @@ def question_page_content(
 
 def question_view(
     actions: list[DeferredQuestion],
-    answers: dict[UUID7, str] | None = None,
+    answers: dict[UUID7, QuestionAnswer] | None = None,
     *,
     page: int = 0,
 ) -> discord.ui.LayoutView:
@@ -417,11 +493,26 @@ def question_view(
         discord.ui.TextDisplay(question_page_content(actions, answers, page=page)),
         accent_color=discord.Color.blurple(),
     )
-    choices_row = discord.ui.ActionRow()
     saved = answers.get(action.id, "")
     choices = list(action.args.get("choices") or [])
-    for index, choice in enumerate(choices):
-        choices_row.add_item(
+    buttons: list[DiscordQuestionChoiceButton | DiscordQuestionAnswerButton] = []
+    if action.args.get("multi_select") and choices:
+        options = [
+            discord.SelectOption(
+                label=choice[:100],
+                value=str(index),
+                default=isinstance(saved, list) and choice in saved,
+            )
+            for index, choice in enumerate(choices)
+        ]
+        # A select menu fills its row alone.
+        container.add_item(
+            discord.ui.ActionRow().add_item(
+                DiscordQuestionPicksSelect(action.batch_id, action.id, options)
+            )
+        )
+    else:
+        buttons = [
             DiscordQuestionChoiceButton(
                 action.batch_id,
                 action.id,
@@ -429,16 +520,24 @@ def question_view(
                 choice,
                 selected=choice == saved,
             )
-        )
-    choices_row.add_item(
+            for index, choice in enumerate(choices)
+        ]
+    buttons.append(
         DiscordQuestionAnswerButton(
             action.batch_id,
             action.id,
             label="Other…" if choices else "Write an answer…",
-            selected=action.id in answers and saved not in choices,
+            selected=isinstance(saved, str)
+            and action.id in answers
+            and saved not in choices,
         )
     )
-    container.add_item(choices_row)
+    # A row holds five buttons, so a fifth choice pushes Other… onto the next.
+    for start in range(0, len(buttons), 5):
+        row = discord.ui.ActionRow()
+        for button in buttons[start : start + 5]:
+            row.add_item(button)
+        container.add_item(row)
     container.add_item(discord.ui.Separator())
     navigation_row = discord.ui.ActionRow()
     if page > 0:
@@ -469,14 +568,14 @@ def question_summary_view(content: str) -> discord.ui.LayoutView:
 
 def question_summary_content(
     actions: list[DeferredQuestion],
-    answers: dict[UUID7, str],
+    answers: dict[UUID7, QuestionAnswer],
     *,
     responder_id: str,
 ) -> str:
     footer = f"\n\nAnswered by <@{responder_id}>"
     content = "**Answers submitted**"
     for index, action in enumerate(actions, start=1):
-        answer = answers.get(action.id, "")
+        answer = answer_text(answers.get(action.id))
         entry = (
             f"\n\n**{index}. {question_text(action)[:200]}**\n"
             f"**Answer:** {answer or '[No answer provided]'}"

@@ -86,9 +86,9 @@ share:
    one; Claude does it in process, Codex over HTTP with a temporary token.
 4. Translate the runtime's events into `StreamEvents` as they arrive, and persist
    the run's messages through `record_agent_run` when it ends.
-5. Raise approvals and questions through the channel's `present_actions`, wait up
-   to `approval_timeout`, and answer the runtime. Mark the batch expired on
-   timeout so the run can finish.
+5. Pause on approvals and questions through the run's suspender, and put the
+   batch it hands back on the run's own stream. Wait up to `approval_timeout` and
+   answer the runtime; mark the batch expired on timeout so the run can finish.
 6. If the gateway recorded a teleport mid-run, interrupt the runtime and end the
    turn through the suspender with the teleport's deferral.
 
@@ -102,6 +102,14 @@ tailer that assembles turns from the streamed lines, committing each as an
 Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
+
+To support native-history teleport, implement `read_fork_transcript`, which
+answers the owner's uploaded history up to its latest whole turn, and
+`fork_transcript`, which imports it into the landed thread's empty conversation as
+a session the runtime resumes. The base class's `fork` and `validate_fork` do the
+rest: ownership, the source thread, its project and the landed thread. Validation
+creates no destination or runtime session; `Awake` calls it before teleport opens
+the destination, and the import must still validate the history it consumes.
 
 ## Register it
 

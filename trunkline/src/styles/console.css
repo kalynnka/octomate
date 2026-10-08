@@ -32,6 +32,8 @@ a:hover {
   --trk-zoom: calc(var(--trk-display-scale) * var(--trk-interface-scale));
   zoom: var(--trk-zoom);
   color-scheme: light;
+  --trk-thread-title-fg: var(--fg-2);
+  --trk-control-item-fg: var(--fg-1);
   --trk-bracket: color-mix(in srgb, var(--color-ink) 42%, transparent);
   --trk-vline: color-mix(in srgb, var(--color-ink) 14%, transparent);
   --surface-raised: #f2ecdd;
@@ -44,9 +46,13 @@ a:hover {
 }
 html[data-theme='dark'] {
   color-scheme: dark;
+  --trk-thread-title-fg: var(--fg-1);
+  --trk-control-item-fg: var(--fg-2);
   --trk-bracket: rgb(236 228 212 / 0.38);
   --trk-vline: rgb(236 228 212 / 0.13);
   --surface-raised: rgb(var(--ce-raised));
+  /* The sunken bed reads black on a dark panel; a skeleton is a grey wash. */
+  --skeleton-bed: rgb(236 228 212 / 0.09);
 }
 
 html[data-interface-size='small'] { --trk-interface-scale: 0.8; }
@@ -487,6 +493,9 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 }
 
 /* Collapsible side rails (width-animated panels) */
+#trk-trace-panel:not([data-folded]) {
+  min-width: min(240px, 100%);
+}
 .trk-rail {
   overflow: hidden;
   transition: width var(--motion-base) var(--ease-out);
@@ -494,8 +503,16 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
 .trk-rail[data-folded] {
   width: 0 !important;
 }
+@property --trk-rail-w {
+  syntax: '<length>';
+  inherits: true;
+  initial-value: 26px;
+}
 .trk-sb {
-  transition: width var(--motion-base) var(--ease-out);
+  transition: width var(--motion-base) var(--ease-out), --trk-rail-w 240ms var(--ease-out);
+}
+.trk-sb:not([data-folded]) {
+  min-width: calc(var(--trk-rail-w) + 220px);
 }
 .trk-rail[data-dragging],
 .trk-sb[data-dragging] {
@@ -838,13 +855,25 @@ select.trk-input option:is(:hover, :focus-visible) {
 select.trk-input option::checkmark { color: var(--color-accent); }
 select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 
-/* Channel letter-rail expands on hover */
-.trk-chrail {
-  transition: width 0.18s ease;
+/* The full channel rail widens together, including its background and controls. */
+.trk-control-label {
+  flex-shrink: 0;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 180ms ease-out, transform 180ms ease-out;
 }
-.trk-chrail:hover {
-  width: 122px !important;
-  box-shadow: var(--shadow-card);
+.trk-sb[data-rail-expanded] .trk-control-label {
+  opacity: 1;
+  transform: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .trk-control-label { transition: none; }
+}
+@media (hover: hover) and (pointer: fine) {
+  .trk-sb[data-rail-expanded] {
+    --trk-rail-w: 100px;
+  }
 }
 
 /* --------------------------------------------------------------------------
@@ -922,12 +951,13 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   :root {
     --trk-interface-scale: 1;
     --trk-rail-w: 36px;
+    --trk-rail-base-w: 36px;
     --trk-rail-letter: 28px;
     --trk-rail-fs: 10px;
     --trk-rail-row-pad: 2px 8px 2px 4px;
     --trk-btn: 32px;
     --trk-channel-row-h: 40px;
-    --trk-th-pad: 11px 14px 11px 30px;
+    --trk-th-pad: 11px 14px;
     --trk-head-h: 54px;
     --trk-head-pad: 0 10px 0 12px;
     --trk-comp-head-pad: 7px 12px 6px;
@@ -965,6 +995,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   }
   #trk-sb-panel:not([data-folded]) {
     width: min(300px, 86vw) !important;
+    min-width: 0;
     z-index: 90;
     box-shadow: var(--shadow-card);
   }
@@ -987,9 +1018,8 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   #mdv-panel:not([data-folded]) {
     width: calc(100% - var(--trk-rail-w)) !important;
   }
-  .trk-chrail:hover {
-    width: var(--trk-rail-w) !important;
-    box-shadow: none;
+  .trk-sb[data-rail-expanded] {
+    --trk-rail-w: 36px;
   }
   .trk-head-title {
     flex-direction: column;
@@ -999,6 +1029,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   .trk-head-chip,
   .trk-comp-hint,
   .trk-comp-tools,
+  .trk-gateway-carry,
   .trk-sbar-channel,
   .trk-sbar-meta > :not(:last-child) {
     display: none !important;
@@ -1007,6 +1038,16 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     padding: 14px 12px;
   }
 }
+@media (pointer: coarse) {
+  :root { --trk-rail-w: 44px; --trk-rail-base-w: 44px; }
+  .trk-sb {
+    --trk-btn: 44px;
+    --trk-channel-row-h: 44px;
+    --trk-rail-letter: 32px;
+    --trk-control-h: 44px;
+  }
+}
+
 /* A phone on its side: the sign-in card must still fit without a scroll. */
 @media (max-height: 519px) and (max-width: 999px) {
   :root {
@@ -1021,3 +1062,15 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
     --trk-pv-w: clamp(360px, 52vw, 720px);
   }
 }
+
+/* Gateway ops in the composer: the frame turns teal for the op, its popover
+   controls keep a visible keyboard focus, and the effort scale is a drawing
+   under a native range that carries the keyboard and the pointer. */
+.trk-composer-frame { transition: border-color var(--motion-base) var(--ease-out); }
+.trk-gateway button:focus-visible, .trk-gateway-close:focus-visible { outline: 1px solid var(--color-accent); outline-offset: -1px; }
+.trk-gateway-filter input { outline: none; }
+.trk-gateway-filter:focus-within { border-bottom-color: var(--color-accent) !important; }
+.trk-gateway-effort { position: relative; display: block; height: 20px; margin: 0 7px; }
+.trk-gateway-effort input { position: absolute; inset: 0 -7px; width: calc(100% + 14px); height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.trk-gateway-effort:has(input:focus-visible) { outline: 1px solid var(--color-accent); outline-offset: 3px; }
+@media (prefers-reduced-motion: reduce) { .trk-composer-frame { transition: none; } }

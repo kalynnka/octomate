@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import gc
+import json
 from collections.abc import AsyncIterator, Callable
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
 from typing import ClassVar, Literal, cast
@@ -22,6 +24,7 @@ from claude_agent_sdk import (
     ToolUseBlock,
     UserMessage,
     UserPromptSubmitHookInput,
+    get_session_messages,
 )
 from claude_agent_sdk.types import Message
 from pydantic import SecretStr, TypeAdapter
@@ -45,6 +48,7 @@ from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.claude import base as claude_base
 from octomate.tentacles.claude.adapter import ClaudeRunAccumulator
+from octomate.tentacles.claude.transcript import transcripts_dir
 from octomate.types.json import JsonObject
 from tests.support.managers import (
     FakeConversation,
@@ -518,16 +522,31 @@ async def test_run_rejects_deferred_output_type(
         )
 
 
-async def test_run_honors_per_run_model(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("permission_mode", [None, "plan", "bypassPermissions"])
+@pytest.mark.parametrize("model", [None, "opus"])
+async def test_run_honors_per_run_model(
+    monkeypatch: pytest.MonkeyPatch, permission_mode: str | None, model: str | None
+) -> None:
     monkeypatch.setattr(claude_base, "ClaudeSDKClient", FakeClaudeClient)
+    conversations = FakeConversationManager()
+    conversations.store[(_THREAD, "claude", "")] = FakeConversation(
+        thread_id=_THREAD, permission_mode=permission_mode
+    )
     tentacle = _tentacle(
-        FakeConversationManager(),
+        conversations,
         config=ClaudeCodeConfig(),
     )
 
-    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model="opus")
+    await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD, model=model)
 
-    assert getattr(FakeClaudeClient.last_options, "model", None) == "opus"
+    assert getattr(FakeClaudeClient.last_options, "model", None) == model
+    [run] = conversations.store[(_THREAD, "claude", "")].runs
+    assert run.model_name == "claude-opus-4-8"
+    assert run.permission_mode == (permission_mode or tentacle.config.permission_mode)
+    assert (
+        getattr(FakeClaudeClient.last_options, "permission_mode", None)
+        == run.permission_mode
+    )
 
 
 async def test_local_transport_passes_no_custom_transport(
@@ -566,6 +585,84 @@ async def test_models_are_discovered_on_connect(
     async with tentacle:
         assert tentacle.models == {"anthropic:a-future-model": "a-future-model"}
         assert tentacle.default_model is None
+
+
+class PickerClaudeClient(FakeClaudeClient):
+    """Claude Code's picker as it lists it: its own names, each with the model it
+    runs, two of them running the same one."""
+
+    async def get_server_info(self) -> JsonObject:
+        return {
+            "models": [
+                {
+                    "value": "default",
+                    "resolvedModel": "claude-opus-5-5",
+                    "displayName": "Default (recommended)",
+                    "description": "Opus 5.5 · Best for everyday, complex tasks",
+                },
+                {
+                    "value": "opus",
+                    "resolvedModel": "claude-opus-5-5",
+                    "displayName": "Opus 5.5",
+                    "description": "For complex work and everyday tasks",
+                },
+                {
+                    "value": "opus[1m]",
+                    "resolvedModel": "claude-opus-5-5[1m]",
+                    "displayName": "Opus 5.5 (1M context)",
+                },
+                {
+                    "value": "sonnet",
+                    "resolvedModel": "claude-sonnet-5-5",
+                    "displayName": "Sonnet 5.5",
+                },
+            ],
+            "account": {"apiProvider": "firstParty"},
+        }
+
+
+async def test_the_catalog_names_each_model_by_what_it_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", PickerClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        assert tentacle.models == {
+            "anthropic:claude-opus-5-5": "claude-opus-5-5",
+            "anthropic:claude-opus-5-5[1m]": "claude-opus-5-5[1m]",
+            "anthropic:claude-sonnet-5-5": "claude-sonnet-5-5",
+        }
+        # Two names for one model are one entry, described by the first.
+        assert tentacle.claims["anthropic:claude-opus-5-5"].ability == (
+            "Opus 5.5 · Best for everyday, complex tasks"
+        )
+
+
+@pytest.mark.parametrize(
+    ("name", "served"),
+    [
+        ("anthropic:claude-sonnet-5-5", "anthropic:claude-sonnet-5-5"),
+        # A pin saved under Claude Code's own name finds what that name runs now,
+        # with or without its provider, and one whose window is gone too.
+        ("anthropic:default", "anthropic:claude-opus-5-5"),
+        ("opus[1m]", "anthropic:claude-opus-5-5[1m]"),
+        ("anthropic:sonnet[1m]", "anthropic:claude-sonnet-5-5"),
+        # A transcript records the id without the window; the larger one wins.
+        ("claude-opus-5-5", "anthropic:claude-opus-5-5[1m]"),
+        ("claude-sonnet-5-5", "anthropic:claude-sonnet-5-5"),
+        ("claude-opus-4-8", None),
+        ("", None),
+    ],
+)
+async def test_a_stored_model_name_finds_the_entry_it_means(
+    monkeypatch: pytest.MonkeyPatch, name: str, served: str | None
+) -> None:
+    monkeypatch.setattr(claude_base, "ClaudeSDKClient", PickerClaudeClient)
+    tentacle = _tentacle(FakeConversationManager())
+
+    async with tentacle:
+        assert tentacle.served_model(name) == served
 
 
 def test_build_structured_result_validates_into_model() -> None:
@@ -734,7 +831,7 @@ async def test_a_gateway_capability_mounts_the_in_process_server(
     append = options.system_prompt.get("append")
     assert isinstance(append, str)
     assert append.startswith("House rules.\n\n")
-    assert "`gateway_scry`" in append
+    assert "`gateway_inspect`" in append
 
 
 async def test_without_the_gateway_no_server_and_no_instruction(
@@ -784,7 +881,8 @@ class BindingClaudeClient(FakeClaudeClient):
                     name="mcp__octomate__gateway_teleport",
                     input={
                         "hint": "into inky",
-                        "destination": {"kind": "here"},
+                        "destination": asdict(KEY),
+                        "new_thread": False,
                         "project": "inky",
                     },
                 ),
@@ -793,7 +891,11 @@ class BindingClaudeClient(FakeClaudeClient):
         )
         assert BindingClaudeClient.session is not None
         BindingClaudeClient.session.decision = TeleportDecision(
-            hint="into inky", here=True, project="inky"
+            agent_id="claude",
+            hint="into inky",
+            destination=KEY,
+            new_thread=False,
+            project="inky",
         )
         yield UserMessage(content=[ToolResultBlock(tool_use_id="t1", content="bound")])
         await self.released.wait()
@@ -817,7 +919,7 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     tentacle = _tentacle(conversations)
     session = OctomateSession(channel_routes={}, current_agent_id="claude")
     BindingClaudeClient.session = session
-    suspender = RecordingSuspender()
+    suspender = RecordingSuspender(agent_tentacle_id="claude")
 
     events = []
     async with tentacle.run_stream_events(
@@ -840,7 +942,8 @@ async def test_a_teleport_mid_run_interrupts_the_turn_and_ends_it_as_a_deferral(
     assert call.tool_name == "teleport"
     assert output.metadata[call.tool_call_id]["kind"] == "teleport"
     assert output.metadata[call.tool_call_id]["project"] == "inky"
-    assert output.metadata[call.tool_call_id]["here"] is True
+    assert output.metadata[call.tool_call_id]["destination"] == asdict(KEY)
+    assert output.metadata[call.tool_call_id]["new_thread"] is False
     # Suspended through the one entry the graph resumes from, and recorded as far
     # as it got.
     assert suspender.suspended == [output]
@@ -912,3 +1015,72 @@ async def test_relocating_a_conversation_moves_its_session_by_id(
     )
 
     assert relocated == [("prev-sess", Path("/workspaces/t1"))]
+
+
+@pytest.mark.parametrize("same_workspace", [False, True])
+async def test_claude_fork_preserves_source_and_relocates_only_the_new_session(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, same_workspace: bool
+) -> None:
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "claude"))
+    source_cwd = tmp_path / "source"
+    destination = source_cwd if same_workspace else tmp_path / "destination"
+    session_id, user_id, assistant_id = (str(uuid7()) for _ in range(3))
+    messages: list[JsonObject] = [
+        {"role": "user", "content": "remember the source"},
+        {"role": "assistant", "content": [{"type": "text", "text": "remembered"}]},
+    ]
+    entries: list[JsonObject] = [
+        {
+            "type": role,
+            "sessionId": session_id,
+            "uuid": message_id,
+            "parentUuid": parent_id,
+            "cwd": str(source_cwd),
+            "timestamp": "2026-01-01T00:00:00Z",
+            "message": message,
+        }
+        for role, message_id, parent_id, message in zip(
+            ("user", "assistant"),
+            (user_id, assistant_id),
+            (None, user_id),
+            messages,
+            strict=True,
+        )
+    ]
+    source_path = transcripts_dir(source_cwd) / f"{session_id}.jsonl"
+    source_path.parent.mkdir(parents=True)
+    original = "".join(json.dumps(entry) + "\n" for entry in entries)
+    source_path.write_text(original)
+    source = claude_base.Conversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", external_id=session_id
+    )
+    tentacle = _tentacle(FakeConversationManager())
+
+    fork_id = await tentacle.fork_session(source, cwd=destination)
+    target = claude_base.Conversation(
+        thread_id=uuid7(), agent_tentacle_id="claude", external_id=fork_id
+    )
+    await tentacle.relocate(target, cwd=destination)
+
+    assert fork_id != session_id
+    assert source.external_id == session_id
+    assert source_path.read_text() == original
+    fork_path = transcripts_dir(destination) / f"{fork_id}.jsonl"
+    assert fork_path.is_file()
+    restored = get_session_messages(fork_id, directory=str(destination))
+    assert [message.message for message in restored] == messages
+    assert {message.uuid for message in restored}.isdisjoint({user_id, assistant_id})
+    with fork_path.open("a") as transcript:
+        transcript.write('{"type":"custom-title","customTitle":"fork only"}\n')
+    assert source_path.read_text() == original
+
+
+@pytest.mark.parametrize("external_id", [None, ""])
+async def test_claude_cannot_fork_without_a_session_id(external_id: str | None) -> None:
+    source = claude_base.Conversation(
+        thread_id=_THREAD, agent_tentacle_id="claude", external_id=external_id
+    )
+    with pytest.raises(ValueError, match="without a session id"):
+        await _tentacle(FakeConversationManager()).fork_session(
+            source, cwd=Path("/new")
+        )

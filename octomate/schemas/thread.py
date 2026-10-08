@@ -13,6 +13,7 @@ from pydantic import (
     AwareDatetime,
     ConfigDict,
     Field,
+    computed_field,
     model_validator,
 )
 from pydantic.dataclasses import dataclass
@@ -21,7 +22,7 @@ from uuid_utils.compat import uuid7
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
@@ -83,6 +84,16 @@ class ThreadKey:
             chat_type=address.chat_type,
             chat_id=address.chat_id,
             channel_thread_id=address.channel_thread_id,
+        )
+
+    def address(self, user_id: str) -> ChannelAddress:
+        """The surface this key names, spoken to `user_id` — `from_address` back."""
+        return ChannelAddress(
+            channel_tentacle_id=self.channel_tentacle_id,
+            chat_type=self.chat_type,
+            chat_id=self.chat_id,
+            channel_thread_id=self.channel_thread_id,
+            user_id=user_id,
         )
 
     @property
@@ -268,6 +279,7 @@ class Thread(BaseTransmuter):
 
     messages: RelationCollection[ThreadMessage] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
+    conversations: RelationCollection[Conversation] = Relationships(exclude=True)
 
     @model_validator(mode="after")
     def kind_agrees_with_the_key(self) -> Self:
@@ -294,14 +306,20 @@ class Thread(BaseTransmuter):
 
     @property
     def latest_handoff(self) -> Handoff | None:
-        return max(self.handoffs, default=None)
+        return self.handoffs[-1] if self.handoffs else None
 
+    @computed_field
     @property
     def active_agent_tentacle_id(self) -> str | None:
         handoff = self.latest_handoff
-        if handoff is None:
-            return None
-        return handoff.to_agent_tentacle_id
+        if handoff is not None:
+            return handoff.to_agent_tentacle_id
+        conversations = [
+            conversation
+            for conversation in self.conversations
+            if not conversation.subagent_id
+        ]
+        return conversations[-1].agent_tentacle_id if conversations else None
 
     @property
     def active_model(self) -> AgentRouteModelName | None:

@@ -254,6 +254,8 @@ export interface WireQuestionArgs {
   question: string
   choices?: string[] | null
   hint?: string
+  /** several choices may be picked, and the answer lists the picks */
+  multi_select?: boolean
 }
 
 export interface WireApprovalArgs {
@@ -314,6 +316,14 @@ export interface RunUsage {
   cache_write_tokens: number
 }
 
+/** A run's first event, a Pydantic AI custom event from the graph: the thread it
+ *  reports into — another than the one asked about when a move carried the turn there. */
+export interface RunStartedEvent {
+  event_kind: 'custom'
+  name: 'run_started'
+  address: ChannelAddress
+}
+
 export interface RunResultEvent {
   event_kind: 'run_result'
   output: string | WireSegment[] | null
@@ -323,6 +333,37 @@ export interface RunResultEvent {
 export interface RunErrorEvent {
   event_kind: 'run_error'
   message: string
+  trace_id: string
+}
+
+/** What a channel adds to an address to show it. `inside` marks a place to
+ *  open — pass it back to list what it holds — rather than one to land in;
+ *  `barred` says why a thread cannot land in one. */
+export interface AddressMetadata {
+  name?: string
+  inside?: string
+  barred?: string
+  server?: string
+}
+
+export interface ChannelAddress {
+  channel_tentacle_id: string
+  chat_type: 'dm' | 'group' | 'thread'
+  chat_id: string
+  user_id: string
+  channel_thread_id: string | null
+  shared: boolean
+  metadata?: AddressMetadata
+}
+
+/** Where a streamed turn ended, when a spell carried it to another thread: the
+ *  console's own operation, or one the agent cast itself mid-turn. */
+export interface GatewayEvent {
+  event_kind: 'gateway'
+  action: 'teleport' | 'summon' | 'scheme'
+  destination: ChannelAddress
+  /** The line the move leaves where the conversation was, if any. */
+  announcement: string | null
 }
 
 export type WireEvent =
@@ -345,8 +386,10 @@ export type WireEvent =
   | ActionBatchEvent
   | SubagentStartedEvent
   | SubagentSettledEvent
+  | RunStartedEvent
   | RunResultEvent
   | RunErrorEvent
+  | GatewayEvent
 
 // ---- REST payloads ---------------------------------------------------------
 
@@ -363,13 +406,15 @@ export interface ApiRoute {
 
 /** One model an agent can be routed to, with what that route claims to be for.
  *  `efforts` empty means the route takes no effort levels — not that it takes
- *  every one of them. */
+ *  every one of them. `default_effort` is what a run with no effort set runs
+ *  at, null when the runtime decides and does not say. */
 export interface ApiAgentRoute {
   agent_id: string
   model: string
   claim: {
     ability: string
     efforts: EffortStep[]
+    default_effort: EffortStep | null
   }
 }
 
@@ -494,6 +539,8 @@ export interface ApiHandoff {
 }
 
 export interface ApiThread {
+  /** Derived from an explicit handoff or the thread’s own conversation. */
+  active_agent_tentacle_id?: string | null
   /** thread row id (uuid) — the read key for every /threads/{id} read */
   id: string
   kind: 'dm' | 'group' | 'thread' | 'native_thread'
@@ -545,6 +592,8 @@ export interface ApiAgentRun {
   kind: 'octomate' | 'external'
   conversation_id: string
   name: string | null
+  model_name: string | null
+  permission_mode: string | null
   /** the directory this run ran in; null when its source reported none */
   cwd: string | null
   parent_run_id: string | null
@@ -633,7 +682,48 @@ export interface DirectiveBody {
 }
 
 export interface BatchResponseBody {
-  answers?: Record<string, string>
+  /** a question's text, or a multi-select question's picks */
+  answers?: Record<string, string | string[]>
   approvals?: Record<string, boolean>
   allow_session?: boolean
 }
+
+export interface OperationAvailability {
+  /** suggested addresses; a browsed one is submitted the same way */
+  destinations: ChannelAddress[]
+  /** this conversation, when Summon may hand it over in place */
+  here: ChannelAddress | null
+  /** what the op can run on each connected channel, keyed by its id: the other
+   *  agents for Summon, this conversation's own for Teleport */
+  routes: Record<string, ApiAgentRoute[]>
+  reason: string | null
+}
+
+export interface ThreadOperations {
+  /** the surface this conversation is on; its `shared` against a destination's warns of exposure */
+  source: ChannelAddress | null
+  teleport: OperationAvailability
+  summon: OperationAvailability
+  /** connected channels where no conversation can land, with why */
+  barred: Record<string, string>
+}
+
+export interface TeleportBody {
+  destination: ChannelAddress
+  hint: string
+  /** sent to the Trunkline thread the move lands in, as your next message */
+  prompt?: string
+}
+
+/** Summon hands this conversation to another agent where it is. */
+export interface SummonBody {
+  agent_id: string
+  model: string
+  brief: string
+  hint: string
+  effort?: EffortStep | null
+}
+
+export type GatewayRequest =
+  | { action: 'teleport'; body: TeleportBody }
+  | { action: 'summon'; body: SummonBody }

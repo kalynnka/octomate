@@ -107,9 +107,12 @@ Inkling is the one agent that can resolve a deferral without a human and keep go
 - `bypassPermissions` grants approvals without a card and still decides questions
   itself.
 
-A commissioned run declines everything, since it has no user. Because Inkling's
-deferrals go through the persisted graph rather than a parked process, an answer to
-an Inkling question survives a restart.
+[Teleport](../gateway.md#teleport) declares `requires_approval` like other gated
+tools: `default` asks, `bypassPermissions` grants, and `dontAsk` denies it.
+
+A commissioned run applies the same posture, then declines any remaining deferrals
+since it has no user. Because Inkling's deferrals go through the persisted graph
+rather than a parked process, an answer to an Inkling question survives a restart.
 
 ## Oversized tool output
 

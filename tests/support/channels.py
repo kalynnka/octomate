@@ -10,7 +10,6 @@ binds a bare `TimelineState` to a channel's feelers for the direct-drive tests.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -27,8 +26,10 @@ from typing_extensions import TypedDict
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import (
-    SubagentActivity,
+    GatewayEvent,
+    RunErrorEvent,
     SubagentActivityStatus,
+    SubagentStartedEvent,
     TodoEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
@@ -49,6 +50,7 @@ from octomate.tentacles.channel import (
     Ink,
     ThreadStrategy,
 )
+from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.deferred import (
     ApprovalFeeler,
     QuestionFeeler,
@@ -144,6 +146,26 @@ class RecordingInk(Ink[NativeMessage]):
     # failing at the moment of asking.
     dm_opens: bool = True
 
+    async def suggest_addresses(
+        self, address: ChannelAddress, source_address: ChannelAddress | None = None
+    ) -> list[ChannelAddress]:
+        if source_address is not None:
+            if source_address.channel_thread_id or source_address.chat_type == "thread":
+                return []
+            return [source_address]
+        return [address]
+
+    async def prepare_address(
+        self,
+        address: ChannelAddress,
+        source_address: ChannelAddress | None = None,
+        *,
+        private: bool = False,
+    ) -> ChannelAddress:
+        if address.chat_type == "thread":
+            raise ValueError("A thread cannot contain another thread.")
+        return address
+
     async def inspect(self) -> UserProfile:
         return self.self_profile
 
@@ -234,7 +256,7 @@ class RecordingTimelineFeeler:
 @dataclass
 class RecordingSubagentTimelineState(SubagentTimelineState):
     address: ChannelAddress
-    activity: SubagentActivity
+    activity: SubagentStartedEvent
     response: str = ""
     settlements: list[tuple[SubagentActivityStatus, str | None]] = field(
         default_factory=list
@@ -257,6 +279,21 @@ class RecordingSubagentTimelineState(SubagentTimelineState):
         self.settlements.append((status, detail))
 
 
+@dataclass
+class RecordingFeelers(Feelers):
+    """Real feelers that also log what the graph reports outside a run."""
+
+    presented: list[tuple[ChannelAddress, GatewayEvent | RunErrorEvent]] = field(
+        default_factory=list
+    )
+
+    async def present(
+        self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent
+    ) -> IMMessageID | None:
+        self.presented.append((address, event))
+        return await super().present(address, event)
+
+
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     """Real channel pipeline over recording fakes. `start_sub_thread` succeeds
     and records, so the graph tests can route receptions into "hint-thread".
@@ -274,6 +311,8 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     sub_threads: list[tuple[ChannelAddress, str]]
     opened_dms: list[str]
     dm_openers: list[str | None]
+    # What the graph reported to this channel outside a run.
+    presented: list[tuple[ChannelAddress, GatewayEvent | RunErrorEvent]]
 
     def __init__(
         self,
@@ -303,9 +342,15 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.opened_dms = self.recording_ink.opened_dms
         self.dm_openers = self.recording_ink.dm_openers
         self.self_profile = self.recording_ink.self_profile
-        self.feelers.timeline = RecordingTimelineFeeler(
-            self.feelers.timeline, self.consumed
+        self.feelers = RecordingFeelers(
+            markdown=self.feelers.markdown,
+            timeline=RecordingTimelineFeeler(self.feelers.timeline, self.consumed),
+            segments=self.feelers.segments,
+            approvals=self.feelers.approvals,
+            ask_questions=self.feelers.ask_questions,
+            oauth=self.feelers.oauth,
         )
+        self.presented = self.feelers.presented
 
     async def consume(
         self,
@@ -331,6 +376,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
             chat_id=address.chat_id,
             user_id=address.user_id,
             channel_thread_id="hint-thread",
+            shared=address.shared,
         )
 
 
@@ -360,18 +406,12 @@ class RecordingTimeline(TimelineState):
     @asynccontextmanager
     async def open(self, address: ChannelAddress) -> AsyncGenerator[RecordingTimeline]:
         self.address = address
-        try:
-            yield self
-        except asyncio.CancelledError:
-            await self.settle_subagents("cancelled")
-            raise
-        finally:
-            await self.settle_subagents("failed")
+        yield self
 
     @asynccontextmanager
     async def open_subagent(
         self,
-        activity: SubagentActivity,
+        activity: SubagentStartedEvent,
     ) -> AsyncGenerator[RecordingSubagentTimelineState]:
         if self.fail_subagent_open:
             raise RuntimeError("subagent timeline open failed")

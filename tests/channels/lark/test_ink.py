@@ -4,10 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
+from typing import cast
 
 import httpx
 import lark_oapi as lark
 import pytest
+from lark_oapi.api.im.v1 import (
+    GetChatMembersRequest,
+    ListChat,
+    ListChatRequest,
+    ListMember,
+)
 from lark_oapi.api.im.v1.model.p2_im_message_receive_v1 import P2ImMessageReceiveV1
 from lark_oapi.core.http import Transport
 from lark_oapi.core.json import JSON
@@ -256,3 +264,86 @@ async def test_pooled_transport_preserves_sdk_body_encoding(multipart: bool) -> 
             del pools[config]
     assert response.status_code == 200
     assert response.content == b'{"code":0}'
+
+
+class ListingLarkClient:
+    """The bot's groups and each group's members, a page at a time."""
+
+    def __init__(
+        self, groups: list[list[str]], members: dict[str, list[list[str]]]
+    ) -> None:
+        self.groups = groups
+        self.members = members
+        self.im = SimpleNamespace(
+            v1=SimpleNamespace(
+                chat=SimpleNamespace(alist=self.list_chats),
+                chat_members=SimpleNamespace(aget=self.list_members),
+            )
+        )
+
+    def page(
+        self, pages: list[list[ListChat]] | list[list[ListMember]], token: str | None
+    ) -> SimpleNamespace:
+        index = int(token or 0)
+        return SimpleNamespace(
+            success=lambda: True,
+            data=SimpleNamespace(
+                items=pages[index],
+                has_more=index + 1 < len(pages),
+                page_token=str(index + 1),
+            ),
+        )
+
+    async def list_chats(self, request: ListChatRequest) -> SimpleNamespace:
+        return self.page(
+            [
+                [ListChat({"chat_id": one, "name": one.upper()}) for one in page]
+                for page in self.groups
+            ],
+            request.page_token,
+        )
+
+    async def list_members(self, request: GetChatMembersRequest) -> SimpleNamespace:
+        members = self.members.get(request.paths["chat_id"])
+        if members is None:
+            return SimpleNamespace(
+                success=lambda: False, data=None, code=232011, msg="not in the chat"
+            )
+        return self.page(
+            [[ListMember({"member_id": one}) for one in page] for page in members],
+            request.page_token,
+        )
+
+
+async def test_lark_lists_and_accepts_only_groups_the_requester_is_in() -> None:
+    ink = LarkInk("test", SecretStr("test"))
+    ink.client = cast(
+        lark.Client,
+        ListingLarkClient(
+            groups=[["oc_a", "oc_b"], ["oc_c"]],
+            members={
+                "oc_a": [["ou_bob"], ["ou_alice"]],
+                "oc_b": [["ou_bob"]],
+                "oc_c": [["ou_alice"]],
+            },
+        ),
+    )
+    one_to_one = ChannelAddress("lark", "dm", "", "ou_alice")
+
+    listed = await ink.list_addresses(one_to_one)
+
+    assert listed == [
+        ChannelAddress("lark", "group", "oc_a", "ou_alice", shared=True),
+        ChannelAddress("lark", "group", "oc_c", "ou_alice", shared=True),
+    ]
+    assert [one.metadata for one in listed] == [{"name": "OC_A"}, {"name": "OC_C"}]
+    # The address is the client's to send, so who can read it is not its to say.
+    claimed = ChannelAddress("lark", "group", "oc_c", "ou_alice")
+    assert (await ink.prepare_address(claimed, private=True)).shared
+    with pytest.raises(ValueError, match="not in that Lark group"):
+        await ink.prepare_address(ChannelAddress("lark", "group", "oc_b", "ou_alice"))
+    # A group the bot is not in cannot be read at all.
+    with pytest.raises(ValueError, match="232011"):
+        await ink.prepare_address(ChannelAddress("lark", "group", "oc_z", "ou_alice"))
+    with pytest.raises(ValueError, match="nothing to open"):
+        await ink.list_addresses(one_to_one, "oc_a")

@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import field, fields
 from functools import cached_property
 from typing import Annotated, NamedTuple
 
 from arcanus import BaseTransmuter, RelationCollection, Relationships
 from arcanus.base import Identity
-from pydantic import UUID7, ConfigDict, Field
+from pydantic import UUID7, ConfigDict, Field, with_config
+from pydantic.dataclasses import dataclass
+from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
@@ -19,7 +21,18 @@ from octomate.types.conversations import ChatType
 from octomate.types.permissions import AgentPermissionMode
 
 
-@dataclass(frozen=True)
+@with_config(ConfigDict(extra="allow"))
+class AddressMetadata(TypedDict, total=False):
+    """What a channel adds to an address to show it; each channel types its own."""
+
+    name: str
+    # Lists what is inside; set on a place to open, absent on one to land in.
+    inside: str
+    # Why a thread cannot land here; absent on an address that can be used.
+    barred: str
+
+
+@dataclass(frozen=True, eq=False)
 class ChannelAddress:
     """One surface on a channel — a DM, a group, a thread — and the user spoken to
     on it."""
@@ -38,6 +51,21 @@ class ChannelAddress:
     # as "thread". False is the safe default — a spell that moves work somewhere
     # private then refuses rather than moving it out of a surface already private.
     shared: bool = False
+    # A channel's extras for showing this surface; never part of its identity.
+    metadata: AddressMetadata = field(default_factory=AddressMetadata, compare=False)
+
+    # A channel's subclass only types `metadata`, so it is still the same address.
+    def __eq__(self, other: object) -> bool:
+        return isinstance(other, ChannelAddress) and all(
+            getattr(self, field.name) == getattr(other, field.name)
+            for field in fields(self)
+            if field.compare
+        )
+
+    def __hash__(self) -> int:
+        return hash(
+            tuple(getattr(self, field.name) for field in fields(self) if field.compare)
+        )
 
     @cached_property
     def group_id(self) -> str:
@@ -81,6 +109,10 @@ class Conversation(BaseTransmuter):
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     external_id: str | None = None
+    transcript_file_id: UUID7 | None = Field(
+        default=None,
+        description="Live native transcript, or the independent starting copy of an imported fork.",
+    )
 
     thread_id: UUID7 = Field(
         frozen=True,
