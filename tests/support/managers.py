@@ -150,6 +150,7 @@ class FakeConversation:
 
     id: UUID7 = field(default_factory=uuid7)
     messages: list[ModelMessage] = field(default_factory=list)
+    name: str | None = None
     external_id: str | None = None
     thread_id: UUID7 | None = None
     subagent_id: str = ""

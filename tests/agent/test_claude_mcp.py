@@ -179,10 +179,10 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
     session = a_turn()
     tools = await spells(session)
 
-    # The bad effort level is the input under test: schema validation refuses it
+    # A non-string effort is the input under test: schema validation refuses it
     # before any policy is consulted, and the refusal is a retryable error.
     result = await tools["gateway_summon"].handler(
-        {**SUMMON_ARGUMENTS, "effort": "everything"}
+        {**SUMMON_ARGUMENTS, "effort": ["everything"]}
     )
 
     assert result["is_error"] is True

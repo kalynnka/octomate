@@ -279,7 +279,7 @@ async def test_teleport_creates_independent_owned_destination(
     threads = await case.app.threads.list_threads(user_id=case.owner.id)
     landed = next(thread for thread in threads if thread.id != case.thread.id)
     assert landed.id != case.thread.id
-    assert landed.title == "Fork of Radio check"
+    assert landed.title == "Radio check"
     original = await case.app.threads.get(case.thread.id)
     assert original is not None
     assert original.title == "Radio check"

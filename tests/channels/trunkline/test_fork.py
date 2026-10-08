@@ -187,7 +187,7 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     await app.threads.rename(source, "Native work")
     stored = await teleport_to_trunkline(case, client)
 
-    assert stored.title == "Fork of Native work"
+    assert stored.title == "Native work"
     original = await app.threads.get(source.id)
     assert original is not None
     assert original.title == "Native work"
@@ -199,7 +199,7 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     assert notice.direction == "inbound"
     assert notice.platform_message_id is None
     assert notice.message_text == (
-        f"Forked from conversation {case.source.id}.\n\n"
+        'Forked from "Native work".\n\n'
         "This fork has no server project. The source working directory "
         "and its files were not transferred.\n\n"
         f"Current channel address:\n{stored.key}/{case.owner_id}."

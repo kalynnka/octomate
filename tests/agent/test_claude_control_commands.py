@@ -173,7 +173,8 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     assert await deliver(agent, context, "fork") == outcome
     client.query.assert_not_called()
     threads = await agent.threads.list_threads(user_id=context.user_id)
-    [target] = [thread for thread in threads if thread.title == "Fork of Original"]
+    [target] = [thread for thread in threads if thread.id != source_thread.id]
+    assert target.title == "Original"
     copied = await agent.conversations.ensure(target.id, agent_tentacle_id=agent.id)
     assert copied.external_id is not None
     assert copied.external_id != session_id

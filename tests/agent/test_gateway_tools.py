@@ -274,11 +274,11 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
     server, session, _channel, _threads = a_turn()
 
     async with Client(server) as client:
-        # The bad effort level is the input under test: the server validates
+        # A non-string effort is the input under test: the server validates
         # against the tool's own schema before any policy is consulted.
         with pytest.raises(ToolError, match="effort"):
             await client.call_tool(
-                "gateway_summon", {**SUMMON_ARGUMENTS, "effort": "everything"}
+                "gateway_summon", {**SUMMON_ARGUMENTS, "effort": ["everything"]}
             )
 
     assert session.decision is None

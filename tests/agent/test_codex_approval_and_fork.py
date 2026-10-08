@@ -394,12 +394,15 @@ async def test_fork_copies_history_settings_and_preserves_source(
     await agent.threads.record_handoff(
         source_thread, to_agent_tentacle_id=agent.id, to_model=context.model
     )
+    existing_ids = {
+        thread.id
+        for thread in await agent.threads.list_threads(user_id=context.user_id)
+    }
     outcome = await deliver(agent, context, "fork")
     assert isinstance(outcome, CommandResult)
     threads = await agent.threads.list_threads(user_id=context.user_id)
-    [target] = [
-        thread for thread in threads if thread.title == "Fork of Original conversation"
-    ]
+    [target] = [thread for thread in threads if thread.id not in existing_ids]
+    assert target.title == "Original conversation"
     target = await agent.threads.get(target.id)
     assert target is not None
     copied = await agent.conversations.ensure(target.id, agent_tentacle_id=agent.id)
