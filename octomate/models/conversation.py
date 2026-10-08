@@ -35,9 +35,19 @@ class ConversationRun(Base, TransmuterProxiedMixin):
     )
     run_id: Mapped[str] = mapped_column(
         String,
-        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        ForeignKey(
+            "agent_runs.id",
+            name="fk_conversation_runs_run_id_agent_runs",
+            ondelete="NO ACTION",
+        ),
         primary_key=True,
         index=True,
+        comment=(
+            "Not cascaded: a run cannot be deleted while any history includes it, so "
+            "a conversation whose runs a fork still includes cannot be deleted. Not "
+            "RESTRICT either, which SQLite checks mid-statement, before the deleted "
+            "conversation's own references are sure to be gone."
+        ),
     )
 
 
@@ -151,8 +161,8 @@ class Conversation(Base, TransmuterProxiedMixin):
 
     transcript_file: Mapped[File | None] = relationship("File", lazy="raise")
     # The runs of this conversation's history: the ones it ran, and the ones it was
-    # forked with. Deleting either side leaves its `conversation_runs` rows to the
-    # database's cascade.
+    # forked with. Deleting the conversation leaves its `conversation_runs` rows to
+    # the database's cascade; a run still in any history cannot be deleted.
     runs: Mapped[list[AgentRun]] = relationship(
         "AgentRun",
         secondary="conversation_runs",

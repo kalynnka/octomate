@@ -13,7 +13,8 @@ from pydantic_ai.messages import (
     ToolCallPart,
     UserPromptPart,
 )
-from sqlalchemy import event
+from sqlalchemy import delete, event
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -23,6 +24,8 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.schemas.commands import CommandInvocation, CommandResult
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.messages import ModelMessage
+from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import FileData, FileSegment, ReplySegment, TextSegment
 from octomate.schemas.thread import (
     Handoff,
@@ -382,3 +385,55 @@ async def test_abandoning_a_shared_tool_call_leaves_the_fork_resuming_it() -> No
     # …while the fork still holds the call it resumes.
     forked = await manager.get(target.id)
     assert forked.messages[-1].id == dropped.id
+
+
+@pytest.mark.parametrize("removal", ["conversation", "thread", "run"])
+async def test_a_run_a_fork_includes_cannot_be_deleted(removal: str) -> None:
+    manager = ConversationManager()
+    source = await manager.ensure(await a_thread("source"), agent_tentacle_id="codex")
+    run = await manager.record_agent_run(
+        source, str(uuid7()), [ModelRequest(parts=[UserPromptPart("keep this")])]
+    )
+    assert run is not None
+    target = await manager.ensure(await a_thread("target"), agent_tentacle_id="codex")
+    await manager.fork(source, target)
+
+    statements = {
+        "conversation": delete(Conversation).where(Conversation["id"] == source.id),
+        "thread": delete(Thread).where(Thread["id"] == source.thread_id),
+        "run": delete(AgentRun).where(AgentRun["id"] == run.id),
+    }
+    async with async_session() as session:
+        with pytest.raises(IntegrityError):
+            await session.execute(statements[removal])
+
+    for conversation in (source, target):
+        history = await manager.get(conversation.id)
+        assert [message.id for message in history.messages] == [run.messages[0].id]
+
+
+async def test_a_source_deletes_with_its_runs_once_no_fork_includes_them() -> None:
+    manager = ConversationManager()
+    source = await manager.ensure(await a_thread("source"), agent_tentacle_id="codex")
+    run = await manager.record_agent_run(
+        source, str(uuid7()), [ModelRequest(parts=[UserPromptPart("keep this")])]
+    )
+    assert run is not None
+    target = await manager.ensure(await a_thread("target"), agent_tentacle_id="codex")
+    await manager.fork(source, target)
+
+    async with async_session() as session:
+        await session.execute(
+            delete(Conversation).where(Conversation["id"] == target.id)
+        )
+        await session.commit()
+    history = await manager.get(source.id)
+    assert [message.id for message in history.messages] == [run.messages[0].id]
+
+    async with async_session() as session:
+        await session.execute(
+            delete(Conversation).where(Conversation["id"] == source.id)
+        )
+        await session.commit()
+        assert await session.get(AgentRun, run.id) is None
+        assert await session.list(ModelMessage, limit=None) == []
