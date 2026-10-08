@@ -691,7 +691,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         sender: UserProfile,
         title: str | None,
     ) -> Thread:
-        """Publish a user-attributed system notice after a successful fork."""
+        """Publish a user-attributed system notice after a successful fork. It names
+        the source by `title`, the source's own name that the fork starts with, or by
+        the source's id when it goes by nothing."""
         profile = await self.users.ensure_profile(target.channel_tentacle_id, sender)
         async with async_session() as session:
             thread = await session.get(
@@ -702,7 +704,11 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if thread is None:
                 raise ValueError(f"unknown thread {target.id}")
             address = thread.key.address(profile.channel_user_id)
-            text = f"Forked from conversation {source.id}.\n\n"
+            text = (
+                f'Forked from "{title}".\n\n'
+                if title is not None
+                else f"Forked from conversation {source.id}.\n\n"
+            )
             if thread.project_id is None:
                 text += (
                     "This fork has no server project. The source working directory "
