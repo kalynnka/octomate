@@ -427,7 +427,9 @@ export function TimelinePanel() {
       <div
         id="trk-timeline"
         onScroll={() => syncRails('timeline')}
-        style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', minHeight: 0, padding: '0 0 12px' }}
+        // Folding a conversation can end the overflow; a reserved gutter keeps
+        // the rows from widening as the scrollbar goes and narrowing as it returns.
+        style={{ flex: 1, overflowY: 'auto', overflowX: 'hidden', scrollbarGutter: 'stable', minHeight: 0, padding: '0 0 12px' }}
       >
         <div style={{ paddingTop: 4 }}>
           {sessions.map((ses, si) => {
