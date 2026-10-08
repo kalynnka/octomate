@@ -204,10 +204,13 @@ lands in shows up in your thread list and is about the same project as the one i
 left. A new destination starts with the source's name: the one its agent gave the
 session, or else the source thread's title. An agent that names its sessions renames
 the destination as its work goes on, and a source with no name leaves the
-destination to take one from the first thing you say in it. The destination shows the original chat, with its senders and
-attachments, and the agent's history run by run; work its subagents did stays with
-the source. From there the two threads grow apart: what happens in one never
-appears in the other.
+destination to take one from the first thing you say in it. The destination
+carries the agent's history run by run; work its subagents did stays with the
+source. A move from a thread also shows that thread's chat, with its senders and
+attachments. A move from a DM or group chat brings only the agent's history: the
+chat room's messages stay in the chat room, where history search still finds
+them. From there the two threads grow apart: what happens in one never appears in
+the other.
 Inheriting someone's messages does not give them access to the destination or
 its later messages through history search.
 The continuation notice appears in the destination; the source Trunkline thread
