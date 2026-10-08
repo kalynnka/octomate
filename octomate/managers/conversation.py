@@ -10,7 +10,6 @@ from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from fastapi import UploadFile
 from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
-from pydantic_ai.messages import ToolCallPart
 from sqlalchemy import and_, func, insert, literal, or_, select
 
 from octomate.database import async_session
@@ -18,7 +17,7 @@ from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation, ConversationRun
 from octomate.schemas.files import FileVariant, Jsonl
-from octomate.schemas.messages import ModelMessage, ModelResponse
+from octomate.schemas.messages import ModelMessage
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import (
     MessageBinding,
@@ -574,12 +573,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
 
             await session.execute(
                 insert(ConversationRun).from_select(
-                    ["conversation_id", "run_id", "through_message_id"],
-                    select(
-                        literal(target.id),
-                        ConversationRun["run_id"],
-                        ConversationRun["through_message_id"],
-                    ).where(
+                    ["conversation_id", "run_id"],
+                    select(literal(target.id), ConversationRun["run_id"]).where(
                         ConversationRun["conversation_id"] == source.id,
                         ConversationRun["run_id"].not_in(dropped),
                     ),
@@ -741,56 +736,6 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 return
             stored.allowed_tools = [*stored.allowed_tools, tool_name]
             await session.commit()
-
-    async def drop_trailing_deferral(
-        self,
-        conversation: Conversation,
-    ) -> ModelResponse | None:
-        """If the conversation's last message is an abandoned deferred-tool
-        ModelResponse (a tool-call request a new user turn supersedes), end the
-        conversation's history just before it, remove it from the caller's copy,
-        and return it. Without the bound the orphan would resurface mid-history on
-        a cold reload, where it can no longer be recognized as a trailing deferral.
-
-        The message itself stays: a fork may share its run and resume the call.
-        """
-        messages = conversation.messages
-        if not messages:
-            return None
-        last = messages[-1]
-        if not isinstance(last, ModelResponse):
-            return None
-        if not any(isinstance(part, ToolCallPart) for part in last.parts):
-            return None
-        previous = next(
-            (
-                message
-                for message in reversed(messages)
-                if message is not last and message.run_id == last.run_id
-            ),
-            None,
-        )
-        async with async_session() as session:
-            entry = await session.one_or_none(
-                ConversationRun,
-                expressions=[
-                    ConversationRun["conversation_id"] == conversation.id,
-                    ConversationRun["run_id"] == last.run_id,
-                ],
-            )
-            if entry is None:
-                raise ValueError(
-                    f"run {last.run_id} is not in conversation {conversation.id}"
-                )
-            if previous is None:
-                # Nothing of the run comes before the call, so the run leaves this
-                # history whole.
-                await session.delete(entry)
-            else:
-                entry.through_message_id = previous.id
-            await session.commit()
-        conversation.messages.remove(last)
-        return last
 
     async def search_messages(
         self,

@@ -109,12 +109,6 @@ class ConversationRun(BaseTransmuter):
 
     conversation_id: Annotated[UUID7, Identity]
     run_id: Annotated[str, Identity]
-    through_message_id: UUID7 | None = Field(
-        default=None,
-        description=(
-            "The run's last message this history includes; None is the whole run."
-        ),
-    )
 
 
 @sqlalchemy_materia.bless(ConversationModel)

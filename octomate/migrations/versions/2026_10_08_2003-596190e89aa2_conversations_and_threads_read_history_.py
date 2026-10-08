@@ -15,7 +15,7 @@ pointed at.
 
 Revision ID: 596190e89aa2
 Revises: 6d1fcc656563
-Create Date: 2026-10-08 14:18:16.325010
+Create Date: 2026-10-08 20:03:18.157504
 
 """
 
@@ -66,20 +66,10 @@ def upgrade() -> None:
         "conversation_runs",
         sa.Column("conversation_id", sa.Uuid(), nullable=False),
         sa.Column("run_id", sa.String(), nullable=False),
-        sa.Column(
-            "through_message_id",
-            sa.Uuid(),
-            nullable=True,
-            comment="The run's last message this conversation's history includes; NULL is the whole run. A conversation that abandons a pending tool call stops short of it here, rather than deleting a message a fork may resume.",
-        ),
         sa.ForeignKeyConstraint(
             ["conversation_id"], ["conversations.id"], ondelete="CASCADE"
         ),
         sa.ForeignKeyConstraint(["run_id"], ["agent_runs.id"], ondelete="CASCADE"),
-        sa.ForeignKeyConstraint(
-            ["through_message_id"],
-            ["model_messages.id"],
-        ),
         sa.PrimaryKeyConstraint("conversation_id", "run_id"),
     )
     with op.batch_alter_table("conversation_runs", schema=None) as batch_op:

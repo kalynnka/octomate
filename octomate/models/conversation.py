@@ -39,16 +39,6 @@ class ConversationRun(Base, TransmuterProxiedMixin):
         primary_key=True,
         index=True,
     )
-    through_message_id: Mapped[UUID7 | None] = mapped_column(
-        Uuid,
-        ForeignKey("model_messages.id"),
-        nullable=True,
-        comment=(
-            "The run's last message this conversation's history includes; NULL is "
-            "the whole run. A conversation that abandons a pending tool call stops "
-            "short of it here, rather than deleting a message a fork may resume."
-        ),
-    )
 
 
 class Conversation(Base, TransmuterProxiedMixin):
@@ -177,17 +167,12 @@ class Conversation(Base, TransmuterProxiedMixin):
         back_populates="conversations",
         lazy="raise_on_sql",
     )
-    # Read-only flat view of every message in the conversation's history, up to
-    # each run's bound.
+    # Read-only flat view of every message in the conversation's history.
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
         secondary="join(ConversationRun, AgentRun, ConversationRun.run_id == AgentRun.id)",
         primaryjoin="Conversation.id == ConversationRun.conversation_id",
-        secondaryjoin=(
-            "and_(AgentRun.id == ModelMessage.run_id, "
-            "or_(ConversationRun.through_message_id.is_(None), "
-            "ModelMessage.id <= ConversationRun.through_message_id))"
-        ),
+        secondaryjoin="AgentRun.id == ModelMessage.run_id",
         order_by="(AgentRun.started_at, AgentRun.id, ModelMessage.id)",
         viewonly=True,
         lazy="selectin",
