@@ -103,21 +103,14 @@ def in_ledger(thread_id: UUID7) -> ColumnElement[bool]:
 
 
 def in_history_of(senders: list[UUID7]) -> ColumnElement[bool]:
-    """The messages in a person's history: everything shown by a thread that shows
-    something one of `senders` said."""
+    """The messages shown by threads that received a message from `senders`.
+
+    Inherited messages are readable history, not participation in the destination.
+    """
     # Aliased, so the rows said here never correlate with the rows being shown.
-    ledgers = aliased(ThreadLedger)
     said = aliased(ThreadMessage)
-    spoken_in = (
-        select(ledgers["thread_id"])
-        .join(said, said["thread_id"] == ledgers["ledger_id"])
-        .where(
-            or_(
-                ledgers["cut_message_id"].is_(None),
-                said["id"] <= ledgers["cut_message_id"],
-            ),
-            said["sender_id"].in_(senders),
-        )
+    spoken_in = select(said["thread_id"]).where(
+        said["sender_id"].in_(senders),
     )
     return shown_by(ThreadLedger["thread_id"].in_(spoken_in))
 
@@ -375,6 +368,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         Either way the model ledger stays behind: it hangs off a message, and
         `related_model_messages` is how a caller asks for it — dragging it here
         would put a query per message behind every thread read.
+
+        `user_id` restricts access to participation in the thread's own ledger;
+        messages inherited from another thread grant no access.
         """
         options = (
             [selectinload(Thread["messages"]).noload(ThreadMessage["model_messages"])]
@@ -391,7 +387,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if user_id is not None:
                 expressions.append(
                     Thread["messages"].any(
-                        ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                        (ThreadMessage["thread_id"] == Thread["id"])
+                        & ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
                     )
                 )
             thread = await session.one_or_none(
@@ -423,7 +420,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         if user_id is not None:
             expressions.append(
                 Thread["messages"].any(
-                    ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                    (ThreadMessage["thread_id"] == Thread["id"])
+                    & ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
                 )
             )
         if channel_tentacle_id is not None:

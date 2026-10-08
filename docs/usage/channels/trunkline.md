@@ -208,6 +208,8 @@ destination to take one from the first thing you say in it. The destination show
 attachments, and the agent's history run by run; work its subagents did stays with
 the source. From there the two threads grow apart: what happens in one never
 appears in the other.
+Inheriting someone's messages does not give them access to the destination or
+its later messages through history search.
 The continuation notice appears in the destination; the source Trunkline thread
 gets no extra chat message.
 

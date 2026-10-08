@@ -124,6 +124,85 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     assert updated.latest_handoff.source_conversation_id is not None
 
 
+async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
+    case: Case, client: httpx.AsyncClient
+) -> None:
+    visitor = await a_user("bob", profiles={"trunkline": "bob", "lark": "ou_bob"})
+    inherited = await case.app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="trunkline",
+            chat_type=case.thread.chat_type,
+            chat_id=case.thread.chat_id,
+            channel_thread_id=case.thread.channel_thread_id,
+            message_id="inherited",
+            user_id="bob",
+            sender=UserProfile(channel_user_id="bob", user_id=visitor.id, name="Bob"),
+            segments=[TextSegment(data={"text": "inherited context"})],
+        )
+    )
+    source = (await case.app.conversations.for_thread(case.thread.id))[0]
+    destination = await case.app.threads.ensure(
+        ThreadKey("trunkline", "thread", str(case.owner.id), uuid7().hex)
+    )
+    target = await case.app.conversations.ensure(
+        destination.id, agent_tentacle_id=case.agent.id
+    )
+    await case.app.conversations.fork(source, target)
+    owner = await case.app.users.profile("trunkline", str(case.owner.id))
+    assert owner is not None
+    await case.app.threads.record_fork(
+        source, destination, sender=owner, title="Private continuation"
+    )
+    private = await case.app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="trunkline",
+            chat_type=destination.chat_type,
+            chat_id=destination.chat_id,
+            channel_thread_id=destination.channel_thread_id,
+            message_id="private",
+            user_id=str(case.owner.id),
+            sender=owner,
+            segments=[TextSegment(data={"text": "confidential continuation"})],
+        )
+    )
+    path = f"/api/trunkline/threads/{destination.id}"
+    for suffix in ("", "/messages", "/conversations", "/operations"):
+        assert (await client.get(f"{path}{suffix}")).status_code == 200
+    assert str(destination.id) in {
+        thread["id"] for thread in (await client.get("/api/trunkline/threads")).json()
+    }
+    messages = (await client.get(f"{path}/messages")).json()
+    assert inherited.message_text in {message["message_text"] for message in messages}
+    assert (
+        await case.app.threads.chat_message(owner, str(inherited.id))
+    ).id == inherited.id
+    assert [
+        message.id
+        for message in await case.app.threads.search_chat_messages(
+            owner, "confidential"
+        )
+    ] == [private.id]
+
+    case.app.dependency_overrides[current_user] = lambda: visitor
+    assert (
+        await client.get(f"/api/trunkline/threads/{case.thread.id}")
+    ).status_code == 200
+    for suffix in ("", "/messages", "/conversations", "/operations"):
+        assert (await client.get(f"{path}{suffix}")).status_code == 404
+    assert str(destination.id) not in {
+        thread["id"] for thread in (await client.get("/api/trunkline/threads")).json()
+    }
+    linked = await case.app.users.profile("lark", "ou_bob")
+    assert linked is not None
+    assert (
+        await case.app.threads.chat_message(linked, str(inherited.id))
+    ).id == inherited.id
+    assert await case.app.threads.search_chat_messages(linked, "confidential") == []
+    for handle in (str(private.id), "#msg:private"):
+        with pytest.raises(ValueError, match="no message"):
+            await case.app.threads.chat_message(linked, handle)
+
+
 @pytest.mark.parametrize("destination_kind", ["dm", "group", "trunkline"])
 async def test_teleport_creates_independent_owned_destination(
     case: Case,
