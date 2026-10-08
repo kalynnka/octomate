@@ -20,6 +20,7 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
@@ -65,11 +66,11 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
     )
     await channel.probe()
     await far.probe()
-    thread = await app.thread_manager.ensure(
+    thread = await app.threads.ensure(
         ThreadKey("trunkline", "thread", str(owner.id), uuid7().hex)
     )
     await app.conversations.ensure(thread.id, agent_tentacle_id=agent.id)
-    await app.thread_manager.record_outbound(
+    await app.threads.record_outbound(
         thread,
         agent_tentacle_id=agent.id,
         segments=[TextSegment(data={"text": "Original history"})],
@@ -116,23 +117,126 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     assert '"event_kind":"gateway"' in response.text, response.text
     assert "run_error" not in response.text, response.text
     assert case.receiver.streams[-1].prompt == "Investigate the existing work"
-    updated = await case.app.thread_manager.get(case.thread.id)
+    updated = await case.app.threads.get(case.thread.id)
     assert updated is not None
     assert updated.active_agent_tentacle_id == "second"
     assert updated.latest_handoff is not None
+    assert updated.latest_handoff.brief == "Investigate the existing work"
     assert updated.latest_handoff.source_conversation_id is not None
 
 
-@pytest.mark.parametrize("explicit_parent", [False, True])
+async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
+    case: Case, client: httpx.AsyncClient
+) -> None:
+    visitor = await a_user("bob", profiles={"trunkline": "bob", "lark": "ou_bob"})
+    inherited = await case.app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="trunkline",
+            chat_type=case.thread.chat_type,
+            chat_id=case.thread.chat_id,
+            channel_thread_id=case.thread.channel_thread_id,
+            message_id="inherited",
+            user_id="bob",
+            sender=UserProfile(channel_user_id="bob", user_id=visitor.id, name="Bob"),
+            segments=[TextSegment(data={"text": "inherited context"})],
+        )
+    )
+    source = (await case.app.conversations.for_thread(case.thread.id))[0]
+    destination = await case.app.threads.ensure(
+        ThreadKey("trunkline", "thread", str(case.owner.id), uuid7().hex)
+    )
+    target = await case.app.conversations.ensure(
+        destination.id, agent_tentacle_id=case.agent.id
+    )
+    await case.app.conversations.fork(source, target)
+    owner = await case.app.users.profile("trunkline", str(case.owner.id))
+    assert owner is not None
+    await case.app.threads.record_fork(
+        source, destination, sender=owner, title="Private continuation"
+    )
+    private = await case.app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="trunkline",
+            chat_type=destination.chat_type,
+            chat_id=destination.chat_id,
+            channel_thread_id=destination.channel_thread_id,
+            message_id="private",
+            user_id=str(case.owner.id),
+            sender=owner,
+            segments=[TextSegment(data={"text": "confidential continuation"})],
+        )
+    )
+    path = f"/api/trunkline/threads/{destination.id}"
+    for suffix in ("", "/messages", "/conversations", "/operations"):
+        assert (await client.get(f"{path}{suffix}")).status_code == 200
+    assert str(destination.id) in {
+        thread["id"] for thread in (await client.get("/api/trunkline/threads")).json()
+    }
+    messages = (await client.get(f"{path}/messages")).json()
+    assert inherited.message_text in {message["message_text"] for message in messages}
+    assert (
+        await case.app.threads.chat_message(owner, str(inherited.id))
+    ).id == inherited.id
+    assert [
+        message.id
+        for message in await case.app.threads.search_chat_messages(
+            owner, "confidential"
+        )
+    ] == [private.id]
+
+    case.app.dependency_overrides[current_user] = lambda: visitor
+    assert (
+        await client.get(f"/api/trunkline/threads/{case.thread.id}")
+    ).status_code == 200
+    for suffix in ("", "/messages", "/conversations", "/operations"):
+        assert (await client.get(f"{path}{suffix}")).status_code == 404
+    assert str(destination.id) not in {
+        thread["id"] for thread in (await client.get("/api/trunkline/threads")).json()
+    }
+    linked = await case.app.users.profile("lark", "ou_bob")
+    assert linked is not None
+    assert (
+        await case.app.threads.chat_message(linked, str(inherited.id))
+    ).id == inherited.id
+    assert await case.app.threads.search_chat_messages(linked, "confidential") == []
+    for handle in (str(private.id), "#msg:private"):
+        with pytest.raises(ValueError, match="no message"):
+            await case.app.threads.chat_message(linked, handle)
+
+
+@pytest.mark.parametrize("destination_kind", ["dm", "group", "trunkline"])
 async def test_teleport_creates_independent_owned_destination(
     case: Case,
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
-    explicit_parent: bool,
+    destination_kind: str,
 ) -> None:
     destination = asdict(ChannelAddress("far", "dm", "", "alice"))
-    if explicit_parent:
+    if destination_kind == "group":
         destination.update(chat_type="group", chat_id="another-room", shared=True)
+    elif destination_kind == "trunkline":
+        destination = asdict(
+            ChannelAddress(
+                "trunkline", "thread", str(case.owner.id), str(case.owner.id)
+            )
+        )
+    await case.app.threads.rename(case.thread, "Radio check")
+    await case.app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="trunkline",
+            chat_type=case.thread.chat_type,
+            chat_id=case.thread.chat_id,
+            channel_thread_id=case.thread.channel_thread_id,
+            message_id="radio-check",
+            user_id=str(case.owner.id),
+            sender=UserProfile(
+                channel_user_id=str(case.owner.id),
+                user_id=case.owner.id,
+                name=case.owner.name,
+            ),
+            segments=[TextSegment(data={"text": "radio check"})],
+        )
+    )
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
     case.agent.models["opus"] = "picked-model"
     await case.app.conversations.record_agent_run(
@@ -161,28 +265,62 @@ async def test_teleport_creates_independent_owned_destination(
         if line.startswith("data: ")
     ]
     event = next(frame for frame in frames if frame["event_kind"] == "gateway")
-    assert event["destination"]["channel_tentacle_id"] == "far"
-    if explicit_parent:
+    assert (
+        event["destination"]["channel_tentacle_id"]
+        == destination["channel_tentacle_id"]
+    )
+    if destination_kind == "group":
         assert event["destination"]["chat_id"] == "another-room"
         assert event["destination"]["shared"]
         assert case.far.opened_dms == []
     # You asked for the move, so nothing runs there until you write.
     assert case.agent.turns == []
     assert case.agent.streams == []
-    threads = await case.app.thread_manager.list_threads(user_id=case.owner.id)
-    landed = next(thread for thread in threads if thread.channel_tentacle_id == "far")
+    threads = await case.app.threads.list_threads(user_id=case.owner.id)
+    landed = next(thread for thread in threads if thread.id != case.thread.id)
     assert landed.id != case.thread.id
+    assert landed.title == "Radio check"
+    original = await case.app.threads.get(case.thread.id)
+    assert original is not None
+    assert original.title == "Radio check"
+    source_messages = await client.get(
+        f"/api/trunkline/threads/{case.thread.id}/messages"
+    )
+    assert source_messages.status_code == 200
+    assert [message["message_text"] for message in source_messages.json()] == [
+        "Original history",
+        "radio check",
+    ]
+    destination_messages = await client.get(
+        f"/api/trunkline/threads/{landed.id}/messages"
+    )
+    assert destination_messages.status_code == 200
+    question = next(
+        message
+        for message in destination_messages.json()
+        if message["actor_kind"] == "human"
+    )
+    assert question["message_text"] == "radio check"
+    assert question["sender"]["name"] == case.owner.name
     copied = (await case.app.conversations.for_thread(landed.id))[0]
     assert copied.id != source.id
     assert copied.permission_mode == "default"
     assert copied.runs[-1].model_name == "opus"
     assert len((await case.app.conversations.get(copied.id)).messages) == 2
     # The landing is still recorded, on the model the conversation ran.
-    stored = await case.app.thread_manager.get(landed.id)
+    stored = await case.app.threads.get(landed.id)
     assert stored is not None
+    assert [
+        (message.actor_kind, message.message_text) for message in stored.messages
+    ] == [
+        ("agent", "Original history"),
+        ("human", "radio check"),
+        ("system", "Work here"),
+    ]
     assert stored.latest_handoff is not None
     assert stored.latest_handoff.to_agent_tentacle_id == "first"
     assert stored.latest_handoff.to_model == "opus"
+    assert stored.latest_handoff.source_conversation_id == source.id
     assert (await case.app.conversations.get(source.id)).thread_id == case.thread.id
 
 
@@ -249,10 +387,10 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
     assert '"event_kind":"gateway"' in response.text
     [run] = case.agent.streams
     assert "Pick up the review" in str(run.prompt)
-    threads = await case.app.thread_manager.list_threads(user_id=case.owner.id)
+    threads = await case.app.threads.list_threads(user_id=case.owner.id)
     [landed] = [thread for thread in threads if thread.id != case.thread.id]
     assert run.thread_id == landed.id
-    stored = await case.app.thread_manager.get(landed.id)
+    stored = await case.app.threads.get(landed.id)
     assert stored is not None
     [asked] = [one for one in stored.messages if one.direction == "inbound"]
     assert asked.message_text == "Pick up the review"
@@ -442,13 +580,13 @@ async def test_unsupported_fork_harness_is_not_offered(
 async def test_external_thread_unknown_privacy_does_not_export_history(
     case: Case, client: httpx.AsyncClient
 ) -> None:
-    thread = await case.app.thread_manager.ensure(
+    thread = await case.app.threads.ensure(
         ThreadKey("far", "thread", "room", uuid7().hex)
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
     profile = await case.app.users.profile("far", "alice")
     assert profile is not None
-    await case.app.thread_manager.record_outbound(
+    await case.app.threads.record_outbound(
         thread,
         agent_tentacle_id="first",
         sender=profile,
@@ -480,13 +618,13 @@ async def test_external_thread_its_channel_calls_private_exports_history(
     case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(case.far, "is_shared", lambda address: False)
-    thread = await case.app.thread_manager.ensure(
+    thread = await case.app.threads.ensure(
         ThreadKey("far", "thread", "alice", uuid7().hex)
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id="first")
     profile = await case.app.users.profile("far", "alice")
     assert profile is not None
-    await case.app.thread_manager.record_outbound(
+    await case.app.threads.record_outbound(
         thread,
         agent_tentacle_id="first",
         sender=profile,
@@ -554,11 +692,11 @@ async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
 async def test_native_teleport_requires_a_transcript_fork_agent(
     case: Case, client: httpx.AsyncClient
 ) -> None:
-    thread = await case.app.thread_manager.ensure(
+    thread = await case.app.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", str(case.owner.id), uuid7().hex)
     )
     await case.app.conversations.ensure(thread.id, agent_tentacle_id=CODEX_NATIVE_ID)
-    await case.app.thread_manager.record_outbound(
+    await case.app.threads.record_outbound(
         thread,
         agent_tentacle_id=CODEX_NATIVE_ID,
         sender=UserProfile(channel_user_id=str(case.owner.id), user_id=case.owner.id),
@@ -711,13 +849,13 @@ async def test_new_trunkline_destination_is_owned_and_independent(
     )
     assert "run_error" not in response.text, response.text
     assert '"event_kind":"gateway"' in response.text
-    listed = await case.app.thread_manager.list_threads(user_id=case.owner.id)
+    listed = await case.app.threads.list_threads(user_id=case.owner.id)
     [landed] = [thread for thread in listed if thread.id != case.thread.id]
     assert landed.channel_tentacle_id == "trunkline"
     assert landed.chat_type == "thread"
     assert landed.channel_thread_id != case.thread.channel_thread_id
     assert landed.active_agent_tentacle_id == "first"
-    original = await case.app.thread_manager.get(case.thread.id)
+    original = await case.app.threads.get(case.thread.id)
     assert original is not None
     assert original.active_agent_tentacle_id == "first"
 

@@ -12,6 +12,8 @@ from fastapi.responses import StreamingResponse
 from fastapi.routing import APIRoute
 from pydantic_ai.messages import ModelMessage, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
+from pydantic_ai.profiles import ModelProfile
+from pydantic_ai.settings import ThinkingLevel
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -249,7 +251,7 @@ async def test_directive_records_chat_ledger(
 
     await _post(channel, "hi there")
 
-    thread = await a_loaded_thread(octomate.thread_manager, _console_address())
+    thread = await a_loaded_thread(octomate.threads, _console_address())
     messages = list(thread.messages)
     inbound = [message for message in messages if message.direction == "inbound"]
     outbound = [message for message in messages if message.direction == "outbound"]
@@ -293,7 +295,7 @@ async def test_selected_route_routes_to_and_owns_the_chosen_agent(
     payload = await _post(channel, "hello", model=f"claude{ROUTE_SEP}{RECEPTION_MODEL}")
 
     assert "from claude" in _streamed_text(payload)
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert thread.active_agent_tentacle_id == "claude"
 
 
@@ -310,7 +312,7 @@ async def test_unchanged_selection_does_not_re_handoff(
     await _post(channel, "one", model=selected)
     await _post(channel, "two", model=selected)
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
@@ -329,7 +331,7 @@ async def test_route_change_after_first_directive_is_refused(
     with pytest.raises(RouteLockedError, match="manual handoff"):
         await _post(channel, "two", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert [handoff.to_agent_tentacle_id for handoff in thread.handoffs] == ["claude"]
 
 
@@ -364,7 +366,7 @@ async def test_routes_offer_and_run_all_registered_agents(
 
     assert _events(payload)[-1]["event_kind"] == "run_result"
     assert "from inkling" in _streamed_text(payload)
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert thread.active_agent_tentacle_id == "inkling"
 
 
@@ -410,7 +412,7 @@ async def test_model_choices_keep_only_the_configured_entry_default(
 
     assert _events(reply)[-1]["output"] == "handled"
     assert [turn.model for turn in agent.streams] == [None, None]
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert thread.active_model is None
     assert len(thread.handoffs) == 1
 
@@ -431,7 +433,7 @@ async def test_a_first_directive_files_the_thread_under_a_project(
 
     await _post(channel, "what is this repo?", project="inky")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     project = await thread.project
     assert project is not None
     assert project.root == inky
@@ -453,7 +455,7 @@ async def test_a_directive_naming_no_project_leaves_the_thread_a_chat(
 
     await _post(channel, "just talk to me")
 
-    thread = await octomate.thread_manager.ensure(_console_address())
+    thread = await octomate.threads.ensure(_console_address())
     assert await thread.project is None
 
 
@@ -657,6 +659,132 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
 
     assert refused.status_code == 422
     assert "not one of inkling's modes" in refused.json()["detail"]
+    assert unknown.status_code == 404
+
+
+@pytest.mark.parametrize("effort", [None, "high", "invalid"])
+async def test_first_directive_applies_effort_to_its_first_run(
+    in_memory_engine: AsyncEngine, effort: str | None
+) -> None:
+    seen: list[ThinkingLevel | None] = []
+
+    async def respond(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str]:
+        seen.append(info.model_request_parameters.thinking)
+        yield "done"
+
+    agent: Agent[None, InklingOutput] = Agent(
+        FunctionModel(
+            stream_function=respond,
+            model_name="scripted",
+            profile=ModelProfile(supports_thinking=True),
+        ),
+        deps_type=type(None),
+        output_type=[str, DeferredToolRequests],
+        system_prompt=SYSTEM_PROMPT,
+    )
+    octomate = Octomate()
+    await _register(octomate, agent)
+    inkling = octomate.agents["inkling"]
+    inkling.claims = {RECEPTION_MODEL: Claim("Test", efforts=("high",))}
+    inkling.routes = inkling.build_routes()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate),
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        response = await client.post(
+            "/api/trunkline/threads/first-effort/messages",
+            json={
+                "text": "hello",
+                "model": f"inkling:{RECEPTION_MODEL}",
+                "effort": effort,
+            },
+        )
+        assert response.status_code == (422 if effort == "invalid" else 200)
+        if effort == "invalid":
+            assert seen == []
+            return
+        [thread] = (await client.get("/api/trunkline/threads")).json()
+        [conversation] = (
+            await client.get(f"/api/trunkline/threads/{thread['id']}/conversations")
+        ).json()
+    assert seen == [effort]
+    assert conversation["effort"] == effort
+
+
+async def test_an_effort_set_mid_thread_stays_on_the_row_until_cleared(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    inkling = octomate.agents["inkling"]
+    inkling.claims = {RECEPTION_MODEL: Claim(ability="test", efforts=("high",))}
+    inkling.routes = inkling.build_routes()
+    route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={"text": "hello", "model": route},
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        conversations = f"/api/trunkline/threads/{listed['id']}/conversations"
+        [opened] = (await client.get(conversations)).json()
+        effort = f"/api/trunkline/conversations/{opened['id']}/effort"
+        raised = await client.patch(effort, json={"effort": "high"})
+        [reread] = (await client.get(conversations)).json()
+        cleared = await client.patch(effort, json={"effort": None})
+
+    assert opened["effort"] is None
+    assert raised.status_code == 200
+    assert raised.json()["effort"] == "high"
+    assert reread["effort"] == "high"
+    assert cleared.json()["effort"] is None
+
+
+async def test_an_effort_the_route_does_not_claim_is_refused(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    inkling = octomate.agents["inkling"]
+    inkling.claims = {RECEPTION_MODEL: Claim(ability="test", efforts=("low", "medium"))}
+    inkling.routes = inkling.build_routes()
+    route = f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
+
+    transport = httpx.ASGITransport(app=octomate)
+    async with httpx.AsyncClient(
+        transport=transport,
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        await client.post(
+            "/api/trunkline/threads/trunkline-abc123/messages",
+            json={"text": "hello", "model": route},
+        )
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        [opened] = (
+            await client.get(f"/api/trunkline/threads/{listed['id']}/conversations")
+        ).json()
+        refused = await client.patch(
+            f"/api/trunkline/conversations/{opened['id']}/effort",
+            json={"effort": "xhigh"},
+        )
+        unknown = await client.patch(
+            f"/api/trunkline/conversations/{uuid7()}/effort", json={"effort": "low"}
+        )
+
+    assert refused.status_code == 422
+    assert "does not take effort 'xhigh'" in refused.json()["detail"]
     assert unknown.status_code == 404
 
 
@@ -930,7 +1058,7 @@ async def test_threads_and_detail_endpoints(
     channel = await _register(octomate, agent)
     await _post(channel, "triage the failing checks", thread_id="thread-9")
     # Bound profiles make this user's other channels visible too.
-    await octomate.thread_manager.record_inbound(
+    await octomate.threads.record_inbound(
         MessageEvent(
             tentacle_id="slack",
             message_id="slack-1",
@@ -1049,7 +1177,7 @@ async def test_console_reads_never_load_the_model_ledger(
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
     await _post(channel, "triage the failing checks", thread_id="thread-9")
-    thread = await octomate.thread_manager.ensure(_console_address("thread-9"))
+    thread = await octomate.threads.ensure(_console_address("thread-9"))
 
     selects: list[str] = []
 
@@ -1116,10 +1244,10 @@ async def test_a_native_thread_reads_back_with_its_project_and_run_directory(
     )
     project = a_project(Path("/srv/inky"))
     octomate.workspaces.projects = await a_registry(project)
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", "session-1"), project=project
     )
-    await octomate.thread_manager.record_inbound(
+    await octomate.threads.record_inbound(
         MessageEvent(
             tentacle_id=CLAUDE_NATIVE_ID,
             message_id="turn-1",
@@ -1206,7 +1334,7 @@ async def test_batch_resolve_resolves_and_streams(
     channel = await _register(octomate, agent)
     await _post(channel, "kick off", thread_id="thread-2")
 
-    thread = await octomate.thread_manager.ensure(_console_address("thread-2"))
+    thread = await octomate.threads.ensure(_console_address("thread-2"))
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="inkling"
     )

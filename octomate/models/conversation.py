@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from arcanus.base import TransmuterProxiedMixin
 from pydantic import UUID7
 from sqlalchemy import ARRAY, JSON, ForeignKey, String, UniqueConstraint, Uuid
+from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
@@ -18,6 +19,36 @@ if TYPE_CHECKING:
     from octomate.models.messages import ModelMessage
     from octomate.models.runs import AgentRun
     from octomate.models.thread import Thread
+
+
+class ConversationRun(Base, TransmuterProxiedMixin):
+    """A run in a conversation's history. Every run is in the history of the
+    conversation it ran in; a fork adds the runs it was forked with, so the fork
+    and its source read the same rows."""
+
+    __tablename__ = "conversation_runs"
+
+    conversation_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey(
+            "agent_runs.id",
+            name="fk_conversation_runs_run_id_agent_runs",
+            ondelete="NO ACTION",
+        ),
+        primary_key=True,
+        index=True,
+        comment=(
+            "Not cascaded: a run cannot be deleted while any history includes it, so "
+            "a conversation whose runs a fork still includes cannot be deleted. Not "
+            "RESTRICT either, which SQLite checks mid-statement, before the deleted "
+            "conversation's own references are sure to be gone."
+        ),
+    )
 
 
 class Conversation(Base, TransmuterProxiedMixin):
@@ -110,6 +141,16 @@ class Conversation(Base, TransmuterProxiedMixin):
             "project when the row is created, and owned by the conversation after."
         ),
     )
+    effort: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment=(
+            "Reasoning effort this conversation's runs ask for, one of the levels "
+            "its agent's route claims for the model. NULL is nothing declared, and "
+            "the runtime's own default decides. A run given an effort of its own, "
+            "as a summon is, uses that one instead."
+        ),
+    )
     # Native string array on Postgres; SQLite (tests/dev) has no array type, so
     # store the list as JSON there. The Python value is `list[str]` either way.
     allowed_tools: Mapped[list[str]] = mapped_column(
@@ -119,13 +160,16 @@ class Conversation(Base, TransmuterProxiedMixin):
     )
 
     transcript_file: Mapped[File | None] = relationship("File", lazy="raise")
+    # The runs of this conversation's history: the ones it ran, and the ones it was
+    # forked with. Deleting the conversation leaves its `conversation_runs` rows to
+    # the database's cascade; a run still in any history cannot be deleted.
     runs: Mapped[list[AgentRun]] = relationship(
         "AgentRun",
-        back_populates="conversation",
-        cascade="all, delete-orphan",
+        secondary="conversation_runs",
         # `id` breaks started_at ties so two reads never disagree on the order; at
         # equal stamps chronology is unknowable, and stability is what is owed.
         order_by="(AgentRun.started_at, AgentRun.id)",
+        passive_deletes=True,
         lazy="selectin",
     )
     thread: Mapped[Thread | None] = relationship(
@@ -133,14 +177,18 @@ class Conversation(Base, TransmuterProxiedMixin):
         back_populates="conversations",
         lazy="raise_on_sql",
     )
-    # Read-only flat view of every message in the conversation, joined through
-    # agent_runs. Writes go through `runs` and each run's `messages`.
+    # Read-only flat view of every message in the conversation's history.
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
-        secondary="agent_runs",
-        primaryjoin="Conversation.id == AgentRun.conversation_id",
+        secondary="join(ConversationRun, AgentRun, ConversationRun.run_id == AgentRun.id)",
+        primaryjoin="Conversation.id == ConversationRun.conversation_id",
         secondaryjoin="AgentRun.id == ModelMessage.run_id",
         order_by="(AgentRun.started_at, AgentRun.id, ModelMessage.id)",
         viewonly=True,
         lazy="selectin",
     )
+
+    @hybrid_property
+    def latest_run(self) -> AgentRun | None:
+        """The last run in the ordered history, or None before the first run."""
+        return self.runs[-1] if self.runs else None

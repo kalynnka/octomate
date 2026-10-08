@@ -124,7 +124,7 @@ def _decision(
         effort=effort,
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
 
@@ -137,7 +137,7 @@ def test_summon_decision_requires_model_field() -> None:
             agent_id="claude",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -149,7 +149,7 @@ def test_summon_decision_rejects_empty_model() -> None:
             model="",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -164,7 +164,7 @@ async def test_summon_capability_accepts_exact_route() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
     assert capability.decision == _decision()
@@ -259,7 +259,7 @@ async def test_a_native_session_cannot_be_summoned() -> None:
             model="test",
             hint="Continue",
             reason="replacement",
-            summon="Carry on from this brief.",
+            brief="Carry on from this brief.",
         )
     assert session.decision is None
 
@@ -276,7 +276,7 @@ async def test_summon_capability_rejects_self_summon() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -302,7 +302,7 @@ async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> N
             model=model,
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -317,7 +317,7 @@ async def test_summon_carries_a_claimed_effort() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
         effort="high",
     )
 
@@ -336,7 +336,7 @@ async def test_summon_refuses_an_unclaimed_effort() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
             effort="low",
         )
     assert capability.decision is None
@@ -387,7 +387,7 @@ async def test_summon_here_refused_when_disallowed() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
     assert capability.decision is None
 
@@ -403,7 +403,7 @@ async def test_summon_here_allowed_on_bounded_surface() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
     assert capability.decision == _decision()
@@ -420,7 +420,7 @@ async def test_summon_tool_records_decision() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
     assert result == "Summoning claude (opus) to take over here."
@@ -957,6 +957,35 @@ async def test_driving_tolerates_a_gateway_that_was_never_built() -> None:
         assert manager.sessions == {}
 
 
+async def test_driving_without_gateway_spells_still_holds_the_conversation() -> None:
+    manager = GatewayManager()
+    session = _registered_session()
+    assert session.conversation_id is not None
+    async with manager.driving(None, conversation_id=session.conversation_id):
+        assert manager.get(session.conversation_id) is None
+        with pytest.raises(RuntimeError, match="already has a turn"):
+            manager.register(session)
+        with pytest.raises(RuntimeError, match="already has a turn"):
+            async with manager.driving(None, conversation_id=session.conversation_id):
+                pytest.fail("a second turn acquired the guard")
+        assert session.conversation_id in manager.sessions
+    assert manager.sessions == {}
+    async with manager.driving(session):
+        with pytest.raises(RuntimeError, match="already has a turn"):
+            async with manager.driving(None, conversation_id=session.conversation_id):
+                pytest.fail("a second turn acquired the guard")
+        assert manager.get(session.conversation_id) is session
+    assert manager.sessions == {}
+
+
+async def test_driving_rejects_mismatched_session_identity() -> None:
+    manager = GatewayManager()
+    with pytest.raises(ValueError, match="another conversation"):
+        async with manager.driving(_registered_session(), conversation_id=uuid7()):
+            pytest.fail("a mismatched session acquired the guard")
+    assert manager.sessions == {}
+
+
 async def test_summon_refuses_a_brief_over_the_cap() -> None:
     """Refused, never trimmed, and before the spell runs: the cap is the tool's own
     argument schema, which the model sees and pydantic-ai validates by, so nothing
@@ -967,9 +996,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
     tool = capability.toolset.tools[GatewayTool.SUMMON]
     over = "Please investigate the failing test. " * 300
 
-    assert (
-        tool.function_schema.json_schema["properties"]["summon"]["maxLength"] == 8_000
-    )
+    assert tool.function_schema.json_schema["properties"]["brief"]["maxLength"] == 8_000
     with pytest.raises(ValidationError, match="at most 8000 characters"):
         tool.function_schema.validator.validate_python(
             {
@@ -977,7 +1004,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
                 "model": "opus",
                 "reason": "needs coding",
                 "hint": "Working on it",
-                "summon": over,
+                "brief": over,
             }
         )
     with pytest.raises(ValidationError, match="at most 8000 characters"):
@@ -987,7 +1014,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon=over,
+            brief=over,
         )
 
     assert capability.decision is None
@@ -1021,12 +1048,15 @@ def test_a_decision_carries_no_brief_over_the_cap() -> None:
         "model": "opus",
         "reason": "needs coding",
         "hint": "Working on it",
-        "summon": "x" * 8_000,
+        "brief": "x" * 8_000,
     }
 
-    assert len(SummonDecision.model_validate(fields).summon) == 8_000
+    decision = SummonDecision.model_validate(fields)
+    assert len(decision.brief) == 8_000
+    assert decision.model_dump()["brief"] == fields["brief"]
+    assert "summon" not in decision.model_dump()
     with pytest.raises(ValidationError, match="at most 8000 characters"):
-        SummonDecision.model_validate({**fields, "summon": "x" * 8_001})
+        SummonDecision.model_validate({**fields, "brief": "x" * 8_001})
 
 
 @pytest.mark.parametrize("offered", [False, True])

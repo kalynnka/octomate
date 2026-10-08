@@ -115,6 +115,9 @@ class TrunklineDirective(BaseModel):
     model: str | None = None
     project: str | None = None
     permission_mode: AgentPermissionMode | None = None
+    effort: str | None = Field(
+        default=None, description="The model's effort selection, stored before the run."
+    )
 
 
 class RouteLockedError(Exception):
@@ -378,7 +381,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
                 continue
             default_model: str | None = None
             if agent_id == self.config.agents[0]:
-                default_model = agent.default_model
+                default_model = agent.resolve_model()
                 routes.append(AgentModelConfig(agent=agent_id, model=default_model))
             for model in agent.models:
                 if model != default_model:
@@ -432,7 +435,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         conversation = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=chosen.agent
         )
-        await self.octomate.thread_manager.record_handoff(
+        await self.octomate.threads.record_handoff(
             thread,
             source_agent_tentacle_id=None,
             to_agent_tentacle_id=chosen.agent,
@@ -490,8 +493,9 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         conversation = await self.octomate.conversations.ensure(
             thread.id, agent_tentacle_id=agent_tentacle_id
         )
-        self.octomate.agents[agent_tentacle_id].check_permission_mode(mode)
-        await self.octomate.conversations.set_permission_mode(conversation, mode)
+        await self.octomate.agents[agent_tentacle_id].set_permission_mode(
+            conversation, mode
+        )
 
     def stream_kick(self, signal: AwakeSignal) -> StreamingResponse:
         """Run the kick in a free task with this request's sink active and
@@ -551,7 +555,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             name=directive.user.name,
             nickname=directive.user.nickname,
         )
-        thread = await self.octomate.thread_manager.ensure(
+        thread = await self.octomate.threads.ensure(
             ChannelAddress(
                 channel_tentacle_id=self.id,
                 chat_type=event.chat_type,
@@ -565,7 +569,18 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         await self.claim_route(thread, directive.model)
         if directive.permission_mode is not None:
             await self.claim_posture(thread, directive.permission_mode)
-        thread_message = await self.octomate.thread_manager.record_inbound(event)
+        if directive.effort is not None:
+            agent_id = thread.active_agent_tentacle_id
+            if agent_id is None:
+                raise ValueError("Select a route before setting its effort")
+            conversation = await self.octomate.conversations.ensure(
+                thread.id, agent_tentacle_id=agent_id, with_history=False
+            )
+            effort = await self.octomate.agents[agent_id].resolve_effort(
+                conversation, model=thread.active_model, effort=directive.effort
+            )
+            await self.octomate.conversations.set_effort(conversation, effort)
+        thread_message = await self.octomate.threads.record_inbound(event)
         return self.stream_kick(
             UserMessageSignal([event], trigger_thread_message_id=thread_message.id)
         )

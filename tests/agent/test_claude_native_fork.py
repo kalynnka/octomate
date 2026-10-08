@@ -20,7 +20,7 @@ from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.transcript import transcripts_dir
 from tests.agent.test_claude_stream import AUTH, CLIENT_PATH, frames, hello_json
 from tests.agent.test_claude_stream import stream_client as a_stream_client
@@ -44,7 +44,21 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 async def a_native_session() -> tuple[Octomate, ClaudeCodeTentacle, UserProfile]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        ClaudeCodeTentacle("claude", octomate, config=ClaudeCodeConfig())
+        ClaudeCodeTentacle(
+            "claude",
+            octomate,
+            config=ClaudeCodeConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            mcp=octomate.mcp,
+        )
     )
     user = await a_user()
     return octomate, tentacle, UserProfile(channel_user_id="lu", user_id=user.id)
@@ -115,7 +129,7 @@ def test_lines_over_the_socket_are_kept_for_their_owner() -> None:
 
         async def kept() -> bytes:
             octomate = tentacle.octomate
-            thread = await octomate.thread_manager.get(SESSION_KEY, with_messages=False)
+            thread = await octomate.threads.get(SESSION_KEY, with_messages=False)
             owner = await octomate.users.native_profile(CLAUDE_NATIVE_ID, "lu")
             assert thread is not None
             assert owner is not None
@@ -157,7 +171,7 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
         forked_from.append((session_id, directory, staged.read_bytes()))
         return SimpleNamespace(session_id="forked-session")
 
-    monkeypatch.setattr(claude_base, "fork_session", fork_session)
+    monkeypatch.setattr(claude_ink, "fork_session", fork_session)
     # The model the session's turns ran, as a transcript records it.
     tentacle.models = {"anthropic:claude-opus-4-8": "claude-opus-4-8"}
     await tentacle.validate_fork(source, sender=sender)
@@ -204,7 +218,7 @@ async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork() -> 
 
 async def test_a_native_session_with_nothing_kept_cannot_fork() -> None:
     octomate, tentacle, sender = await a_native_session()
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY)
     source = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=tentacle.native_id
     )

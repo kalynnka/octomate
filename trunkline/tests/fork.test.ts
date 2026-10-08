@@ -17,7 +17,7 @@ const thread: ApiThread = {
 const conversation: ApiConversation = {
   id: 'native-conversation', external_id: 'native-session', thread_id: thread.id,
   agent_tentacle_id: 'codex-native', subagent_id: '', parent_conversation_id: null,
-  name: null, status: 'active', permission_mode: null, allowed_tools: [], runs: [],
+  name: null, status: 'active', permission_mode: null, effort: null, allowed_tools: [], runs: [],
 }
 
 before(async () => {
@@ -29,6 +29,13 @@ before(async () => {
 })
 after(async () => { await server?.close() })
 
+test('native thread kind keeps a synced session read-only regardless of its channel name', () => {
+  const native: ApiThread = { ...thread, kind: 'native_thread', channel_tentacle_id: 'trunkline', channel_thread_id: 'key' }
+  const detail = liveThreadDetail({ thread: native, conversations: [], messages: [], project: null, batches: [] })
+  assert.equal(detail.kind, 'native_thread')
+  assert.equal(detail.sendKey, undefined)
+})
+
 test('an imported session displays its conversation agent without a handoff', () => {
   const imported: ApiThread = {
     ...thread, channel_tentacle_id: 'trunkline', active_agent_tentacle_id: 'codex',
@@ -36,9 +43,9 @@ test('an imported session displays its conversation agent without a handoff', ()
   assert.equal(liveThreadSummary(imported).agentLabel, 'codex')
 })
 
-test('an import notice of several lines reads as a system row per line', () => {
+test('an import notice keeps the address label and value in one system paragraph', () => {
   const notice: ApiThreadMessage = {
-    id: 'notice', thread_id: thread.id, platform_message_id: null,
+    kind: 'message', id: 'notice', thread_id: thread.id, platform_message_id: null,
     happened_at: '2026-09-29T00:00:00Z', direction: 'inbound', actor_kind: 'system',
     agent_tentacle_id: null, sender: null, segments: [], created_at: '2026-09-29T00:00:00Z',
     message_text: 'Forked from conversation native-session.\n\nCurrent channel address:\ntrunkline/thread/owner/landed/owner.',
@@ -46,8 +53,7 @@ test('an import notice of several lines reads as a system row per line', () => {
   const detail = liveThreadDetail({ thread, conversations: [], messages: [notice], project: null, batches: [] })
   assert.deepEqual(detail.ledger.flatMap((item) => (item.kind === 'system' ? [item.text] : [])), [
     'Forked from conversation native-session.',
-    'Current channel address:',
-    'trunkline/thread/owner/landed/owner.',
+    'Current channel address:\ntrunkline/thread/owner/landed/owner.',
   ])
 })
 

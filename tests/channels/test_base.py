@@ -129,7 +129,7 @@ async def test_ingest_dispatches_event_to_octomate(
     assert event.self_id == "bot"
     assert event.sender.channel_user_id == "alice"
 
-    thread = await a_loaded_thread(octomate.thread_manager, address)
+    thread = await a_loaded_thread(octomate.threads, address)
     assert thread.messages[-1].id == signal.trigger_thread_message_id
     assert thread.messages[-1].message_text == "hello"
 
@@ -171,7 +171,7 @@ async def test_group_mention_filter_records_unmentioned_events_before_ignore(
     assert octomate.kicks == []
 
     thread = await a_loaded_thread(
-        octomate.thread_manager, _key(chat_type="group", chat_id="lobby")
+        octomate.threads, _key(chat_type="group", chat_id="lobby")
     )
     assert [message.message_text for message in thread.messages] == ["hello"]
 
@@ -196,7 +196,7 @@ async def test_a_re_delivery_is_recorded_once_and_woken_once(
     octomate = channel.octomate
     assert isinstance(octomate, FakeOctomate)
     assert len(octomate.kicks) == 1
-    thread = await a_loaded_thread(octomate.thread_manager, _key())
+    thread = await a_loaded_thread(octomate.threads, _key())
     assert [message.message_text for message in thread.messages] == ["hello"]
 
 
@@ -306,7 +306,7 @@ async def test_mention_filter_answers_a_shared_thread_an_agent_owns(
     channel = FakeChannelTentacle(id="chan1")
     octomate = channel.octomate
     assert isinstance(octomate, FakeOctomate)
-    await octomate.thread_manager.record_handoff(
+    await octomate.threads.record_handoff(
         _key(chat_type="thread", chat_id="lobby", thread_id="t1"),
         to_agent_tentacle_id="inkling",
     )
@@ -359,10 +359,8 @@ async def test_next_mention_prompt_includes_stored_unmentioned_messages(
     assert isinstance(signal, UserMessageSignal)
     assert signal.trigger_thread_message_id is not None
 
-    thread = await octomate.thread_manager.ensure(
-        _key(chat_type="group", chat_id="lobby")
-    )
-    pending = await octomate.thread_manager.pending_prompt_messages(
+    thread = await octomate.threads.ensure(_key(chat_type="group", chat_id="lobby"))
+    pending = await octomate.threads.pending_prompt_messages(
         thread,
         signal.trigger_thread_message_id,
         active_agent_id="inkling",

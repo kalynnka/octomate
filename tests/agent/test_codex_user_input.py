@@ -34,7 +34,22 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
     in_memory_engine: AsyncEngine, answer: str | None
 ) -> None:
     octomate = Octomate()
-    tentacle = CodexTentacle("codex", octomate, config=CodexConfig(approval_timeout=5))
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(approval_timeout=0.01 if answer is None else 5),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
     octomate.connect(tentacle)
     octomate.connect(
         TrunklineTentacle(
@@ -50,7 +65,7 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
         channel_thread_id="approval-test",
         user_id="dev",
     )
-    thread = await octomate.thread_manager.ensure(address)
+    thread = await octomate.threads.ensure(address)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id="codex"
     )
@@ -78,9 +93,9 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
             },
         ],
     }
+    params["threadId"] = "native-thread"
     interjections = Interjections[Notification]()
-    tentacle.bridge_contexts[conversation.id] = CodexBridgeContext(
-        loop=asyncio.get_running_loop(),
+    tentacle.bridge_contexts["native-thread"] = CodexBridgeContext(
         conversation=conversation,
         session_allowed=set(),
         suspender=ReflexSuspender(
@@ -100,16 +115,11 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
     )
     turn = interjections.around(never())
     async with aclosing(turn):
-        # The SDK invokes its handler on a plain transport thread.
-        task = asyncio.get_running_loop().run_in_executor(
-            None,
-            tentacle.handle_sdk_request,
-            conversation.id,
-            "item/tool/requestUserInput",
-            params,
+        task = asyncio.create_task(
+            tentacle.handle_sdk_request("item/tool/requestUserInput", params)
         )
         try:
-            card = await asyncio.wait_for(anext(turn), timeout=1)
+            card = await asyncio.wait_for(anext(turn), timeout=5)
             assert isinstance(card, ActionBatchEvent)
             question, follow_up = sorted(card.questions)
             assert question.args.get("choices") == ["Accept", "Decline", "Cancel"]

@@ -2,6 +2,8 @@
 
 ::: octomate.reflex.nodes.awake
 
+::: octomate.reflex.nodes.command
+
 ::: octomate.reflex.nodes.route
 
 ::: octomate.reflex.nodes.react

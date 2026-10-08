@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
 from types import SimpleNamespace, TracebackType
@@ -11,12 +12,12 @@ from unittest.mock import AsyncMock, Mock
 
 import anyio
 import pytest
-from openai_codex import AsyncCodex, AsyncThread
+from openai_codex import AsyncCodex, AsyncThread, InputItem, SkillInput, TextInput
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.api import ApprovalMode, Sandbox
-from openai_codex.client import ApprovalHandler
-from openai_codex.errors import CodexError
+from openai_codex.errors import CodexError, TransportClosedError
 from openai_codex.generated.v2_all import (
+    ActiveThreadStatus,
     AgentMessageDeltaNotification,
     ApprovalsReviewer,
     AskForApprovalValue,
@@ -29,11 +30,15 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     SandboxMode,
+    SkillUserInput,
+    TextUserInput,
+    ThreadClosedNotification,
     ThreadForkParams,
     ThreadItem,
     ThreadReadResponse,
     ThreadResumeParams,
     ThreadStartParams,
+    ThreadStatus,
     Turn,
     TurnCompletedNotification,
     TurnError,
@@ -58,6 +63,7 @@ from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
+from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces.base import ChatWorkspace, Workspace
@@ -76,6 +82,8 @@ from octomate.schemas.user import UserProfile
 from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
+from octomate.tentacles.codex import ink as codex_ink
+from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
@@ -112,9 +120,18 @@ class ThreadCall:
     sandbox: Sandbox | None
 
 
+def driven_headers(call: ThreadCall | ThreadStartParams) -> dict[str, str]:
+    assert call.config is not None
+    servers = call.config["mcp_servers"]
+    assert isinstance(servers, dict)
+    driven = servers["octomate_driven"]
+    assert isinstance(driven, dict)
+    return TypeAdapter(dict[str, str]).validate_python(driven["http_headers"])
+
+
 @dataclass
 class TurnCall:
-    prompt: str
+    prompt: str | list[InputItem]
     approval_mode: ApprovalMode | None
     cwd: str | None
     effort: ReasoningEffort | None
@@ -220,9 +237,14 @@ class FakeThread:
                     "cwd": "/workspace",
                     "ephemeral": False,
                     "modelProvider": "openai",
+                    "model": FakeCodex.thread_models.get(self.id, FakeCodex.model_name),
                     "preview": "the opening line",
                     "source": "appServer",
-                    "status": {"type": "idle"},
+                    "status": {
+                        "type": "idle"
+                        if self.id in FakeCodex.loaded_threads
+                        else "notLoaded"
+                    },
                     "turns": [],
                 }
             }
@@ -230,7 +252,7 @@ class FakeThread:
 
     async def turn(
         self,
-        input: str,
+        input: str | list[InputItem],
         *,
         approval_mode: ApprovalMode | None = None,
         cwd: str | None = None,
@@ -241,6 +263,8 @@ class FakeThread:
         sandbox: Sandbox | None = None,
         summary: ReasoningSummary | None = None,
     ) -> FakeTurn:
+        if model is not None:
+            FakeCodex.thread_models[self.id] = model
         if FakeCodex.on_turn is not None:
             FakeCodex.on_turn(self.id)
         turn = FakeTurn()
@@ -261,7 +285,19 @@ class FakeThread:
         return turn
 
 
+@pytest.fixture(autouse=True)
+def native_thread_handles(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handle(client: AsyncCodex, thread_id: str) -> AsyncThread | FakeThread:
+        if isinstance(client, FakeCodex):
+            return FakeThread(thread_id)
+        return AsyncThread(client, thread_id)
+
+    monkeypatch.setattr(codex_ink, "AsyncThread", handle)
+
+
 class FakeCodex:
+    loaded_threads: ClassVar[set[str]] = set()
+    thread_models: ClassVar[dict[str, str]] = {}
     script: ClassVar[list[Notification]] = []
     thread_name: ClassVar[str | None] = None
     model_name: ClassVar[str] = "runtime-model"
@@ -270,54 +306,93 @@ class FakeCodex:
     thread_calls: ClassVar[list[ThreadCall]] = []
     turn_calls: ClassVar[list[TurnCall]] = []
     turns: ClassVar[list[FakeTurn]] = []
-    approval_handler: ClassVar[ApprovalHandler | None] = None
+    approval_handler: ClassVar[RequestHandler | None] = None
     approval_responses: ClassVar[list[JsonObject]] = []
     builds: ClassVar[int] = 0
     closed: ClassVar[int] = 0
     on_turn: ClassVar[Callable[[str], None] | None] = None
+    start_gate: ClassVar[tuple[asyncio.Event, asyncio.Event] | None] = None
     local_mcp_servers: ClassVar[JsonObject] = {}
 
-    def __init__(self, config: CodexSdkConfig | None = None) -> None:
+    def __init__(
+        self, config: CodexSdkConfig, handler: RequestHandler, *, instrument: bool
+    ) -> None:
         FakeCodex.last_config = config
         FakeCodex.builds += 1
-        # Mirror AsyncCodex's `_client._sync` slot: the tentacle swaps a
-        # handler-bearing sync client into it for every client it builds.
+        FakeCodex.approval_handler = handler
+        self.notifications: asyncio.Queue[Notification | CodexError] = asyncio.Queue()
         self._client = SimpleNamespace(
             _sync=None,
             thread_start=self.thread_start,
             thread_resume=self.thread_resume,
             thread_fork=self.thread_fork,
-            request=AsyncMock(
-                return_value=ConfigReadResponse.model_validate(
-                    {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
-                )
-            ),
+            request=AsyncMock(side_effect=self.request),
+            next_notification=self.next_notification,
         )
+
+    async def request[ResponseT: BaseModel](
+        self, method: str, params: JsonObject | None, *, response_model: type[ResponseT]
+    ) -> ResponseT:
+        if method == "model/list":
+            payload: JsonObject = {
+                "data": [
+                    {
+                        "id": "test-model",
+                        "model": "test-model",
+                        "displayName": "Test model",
+                        "description": "Test catalog",
+                        "isDefault": True,
+                        "hidden": False,
+                        "defaultReasoningEffort": "medium",
+                        "supportedReasoningEfforts": [],
+                    }
+                ]
+            }
+        elif method == "thread/unsubscribe":
+            assert params is not None
+            payload = {"status": "unsubscribed"}
+        elif method == "thread/settings/update":
+            payload = {}
+        else:
+            payload = {"config": {"mcp_servers": self.local_mcp_servers}, "origins": {}}
+        return response_model.model_validate(payload)
+
+    async def next_notification(self) -> Notification:
+        item = await self.notifications.get()
+        if isinstance(item, CodexError):
+            raise item
+        return item
 
     async def __aenter__(self) -> FakeCodex:
         return self
 
-    async def __aexit__(
-        self,
-        exc_type: type[BaseException] | None = None,
-        exc: BaseException | None = None,
-        tb: TracebackType | None = None,
-    ) -> None:
+    async def close(self) -> None:
         FakeCodex.closed += 1
+        self.notifications.put_nowait(TransportClosedError("closed"))
 
     async def _ensure_initialized(self) -> None:
         return
 
     async def thread_start(self, params: ThreadStartParams) -> SimpleNamespace:
+        if FakeCodex.start_gate is not None and FakeCodex.thread_calls:
+            entered, release = FakeCodex.start_gate
+            entered.set()
+            await release.wait()
         self.record_thread(params)
+        count = sum(call.kind == "start" for call in FakeCodex.thread_calls)
+        thread_id = "thread-new" if count == 1 else f"thread-new-{count}"
+        FakeCodex.loaded_threads.add(thread_id)
+        FakeCodex.thread_models[thread_id] = params.model or self.model_name
         return SimpleNamespace(
-            thread=FakeThread("thread-new"), model=params.model or self.model_name
+            thread=FakeThread(thread_id), model=params.model or self.model_name
         )
 
     async def thread_resume(
         self, thread_id: str, params: ThreadResumeParams
     ) -> SimpleNamespace:
         self.record_thread(params)
+        FakeCodex.loaded_threads.add(thread_id)
+        FakeCodex.thread_models[thread_id] = params.model or self.model_name
         return SimpleNamespace(
             thread=FakeThread(thread_id), model=params.model or self.model_name
         )
@@ -379,8 +454,7 @@ class ApprovalFakeTurn(FakeTurn):
     async def stream(self) -> AsyncIterator[Notification]:
         handler = FakeCodex.approval_handler
         assert handler is not None
-        response = await asyncio.to_thread(
-            handler,
+        response = await handler(
             "item/commandExecution/requestApproval",
             {
                 "threadId": "thread-new",
@@ -419,9 +493,11 @@ class StructuredCodexResult(BaseModel):
 
 
 def reset_fake_codex(script: list[Notification]) -> None:
+    FakeCodex.loaded_threads = set()
     FakeCodex.script = script
     FakeCodex.thread_name = None
     FakeCodex.model_name = "runtime-model"
+    FakeCodex.thread_models = {}
     FakeCodex.read_calls = []
     FakeCodex.last_config = None
     FakeCodex.thread_calls = []
@@ -432,6 +508,7 @@ def reset_fake_codex(script: list[Notification]) -> None:
     FakeCodex.builds = 0
     FakeCodex.closed = 0
     FakeCodex.on_turn = None
+    FakeCodex.start_gate = None
     FakeCodex.local_mcp_servers = {}
 
 
@@ -441,7 +518,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
     in_memory_engine: AsyncEngine,
     resumed: bool,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     sdk_thread_id = "prior-thread" if resumed else "thread-new"
     reset_fake_codex(text_script("done", thread_id=sdk_thread_id))
     octomate = Octomate()
@@ -456,7 +533,20 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             stored.external_id = sdk_thread_id
             await session.commit()
     tentacle = CodexTentacle(
-        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     expected = None
     names = [None, "", "  ", " First name ", "修复会话名称", "修复会话名称", None, " "]
@@ -472,11 +562,13 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
             stored_conversation = await octomate.conversations.get(
                 conversation.id, with_history=False
             )
-            thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+            thread = await octomate.threads.get(thread_id, with_messages=False)
             assert thread is not None
             assert stored_conversation.name == expected
             assert thread.title == expected
-    assert FakeCodex.read_calls == [(sdk_thread_id, False)] * len(names)
+    assert FakeCodex.read_calls == [(sdk_thread_id, False)] * (
+        2 * len(names) - (not resumed)
+    )
     assert len(FakeCodex.thread_calls) == 1
     assert FakeCodex.thread_calls[0].kind == ("resume" if resumed else "start")
 
@@ -484,14 +576,14 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
 async def test_driven_child_name_does_not_rename_parent_thread(
     monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     FakeCodex.thread_name = "Child work"
     octomate = Octomate()
     thread_id = await a_thread()
-    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
-    await octomate.thread_manager.rename(thread, "Parent work")
+    await octomate.threads.rename(thread, "Parent work")
     parent = await octomate.conversations.ensure(thread_id, agent_tentacle_id="codex")
     await octomate.conversations.set_name(parent, "Parent work")
     child = await octomate.conversations.ensure(
@@ -501,7 +593,20 @@ async def test_driven_child_name_does_not_rename_parent_thread(
         parent_conversation_id=parent.id,
     )
     tentacle = CodexTentacle(
-        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     async with tentacle:
         await tentacle.run(
@@ -516,7 +621,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     assert (
         await octomate.conversations.get(parent.id, with_history=False)
     ).name == "Parent work"
-    thread = await octomate.thread_manager.get(thread_id, with_messages=False)
+    thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
     assert thread.title == "Parent work"
 
@@ -527,7 +632,7 @@ async def test_driven_name_lookup_failure_keeps_the_run_result(
     caplog: pytest.LogCaptureFixture,
     error: CodexError | OSError,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     read = AsyncMock(side_effect=error)
     monkeypatch.setattr(FakeThread, "read", read)
@@ -546,10 +651,22 @@ def _tentacle(
     *,
     config: CodexConfig | None = None,
 ) -> CodexTentacle:
+    host = Octomate(conversations=conversations)
     return CodexTentacle(
         "codex",
-        Octomate(conversations=conversations),
+        host,
         config=config or CodexConfig(permission_mode="auto_review"),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
     )
 
 
@@ -557,7 +674,6 @@ def codex_bridge_context(
     conversation: FakeConversation, suspender: RecordingSuspender
 ) -> codex_base.CodexBridgeContext:
     return codex_base.CodexBridgeContext(
-        loop=asyncio.get_running_loop(),
         conversation=cast(codex_base.Conversation, conversation),
         session_allowed=set(conversation.allowed_tools),
         suspender=suspender,
@@ -577,18 +693,28 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     monkeypatch: pytest.MonkeyPatch,
     instrument: bool,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     trace_environment = TraceEnvironment(
         "https://logfire.example/v1/traces", SecretStr("test-token")
     )
     trace_config = Mock(return_value=trace_environment)
-    monkeypatch.setattr(codex_base, "octomate_trace_environment", trace_config)
+    monkeypatch.setattr(codex_ink, "octomate_trace_environment", trace_config)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(
         conversations,
         config=CodexConfig(instrument=instrument, permission_mode="auto_review"),
     )
+    # A driven turn and runtime shutdown must use the injected managers.
+    for name in (
+        "commands",
+        "conversations",
+        "threads",
+        "workspaces",
+        "auth",
+        "gateway",
+    ):
+        monkeypatch.delattr(tentacle.octomate, name)
 
     events = []
     async with tentacle:
@@ -637,9 +763,9 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
 
     [recorded] = conversations.runs
     fake, _label, messages = recorded
-    assert fake.external_id == "thread-1"
+    assert fake.external_id == "thread-new"
     assert fake.runs[-1].native_id == "codex-native"
-    assert fake.runs[-1].native_session_id == "thread-1"
+    assert fake.runs[-1].native_session_id == "thread-new"
     assert fake.runs[-1].native_turn_id == "turn-1"
     assert messages
 
@@ -649,7 +775,7 @@ async def test_instructions_join_the_developer_instructions(
 ) -> None:
     # Run-level instructions (an accomplice's framing included) ride the
     # thread's developer instructions, joined after the config default.
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(
@@ -678,7 +804,7 @@ async def test_instructions_join_the_developer_instructions(
 async def test_run_resumes_prior_thread_and_applies_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="prev-thread"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -696,7 +822,7 @@ async def test_run_resumes_prior_thread_and_applies_config(
             developer_instructions="dev",
             ephemeral=True,
             personality="pragmatic",
-            effort="xhigh",
+            effort=ReasoningEffort.xhigh,
             summary="detailed",
         ),
     )
@@ -741,14 +867,27 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
     in_memory_engine: AsyncEngine,
     here: bool,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("before", thread_id="thread-new"))
     fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
     octomate = Octomate()
-    thread = await octomate.thread_manager.ensure(KEY)
+    thread = await octomate.threads.ensure(KEY)
     tentacle = CodexTentacle(
-        "codex", octomate, config=CodexConfig(permission_mode="auto_review")
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     channel = FakeChannelTentacle(config=ChannelConfig(type="fake", agents=["codex"]))
     origin = ResponseTarget(channel_id="im", address=KEY)
@@ -757,7 +896,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         agents={"codex": tentacle},
         channels={"im": channel},
         conversation_manager=octomate.conversations,
-        thread_manager=octomate.thread_manager,
+        thread_manager=octomate.threads,
         action_manager=octomate.deferred_actions,
         gateway=octomate.gateway,
         workspaces=octomate.workspaces,
@@ -828,7 +967,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
 async def test_codex_fork_passes_the_turn_cutoff(
     monkeypatch: pytest.MonkeyPatch, last_turn_id: str | None
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     fork = AsyncMock(return_value=SimpleNamespace(thread=FakeThread("thread-fork")))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork)
@@ -836,9 +975,10 @@ async def test_codex_fork_passes_the_turn_cutoff(
         thread_id=uuid7(), agent_tentacle_id="codex", external_id="source"
     )
 
-    result = await _tentacle(FakeConversationManager()).fork_session(
-        source, cwd=Path("/destination"), last_turn_id=last_turn_id
-    )
+    async with _tentacle(FakeConversationManager()) as tentacle:
+        result = await tentacle.fork_session(
+            source, cwd=Path("/destination"), last_turn_id=last_turn_id
+        )
 
     assert result == "thread-fork"
     fork.assert_awaited_once_with(
@@ -858,7 +998,7 @@ async def test_codex_fork_passes_the_turn_cutoff(
 async def test_codex_fork_failure_leaves_the_source_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     fork = AsyncMock(side_effect=RuntimeError("fork failed"))
     monkeypatch.setattr(FakeCodex, "thread_fork", fork, raising=False)
@@ -867,8 +1007,9 @@ async def test_codex_fork_failure_leaves_the_source_unchanged(
         thread_id=uuid7(), agent_tentacle_id="codex", external_id="source"
     )
 
-    with pytest.raises(RuntimeError, match="fork failed"):
-        await tentacle.fork_session(source, cwd=Path("/destination"))
+    async with tentacle:
+        with pytest.raises(RuntimeError, match="fork failed"):
+            await tentacle.fork_session(source, cwd=Path("/destination"))
 
     assert source.external_id == "source"
     assert FakeCodex.closed == 1
@@ -879,7 +1020,7 @@ async def test_codex_cannot_fork_without_a_session_id(
     monkeypatch: pytest.MonkeyPatch, external_id: str | None
 ) -> None:
     client = Mock()
-    monkeypatch.setattr(codex_base, "AsyncCodex", client)
+    monkeypatch.setattr(codex_ink, "SharedCodex", client)
     source = Conversation(
         thread_id=_THREAD, agent_tentacle_id="codex", external_id=external_id
     )
@@ -887,13 +1028,13 @@ async def test_codex_cannot_fork_without_a_session_id(
         await _tentacle(FakeConversationManager()).fork_session(
             source, cwd=Path("/new")
         )
-    client.assert_not_called()
+    client.return_value._client.thread_fork.assert_not_called()
 
 
 async def test_run_with_output_type_passes_schema_and_validates_json(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script('{"answer":"ok"}'))
     tentacle = _tentacle(FakeConversationManager())
 
@@ -913,7 +1054,7 @@ async def test_run_with_output_type_passes_schema_and_validates_json(
 async def test_failed_run_persists_before_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(failed_script("boom"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -928,7 +1069,7 @@ async def test_failed_run_persists_before_raising(
 
     [recorded] = conversations.runs
     fake, _label, messages = recorded
-    assert fake.external_id == "thread-1"
+    assert fake.external_id == "thread-new"
     assert messages
 
 
@@ -937,18 +1078,8 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
 ) -> None:
     reset_fake_codex(text_script("done"))
 
-    def capture_handler(
-        config: CodexSdkConfig | None = None,
-        approval_handler: ApprovalHandler | None = None,
-    ) -> object:
-        # Stands in for the sync CodexClient the tentacle swaps into `_client._sync`;
-        # capture the per-thread approval handler the run binds.
-        FakeCodex.approval_handler = approval_handler
-        return object()
-
     async def start_fake_thread(
-        self: CodexTentacle,
-        client: codex_base.AsyncCodex,
+        self: codex_ink.CodexInk,
         *,
         approval_mode: ApprovalMode | None,
         base_instructions: str | None,
@@ -966,8 +1097,8 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         assert approval_mode is None
         assert sandbox is Sandbox.workspace_write
         assert config == {"mcp_servers": {}}
-        assert isinstance(client, FakeCodex)
-        client._client._start_turn = AsyncMock(
+        assert isinstance(self.client, FakeCodex)
+        self.client._client._start_turn = AsyncMock(
             return_value=(
                 SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
                 None,
@@ -975,11 +1106,10 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         )
         return FakeThread("thread-new"), "runtime-model"
 
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
-    monkeypatch.setattr(codex_base, "CodexClient", capture_handler)
-    monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_fake_thread)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink.CodexInk, "start_thread", start_fake_thread)
     monkeypatch.setattr(
-        codex_base, "AsyncTurnHandle", Mock(return_value=ApprovalFakeTurn())
+        codex_ink, "AsyncTurnHandle", Mock(return_value=ApprovalFakeTurn())
     )
     approval = DeferredApproval(
         tool_name="codex_command_execution",
@@ -998,6 +1128,17 @@ async def test_user_approval_mode_bridges_sdk_requests_to_cards(
         "codex",
         octomate,
         config=CodexConfig(permission_mode="user_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     octomate.connect(tentacle)
 
@@ -1047,14 +1188,23 @@ async def test_question_requests_bridge_to_cards() -> None:
         "codex",
         octomate,
         config=CodexConfig(permission_mode="user_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
+    tentacle.bridge_contexts["thread-1"] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
-        asyncio.to_thread(
-            tentacle.handle_sdk_request,
-            _THREAD,
+        tentacle.handle_sdk_request(
             "mcp/elicitation/create",
             {
                 "threadId": "thread-1",
@@ -1100,17 +1250,28 @@ async def test_an_mcp_tool_prompt_bridges_to_an_approval_card(approved: bool) ->
         deferred_actions=cast(DeferredActionManager, deferred_actions),
     )
     tentacle = CodexTentacle(
-        "codex", octomate, config=CodexConfig(permission_mode="user_review")
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="user_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
+    tentacle.bridge_contexts["thread-1"] = codex_bridge_context(
         FakeConversation(thread_id=_THREAD), suspender
     )
 
     task = asyncio.create_task(
-        asyncio.to_thread(
-            tentacle.handle_sdk_request,
-            _THREAD,
+        tentacle.handle_sdk_request(
             "mcpServer/elicitation/request",
             {
                 "threadId": "thread-1",
@@ -1166,14 +1327,23 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
         "codex",
         octomate,
         config=CodexConfig(permission_mode="user_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
+    tentacle.bridge_contexts["thread-1"] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
-        asyncio.to_thread(
-            tentacle.handle_sdk_request,
-            _THREAD,
+        tentacle.handle_sdk_request(
             "item/commandExecution/requestApproval",
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
@@ -1197,15 +1367,24 @@ async def test_codex_approval_deny_and_timeout_paths() -> None:
             permission_mode="user_review",
             approval_timeout=0.01,
         ),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     octomate.connect(timeout_tentacle)
-    timeout_tentacle.bridge_contexts[_THREAD] = codex_bridge_context(
+    timeout_tentacle.bridge_contexts["thread-1"] = codex_bridge_context(
         conversation, suspender
     )
     timeout_task = asyncio.create_task(
-        asyncio.to_thread(
-            timeout_tentacle.handle_sdk_request,
-            _THREAD,
+        timeout_tentacle.handle_sdk_request(
             "item/commandExecution/requestApproval",
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
@@ -1237,14 +1416,23 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         "codex",
         octomate,
         config=CodexConfig(permission_mode="user_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     octomate.connect(tentacle)
-    tentacle.bridge_contexts[_THREAD] = codex_bridge_context(conversation, suspender)
+    tentacle.bridge_contexts["thread-1"] = codex_bridge_context(conversation, suspender)
 
     task = asyncio.create_task(
-        asyncio.to_thread(
-            tentacle.handle_sdk_request,
-            _THREAD,
+        tentacle.handle_sdk_request(
             "item/commandExecution/requestApproval",
             {"threadId": "thread-1", "itemId": "cmd-1", "command": "pytest"},
         )
@@ -1258,9 +1446,7 @@ async def test_codex_allow_session_auto_approves_the_next_request() -> None:
         )
     )
     response = await task
-    second_response = await asyncio.to_thread(
-        tentacle.handle_sdk_request,
-        _THREAD,
+    second_response = await tentacle.handle_sdk_request(
         "item/commandExecution/requestApproval",
         {"threadId": "thread-1", "itemId": "cmd-2", "command": "pytest"},
     )
@@ -1283,7 +1469,7 @@ async def test_detached_run_drains_before_releasing_resources(
     detach: str,
     fails: bool,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex([])
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1365,9 +1551,7 @@ async def test_detached_run_drains_before_releasing_resources(
             assert len(tentacle.live_turns) == 1
             assert len(tentacle.bridge_contexts) == 1
             assert len(tentacle.run_tasks) == 1
-            assert tentacle.pool is not None
-            [client] = tentacle.pool.clients.values()
-            assert client.in_use == 1
+            assert tentacle.ink.client is not None
             cwd = FakeCodex.turn_calls[0].cwd
             assert cwd is not None
             assert await anyio.Path(cwd).is_dir()
@@ -1393,7 +1577,6 @@ async def test_detached_run_drains_before_releasing_resources(
         assert tentacle.live_turns == {}
         assert tentacle.bridge_contexts == {}
         assert tentacle.run_tasks == set()
-        assert client.in_use == 0
         assert len(conversations.runs) == 1
         assert any(
             isinstance(part, TextPart) and part.content == "finished"
@@ -1420,7 +1603,7 @@ async def test_shutdown_drains_live_turns_without_interrupting(
     monkeypatch: pytest.MonkeyPatch,
     cancel_shutdown: bool,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1464,7 +1647,7 @@ async def test_shutdown_drains_live_turns_without_interrupting(
 
     assert len(conversations.runs) == 1
     assert FakeCodex.closed == 1
-    assert tentacle.pool is None
+    assert tentacle.ink.notification_task is None
     assert not tentacle.live_turns
     assert not tentacle.driven_sessions
 
@@ -1472,7 +1655,7 @@ async def test_shutdown_drains_live_turns_without_interrupting(
 async def test_same_conversation_waits_before_opening_another_workspace(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1535,10 +1718,10 @@ async def test_same_conversation_waits_before_opening_another_workspace(
         assert all(not turn.interrupted for turn in FakeCodex.turns)
 
 
-async def test_pool_reuses_client_per_thread_and_drains_on_exit(
+async def test_one_client_serves_multiple_conversations_and_closes_on_exit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     other_thread = uuid7()
     tentacle = _tentacle(FakeConversationManager())
@@ -1546,7 +1729,7 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
     async with tentacle:
         await tentacle.run("one", conversation_address=KEY, thread_id=_THREAD)
         await tentacle.run("two", conversation_address=KEY, thread_id=_THREAD)
-        # Same thread: one warm client, one thread_start, both turns reuse it.
+        # The same conversation keeps its native thread handle.
         assert FakeCodex.builds == 1
         assert len(FakeCodex.thread_calls) == 1
         assert len(FakeCodex.turn_calls) == 2
@@ -1554,12 +1737,10 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
         await tentacle.run(
             "elsewhere", conversation_address=KEY, thread_id=other_thread
         )
-        # A different thread gets its own client and its own thread_start.
-        assert FakeCodex.builds == 2
+        assert FakeCodex.builds == 1
 
-    # Exiting the tentacle drains the pool, closing every warm client.
-    assert FakeCodex.closed == 2
-    assert tentacle.pool is None
+    assert FakeCodex.closed == 1
+    assert tentacle.ink.notification_task is None
 
 
 @pytest.mark.parametrize("external_id", [None, "thread-prior"])
@@ -1567,7 +1748,7 @@ async def test_pool_reuses_client_per_thread_and_drains_on_exit(
 async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
     monkeypatch: pytest.MonkeyPatch, external_id: str | None, fails: bool
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     session_id = external_id or "thread-new"
     reset_fake_codex(
         failed_script("boom", thread_id=session_id)
@@ -1632,21 +1813,15 @@ async def test_session_is_driven_before_turn_dispatch_and_released_afterward(
     assert tentacle.driven_sessions == {}
 
 
-async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
+async def test_a_new_thread_does_not_block_an_existing_conversations_first_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     starting = asyncio.Event()
     finish_starting = asyncio.Event()
 
-    class SlowStartingCodex(FakeCodex):
-        async def __aenter__(self) -> FakeCodex:
-            if FakeCodex.builds > 1:
-                starting.set()
-                await finish_starting.wait()
-            return self
-
-    monkeypatch.setattr(codex_base, "AsyncCodex", SlowStartingCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
+    FakeCodex.start_gate = (starting, finish_starting)
     tentacle = _tentacle(FakeConversationManager())
 
     async with tentacle:
@@ -1671,27 +1846,28 @@ async def test_a_cold_client_does_not_block_a_warm_conversations_first_token(
             finish_starting.set()
             await cold
 
-    assert FakeCodex.builds == 2
-    assert FakeCodex.closed == 2
+    assert FakeCodex.builds == 1
+    assert FakeCodex.closed == 1
 
 
 @pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
-async def test_failed_client_startup_releases_its_pool_lease(
+async def test_failed_shared_client_startup_closes_the_process(
     monkeypatch: pytest.MonkeyPatch, error: type[BaseException]
 ) -> None:
     class FailedStartingCodex(FakeCodex):
         async def __aenter__(self) -> FakeCodex:
             raise error("startup stopped")
 
-    monkeypatch.setattr(codex_base, "AsyncCodex", FailedStartingCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FailedStartingCodex)
     reset_fake_codex(text_script("done"))
     tentacle = _tentacle(FakeConversationManager())
 
-    async with tentacle:
-        with pytest.raises(error, match="startup stopped"):
-            await tentacle.run("cold", conversation_address=KEY, thread_id=_THREAD)
-        assert tentacle.pool is not None
-        assert all(client.in_use == 0 for client in tentacle.pool.clients.values())
+    with pytest.raises(
+        error, match="startup stopped" if error is RuntimeError else None
+    ):
+        async with tentacle:
+            pytest.fail("A failed shared process must not enter")
+    assert tentacle.ink.notification_task is None
 
     assert FakeCodex.closed == 1
 
@@ -1711,7 +1887,7 @@ async def test_the_conversations_preset_overrides_the_configured_one(
     sandbox: Sandbox,
     external_id: str | None,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -1742,7 +1918,7 @@ async def test_the_conversations_preset_overrides_the_configured_one(
 async def test_a_warm_thread_retains_the_reported_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
     tentacle = _tentacle(conversations)
@@ -1766,7 +1942,7 @@ async def test_a_warm_thread_retains_the_reported_model(
 async def test_a_warm_thread_reapplies_the_selected_preset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     conversations = FakeConversationManager()
     conversation = FakeConversation(thread_id=_THREAD, permission_mode="auto_review")
@@ -1792,12 +1968,137 @@ async def test_a_warm_thread_reapplies_the_selected_preset(
     ]
 
 
+@pytest.mark.parametrize("error", [RuntimeError, asyncio.CancelledError])
+async def test_native_identity_is_persisted_before_a_failed_first_turn(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    error: type[Exception] | type[asyncio.CancelledError],
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
+    octomate = Octomate()
+    thread_id = await a_thread()
+    conversation = await octomate.conversations.ensure(
+        thread_id, agent_tentacle_id="codex"
+    )
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+
+    def fail(thread_id: str) -> None:
+        raise error("first turn failed")
+
+    async with tentacle:
+        FakeCodex.on_turn = fail
+        with pytest.raises(error):
+            await tentacle.run("first", conversation_address=KEY, thread_id=thread_id)
+        stored = await octomate.conversations.get(conversation.id)
+        assert stored.external_id == "thread-new"
+        assert not await stored.runs
+        FakeCodex.on_turn = None
+        await tentacle.run("again", conversation_address=KEY, thread_id=thread_id)
+        assert len(FakeCodex.thread_calls) == 1
+
+
+async def test_concurrent_first_turns_share_the_persisted_native_identity(
+    monkeypatch: pytest.MonkeyPatch, in_memory_engine: AsyncEngine
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done", thread_id="thread-new"))
+    octomate = Octomate()
+    thread_id = await a_thread()
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+    async with tentacle:
+        await asyncio.gather(
+            *(
+                tentacle.run(prompt, conversation_address=KEY, thread_id=thread_id)
+                for prompt in ("first", "second")
+            )
+        )
+    assert len(FakeCodex.thread_calls) == 1
+    assert len(FakeCodex.turn_calls) == 2
+
+
+@pytest.mark.parametrize("replaced", [False, True])
+async def test_native_state_takes_precedence_over_cached_binding(
+    monkeypatch: pytest.MonkeyPatch, replaced: bool
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    async with tentacle:
+        await tentacle.run("first", conversation_address=KEY, thread_id=_THREAD)
+        conversation = await conversations.ensure(_THREAD, agent_tentacle_id="codex")
+        if replaced:
+            await conversations.set_external_id(conversation, "replacement-thread")
+            FakeCodex.loaded_threads.add("replacement-thread")
+        else:
+            FakeCodex.loaded_threads.remove("thread-new")
+        await tentacle.run("second", conversation_address=KEY, thread_id=_THREAD)
+        assert FakeCodex.thread_calls[-1].kind == "resume"
+        assert FakeCodex.thread_calls[-1].thread_id == (
+            "replacement-thread" if replaced else "thread-new"
+        )
+
+
+async def test_active_native_thread_refuses_a_changed_mcp_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = FakeConversationManager()
+    tentacle = _tentacle(conversations)
+    async with tentacle:
+        await tentacle.run("first", conversation_address=KEY, thread_id=_THREAD)
+        metadata = await FakeThread("thread-new").read()
+        metadata.thread.status = ThreadStatus(
+            root=ActiveThreadStatus(type="active", active_flags=[])
+        )
+        monkeypatch.setattr(FakeThread, "read", AsyncMock(return_value=metadata))
+        conversations.store[(_THREAD, "codex", "")] = FakeConversation(
+            thread_id=_THREAD, external_id="thread-new"
+        )
+        with pytest.raises(RuntimeError, match="must be idle"):
+            await tentacle.run("second", conversation_address=KEY, thread_id=_THREAD)
+        assert len(FakeCodex.thread_calls) == 1
+        assert len(FakeCodex.turn_calls) == 1
+
+
 @pytest.mark.parametrize("mode", ["deny_all", "bypassPermissions"])
 async def test_unavailable_saved_modes_require_an_explicit_choice(
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -1822,7 +2123,7 @@ async def test_a_subagent_run_declines_only_where_a_human_was_needed(
     monkeypatch: pytest.MonkeyPatch,
     permission_mode: str,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversation = FakeConversation(
@@ -1861,6 +2162,326 @@ async def a_kicker() -> UserProfile:
     )
 
 
+@pytest.mark.parametrize("same_user", [False, True])
+@pytest.mark.parametrize("disconnect", [False, True])
+@pytest.mark.parametrize("start_first", [0, 1])
+async def test_shared_client_reuses_keys_per_user(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    same_user: bool,
+    disconnect: bool,
+    start_first: int,
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = ConversationManager()
+    octomate = Octomate(
+        conversations=conversations, config=OctomateConfig(auth=auth_config())
+    )
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+    principals: dict[str, UUID7] = {}
+    thread_ids: list[UUID7] = []
+    alice = await a_user("alice")
+    bob = alice if same_user else await a_user("bob")
+    for index, user in enumerate((alice, bob)):
+        thread_id = await a_thread(f"shared-{index}")
+        thread_ids.append(thread_id)
+        conversation = await conversations.ensure(thread_id, agent_tentacle_id="codex")
+        principals[str(conversation.id)] = user.id
+        octomate.gateway.register(
+            OctomateSession(
+                channel_routes={},
+                current_agent_id="codex",
+                conversation_id=conversation.id,
+                user_profile=UserProfile(
+                    channel_tentacle_id="im",
+                    channel_user_id=user.username,
+                    user_id=user.id,
+                ),
+            )
+        )
+    first_started = list(principals)[start_first]
+    started = asyncio.Event()
+    runtime = tentacle.ink.client
+    assert isinstance(runtime, FakeCodex)
+
+    async def ordered_start(params: ThreadStartParams) -> SimpleNamespace:
+        if driven_headers(params)["X-Octomate-Conversation"] != first_started:
+            await asyncio.wait_for(started.wait(), 5)
+        result = await FakeCodex.thread_start(runtime, params)
+        started.set()
+        return result
+
+    monkeypatch.setattr(runtime._client, "thread_start", ordered_start)
+    assert octomate.auth is not None
+    tokens: dict[str, SecretStr] = {}
+    async with tentacle:
+        await asyncio.gather(
+            *(
+                tentacle.run("work", conversation_address=KEY, thread_id=thread_id)
+                for thread_id in thread_ids
+            )
+        )
+        assert FakeCodex.builds == 1
+        assert (
+            driven_headers(FakeCodex.thread_calls[0])["X-Octomate-Conversation"]
+            == first_started
+        )
+        for call in FakeCodex.thread_calls:
+            headers = driven_headers(call)
+            conversation_id = headers["X-Octomate-Conversation"]
+            token = SecretStr(headers["Authorization"].removeprefix("Bearer "))
+            tokens[conversation_id] = token
+            key = await octomate.auth.authenticate_api_key(token, scope="mcp")
+            assert key is not None
+            assert key.user_id == principals[conversation_id]
+        assert len(tokens) == 2
+        assert len(set(tokens.values())) == (1 if same_user else 2)
+        assert len(tentacle.api_keys) == (1 if same_user else 2)
+        assert len(await octomate.auth.list_api_keys(alice.id)) == 1
+
+        first = await conversations.ensure(thread_ids[0], agent_tentacle_id="codex")
+        first_token = tokens[str(first.id)]
+        assert first.external_id is not None
+        FakeCodex.loaded_threads.remove(first.external_id)
+        client = tentacle.ink.client
+        assert isinstance(client, FakeCodex)
+        client.notifications.put_nowait(
+            notification(
+                "thread/closed", ThreadClosedNotification(thread_id=first.external_id)
+            )
+        )
+        await asyncio.sleep(0)
+        assert first.external_id not in tentacle.ink.thread_bindings
+        assert len(tentacle.ink.thread_bindings) == 1
+        assert (
+            await octomate.auth.authenticate_api_key(first_token, scope="mcp")
+            is not None
+        )
+        await tentacle.run("again", conversation_address=KEY, thread_id=thread_ids[0])
+        assert driven_headers(FakeCodex.thread_calls[-1])["Authorization"] == (
+            f"Bearer {first_token.get_secret_value()}"
+        )
+        if disconnect:
+            client = tentacle.ink.client
+            assert isinstance(client, FakeCodex)
+            client.notifications.put_nowait(TransportClosedError("runtime exited"))
+            assert tentacle.ink.notification_task is not None
+            await asyncio.wait_for(tentacle.ink.notification_task, 1)
+            assert not tentacle.ink.running
+            assert not tentacle.ink.thread_bindings
+            assert len(tentacle.api_keys) == (1 if same_user else 2)
+            assert (
+                await octomate.auth.authenticate_api_key(first_token, scope="mcp")
+                is not None
+            )
+    for token in tokens.values():
+        assert await octomate.auth.authenticate_api_key(token, scope="mcp") is None
+    assert not tentacle.api_keys
+    assert not tentacle.ink.thread_bindings
+    assert FakeCodex.closed == 1
+
+
+@pytest.mark.parametrize("cancel_refresh", [False, True])
+async def test_expired_user_key_is_replaced_once_and_applied_to_each_thread(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    cancel_refresh: bool,
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    conversations = ConversationManager()
+    octomate = Octomate(
+        conversations=conversations, config=OctomateConfig(auth=auth_config())
+    )
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+    profile = await a_kicker()
+    assert profile.user_id is not None
+    thread_ids = [await a_thread("first"), await a_thread("second")]
+    for thread_id in thread_ids:
+        conversation = await conversations.ensure(thread_id, agent_tentacle_id="codex")
+        octomate.gateway.register(
+            OctomateSession(
+                channel_routes={},
+                current_agent_id="codex",
+                conversation_id=conversation.id,
+                user_profile=profile,
+            )
+        )
+    assert octomate.auth is not None
+    async with tentacle:
+        for thread_id in thread_ids:
+            await tentacle.run("work", conversation_address=KEY, thread_id=thread_id)
+        expired = tentacle.api_keys[profile.user_id]
+        expired.key.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+        if cancel_refresh:
+            client = tentacle.ink.client
+            assert isinstance(client, FakeCodex)
+            request = AsyncMock()
+
+            async def cancel_unsubscribe[ResponseT: BaseModel](
+                method: str,
+                params: JsonObject | None,
+                *,
+                response_model: type[ResponseT],
+            ) -> ResponseT:
+                if method == "thread/unsubscribe":
+                    request.side_effect = client.request
+                    raise asyncio.CancelledError
+                return await client.request(
+                    method, params, response_model=response_model
+                )
+
+            request.side_effect = cancel_unsubscribe
+            monkeypatch.setattr(client._client, "request", request)
+            with pytest.raises(asyncio.CancelledError):
+                await tentacle.run(
+                    "cancel", conversation_address=KEY, thread_id=thread_ids[0]
+                )
+            interrupted = await conversations.ensure(
+                thread_ids[0], agent_tentacle_id="codex"
+            )
+            assert interrupted.external_id not in tentacle.ink.thread_bindings
+
+        await asyncio.gather(
+            *(
+                tentacle.run("again", conversation_address=KEY, thread_id=thread_id)
+                for thread_id in thread_ids
+            )
+        )
+        current = tentacle.api_keys[profile.user_id]
+        assert current.key.id != expired.key.id
+        assert len(await octomate.auth.list_api_keys(profile.user_id)) == 2
+        assert (
+            await octomate.auth.authenticate_api_key(expired.token, scope="mcp") is None
+        )
+        assert (
+            await octomate.auth.authenticate_api_key(current.token, scope="mcp")
+            is not None
+        )
+        assert [call.kind for call in FakeCodex.thread_calls] == [
+            "start",
+            "start",
+            "resume",
+            "resume",
+        ]
+        for call in FakeCodex.thread_calls[-2:]:
+            assert driven_headers(call)["Authorization"] == (
+                f"Bearer {current.token.get_secret_value()}"
+            )
+        for thread_id in thread_ids:
+            stored = await conversations.ensure(thread_id, agent_tentacle_id="codex")
+            assert stored.external_id is not None
+            assert tentacle.ink.thread_bindings[stored.external_id] == (
+                stored.id,
+                current.key.id,
+            )
+    assert await octomate.auth.authenticate_api_key(current.token, scope="mcp") is None
+
+
+@pytest.mark.parametrize("moved", [False, True])
+async def test_cached_binding_reconfigures_a_changed_caller(
+    monkeypatch: pytest.MonkeyPatch,
+    in_memory_engine: AsyncEngine,
+    moved: bool,
+) -> None:
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
+    reset_fake_codex(text_script("done"))
+    octomate = Octomate(config=OctomateConfig(auth=auth_config()))
+    conversations = octomate.conversations
+    thread_id = await a_thread("source")
+    source = await conversations.ensure(thread_id, agent_tentacle_id="codex")
+    alice = await a_kicker()
+    session = OctomateSession(
+        channel_routes={},
+        current_agent_id="codex",
+        conversation_id=source.id,
+        user_profile=alice,
+    )
+    octomate.gateway.register(session)
+    tentacle = CodexTentacle(
+        "codex",
+        octomate,
+        config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
+    )
+    async with tentacle:
+        await tentacle.run("first", conversation_address=KEY, thread_id=thread_id)
+        if moved:
+            thread_id = await a_thread("target")
+            target = await conversations.ensure(thread_id, agent_tentacle_id="codex")
+            source = await conversations.get(source.id)
+            await conversations.fork(source, target, carry_external_id=True)
+            session = OctomateSession(
+                channel_routes={},
+                current_agent_id="codex",
+                conversation_id=target.id,
+                user_profile=alice,
+            )
+            octomate.gateway.register(session)
+        else:
+            bob = await a_user("bob")
+            session.user_profile = UserProfile(
+                channel_tentacle_id="im", channel_user_id="bob", user_id=bob.id
+            )
+        await tentacle.run("second", conversation_address=KEY, thread_id=thread_id)
+        assert [call.kind for call in FakeCodex.thread_calls] == ["start", "resume"]
+        headers = driven_headers(FakeCodex.thread_calls[-1])
+        assert headers["X-Octomate-Conversation"] == str(session.conversation_id)
+        assert session.user_profile is not None
+        assert session.user_profile.user_id is not None
+        key = tentacle.api_keys[session.user_profile.user_id]
+        assert headers["Authorization"] == f"Bearer {key.token.get_secret_value()}"
+        assert session.conversation_id is not None
+        stored = await conversations.get(session.conversation_id, with_history=False)
+        assert stored.external_id == "thread-new"
+        assert tentacle.ink.thread_bindings[stored.external_id] == (
+            stored.id,
+            key.key.id,
+        )
+
+
 @pytest.mark.parametrize(
     ("host", "url_host"),
     [
@@ -1880,7 +2501,7 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     external_id: str | None,
     permission_mode: Literal["auto_review", "full_access"],
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     FakeCodex.local_mcp_servers = {
         "octomate": {
@@ -1908,14 +2529,28 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
         "codex",
         octomate,
         config=CodexConfig(permission_mode=permission_mode),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
 
     async with tentacle:
         await tentacle.run("fix it", conversation_address=KEY, thread_id=_THREAD)
         assert octomate.auth is not None
         assert FakeCodex.last_config is not None
-        assert FakeCodex.last_config.env is not None
-        token = SecretStr(FakeCodex.last_config.env[codex_base.MCP_TOKEN_ENV])
+        token = SecretStr(
+            driven_headers(FakeCodex.thread_calls[-1])["Authorization"].removeprefix(
+                "Bearer "
+            )
+        )
         key = await octomate.auth.authenticate_api_key(token, scope="mcp")
         assert key is not None
         assert await octomate.auth.authenticate_api_key(token, scope="hooks") is None
@@ -1925,12 +2560,10 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
     assert config is not None
     assert config.env is not None
     # The kicker's own credential: the turn speaks as the human it represents.
-    assert config.env[codex_base.MCP_TOKEN_ENV].startswith(
-        octomate.auth.config.api_key_prefix
-    )
-
-    assert config.env[codex_base.MCP_CONVERSATION_ENV] == str(conversation.id)
-    assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
+    assert token.get_secret_value().startswith(octomate.auth.config.api_key_prefix)
+    assert "OCTOMATE_MCP_TOKEN" not in config.env
+    assert "OCTOMATE_MCP_CONVERSATION" not in config.env
+    assert config.config_overrides == (*codex_ink.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.kind == ("resume" if external_id else "start")
     expected = (
@@ -1947,9 +2580,9 @@ async def test_a_registered_octomate_session_wires_the_thread_config(
             "octomate_driven": {
                 "enabled": True,
                 "url": f"http://{url_host}:8123/octomate/mcp",
-                "bearer_token_env_var": "OCTOMATE_MCP_TOKEN",
-                "env_http_headers": {
-                    "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
+                "http_headers": {
+                    "Authorization": driven_headers(thread_call)["Authorization"],
+                    "X-Octomate-Conversation": str(conversation.id),
                 },
                 "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             },
@@ -1963,7 +2596,7 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
     # Clean means the server is turned off, not merely left unmentioned: the
     # operator's `~/.codex/config.toml` may hold a native Octomate entry with
     # their own credential in it, and an app-server is a child of this host.
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     FakeCodex.local_mcp_servers = {
         "owner": {"url": "https://owner.example/mcp"},
@@ -1975,16 +2608,16 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
+    assert config.config_overrides == (*codex_ink.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {"mcp_servers": {"owner": {"enabled": False}}}
-    assert codex_base.MCP_TOKEN_ENV not in (config.env or {})
+    assert "OCTOMATE_MCP_TOKEN" not in (config.env or {})
 
 
 async def test_local_config_cannot_claim_the_driven_mcp_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = AsyncCodex()
+    client = SharedCodex(CodexSdkConfig(), AsyncMock(return_value={}), instrument=False)
     request = AsyncMock(
         return_value=ConfigReadResponse.model_validate(
             {
@@ -1995,8 +2628,9 @@ async def test_local_config_cannot_claim_the_driven_mcp_name(
     )
     monkeypatch.setattr(client._client, "request", request)
     tentacle = _tentacle(FakeConversationManager())
+    tentacle.ink.client = client
     with pytest.raises(ValueError, match="reserved for driven sessions"):
-        await tentacle.thread_config(client, "/project", SecretStr("caller"))
+        await tentacle.ink.thread_config("/project", SecretStr("caller"), uuid7())
     request.assert_awaited_once_with(
         "config/read",
         {"cwd": "/project", "includeLayers": False},
@@ -2007,7 +2641,7 @@ async def test_local_config_cannot_claim_the_driven_mcp_name(
 async def test_driven_isolation_overrides_local_feature_settings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     tentacle = _tentacle(
         FakeConversationManager(),
@@ -2039,7 +2673,7 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 ) -> None:
     # The session is registered, but its kicker is a visitor: no credential to
     # speak with, so the spells are withheld rather than borrowed.
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -2061,6 +2695,17 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
 
     async with tentacle:
@@ -2068,17 +2713,17 @@ async def test_a_turn_kicked_by_an_unregistered_user_launches_clean(
 
     config = FakeCodex.last_config
     assert config is not None
-    assert config.config_overrides == (*codex_base.DRIVEN_CONFIG_OVERRIDES,)
+    assert config.config_overrides == (*codex_ink.DRIVEN_CONFIG_OVERRIDES,)
     [thread_call] = FakeCodex.thread_calls
     assert thread_call.config == {"mcp_servers": {}}
-    assert codex_base.MCP_TOKEN_ENV not in (config.env or {})
+    assert "OCTOMATE_MCP_TOKEN" not in (config.env or {})
 
 
-async def test_an_mcp_wiring_flip_evicts_the_pooled_client(
+async def test_an_mcp_wiring_flip_reloads_only_the_conversations_thread(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -2089,6 +2734,17 @@ async def test_an_mcp_wiring_flip_evicts_the_pooled_client(
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
 
     async with tentacle:
@@ -2104,19 +2760,25 @@ async def test_an_mcp_wiring_flip_evicts_the_pooled_client(
         )
         octomate.gateway.register(session)
         await tentacle.run("two", conversation_address=KEY, thread_id=_THREAD)
-        assert (FakeCodex.builds, FakeCodex.closed) == (2, 1)
+        assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
+        assert [call.kind for call in FakeCodex.thread_calls] == ["start", "resume"]
 
         # And back again once the turn no longer has the gateway.
         octomate.gateway.unregister(session)
         await tentacle.run("three", conversation_address=KEY, thread_id=_THREAD)
-        assert (FakeCodex.builds, FakeCodex.closed) == (3, 2)
+        assert (FakeCodex.builds, FakeCodex.closed) == (1, 0)
+        assert [call.kind for call in FakeCodex.thread_calls] == [
+            "start",
+            "resume",
+            "resume",
+        ]
 
 
 async def test_a_registered_gateway_uses_the_default_served_endpoint(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -2135,6 +2797,17 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
 
     async with tentacle:
@@ -2146,9 +2819,9 @@ async def test_a_registered_gateway_uses_the_default_served_endpoint(
             "octomate_driven": {
                 "enabled": True,
                 "url": "http://127.0.0.1:8000/octomate/mcp",
-                "bearer_token_env_var": "OCTOMATE_MCP_TOKEN",
-                "env_http_headers": {
-                    "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION",
+                "http_headers": {
+                    "Authorization": driven_headers(thread_call)["Authorization"],
+                    "X-Octomate-Conversation": str(conversation.id),
                 },
                 "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
             }
@@ -2201,7 +2874,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("working"))
     conversations = FakeConversationManager()
     octomate = Octomate(
@@ -2219,8 +2892,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
     BindingFakeTurn.session = session
 
     async def start_binding_thread(
-        self: CodexTentacle,
-        client: codex_base.AsyncCodex,
+        self: codex_ink.CodexInk,
         *,
         approval_mode: ApprovalMode | None,
         base_instructions: str | None,
@@ -2233,24 +2905,33 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
         personality: Personality | None,
         sandbox: Sandbox,
     ) -> tuple[BindingFakeThread, str]:
-        assert config["mcp_servers"] == {
-            "octomate_driven": {
-                "enabled": True,
-                "url": "http://127.0.0.1:8123/octomate/mcp",
-                "bearer_token_env_var": "OCTOMATE_MCP_TOKEN",
-                "env_http_headers": {
-                    "X-Octomate-Conversation": "OCTOMATE_MCP_CONVERSATION"
-                },
-                "tools": {"gateway_teleport": {"approval_mode": "prompt"}},
-            }
-        }
+        servers = config["mcp_servers"]
+        assert isinstance(servers, dict)
+        driven = servers["octomate_driven"]
+        assert isinstance(driven, dict)
+        headers = TypeAdapter(dict[str, str]).validate_python(driven["http_headers"])
+        assert headers["Authorization"].startswith("Bearer ")
+        assert headers["X-Octomate-Conversation"] == str(conversation.id)
+        assert driven["url"] == "http://127.0.0.1:8123/octomate/mcp"
+        assert driven["tools"] == {"gateway_teleport": {"approval_mode": "prompt"}}
         return BindingFakeThread("thread-new"), "runtime-model"
 
-    monkeypatch.setattr(CodexTentacle, "start_codex_thread", start_binding_thread)
+    monkeypatch.setattr(codex_ink.CodexInk, "start_thread", start_binding_thread)
     tentacle = CodexTentacle(
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     suspender = RecordingSuspender(agent_tentacle_id="codex")
 
@@ -2282,7 +2963,7 @@ async def test_a_teleport_mid_turn_interrupts_it_and_ends_it_as_a_deferral(
 async def test_a_resumed_turn_opens_from_what_the_graph_resolved(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex(text_script("done"))
     conversations = FakeConversationManager()
     conversations.store[(_THREAD, "codex", "")] = FakeConversation(
@@ -2337,9 +3018,9 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     client._client.thread_start.return_value.model = "runtime-model"
     client._client.thread_resume.return_value.model = "runtime-model"
     client._client.thread_resume.return_value.thread.id = "previous-thread"
+    tentacle.ink.client = client
     if resume:
-        thread, model_name = await tentacle.resume_codex_thread(
-            client,
+        thread, model_name = await tentacle.ink.resume_thread(
             thread_id="previous-thread",
             approval_mode=approval_mode,
             base_instructions=None,
@@ -2356,8 +3037,7 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
         assert thread.id == "previous-thread"
         client.thread_resume.assert_not_awaited()
     else:
-        thread, model_name = await tentacle.start_codex_thread(
-            client,
+        thread, model_name = await tentacle.ink.start_thread(
             approval_mode=approval_mode,
             base_instructions=None,
             config={},
@@ -2379,15 +3059,19 @@ async def test_thread_settings_preserve_reviewer_and_report_model(
     assert params.approvals_reviewer is reviewer
 
 
-async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> None:
+@pytest.mark.parametrize("skill", [False, True])
+async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
+    skill: bool,
+) -> None:
     tentacle = _tentacle(FakeConversationManager())
-    client = AsyncCodex()
+    client = SharedCodex(CodexSdkConfig(), AsyncMock(return_value={}), instrument=False)
     client._client = AsyncMock()
     client._client._start_turn.return_value = (
         SimpleNamespace(turn=SimpleNamespace(id="turn-1")),
         Mock(),
     )
     client._initialized = True
+    tentacle.ink.client = client
     thread = AsyncThread(client, "warm-thread")
     for approval, sandbox, reviewer, policy in (
         (ApprovalMode.deny_all, Sandbox.full_access, None, AskForApprovalValue.never),
@@ -2410,10 +3094,11 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
             AskForApprovalValue.on_request,
         ),
     ):
-        await tentacle.turn_codex_thread(
-            client,
+        await tentacle.ink.start_turn(
             thread,
-            "work",
+            [SkillInput("review", "/review/SKILL.md"), TextInput("  work\n")]
+            if skill
+            else "work",
             approval_mode=approval,
             sandbox=sandbox,
             cwd="/workspace",
@@ -2426,6 +3111,13 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread() -> No
         params = client._client._start_turn.call_args.kwargs["params"]
         assert isinstance(params, TurnStartParams)
         assert params.thread_id == "warm-thread"
+        if skill:
+            assert params.input[0].root == SkillUserInput(
+                type="skill", name="review", path="/review/SKILL.md"
+            )
+            assert params.input[1].root == TextUserInput(type="text", text="  work\n")
+        else:
+            assert params.input[0].root == TextUserInput(type="text", text="work")
         assert params.approval_policy is not None
         assert params.approval_policy.root is policy
         assert params.approvals_reviewer is reviewer

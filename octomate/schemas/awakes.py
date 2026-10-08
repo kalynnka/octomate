@@ -5,6 +5,7 @@ from functools import cached_property
 
 from pydantic import UUID7, BaseModel, Field
 
+from octomate.schemas.commands import CommandContext, CommandInvocation
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import QuestionAnswer
 from octomate.schemas.events import MessageEvent
@@ -65,6 +66,15 @@ class NativeGatewaySignal:
 
 
 @dataclass(frozen=True)
+class CommandSignal:
+    """Explicit command intent on an authenticated, resolved conversation surface."""
+
+    context: CommandContext
+    invocation: CommandInvocation
+    delivery_id: str  # Stable across retries of the same explicit request.
+
+
+@dataclass(frozen=True)
 class DrivenGatewaySignal:
     """An authenticated, validated operation on an existing thread."""
 
@@ -80,6 +90,7 @@ class DrivenGatewaySignal:
 type AwakeSignal = (
     UserMessageSignal
     | DeferredActionBatchResponse
+    | CommandSignal
     | NativeGatewaySignal
     | DrivenGatewaySignal
 )

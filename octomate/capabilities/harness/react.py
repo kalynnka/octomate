@@ -28,11 +28,23 @@ from pydantic_ai.capabilities import (
     NativeTool,
     NodeResult,
 )
-from pydantic_ai.messages import AgentStreamEvent, ModelResponse, UserContent
+from pydantic_ai.messages import (
+    AgentStreamEvent,
+    ModelResponse,
+    RetryPromptPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserContent,
+)
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.models import KnownModelName, Model, ModelRequestContext
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, RunContext
+from pydantic_ai.tools import (
+    DeferredToolRequests,
+    DeferredToolResults,
+    RunContext,
+    ToolDenied,
+)
 from pydantic_ai.toolsets import AbstractToolset
 from pydantic_graph import (
     BaseNode,
@@ -269,17 +281,43 @@ class StartTurn[ReactOutputT, ReactDepsT](
     async def run(
         self, ctx: GraphRunContext[ReactState, ReactDeps[ReactOutputT, ReactDepsT]]
     ) -> RunAgent[ReactOutputT, ReactDepsT]:
-        if self.user_prompt is not None:
-            conversation = await resolve_conversation(ctx)
-            abandoned = await ctx.deps.conversation_manager.drop_trailing_deferral(
-                conversation
+        if self.user_prompt is None:
+            return RunAgent()
+        conversation = await resolve_conversation(ctx)
+        # A new prompt answers every call the last response still waits on, denied,
+        # rather than leaving it unanswered: the history stays whole, so a fork
+        # that shares the run can still resume the call.
+        answered: set[str] = set()
+        abandoned: list[str] = []
+        for message in reversed(conversation.messages):
+            if isinstance(message, ModelResponse):
+                abandoned = [
+                    part.tool_call_id
+                    for part in message.parts
+                    if isinstance(part, ToolCallPart)
+                    and part.tool_call_id not in answered
+                ]
+                break
+            answered.update(
+                part.tool_call_id
+                for part in message.parts
+                if isinstance(part, ToolReturnPart | RetryPromptPart)
             )
-            if abandoned is not None:
-                logger.info(
-                    "StartTurn dropped a trailing deferred ModelResponse; the "
-                    "new user prompt supersedes the abandoned tool-call request"
-                )
-        return RunAgent(user_prompt=self.user_prompt)
+        if not abandoned:
+            return RunAgent(user_prompt=self.user_prompt)
+        logger.info("StartTurn denies %d abandoned tool calls", len(abandoned))
+        return RunAgent(
+            user_prompt=self.user_prompt,
+            deferred_results=DeferredToolResults(
+                approvals={
+                    tool_call_id: ToolDenied(
+                        "Not carried out: a new message arrived before this call "
+                        "was answered."
+                    )
+                    for tool_call_id in abandoned
+                }
+            ),
+        )
 
 
 @dataclass
@@ -331,7 +369,9 @@ class RunAgent[ReactOutputT, ReactDepsT](
                 state=ctx.state,
                 run_name=ctx.deps.run_name,
                 cwd=ctx.deps.cwd,
-                binds_prompt_sources=self.deferred_results is None,
+                binds_prompt_sources=(
+                    self.user_prompt is not None or self.deferred_results is None
+                ),
                 permission_mode=conversation.permission_mode
                 or ctx.deps.permission_mode,
             )

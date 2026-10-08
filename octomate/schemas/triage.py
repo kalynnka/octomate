@@ -8,7 +8,6 @@ from typing import Annotated, Literal, NamedTuple
 from octomate_protocol.gateway import GatewayTool
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai.messages import ToolCallPart
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
 
 from octomate.config.agents import AgentRouteModelName, Claim
@@ -20,7 +19,7 @@ ResponseTargetMode = Literal["main", "sub"]
 # `react` (an initial reaction to an inbound message), `summon` (a handoff to another
 # agent), `teleport` (the same agent resuming in a forked sub-thread), or `resume`
 # (continuing after human review). Labels each run's span and any batch it defers.
-RunName = Literal["react", "summon", "teleport", "resume"]
+RunName = Literal["react", "summon", "teleport", "resume", "command"]
 
 # What one `inspect` reveals. One facet per call, because each spell needs exactly one —
 # a route for `summon`, a place for anything that lands somewhere, a project for
@@ -87,9 +86,9 @@ class SummonDecision(BaseModel):
     model: AgentRouteModelName | None = Field(
         description="Selected model, or null to use the harness's native default."
     )
-    effort: ThinkingEffort | None = None
+    effort: str | None = None
     hint: str
-    summon: str = Field(
+    brief: str = Field(
         max_length=8_000,
         description="The receiver's whole opening prompt, refused over the cap rather "
         "than trimmed: what it leaves out, the receiver reads back through the "

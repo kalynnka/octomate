@@ -257,6 +257,27 @@ export function ThreadsSidebar() {
           }}
         />
       )}
+      {!sidebarFolded && (
+        <span
+          onClick={() => startNewThread()}
+          title="New trunkline thread"
+          className="hov-accent-border-wash"
+          style={{
+            display: 'grid',
+            placeItems: 'center',
+            margin: '3px 14px 3px calc(var(--trk-rail-w, 26px) + 14px)',
+            height: 20,
+            flexShrink: 0,
+            boxSizing: 'border-box',
+            border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
+            color: 'var(--color-accent)',
+            ...label(8, '.14em'),
+            cursor: 'pointer',
+          }}
+        >
+          <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
+        </span>
+      )}
       <div
         ref={channelList}
         className="trk-quiet-scroll"
@@ -281,7 +302,7 @@ export function ThreadsSidebar() {
               ...(c.id === 'trunkline' && ntOn && !ths.some(selected)
                 ? [
                     {
-                      id: ntStarted ? selThreadId : 'THR-NEW',
+                      id: 'THR-NEW',
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
                       stColor: 'var(--color-gold)',
@@ -333,6 +354,8 @@ export function ThreadsSidebar() {
                     }}
                   >
                     <span
+                      className="trk-chrail-letter"
+                      aria-hidden="true"
                       style={{
                         width: 'var(--trk-rail-letter, 22px)',
                         height: 'var(--trk-rail-letter, 22px)',
@@ -351,25 +374,33 @@ export function ThreadsSidebar() {
                       {c.id === 'codex' ? 'X' : c.label[0].toUpperCase()}
                     </span>
                     <span
-                      style={{
-                        ...label(8, '.12em'),
-                        color: c.brand,
-                        whiteSpace: 'nowrap',
-                        flex: 1,
-                        textAlign: 'left',
-                      }}
+                      className="trk-chrail-name"
+                      aria-hidden="true"
+                      style={{ background: focused ? c.brand : undefined }}
                     >
-                      {c.label}
-                    </span>
-                    <span
-                      style={{
-                        ...mono(7.5),
-                        color: 'var(--fg-3)',
-                        whiteSpace: 'nowrap',
-                        textAlign: 'right',
-                      }}
-                    >
-                      {(threadsByCh[c.id] ?? []).length}
+                      <span
+                        style={{
+                          ...label(8, '.12em'),
+                          ...ellipsis,
+                          minWidth: 0,
+                          color: focused ? 'var(--trk-on-fill)' : c.brand,
+                          flex: 1,
+                          textAlign: 'left',
+                        }}
+                      >
+                        {c.label}
+                      </span>
+                      <span
+                        style={{
+                          ...mono(7.5),
+                          color: focused ? 'var(--trk-on-fill)' : 'var(--fg-3)',
+                          whiteSpace: 'nowrap',
+                          textAlign: 'right',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {(threadsByCh[c.id] ?? []).length}
+                      </span>
                     </span>
                   </button>
                 </div>
@@ -424,29 +455,6 @@ export function ThreadsSidebar() {
                 {!sidebarFolded && (
                   <div data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
                     <Fold open={!folded}>
-                    {c.id === 'trunkline' && (
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          startNewThread()
-                        }}
-                        title="New trunkline thread"
-                        className="hov-accent-border-wash"
-                        style={{
-                          display: 'grid',
-                          placeItems: 'center',
-                          margin: '3px 14px',
-                          height: 20,
-                          boxSizing: 'border-box',
-                          border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
-                          color: 'var(--color-accent)',
-                          ...label(8, '.14em'),
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
-                      </span>
-                    )}
                     {/* Each channel scrolls under its own header, so a channel with
                         a hundred threads still leaves the ones below it reachable —
                         and gives out its rows a page at a time as one scrolls it. */}
@@ -460,8 +468,9 @@ export function ThreadsSidebar() {
                       }}
                     >
                     {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
+                      <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
+                      <div style={{ overflow: 'hidden' }}>
                       <div
-                        key={t.id}
                         onClick={t.pick}
                         className="hov-wash"
                         style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
@@ -521,6 +530,8 @@ export function ThreadsSidebar() {
                             {t.agent}
                           </span>
                         </div>
+                      </div>
+                      </div>
                       </div>
                     ))}
                     {rows.length > (shown[c.id] ?? THREAD_PAGE) && (

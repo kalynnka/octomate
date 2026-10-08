@@ -5,13 +5,12 @@ import os
 from base64 import urlsafe_b64encode
 from datetime import timedelta
 from pathlib import Path
-from typing import get_args
 from unittest.mock import patch
 
 import pytest
 from openai_codex import CodexConfig as CodexSdkConfig
+from openai_codex.generated.v2_all import ReasoningEffort
 from pydantic import ValidationError
-from pydantic_ai.settings import ThinkingEffort
 
 from octomate.config import (
     AgentModelConfig,
@@ -344,7 +343,8 @@ def test_codex_config_parses_sdk_runtime_config() -> None:
     assert config.runtime.experimental_api is False
 
 
-def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
+@pytest.mark.parametrize("effort", ["xhigh", "future-effort"])
+def test_codex_config_accepts_sdk_thread_and_turn_settings(effort: str) -> None:
     config = CodexConfig.model_validate(
         {
             "permission_mode": "auto_review",
@@ -352,7 +352,7 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
             "developer_instructions": "work carefully",
             "ephemeral": True,
             "personality": "pragmatic",
-            "effort": "xhigh",
+            "effort": effort,
             "summary": "detailed",
         }
     )
@@ -362,7 +362,9 @@ def test_codex_config_accepts_sdk_thread_and_turn_settings() -> None:
     assert config.developer_instructions == "work carefully"
     assert config.ephemeral is True
     assert config.personality == "pragmatic"
-    assert config.effort == "xhigh"
+    assert isinstance(config.effort, ReasoningEffort)
+    assert config.effort.value == effort
+    assert config.model_dump(mode="json")["effort"] == effort
     assert config.summary == "detailed"
 
 
@@ -371,7 +373,6 @@ def test_codex_config_validates_sdk_setting_names() -> None:
         CodexConfig.model_validate(
             {
                 "permission_mode": "never",
-                "effort": "extreme",
                 "summary": "verbose",
                 "personality": "spicy",
             }
@@ -387,14 +388,6 @@ def test_deepseek_config_defaults_to_the_shipped_shape() -> None:
     assert (config.host, config.port) == ("127.0.0.1", 3081)
     # dsh's own default home, expanded like any configured value.
     assert config.dsh_home == Path("~/.dsh").expanduser()
-    # Octomate's one effort scale lands on the llm-deepseek adapter's ids.
-    assert config.efforts == {
-        "minimal": "off",
-        "low": "off",
-        "medium": "high",
-        "high": "high",
-        "xhigh": "max",
-    }
 
 
 def test_deepseek_config_accepts_deployment_permission_names() -> None:
@@ -795,11 +788,8 @@ def test_logfire_instrumentation_defaults_off() -> None:
     assert not instrument.sqlalchemy
 
 
-def test_claim_efforts_default_matches_pydantic_ais_thinking_scale() -> None:
-    # The default is written out rather than derived from `get_args`, so a
-    # pydantic-ai release that adds or drops a grade has to be looked at per route
-    # instead of silently widening every claim that omits `efforts`.
-    assert Claim(ability="anything").efforts == get_args(ThinkingEffort)
+def test_claim_does_not_assume_a_harness_effort_vocabulary() -> None:
+    assert Claim(ability="anything").efforts == ()
 
 
 def test_agent_claims_override_parses_from_config() -> None:

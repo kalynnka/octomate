@@ -84,7 +84,7 @@ def a_repo(path: Path, instructions: str) -> Path:
 async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Thread:
     """A persisted thread, optionally in a registered project — both its thread row and
     the project it references have to exist, since each is a real foreign key."""
-    return await octomate.thread_manager.ensure(
+    return await octomate.threads.ensure(
         ThreadKey("im", "thread", chat_id, "t1"),
         project=octomate.projects.get(project) if project else None,
     )

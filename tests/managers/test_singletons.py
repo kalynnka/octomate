@@ -68,7 +68,7 @@ def test_separate_apps_keep_their_own_configured_managers() -> None:
     assert oauth_manager(first) is first.oauth
     assert oauth_manager(second) is second.oauth
     assert first.oauth is not second.oauth
-    assert first.thread_manager is not second.thread_manager
+    assert first.threads is not second.threads
 
 
 async def test_dependency_preserves_the_lock_in_use() -> None:
@@ -105,7 +105,7 @@ async def test_dependencies_share_the_hosts_manager_graph() -> None:
         gateway: Annotated[GatewayManager, Depends(gateway_manager)],
     ) -> bool:
         assert users is threads.users is oauth.users is octomate.users
-        assert threads is octomate.thread_manager
+        assert threads is octomate.threads
         assert oauth is octomate.oauth
         assert workspaces is octomate.workspaces
         assert projects is workspaces.projects is octomate.projects
@@ -133,7 +133,7 @@ async def test_a_dependency_override_leaves_the_app_managers_intact() -> None:
         oauth: Annotated[OAuthManager, Depends(oauth_manager)],
     ) -> list[int]:
         assert injected_users is users
-        assert threads is octomate.thread_manager
+        assert threads is octomate.threads
         assert oauth is octomate.oauth
         assert threads.users is oauth.users is octomate.users
         return [id(threads), id(oauth)]
@@ -144,5 +144,5 @@ async def test_a_dependency_override_leaves_the_app_managers_intact() -> None:
         first = (await client.get("/managers")).json()
         assert (await client.get("/managers")).json() == first
 
-    assert first == [id(octomate.thread_manager), id(octomate.oauth)]
-    assert octomate.thread_manager.users is octomate.oauth.users is octomate.users
+    assert first == [id(octomate.threads), id(octomate.oauth)]
+    assert octomate.threads.users is octomate.oauth.users is octomate.users

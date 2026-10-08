@@ -51,8 +51,13 @@ async def test_a_hooks_transcript_path_is_never_followed() -> None:
     is the only assembler, so the hook pipe must not put the server in the business
     of opening whatever path a hook claims — and the ledger writes either way."""
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    ingest = ClaudeHookIngest(octomate, tailer)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    ingest = ClaudeHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
 
     await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"), SENDER)
 
@@ -73,7 +78,7 @@ async def stop(ingest: ClaudeHookIngest, prompt_id: str, answer: str) -> None:
 
 async def ledger(octomate: Octomate) -> list[tuple[str, str | None, str | None]]:
     """The thread's chat log as (direction, platform_message_id, text)."""
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     return [
         (m.direction, m.platform_message_id, m.message_text) for m in thread.messages
     ]
@@ -82,8 +87,10 @@ async def ledger(octomate: Octomate) -> list[tuple[str, str | None, str | None]]
 async def test_a_turn_writes_inbound_and_outbound_tagged_by_prompt_id() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "list the files")
@@ -98,8 +105,10 @@ async def test_a_turn_writes_inbound_and_outbound_tagged_by_prompt_id() -> None:
 async def test_multiple_turns_accumulate_in_order() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "first")
@@ -118,8 +127,10 @@ async def test_multiple_turns_accumulate_in_order() -> None:
 async def test_refiring_events_is_idempotent() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "list the files")
@@ -136,8 +147,10 @@ async def test_refiring_events_is_idempotent() -> None:
 async def test_crash_before_stop_leaves_a_clean_inbound_only_turn() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "do a thing")
@@ -153,8 +166,10 @@ async def test_hooks_sketch_the_turns_run_live() -> None:
     and lets the tailer replace it."""
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "hello")
@@ -174,8 +189,10 @@ async def test_hooks_sketch_the_turns_run_live() -> None:
 async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
     sdk_conversation = await octomate.conversations.ensure(
         await a_thread(), agent_tentacle_id="claude"
@@ -210,8 +227,10 @@ async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
     of the history it belongs at the end of."""
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "first")
@@ -219,7 +238,7 @@ async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
     await submit(ingest, "p2", "second")  # the turn now in flight
 
     assert [run_id for run_id, _ in await sketched(octomate)] == ["p1", "p2"]
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -233,7 +252,7 @@ async def test_a_sketch_is_dated_so_it_sorts_after_the_history() -> None:
 
 async def sketched(octomate: Octomate) -> list[tuple[str, list[str | None]]]:
     """Each run of the session's conversation as (run_id, its messages' text)."""
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -246,8 +265,10 @@ async def sketched(octomate: Octomate) -> list[tuple[str, list[str | None]]]:
 async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""), SENDER)
@@ -259,8 +280,10 @@ async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
 async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await submit(ingest, "p1", "hello")
@@ -280,8 +303,10 @@ async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
 async def test_unhandled_events_are_ignored() -> None:
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
 
     await ingest.handle(
@@ -301,8 +326,10 @@ async def test_a_live_turn_is_dated_when_it_happened() -> None:
     turn or history the tailer replayed."""
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
     before = datetime.now(UTC)
 
@@ -310,7 +337,7 @@ async def test_a_live_turn_is_dated_when_it_happened() -> None:
     await stop(ingest, "p1", "Here are the files.")
 
     after = datetime.now(UTC)
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     stamps = [message.happened_at for message in thread.messages]
     assert len(stamps) == 2
     assert all(stamp is not None and before <= stamp <= after for stamp in stamps)
@@ -323,15 +350,17 @@ async def test_the_ledger_row_belongs_to_the_bearers_user() -> None:
     await a_user("lu")
     octomate = Octomate()
     ingest = ClaudeHookIngest(
-        octomate,
-        ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager),
+        ClaudeTranscriptTailer(octomate.conversations, octomate.threads),
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
     bearer = await octomate.users.native_profile(CLAUDE_NATIVE_ID, "lu")
     assert bearer is not None
 
     await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"), bearer)
 
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     [row] = thread.messages
     assert row.user_id == "lu"
     profile = await octomate.users.profile(CLAUDE_NATIVE_ID, "lu")

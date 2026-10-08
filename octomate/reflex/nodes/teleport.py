@@ -130,7 +130,10 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             conversation = target_conversation
             state.thread = landed
             state.target = new_target
-            state.handoff = PendingHandoff(source_agent_tentacle_id=self.agent_id)
+            state.handoff = PendingHandoff(
+                source_agent_tentacle_id=self.agent_id,
+                source_conversation_id=source_conversation.id,
+            )
 
         project = self.request.project
         carried = (
@@ -170,9 +173,12 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 conversation,
                 carry_external_id=carry,
                 external_id=None if carry else external_id,
-                model_name=state.decision.model if state.decision is not None else None,
             )
             await agent.relocate(conversation, cwd=cwd)
+            state.thread = await ctx.deps.thread_manager.rename(
+                state.thread,
+                ctx.deps.thread_manager.fork_title(source_conversation, source),
+            )
         elif not self.request.new_thread:
             external_id = await agent.fork_session(conversation, cwd=cwd)
             if external_id is not None and external_id != conversation.external_id:

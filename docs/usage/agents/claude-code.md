@@ -43,9 +43,76 @@ it ran in and resumes it only from there, so when a thread binds to a project
 Octomate moves the transcript to the workspace's slot before resuming. One live
 client per conversation: a new message while a turn is running interrupts it.
 
-Effort maps directly onto the CLI's scale, except `minimal`, which becomes `low`.
+Choose from the model's native effort levels, including `max` where offered.
+The selected name is passed to Claude unchanged.
+
+## Runtime commands
+
+The command catalog reads Claude's SDK initialization metadata without sending a
+prompt. It preserves command names, descriptions and argument hints; aliases are
+retained as Claude-specific metadata. Native discovery requires an existing workspace
+and uses its model, permission mode, project directories and saved session ID.
+It does not create the workspace or persist an inspection session.
+
+Discovery uses the same safe mode and strict MCP configuration as driven turns.
+Only Octomate's tool-only MCP server can be mounted during a turn, so there are no
+MCP prompts to add to the command catalog. Local commands, skills and plugins stay
+disabled. With SDK 0.2.152 and bundled CLI 2.1.259, a test workspace command remained
+absent even with `setting_sources=["project"]`; it appeared when safe mode was
+removed. Omitting `setting_sources` uses the SDK's normal filesystem defaults;
+safe mode is the restriction here. Loading local commands would require a separate
+configuration opt-in for both discovery and execution, which Octomate does not yet
+expose. See the [SDK command guide](https://code.claude.com/docs/en/agent-sdk/slash-commands).
+
+The SDK caches initialization metadata per client. The host caches the catalog
+until refresh, context changes, eviction or invalidation when a driven turn starts
+or the tentacle starts or stops. Refresh opens a new inspection client to obtain a
+new runtime snapshot. Missing command metadata is reported as a discovery
+limitation; missing or empty native command lists still leave Octomate's `/plan`
+and `/fork` controls available.
+
+Native execution sends the selected command through SDK `query()` with
+the raw argument text and the conversation's saved session. The execution client
+checks its own initialization metadata before submitting the command; a removed
+or changed entry requires a refresh and is never sent as an ordinary prompt.
+Commands absent from the catalog are rejected. An advertised command that needs
+a terminal returns the runtime's refusal text.
+
+Direct output is saved on the command receipt without creating a model run.
+Commands that start model activity use the normal streaming, approval and run
+history path. SDK error results fail the receipt; successful direct text appears
+once. Attachments are not supported.
+
+`/clear` updates the conversation's resumable session ID from the SDK's final
+result. `/compact` leaves summarization to Claude. Neither command deletes or
+rewrites Octomate's recorded history.
+
+`/plan` and `/fork` are Octomate controls, available even when the SDK does not
+advertise them. `/plan` or `/plan on` saves plan mode; `/plan off` saves Claude's
+default permission mode for subsequent runs. During a run, use the conversation's
+permission control to change the active client.
+`/fork` copies a driven conversation, its settings and workspace into a new thread.
+Select that thread to continue; the source stays unchanged. Forking requires a
+saved Claude session and starts no agent turn.
+
+Other commands appear when the connected SDK advertises them:
+
+| Command | Handling |
+|---|---|
+| `/context`, `/compact`, `/clear` | Native execution; direct feedback is recorded without inventing a model run. `/clear` keeps Octomate's history and adopts Claude's new session ID. |
+| `/model` | Disabled; use the agent/model picker when starting a conversation. |
+| `/effort` | Native entry disabled; use the gateway `/effort` to save the selection. |
+| `/plan [on\|off]` | Octomate saves the permission mode without submitting a prompt. |
+| `/fork` | Octomate creates an independent thread and Claude session with the copied history. |
+| `/permissions` | Disabled; use the conversation's permission control. |
+| `/resume` | Disabled; select an existing conversation in Octomate. |
+| `/goal` | Omitted; automatic continuation is not integrated. |
+| Other advertised commands and skills | Native execution with their raw arguments; real agent activity uses the normal recorded stream. Safe mode still limits which skills appear. |
 
 ## Approvals and questions
+
+You can change a driven conversation's [permission mode](permissions.md) while
+it is running. The choice also applies to subsequent runs.
 
 Two bridges, both landing on the same cards:
 

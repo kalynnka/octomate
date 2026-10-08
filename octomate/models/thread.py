@@ -1,5 +1,5 @@
-"""The thread ledger tables: threads, messages, bindings, handoffs, and the
-full-text index."""
+"""The thread ledger tables: threads, messages, the ledgers each thread shows,
+bindings, handoffs, and the full-text index."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from uuid_utils.compat import uuid7
 
-from octomate.models.base import Base, UTCDateTime
+from octomate.models.base import Base, MapperArgs, UTCDateTime
 from octomate.types.threads import (
     ChannelActorKind,
     MessageBindingKind,
@@ -89,6 +89,40 @@ class MessageBinding(Base, TransmuterProxiedMixin):
         "ModelMessage",
         overlaps="thread_messages,model_messages",
         lazy="raise_on_sql",
+    )
+
+
+class ThreadLedger(Base, TransmuterProxiedMixin):
+    """A ledger a thread shows: the messages delivered to one thread, up to a cut.
+
+    Every thread shows its own ledger, whole and still growing. A fork shows each of
+    its source's ledgers frozen where they stood at the fork, so whatever either
+    thread says afterwards is its own.
+    """
+
+    __tablename__ = "thread_ledgers"
+
+    thread_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("threads.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    ledger_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("threads.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+        comment="The thread whose delivered messages make up this ledger.",
+    )
+    cut_message_id: Mapped[UUID7 | None] = mapped_column(
+        Uuid,
+        ForeignKey("thread_messages.id"),
+        nullable=True,
+        comment=(
+            "The ledger's last message this thread shows, frozen at the fork that "
+            "shared it. NULL only for the thread's own ledger, shown whole as it "
+            "grows."
+        ),
     )
 
 
@@ -227,11 +261,29 @@ class Thread(Base, TransmuterProxiedMixin):
         lazy="raise_on_sql",
     )
 
+    # The ledgers this thread shows: its own, which `__init__` gives every new
+    # thread first, and the ones a fork froze into it. Deleting either side leaves
+    # the `thread_ledgers` row to the database's cascade.
+    ledgers: Mapped[list[Thread]] = relationship(
+        "Thread",
+        secondary="thread_ledgers",
+        primaryjoin="Thread.id == ThreadLedger.thread_id",
+        secondaryjoin="Thread.id == ThreadLedger.ledger_id",
+        passive_deletes=True,
+        lazy="raise_on_sql",
+    )
+
+    # What the thread shows: each of its ledgers' messages, up to that ledger's cut.
     messages: Mapped[list[ThreadMessage]] = relationship(
         "ThreadMessage",
-        back_populates="thread",
-        cascade="all, delete-orphan",
-        foreign_keys="ThreadMessage.thread_id",
+        secondary="thread_ledgers",
+        primaryjoin="Thread.id == ThreadLedger.thread_id",
+        secondaryjoin=(
+            "and_(ThreadMessage.thread_id == foreign(ThreadLedger.ledger_id), "
+            "or_(ThreadLedger.cut_message_id.is_(None), "
+            "ThreadMessage.id <= ThreadLedger.cut_message_id))"
+        ),
+        viewonly=True,
         # Conversation order, not insert order. `id` is a uuid7 and so carries the
         # moment of writing, which is the same thing right up until history is replayed:
         # a session Octomate learns of mid-conversation has its backfill written after
@@ -260,11 +312,22 @@ class Thread(Base, TransmuterProxiedMixin):
         lazy="noload",
     )
 
+    def __init__(self, **values: UUID7 | str | datetime | None) -> None:
+        """A new thread, showing its own ledger. A row loaded from the database is
+        never constructed, so this runs once per thread, when it is created."""
+        super().__init__(**values)
+        self.ledgers.append(self)
+
 
 class ThreadMessage(Base, TransmuterProxiedMixin):
     """One user-facing message in a thread's chat ledger."""
 
     __tablename__ = "thread_messages"
+    __mapper_args__: ClassVar[MapperArgs] = {
+        "polymorphic_on": "kind",
+        "polymorphic_identity": "message",
+        "with_polymorphic": "*",
+    }
     # One row per delivery. A platform re-sends a message when it misses an ack, and
     # the second send is the same message — a duplicate here is a duplicate in
     # everyone's scroll-back and a second turn answering what is already answered.
@@ -282,6 +345,12 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
     )
 
     id: Mapped[UUID7] = mapped_column(Uuid, primary_key=True, default=uuid7)
+    kind: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        server_default="message",
+        comment="Whether this ledger row is a chat message or an explicit command.",
+    )
 
     thread_id: Mapped[UUID7] = mapped_column(
         Uuid,
@@ -338,13 +407,12 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         index=True,
     )
 
+    # The thread the message was delivered to: the ledger it is part of.
     thread: Mapped[Thread] = relationship(
         "Thread",
-        back_populates="messages",
         foreign_keys=[thread_id],
         lazy="raise_on_sql",
     )
-
     model_messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
         secondary=MessageBinding.__table__,
@@ -353,6 +421,34 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         lazy="selectin",
         viewonly=True,
         overlaps="thread_message,model_message",
+    )
+
+
+class ThreadCommand(ThreadMessage):
+    """A command delivery in the shared ledger, separate from model input."""
+
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "command"}
+
+    conversation_id: Mapped[UUID7 | None] = mapped_column(
+        Uuid,
+        ForeignKey(
+            "conversations.id",
+            name="fk_thread_command_conversation",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+        nullable=True,
+        comment="The command's target conversation; NULL after that conversation is deleted.",
+    )
+    invocation: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="Explicit command intent with raw arguments and resolved attachments.",
+    )
+    outcome: Mapped[JsonValue] = mapped_column(
+        JSON(none_as_null=True),
+        nullable=True,
+        comment="Recorded command outcome; NULL means no terminal outcome was recorded, not permission to retry.",
     )
 
 

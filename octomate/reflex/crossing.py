@@ -100,7 +100,8 @@ async def open_crossing(
             "Channel %s failed to announce the crossing", origin, exc_info=True
         )
         return opened
-    if origin in ctx.deps.channels:
+    # Stream-only channels navigate on the event without posting a source message.
+    if announced is not None:
         await ctx.deps.record_move(
             source_address,
             hint_text,

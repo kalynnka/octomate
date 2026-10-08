@@ -20,11 +20,27 @@ from pydantic import HttpUrl, SecretStr
 from octomate.tentacles.deepseek.client import DeepseekApiClient
 from octomate.tentacles.deepseek.wire import (
     MuxFrame,
+    RemoteNotification,
     SessionAssistantFrame,
 )
 from octomate.types.json import JsonObject
 
 BASE_URL = "http://127.0.0.1:3080/"
+
+
+async def test_mux_preserves_registry_change_notifications() -> None:
+    socket = AsyncMock()
+    socket.__aiter__.return_value = [
+        '{"type":"item","streamId":"$events","value":'
+        '{"type":"emit","event":"commands/change","args":[]}}'
+    ]
+    async with DeepseekApiClient(
+        HttpUrl(BASE_URL), httpx.AsyncClient(base_url=BASE_URL)
+    ) as client:
+        frames = [frame async for frame in client.mux_frames(socket)]
+    assert frames == [
+        ("$events", RemoteNotification(type="emit", event="commands/change", args=[]))
+    ]
 
 
 async def test_cookie_exchange_authenticates_http_and_websocket_requests() -> None:

@@ -35,7 +35,6 @@ from pydantic_ai.agent.abstract import (
 from pydantic_ai.messages import UserContent
 from pydantic_ai.models import KnownModelName, Model
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 
@@ -43,6 +42,13 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import AgentRouteModelName
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.commands import (
+    CommandCatalog,
+    CommandContext,
+    CommandError,
+    CommandInvocation,
+    CommandOutcome,
+)
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.project import Project
 from octomate.schemas.runs import ExternalAgentRun
@@ -52,9 +58,17 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.base import Tentacle
 from octomate.types.json import JsonObject
 from octomate.types.permissions import PermissionMode
+from octomate.utils import drain_task
 
 if TYPE_CHECKING:
+    from octomate.base import Octomate
     from octomate.capabilities.harness.deferred import DeferredSuspender
+    from octomate.managers.commands import CommandManager
+    from octomate.managers.conversation import ConversationManager
+    from octomate.managers.files import FileManager
+    from octomate.managers.project import ProjectManager
+    from octomate.managers.thread import ThreadManager
+    from octomate.managers.workspaces import WorkspaceManager
 
 # The tentacle's output type is whatever its builder's agent produces (a deferring
 # agent includes DeferredToolRequests in it); run-level output_type overrides are
@@ -66,6 +80,29 @@ type AgentSpecInput = JsonObject | AgentSpec
 
 class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     """Base class for Octomate agents wrapping pydantic-ai run entrypoints."""
+
+    commands: CommandManager
+    projects: ProjectManager
+    threads: ThreadManager
+    files: FileManager
+    conversations: ConversationManager
+    workspaces: WorkspaceManager
+
+    def __init__(
+        self,
+        id: str,
+        octomate: Octomate,
+        *,
+        commands: CommandManager,
+        projects: ProjectManager,
+        threads: ThreadManager,
+        files: FileManager,
+    ) -> None:
+        super().__init__(id=id, octomate=octomate)
+        self.commands = commands
+        self.projects = projects
+        self.threads = threads
+        self.files = files
 
     # Capability blurb the triage agent reads when routing to a reception agent.
     # Subclasses refine this default; overridable at init.
@@ -149,7 +186,6 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         task = asyncio.create_task(collect())
         self.run_tasks.add(task)
         observed_end = False
-        cancelled = False
         try:
             async with receive:
                 async for event in receive:
@@ -159,14 +195,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 raise error
         finally:
             receive.close()
-            # AnyIO scopes repeatedly cancel at checkpoints; asyncio callers can
-            # also cancel more than once. Neither may cancel the collector.
-            with anyio.CancelScope(shield=True):
-                while not task.done():
-                    try:
-                        await asyncio.shield(task)
-                    except asyncio.CancelledError:
-                        cancelled = True
+            cancelled = await drain_task(task)
             self.run_tasks.discard(task)
             if not observed_end:
                 for error in errors:
@@ -225,10 +254,27 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
     ) -> None:
         self.routes = []
 
-    @property
+    @cached_property
     def default_model(self) -> str | None:
-        """Inkling's configured first model; harnesses override with native defaults."""
-        return next(iter(self.models), None)
+        """Configured first model, replaced by discovery with the harness's default."""
+        return next(iter(self.models), None) if self.native_id is None else None
+
+    def resolve_model(
+        self, model: AgentRouteModelName | None = None
+    ) -> AgentRouteModelName | None:
+        """Resolve a default, exact model or unambiguous provider-less name."""
+        if not self.models:
+            raise ValueError(f"agent {self.id!r} has no available model catalog")
+        if model is None:
+            # Native harnesses retain their settings and resumed model selection.
+            return self.default_model if self.native_id is None else None
+        served = self.served_model(model)
+        if served is not None:
+            return served
+
+        raise ValueError(
+            f"agent {self.id!r} does not serve model {model!r} with an unambiguous provider"
+        )
 
     def served_model(self, name: str) -> str | None:
         """The catalog entry a stored model name means: the entry itself, or, for
@@ -256,6 +302,70 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         if not any(option.value == mode for option in self.permission_modes):
             raise ValueError(f"{mode!r} is not one of {self.id}'s modes")
 
+    def check_effort(self, model: AgentRouteModelName | None, effort: str) -> None:
+        """Reject a level the route for `model` does not claim."""
+        model = self.resolve_model(model or self.default_model)
+        if model is None:
+            raise ValueError(
+                "The runtime's model is unknown; select a model to set effort"
+            )
+        route = next((route for route in self.routes if route.model == model), None)
+        efforts = route.claim.efforts if route is not None else ()
+        if effort not in efforts:
+            raise ValueError(
+                f"{self.id} ({model}) does not take effort {effort!r}; it claims "
+                f"{'/'.join(efforts) or 'none'}"
+            )
+
+    async def resolve_effort(
+        self,
+        conversation: Conversation,
+        *,
+        model: AgentRouteModelName | None,
+        effort: str | None = None,
+    ) -> str | None:
+        """Validate the run's override or stored effort against its selected model.
+
+        With no explicit model, use the conversation's last reported model, then
+        the harness's catalog default for a conversation that has not run yet.
+        """
+        selected = effort if effort is not None else conversation.effort
+        if selected is None:
+            return None
+        effective_model = model or await self.conversations.latest_model(
+            conversation.id
+        )
+        self.check_effort(effective_model, selected)
+        return selected
+
+    async def set_permission_mode(
+        self, conversation: Conversation, mode: str | None
+    ) -> Conversation:
+        """Validate and save a selection, updating a live runtime when supported.
+
+        None restores the configured default. Native update failures propagate
+        before the selection is saved. Runtimes without live updates read the
+        saved selection on their next run; existing approvals remain separate.
+        """
+        if conversation.agent_tentacle_id != self.id:
+            raise ValueError("conversation belongs to another agent")
+        effective = mode if mode is not None else self.default_permission_mode
+        if effective is not None:
+            self.check_permission_mode(effective)
+            await self.apply_permission_mode(conversation, effective)
+        updated = await self.conversations.set_permission_mode(conversation, mode)
+        self.commands.invalidate(agent_id=self.id, conversation_id=conversation.id)
+        return updated
+
+    async def apply_permission_mode(
+        self, conversation: Conversation, mode: str
+    ) -> None:
+        """Update an active native runtime when it supports permission changes.
+
+        The default leaves in-flight work alone. Codex applies both permission
+        axes at the next turn start; Inkling reads storage at each deferral.
+        """
+
     @property
     def default_permission_mode(self) -> str | None:
         """The posture this agent's conversations run under when they declare none —
@@ -274,6 +384,75 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         Harnesses call this during entry and install results with set_model_catalog.
         Agents with config-supplied catalogs keep their existing models and claims.
         """
+
+    async def discover_commands(
+        self,
+        context: CommandContext,
+        *,
+        refresh: bool = False,
+        prefix: str = "",
+    ) -> CommandCatalog:
+        """Read this agent's cached catalog for an already authorized context.
+
+        Callers resolve and authorize context before every lookup, including cache
+        hits. Prefix matching filters a copy by command name; it does not imply
+        argument-value completion. Runtime adapters implement `probe_commands`.
+        """
+        catalog = await self.commands.discover(self, context, refresh=refresh)
+        catalog.descriptors = {
+            descriptor
+            for descriptor in catalog.descriptors
+            if descriptor.name.casefold().startswith(prefix.casefold())
+        }
+        return catalog
+
+    async def probe_commands(self, context: CommandContext) -> CommandCatalog:
+        """Read runtime entries in the supplied user/session/workspace context.
+
+        Discovery must not send a model prompt or create a visible turn. If a
+        runtime needs a session before it can discover entries, report unavailable
+        and explain that prerequisite; do not silently create one. Adapters with
+        no discovery API retain this explicit unsupported result.
+        """
+        return CommandCatalog(
+            context=context,
+            status="unsupported",
+            message=f"{self.id} does not expose command discovery.",
+        )
+
+    async def execute_command(
+        self,
+        context: CommandContext,
+        invocation: CommandInvocation,
+        *,
+        deferred_suspender: DeferredSuspender | None = None,
+        capabilities: Sequence[AgentCapability[AgentDepsT]] | None = None,
+    ) -> AsyncGenerator[CommandOutcome | ReactStreamEvent[AgentOutputT], None]:
+        """Invoke a revalidated runtime entry without passing through chat triage.
+
+        Direct controls yield one CommandOutcome without invoking `run`. Entries
+        that run the agent yield the same events as `run_stream_events`, ending
+        with an AgentRunResultEvent. Consuming this generator drives one native
+        invocation; closing it must release that invocation's resources. The
+        caller must close it even when abandoning the stream and hold the
+        conversation's active-turn guard through cleanup. Forward the suspender
+        and capabilities for agent runs; direct controls do not consume them.
+
+        Resolve the opaque invocation id using this tentacle's current catalog.
+        Execution behavior belongs to the invocation, not a fixed descriptor tag:
+        a command may return a control result or run the agent depending on input.
+        If its descriptor permits execution without a conversation, it must yield
+        only a direct outcome in that context, without creating a session or run.
+
+        Preserve invocation arguments verbatim. Never turn an unsupported or
+        unknown invocation into a normal model prompt. Authorization, current
+        catalog validation and delivery deduplication belong to the host caller;
+        these adapter hooks do not establish any of them.
+        """
+        yield CommandError(
+            status="unsupported",
+            message=f"{self.id} does not support explicit command execution.",
+        )
 
     def set_model_catalog(
         self, models: dict[str, Model | str], claims: dict[str, Claim]
@@ -314,35 +493,77 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         destination: ThreadKey,
         *,
         sender: UserProfile,
+        model: AgentRouteModelName | None = None,
     ) -> Thread:
-        """Fork an owner's uploaded native history onto a new surface, as a
-        conversation this tentacle drives. The import is the runtime's own
-        `fork_transcript`; the checks and the thread around it are every runtime's."""
+        """Fork owned native or driven history onto an independent surface.
+
+        Native imports use `fork_transcript`. Driven forks use `fork_session` and
+        copy the history, settings and project workspace, retaining the source
+        session. The caller opens the destination and holds the runtime's turn
+        guard while forking a driven conversation.
+        """
         owner_id = sender.user_id
         if owner_id is None:
-            raise ValueError("A native fork requires a registered owner")
-        if source.agent_tentacle_id != self.native_id or source.subagent_id:
-            raise ValueError("Only a root native session of this runtime can be forked")
-        threads = self.octomate.thread_manager
-        source_thread = await threads.get(
-            source.thread_id, with_messages=False, user_id=owner_id
-        )
+            raise ValueError("A fork requires a registered owner")
+        source = await self.conversations.get(source.id)
+        if (
+            source.agent_tentacle_id not in {self.id, self.native_id}
+            or source.subagent_id
+        ):
+            raise ValueError("Only a root conversation of this runtime can be forked")
+        driven = source.agent_tentacle_id == self.id
+        threads = self.threads
+        source_thread = await threads.get(source.thread_id, with_messages=False)
         if source_thread is None:
             raise FileNotFoundError("No conversation")
-        if source.transcript_file_id is None:
-            raise ValueError("The session transcript has not been uploaded yet")
-        await self.octomate.files.get(source.transcript_file_id, owner_id=owner_id)
-        project = await self.octomate.projects.of(source_thread)
-        if project is not None and not await anyio.Path(project.root).is_dir():
+        surface = await threads.get(
+            source_thread.parent_thread_id or source_thread.id,
+            with_messages=False,
+            user_id=owner_id,
+        )
+        if surface is None:
+            raise FileNotFoundError("No conversation")
+        if not driven:
+            if source.transcript_file_id is None:
+                raise ValueError("The session transcript has not been uploaded yet")
+            await self.files.get(source.transcript_file_id, owner_id=owner_id)
+        project = await self.projects.of(source_thread)
+        if (
+            not driven
+            and project is not None
+            and not await anyio.Path(project.root).is_dir()
+        ):
             project = None
         thread = await threads.ensure(destination, project=project)
-        target = await self.octomate.conversations.ensure(
-            thread.id, agent_tentacle_id=self.id
-        )
-        cwd = self.octomate.workspaces.open(thread.id, project).path
-        await self.fork_transcript(source, target, owner_id=owner_id, cwd=cwd)
+        if thread.id == source_thread.id:
+            raise ValueError("A fork requires an independent destination thread")
+        target = await self.conversations.ensure(thread.id, agent_tentacle_id=self.id)
+        workspace = self.workspaces.open(thread.id, project)
+        if driven:
+            await self.workspaces.carry(source_thread, thread)
+            async with workspace:
+                external_id = await self.fork_session(source, cwd=workspace.path)
+            if source.external_id is not None and (
+                external_id is None or external_id == source.external_id
+            ):
+                raise ValueError("The runtime did not create an independent session.")
+            await self.conversations.fork(source, target, external_id=external_id)
+            await threads.record_handoff(
+                thread,
+                to_agent_tentacle_id=self.id,
+                to_model=model,
+                source_conversation_id=source.id,
+                target_conversation_id=target.id,
+            )
+        else:
+            await self.fork_transcript(
+                source, target, owner_id=owner_id, cwd=workspace.path
+            )
         return await threads.record_fork(
-            source, thread, sender=sender, title=source_thread.title
+            source,
+            thread,
+            sender=sender,
+            title=threads.fork_title(source, source_thread),
         )
 
     async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:
@@ -413,14 +634,14 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         thread is what this adds; judging what it names is the registry's, and is
         `ProjectManager.of`.
         """
-        if not self.octomate.projects.roots:
+        if not self.projects.roots:
             # Nothing registered: no thread can be in a project, so a run is what it
             # was before there were projects, down to not reading the thread.
             return None
-        thread = await self.octomate.thread_manager.get(thread_id)
+        thread = await self.threads.get(thread_id)
         if thread is None:
             raise ValueError(f"unknown thread {thread_id}")
-        return await self.octomate.projects.of(thread)
+        return await self.projects.of(thread)
 
     @overload
     async def run(
@@ -436,7 +657,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -468,7 +689,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -500,7 +721,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -528,7 +749,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[AgentOutputT]:
@@ -570,7 +791,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -601,7 +822,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,
@@ -632,7 +853,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[AgentDepsT] = None,

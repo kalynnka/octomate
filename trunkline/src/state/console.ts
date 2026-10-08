@@ -9,6 +9,7 @@ import { create } from 'zustand'
 import type {
   AskAnswer,
   DocLine,
+  EffortStep,
   LedgerItem,
   QueueChip,
   ReviewComment,
@@ -16,11 +17,21 @@ import type {
   ThreadDetail,
 } from '@/lib/api/types'
 import { api, resolveBatch, streamDirective } from '@/lib/api'
-import { fetchThreads, streamGateway } from '@/lib/api/client'
-import type { BatchResponseBody, ChannelAddress, GatewayEvent, GatewayRequest, WireEvent } from '@/lib/api/events'
+import { fetchThreads, streamCommand, streamGateway } from '@/lib/api/client'
+import type {
+  ApiCommandDescriptor,
+  BatchResponseBody,
+  ChannelAddress,
+  CommandContextBody,
+  CommandStreamEvent,
+  GatewayEvent,
+  GatewayRequest,
+} from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
+import { groupLiveThreads } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
+import { COMMAND_CONTROLS } from '@/features/chat/commands'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
@@ -233,6 +244,10 @@ export interface ConsoleActions {
   cyclePermissionMode(): Promise<void>
   /** choose a mode for the draft or persist it on the current conversation */
   setPermissionMode(mode: string): Promise<void>
+  /** set the level the current conversation's runs ask for; null = the runtime's default */
+  setEffort(effort: EffortStep | null): Promise<void>
+  /** Open a shared client control, or stream a runtime command into the ledger. */
+  runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string): Promise<void>
   closeNtMenu(): void
   sendNewThread(text: string): void
   /** drop what the last operator left open — the next one boots into their own */
@@ -440,7 +455,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   /** Your thread at `address`, if your list holds it, with both ends' details refetched. */
   const landedThread = async (from: string, address: ChannelAddress) => {
     await queryClient.invalidateQueries({ queryKey: ['thread-detail', from] })
-    const landed = (await fetchThreads()).find((thread) =>
+    const threads = await fetchThreads()
+    queryClient.setQueryData(['threads'], groupLiveThreads(threads))
+    const landed = threads.find((thread) =>
       thread.channel_tentacle_id === address.channel_tentacle_id
       && thread.chat_type === address.chat_type
       && thread.chat_id === address.chat_id
@@ -461,7 +478,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
    */
   const runLive = async (
     from: string,
-    request: (onEvent: (event: WireEvent) => void) => Promise<void>,
+    request: (onEvent: (event: CommandStreamEvent) => void) => Promise<void>,
     // What a stream that sent nothing back says; null says nothing.
     quietClose: string | null = 'stream closed without a result',
   ) => {
@@ -478,6 +495,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let received = 0
     let terminal = false
     let landing: ChannelAddress | undefined
+    let summoning = get().gatewayPending?.action === 'summon'
     const turnFold = () => new TurnFold({
       push: (item) => {
         clearDots()
@@ -488,26 +506,52 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (!alive()) return
         patchLive((x) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x))
       },
-      done: () => {
-        if (alive() && openRuns === 1) set({ running: false })
-      },
+      // The graph releases its active turn after the result, before stream EOF.
+      done: () => {},
     })
     let fold = turnFold()
-    const feed = (event: WireEvent) => {
+    const feed = (event: CommandStreamEvent) => {
       received++
-      if (event.event_kind === 'run_result' || event.event_kind === 'run_error') terminal = true
+      if (event.event_kind === 'run_result' || event.event_kind === 'run_error' || event.event_kind === 'command_outcome') {
+        terminal = true
+      }
       fold.feed(event)
     }
     // Opening the thread a run started in; what streams meanwhile waits for it.
     let following: Promise<void> | undefined
-    const held: WireEvent[] = []
+    const held: CommandStreamEvent[] = []
+    const openSummon = async () => {
+      fold = turnFold()
+      terminal = false
+      const detail = await api.getThreadDetail(selId)
+      if (alive()) {
+        const opening = detail.ledger.findLast((item) => item.kind === 'session-open')
+        const anchor = opening ? push({ ...opening, uid: nextUid() }) : undefined
+        set((s) => ({ detail: {
+          ...detail,
+          ledger: s.detail?.ledger ?? [],
+          sessions: detail.sessions.map((session) => session.id === opening?.sessionId ? { ...session, anchor } : session),
+        } }))
+      }
+      following = undefined
+      held.splice(0).forEach(feed)
+    }
     const follow = async (address: ChannelAddress) => {
       const landed = await landedThread(selId, address)
       if (landed && alive()) {
-        await actions.selectThread(landed.channel_tentacle_id, landed.id)
-        selId = landed.id
-        set({ running: true })
-        fold = turnFold()
+        if (get().ntOn && address.channel_tentacle_id === 'trunkline' && address.channel_thread_id === selId) {
+          const detail = await api.getThreadDetail(landed.id)
+          if (alive()) {
+            selId = landed.id
+            // The live overlay already owns this panel's prompt and feedback.
+            set({ selThreadId: selId, detail: { ...detail, ledger: [] }, ntOn: false, ntStarted: false, ntMenu: null, ntRouteId: null })
+          }
+        } else {
+          await actions.selectThread(landed.channel_tentacle_id, landed.id)
+          selId = landed.id
+          set({ running: true })
+          fold = turnFold()
+        }
       }
       following = undefined
       held.splice(0).forEach(feed)
@@ -516,6 +560,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       await request((event) => {
         if (event.event_kind === 'gateway') {
           landing = event.destination
+          summoning = event.action === 'summon'
           return
         }
         if (following) {
@@ -524,7 +569,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }
         if (event.event_kind === 'custom' && event.name === 'run_started') {
           const { channel_tentacle_id, channel_thread_id } = event.address
-          if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
+          if (summoning) {
+            summoning = false
+            following = openSummon()
+          } else if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
             following = follow(event.address)
           }
           return
@@ -555,9 +603,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           // reload the ledger from the relay instead of showing a torn turn.
           void actions.selectThread(get().selChannel, selId)
         } else if (openRuns === 0) {
-          set({ running: false })
+          set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
         }
       }
+      void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
       refreshThreads()
     }
   }
@@ -827,7 +876,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (!landed) {
           throw new Error(`${request.action} completed, but its destination is not visible in your thread list.`)
         }
-        if (get().selThreadId === threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        if (get().selThreadId === threadId && landed.id !== threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       } catch (error) {
         actions.reportThreadError(threadId, error instanceof Error ? error.message : String(error))
       } finally {
@@ -862,6 +911,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     /* ---------------------------------------------------- feelers -------- */
     resolveApproval(uid: string, verdict: 'approved' | 'dismissed') {
+      if (get().detail?.kind === 'native_thread') return
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
@@ -884,6 +934,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }
     },
     answerAsk(uid: string, answers: AskAnswer[], via: string) {
+      if (get().detail?.kind === 'native_thread') return
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
@@ -1127,6 +1178,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         actions.sendNewThread(text)
         return
       }
+      if (s.detail?.kind === 'native_thread') return
       if (s.detail?.live) {
         const live = text.trim()
         if (!live) return
@@ -1260,6 +1312,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         ntTitle: '',
         ntProject: null,
         ntPermissionMode: null,
+        ntEffort: 'auto',
         ntMenu: null,
         live: [],
         running: false,
@@ -1282,7 +1335,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // A posture is one provider's word, so switching agents drops it rather
       // than sending Claude's vocabulary to Codex on the first directive.
       const dropped = patch.ntAgent !== undefined && patch.ntAgent !== get().ntAgent
-      set(dropped ? { ...patch, ntPermissionMode: null } : patch)
+      const modelChanged = patch.ntModel !== undefined && patch.ntModel !== get().ntModel
+      set({ ...(dropped || modelChanged ? { ntEffort: 'auto' } : {}), ...patch, ...(dropped ? { ntPermissionMode: null } : {}) })
     },
     setNtMenu(menu: ConsoleState['ntMenu'], pos?: { top: number; right: number }) {
       set((s) => ({ ntMenu: s.ntMenu === menu ? null : menu, ...(pos ? { ntMenuPos: pos } : {}) }))
@@ -1303,6 +1357,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
      * rather than driven) cycles to nothing at all.
      */
     async cyclePermissionMode() {
+      if (!get().ntOn && get().detail?.kind === 'native_thread') return
       const vocabularies = await queryClient.fetchQuery({
         queryKey: ['permission-modes'],
         queryFn: api.permissionModes,
@@ -1325,6 +1380,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         set({ ntPermissionMode: mode })
         return
       }
+      if (s.detail?.kind === 'native_thread') return
       const session = s.detail?.sessions.at(-1)
       if (!session) return
       await api.setPermissionMode(session.conversationId, mode)
@@ -1346,6 +1402,81 @@ export const useConsole = create<ConsoleState>()((set, get) => {
               },
             },
       )
+    },
+    async setEffort(effort: EffortStep | null) {
+      const s = get()
+      if (s.running || s.detail?.kind === 'native_thread') return
+      if (s.ntOn) {
+        set({ ntEffort: effort ?? 'auto' })
+        return
+      }
+      const session = s.detail?.sessions.at(-1)
+      if (!session) return
+      const stored = await api.setEffort(session.conversationId, effort).catch((err: unknown) => {
+        actions.reportThreadError(s.selThreadId, `effort not set — ${err instanceof Error ? err.message : String(err)}`)
+        return null
+      })
+      if (stored === null || get().selThreadId !== s.selThreadId) return
+      set((x) =>
+        x.detail === null
+          ? {}
+          : {
+              detail: {
+                ...x.detail,
+                sessions: x.detail.sessions.map((each) =>
+                  each.conversationId === session.conversationId ? { ...each, effort: stored.effort } : each,
+                ),
+              },
+              notices: [
+                ...x.notices,
+                { kind: 'notice', uid: nextUid(), text: `effort → ${stored.effort ?? 'auto'} · ${session.route}`, tone: 'info' },
+              ],
+            },
+      )
+      scrollChatBottom(true)
+    },
+    async runCommand(context: CommandContextBody, command: ApiCommandDescriptor, args: string) {
+      const s = get()
+      if (s.running || s.detail?.kind === 'native_thread') return
+      const control = COMMAND_CONTROLS.get(command.id)?.action
+      if (!control && (command.unavailable_reason || (!context.conversation_id && command.requires_conversation !== false))) return
+      if (control) {
+        if (args.trim()) return
+        const result = await queryClient.fetchQuery({ queryKey: ['routes'], queryFn: api.routes, staleTime: 60_000 }).catch((error: unknown) => {
+          actions.reportThreadError(s.selThreadId, `control unavailable — ${error instanceof Error ? error.message : String(error)}`)
+          return null
+        })
+        if (!result || get().selThreadId !== s.selThreadId || get().ntRouteId !== s.ntRouteId || get().running) return
+        const { routes } = result
+        const route = routes.find((one) => one.agent === context.agent_id && one.model === context.model)
+          ?? routes.find((one) => one.agent === context.agent_id)
+        if (!route) {
+          actions.reportThreadError(s.selThreadId, `No Trunkline route is available for ${context.agent_id}.`)
+          return
+        }
+        const project = s.ntOn ? s.ntProject : s.detail?.project?.name ?? null
+        if (!s.ntOn || s.ntStarted || control === 'new_thread') actions.startNewThread()
+        set({
+          ntMenu: control === 'model' ? 'sel' : control === 'new_thread' ? null : 'proj',
+          ntProject: control === 'new_thread' ? null : project,
+          ntAgent: route.agent,
+          ntModel: route.model ?? 'Harness default',
+          ntRouteId: route.id,
+        })
+        return
+      }
+      set({ running: true, composer: '' })
+      push({ kind: 'user', t: nowClock(), who: operator(), text: `/${command.name}${args && ` ${args}`}` } as LedgerItem)
+      const body = {
+        ...context,
+        command_id: command.id,
+        // Opaque to the relay, which only dedupes on it; getRandomValues, unlike
+        // randomUUID, is there on a plain-http origin too.
+        delivery_id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+        arguments: args,
+      }
+      void runLive(s.selThreadId, (onEvent) => streamCommand(body, onEvent), 'command closed without an outcome')
+        .finally(() => { void queryClient.invalidateQueries({ queryKey: ['command-catalog', context.agent_id] }) })
     },
     sendNewThread(text: string) {
       const s = get()
@@ -1379,10 +1510,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // the console holds it until the thread is reopened and its conversation
       // starts answering for it.
       const posture = s.ntPermissionMode ?? undefined
+      const effort = !started && s.ntEffort !== 'auto' ? s.ntEffort : undefined
       void runLive(threadId, (onEvent) =>
         streamDirective(
           threadId,
-          { text: body, model: routeId, project, permission_mode: posture },
+          { text: body, model: routeId, project, permission_mode: posture, effort },
           onEvent,
         ),
       )
@@ -1455,7 +1587,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     ntAgent: 'claude',
     ntModel: 'opus-4.1',
     ntRouteId: null,
-    ntEffort: 'high',
+    ntEffort: 'auto',
     ntMenu: null,
     ntMenuPos: { top: 0, right: 0 },
     actions,

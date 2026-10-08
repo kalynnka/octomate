@@ -50,10 +50,9 @@ composed and has no row to switch — carried on the directive that creates it."
 from dataclasses import replace
 from typing import Annotated, NotRequired, TypedDict
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import UUID7, BaseModel, Field
-from pydantic_ai.settings import ThinkingEffort
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
@@ -81,7 +80,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -137,6 +136,11 @@ class DirectiveBody(BaseModel):
         "thread's is switched through PATCH /conversations/{id}/permission-mode. "
         "Null asks for no change, and never clears a posture already stored.",
     )
+    effort: str | None = Field(
+        default=None,
+        description="An effort level advertised by the selected model, stored before "
+        "the first run. Null leaves the conversation's selection unchanged.",
+    )
 
 
 class TeleportBody(TypedDict):
@@ -161,7 +165,7 @@ class SummonBody(TypedDict):
     model: str
     brief: Annotated[str, Field(min_length=1, max_length=8_000)]
     hint: Annotated[str, Field(min_length=1, max_length=1_000)]
-    effort: NotRequired[ThinkingEffort | None]
+    effort: NotRequired[str | None]
 
 
 class AgentPostures(BaseModel):
@@ -176,29 +180,6 @@ class AgentPostures(BaseModel):
         "nothing of its own — the configured default, which is what a NULL "
         "`permission_mode` means rather than 'no posture'."
     )
-
-
-class PermissionModeBody(BaseModel):
-    """The body of a PATCH switching a conversation's approval posture."""
-
-    permission_mode: AgentPermissionMode | None = Field(
-        default=None,
-        description="A posture from GET /permissions, in this conversation's "
-        "own agent's vocabulary. Null clears it: nothing is declared and the agent's "
-        "configured default decides again.",
-    )
-
-
-class BatchResponseBody(BaseModel):
-    """The body resolving a deferred-action batch.
-
-    Answers and approvals keyed by action id, and whether an approved tool stays
-    allowed for the rest of the session.
-    """
-
-    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
-    approvals: dict[UUID7, bool] = Field(default_factory=dict)
-    allow_session: bool = False
 
 
 async def accessible_thread(
@@ -337,7 +318,7 @@ def build_trunkline_router(
                 model=body["model"],
                 hint=body["hint"],
                 reason="Summon requested from Trunkline",
-                summon=body["brief"],
+                brief=body["brief"],
                 effort=body.get("effort"),
             )
         except GatewayRefusal as exc:
@@ -446,7 +427,7 @@ def build_trunkline_router(
         thread_id: UUID7,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         user: Annotated[User, Depends(current_user)],
-    ) -> list[ThreadMessage]:
+    ) -> list[ThreadMessage | ThreadCommand]:
         thread = await threads.get(thread_id, user_id=user.id)
         if thread is None:
             raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
@@ -516,6 +497,7 @@ def build_trunkline_router(
             model=body.model,
             project=body.project,
             permission_mode=body.permission_mode,
+            effort=body.effort,
         )
         try:
             return await channel.handle_directive(directive)
@@ -531,32 +513,83 @@ def build_trunkline_router(
     )
     async def set_permission_mode(
         conversation_id: UUID7,
-        body: PermissionModeBody,
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         conversations: Annotated[ConversationManager, Depends(conversation_manager)],
         user: Annotated[User, Depends(current_user)],
+        permission_mode: Annotated[
+            AgentPermissionMode | None,
+            Body(
+                embed=True,
+                description="A posture from GET /permissions, in this conversation's "
+                "own agent's vocabulary. Null clears it: nothing is declared and the agent's "
+                "configured default decides again.",
+            ),
+        ] = None,
     ) -> Conversation:
-        """The one place a live thread's posture changes. A run reads it as it
-        starts, so the switch lands on the next turn and leaves anything in flight
-        alone — including a batch already waiting on a human."""
+        """Change the selection through the owning agent, including live updates
+        where its runtime supports them. Pending approval cards stay separate.
+        """
         try:
             conversation = await conversations.get(conversation_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
-        await accessible_thread(conversation.thread_id, threads, user)
+        thread = await accessible_thread(conversation.thread_id, threads, user)
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
         try:
             agent = octomate.agents.get(conversation.agent_tentacle_id)
             if agent is None:
                 raise ValueError(
                     "This conversation has no driven agent to set permissions on"
                 )
-            if body.permission_mode is not None:
-                agent.check_permission_mode(body.permission_mode)
-            return await conversations.set_permission_mode(
-                conversation, body.permission_mode
-            )
+            return await agent.set_permission_mode(conversation, permission_mode)
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.patch(
+        "/conversations/{conversation_id}/effort",
+        summary="Set the reasoning effort this conversation's runs ask for",
+        response_model_exclude={"messages", "runs"},
+    )
+    async def set_effort(
+        conversation_id: UUID7,
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+        user: Annotated[User, Depends(current_user)],
+        effort: Annotated[
+            str | None,
+            Body(
+                embed=True,
+                description="A level the thread's route claims, as GET /agents lists them. "
+                "Null clears it: nothing is declared and the runtime's own default decides.",
+            ),
+        ] = None,
+    ) -> Conversation:
+        """Validate the level against the model the thread runs on, then store it.
+        The next run reads it; a run already going keeps the level it started at.
+        """
+        try:
+            conversation = await conversations.get(conversation_id, with_history=False)
+        except ValueError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        thread = await accessible_thread(conversation.thread_id, threads, user)
+        agent = octomate.agents.get(conversation.agent_tentacle_id)
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
+        if agent is None:
+            raise HTTPException(
+                status_code=422,
+                detail="This conversation has no driven agent to set effort on",
+            )
+        if effort is not None:
+            surface = await threads.surface(thread)
+            try:
+                await agent.resolve_effort(
+                    conversation, model=surface.active_model, effort=effort
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+        return await conversations.set_effort(conversation, effort)
 
     @router.post(
         "/batches/{batch_id}/resolve",
@@ -565,20 +598,35 @@ def build_trunkline_router(
     )
     async def resolve_batch(
         batch_id: UUID7,
-        body: BatchResponseBody,
         user: Annotated[User, Depends(current_user)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],
         conversations: Annotated[ConversationManager, Depends(conversation_manager)],
         deferred_actions: Annotated[
             DeferredActionManager, Depends(deferred_action_manager)
         ],
+        answers: Annotated[
+            dict[UUID7, QuestionAnswer],
+            Body(default_factory=dict, description="Answers keyed by action id."),
+        ],
+        approvals: Annotated[
+            dict[UUID7, bool],
+            Body(default_factory=dict, description="Approvals keyed by action id."),
+        ],
+        allow_session: Annotated[
+            bool,
+            Body(
+                description="Keep approved tools allowed for the rest of the session."
+            ),
+        ] = False,
     ) -> StreamingResponse:
         try:
             batch = await deferred_actions.get_batch(batch_id)
         except ValueError as error:
             raise HTTPException(status_code=404, detail=str(error)) from error
         conversation = await conversations.get(batch.conversation_id)
-        await accessible_thread(conversation.thread_id, threads, user)
+        thread = await accessible_thread(conversation.thread_id, threads, user)
+        if thread.kind == "native_thread":
+            raise HTTPException(409, "Synced native sessions are read-only.")
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
@@ -586,9 +634,9 @@ def build_trunkline_router(
             DeferredActionBatchResponse(
                 batch_id=batch_id,
                 responder_id=str(user.id),
-                answers=body.answers,
-                approvals=body.approvals,
-                allow_session=body.allow_session,
+                answers=answers,
+                approvals=approvals,
+                allow_session=allow_session,
             )
         )
 

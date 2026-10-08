@@ -127,13 +127,11 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, CodexTranscriptTailer(
-        octomate.conversations, octomate.thread_manager
-    )
+    return octomate, CodexTranscriptTailer(octomate.conversations, octomate.threads)
 
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     conversation = await octomate.conversations.ensure(
@@ -237,7 +235,7 @@ async def test_sibling_child_rollouts_stream_into_child_runs() -> None:
     )
     tailer.detach_remote(state)
 
-    thread = await octomate.thread_manager.ensure(
+    thread = await octomate.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
     )
     parent = await octomate.conversations.ensure(
@@ -332,6 +330,17 @@ def stream_client(*, storage: Path | None = None) -> tuple[TestClient, CodexTent
             "codex",
             octomate,
             config=CodexConfig(permission_mode="auto_review"),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            auth=octomate.auth,
+            gateway_manager=octomate.gateway,
         )
     )
 
@@ -630,7 +639,22 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     client, tentacle = stream_client()
     driver = (
         tentacle.octomate.connect(
-            CodexTentacle("other-codex", tentacle.octomate, config=CodexConfig())
+            CodexTentacle(
+                "other-codex",
+                tentacle.octomate,
+                config=CodexConfig(),
+                commands=tentacle.octomate.commands,
+                projects=tentacle.octomate.projects,
+                threads=tentacle.octomate.threads,
+                conversations=tentacle.octomate.conversations,
+                deferred_actions=tentacle.octomate.deferred_actions,
+                workspaces=tentacle.octomate.workspaces,
+                users=tentacle.octomate.users,
+                bearers=tentacle.octomate.bearers,
+                auth=tentacle.octomate.auth,
+                gateway_manager=tentacle.octomate.gateway,
+                files=tentacle.octomate.files,
+            )
         )
         if other_tentacle
         else tentacle

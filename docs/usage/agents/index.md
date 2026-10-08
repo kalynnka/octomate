@@ -61,10 +61,10 @@ tentacles:
         efforts: [medium, high, xhigh]
 ```
 
-Reported metadata wins over a configured claim. Effort is one vocabulary across every
-agent, `minimal`, `low`, `medium`, `high`, `xhigh`, and each tentacle maps it onto
-its runtime's own knob. A route whose provider takes less must say so in its claim,
-because nothing downgrades an effort the provider lacks.
+Reported metadata wins over a configured claim. Each harness keeps its own effort
+names; choose from the levels offered for the selected model. Inkling uses
+Pydantic AI's `minimal`, `low`, `medium`, `high`, and `xhigh` vocabulary. Configured
+claims must list the levels they accept; omitting them advertises no effort control.
 
 A claim also carries `default_effort`, the level a run gets when its caller names
 none, where that is known: Codex's is its `effort` setting, then Codex's own

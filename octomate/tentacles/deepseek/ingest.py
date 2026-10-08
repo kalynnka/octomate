@@ -87,7 +87,7 @@ class DeepseekHookIngest:
         thread's project is frozen at creation."""
         holder = self.octomate.projects.resolve(Path(event.cwd)) if event.cwd else None
         project = self.octomate.projects.get(holder) if holder is not None else None
-        thread = await self.octomate.thread_manager.ensure(
+        thread = await self.octomate.threads.ensure(
             ThreadKey(DEEPSEEK_NATIVE_ID, "thread", event.session_id),
             project=project,
         )

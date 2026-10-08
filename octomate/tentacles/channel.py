@@ -347,8 +347,8 @@ class ChannelTentacle(
                 chat_type=event.chat_type,
                 shared=event.shared,
             )
-            thread = await self.octomate.thread_manager.ensure(address)
-            if event.message_id and await self.octomate.thread_manager.find_message(
+            thread = await self.octomate.threads.ensure(address)
+            if event.message_id and await self.octomate.threads.find_message(
                 thread.id, event.message_id, "inbound"
             ):
                 # The platform sent this one before, so it is already answered or
@@ -361,7 +361,7 @@ class ChannelTentacle(
                     address,
                 )
                 return
-            thread_message = await self.octomate.thread_manager.record_inbound(event)
+            thread_message = await self.octomate.threads.record_inbound(event)
             if self.config.mention_only and event.shared:
                 # Only a surface others can read has to be addressed, and a thread an
                 # agent already owns counts as addressed — its next turn continues

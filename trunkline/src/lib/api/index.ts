@@ -21,6 +21,7 @@ import {
   fetchThreadMessages,
   fetchThreadProject,
   fetchThreads,
+  patchEffort,
   patchPermissionMode,
 } from './client'
 import type { HealthState } from './client'
@@ -31,7 +32,7 @@ import type {
   ApiRoute,
 } from './events'
 import { channelMeta, groupLiveThreads, liveThreadDetail } from './live'
-import type { ChannelMeta, ThreadDetail, ThreadSummary } from './types'
+import type { ChannelMeta, EffortStep, ThreadDetail, ThreadSummary } from './types'
 
 export interface RoutesResult {
   routes: ApiRoute[]
@@ -79,6 +80,11 @@ export const api = {
   /** Switch one conversation's posture; the answer is the row as it now stands. */
   setPermissionMode(conversationId: string, mode: string | null): Promise<ApiConversation> {
     return patchPermissionMode(conversationId, mode)
+  },
+
+  /** Set the level one conversation's runs ask for; null hands it back to the runtime. */
+  setEffort(conversationId: string, effort: EffortStep | null): Promise<ApiConversation> {
+    return patchEffort(conversationId, effort)
   },
 
   async listThreads(): Promise<Record<string, ThreadSummary[]>> {

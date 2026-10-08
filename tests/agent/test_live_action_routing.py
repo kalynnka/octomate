@@ -39,9 +39,38 @@ async def live_agent(
 ) -> tuple[LiveAgent, Conversation]:
     app = Octomate(tentacles={"im": FakeChannelTentacle()})
     if request.param == "claude":
-        agent = ClaudeCodeTentacle("claude", app, config=ClaudeCodeConfig())
+        agent = ClaudeCodeTentacle(
+            "claude",
+            app,
+            config=ClaudeCodeConfig(),
+            commands=app.commands,
+            projects=app.projects,
+            threads=app.threads,
+            files=app.files,
+            conversations=app.conversations,
+            deferred_actions=app.deferred_actions,
+            workspaces=app.workspaces,
+            users=app.users,
+            bearers=app.bearers,
+            mcp=app.mcp,
+        )
     elif request.param == "codex":
-        agent = CodexTentacle("codex", app, config=CodexConfig())
+        agent = CodexTentacle(
+            "codex",
+            app,
+            config=CodexConfig(),
+            commands=app.commands,
+            projects=app.projects,
+            threads=app.threads,
+            files=app.files,
+            conversations=app.conversations,
+            deferred_actions=app.deferred_actions,
+            workspaces=app.workspaces,
+            users=app.users,
+            bearers=app.bearers,
+            auth=app.auth,
+            gateway_manager=app.gateway,
+        )
     else:
         agent = DeepseekTentacle("deepseek", app, config=DeepseekConfig())
     app.connect(agent)
@@ -83,7 +112,6 @@ async def ask(
     if isinstance(agent, CodexTentacle):
         return await agent._await_human(
             context=CodexBridgeContext(
-                loop=asyncio.get_running_loop(),
                 conversation=conversation,
                 session_allowed=set(),
                 suspender=suspender,
@@ -200,7 +228,22 @@ async def test_missing_waiter_does_not_determine_response_routing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     app = Octomate()
-    agent = CodexTentacle("codex", app, config=CodexConfig())
+    agent = CodexTentacle(
+        "codex",
+        app,
+        config=CodexConfig(),
+        commands=app.commands,
+        projects=app.projects,
+        threads=app.threads,
+        files=app.files,
+        conversations=app.conversations,
+        deferred_actions=app.deferred_actions,
+        workspaces=app.workspaces,
+        users=app.users,
+        bearers=app.bearers,
+        auth=app.auth,
+        gateway_manager=app.gateway,
+    )
     app.connect(agent)
     conversation = await app.conversations.ensure(
         await a_thread(), agent_tentacle_id=agent.id

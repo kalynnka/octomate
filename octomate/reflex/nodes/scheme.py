@@ -97,6 +97,6 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             model=resolved.model,
             reason="Continuing with this user privately.",
             hint=self.request.hint,
-            summon=self.request.brief,
+            brief=self.request.brief,
         )
         return React()

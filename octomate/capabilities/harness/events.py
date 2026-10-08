@@ -41,9 +41,9 @@ it, with the generic/unserializable members replaced by their wire forms.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from pydantic_ai import AgentStreamEvent, CustomEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
@@ -315,11 +315,25 @@ type StreamEvents[OutputT] = (
     | SubagentSettledEvent
 )
 
-# The run stream as a wire consumer sees it: `StreamEvents` with `FinalResult`
-# dropped for `RunResultEvent`, plus the graph's own reports, every member
+
+def omit_native_discriminator(schema: dict[str, JsonValue]) -> None:
+    """Keep native event variants without OpenAPI-invalid registry mappings.
+
+    Native registries emit inline discriminator targets, while OpenAPI requires
+    references. The generated oneOf still describes every event variant.
+    """
+    schema.pop("discriminator", None)
+
+
+# The run stream as a wire consumer sees it: `StreamEvents` with the generic /
+# unserializable members replaced by their wire forms (`FinalResult` dropped for
+# `RunResultEvent`, the subagent timeline callbacks as events), every member
 # discriminated by `event_kind`.
 type WireEvent = (
-    AgentStreamEvent
+    Annotated[
+        AgentStreamEvent,
+        Field(json_schema_extra=omit_native_discriminator),
+    ]
     | ResultSegmentEvent
     | ResultTextDeltaEvent
     | TodoEvent
@@ -330,6 +344,7 @@ type WireEvent = (
     | SubagentStartedEvent
     | SubagentSettledEvent
     | RunResultEvent
+    | RunStartedEvent
     | RunErrorEvent
     | GatewayEvent
 )

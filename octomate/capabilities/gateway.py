@@ -51,7 +51,6 @@ from pydantic_ai.messages import (
     ToolReturn,
     ToolReturnPart,
 )
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.toolsets import AbstractToolset, FunctionToolset
 
@@ -422,7 +421,7 @@ class GatewayCapability(AbstractCapability[None]):
         run_name: str,
         prompt: str,
         model: Model | str | None,
-        effort: ThinkingEffort | None,
+        effort: str | None,
     ) -> str:
         agents, conversations, thread_id, conversation_address = self.commission_deps()
         if ctx.run_id is None:
@@ -513,8 +512,8 @@ class GatewayCapability(AbstractCapability[None]):
         model: str,
         hint: str,
         reason: str,
-        summon: Annotated[str, Field(max_length=8_000)],
-        effort: ThinkingEffort | None = None,
+        brief: Annotated[str, Field(max_length=8_000)],
+        effort: str | None = None,
     ) -> str:
         """Hand this conversation to another Octomate agent, who takes it over where
         it is.
@@ -526,7 +525,7 @@ class GatewayCapability(AbstractCapability[None]):
             hint: A short, user-facing note announcing the handoff, recorded with it.
             reason: One line on why this agent fits — recorded with the handoff, not
                 shown to the user as the reply.
-            summon: The self-contained brief the other agent starts from. It becomes
+            brief: The self-contained brief the other agent starts from. It becomes
                 their opening prompt and they cannot see this conversation, so give
                 the goal, the relevant context and decisions, what's been tried, and
                 what a finished result looks like. If anything you carry says how to
@@ -545,7 +544,7 @@ class GatewayCapability(AbstractCapability[None]):
                 model=model,
                 hint=hint,
                 reason=reason,
-                summon=summon,
+                brief=brief,
                 effort=effort,
             )
         except GatewayRefusal as refusal:
@@ -685,7 +684,7 @@ class GatewayCapability(AbstractCapability[None]):
         agent_id: str,
         model: str,
         brief: str,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
     ) -> str:
         """Draw another Octomate agent into working a task and get its report
         back — the user sees none of it.

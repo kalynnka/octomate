@@ -12,7 +12,7 @@ import type {
   ApiThread,
   ApiThreadMessage,
 } from './events'
-import { batchFeelers, replayRun, type ReplayChild } from './fold'
+import { batchFeelers, replayRun, segmentText, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -226,6 +226,8 @@ function liveSessions(
           handoff?.to_model ?? model,
         ),
         agent: conversation.agent_tentacle_id,
+        model: handoff?.to_model ?? model,
+        effort: conversation.effort,
         mode: conversation.permission_mode ?? latest?.permission_mode ?? null,
         kind: ingested ? 'ingest' : index === 0 ? 'entry' : 'summon',
         t: when ? clock(when) : '',
@@ -292,9 +294,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         },
       })
     } else if (message.actor_kind === 'system') {
-      // A system row is one line wide, so a notice of several lines is several rows.
-      for (const line of text.split('\n')) {
-        if (line.trim()) dated.push({ at, item: { kind: 'system', text: line.trim() } })
+      // Each paragraph gets one bullet; line breaks within it stay together.
+      for (const [index, paragraph] of text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).entries()) {
+        dated.push({ at, item: { kind: 'system', text: paragraph, tone: index === 0 ? 'info' : undefined } })
       }
     } else {
       dated.push({
@@ -304,6 +306,14 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           label: message.agent_tentacle_id ?? 'agent',
           blocks: [{ type: 'p', text }],
         },
+      })
+    }
+    if (message.kind === 'command' && message.outcome) {
+      const outcome = message.outcome
+      const feedback = outcome.status === 'completed' ? outcome.segments.map(segmentText) : [outcome.message]
+      if (feedback.length) dated.push({
+        at,
+        item: { kind: 'agent', label: 'relay', blocks: feedback.map((text) => ({ type: 'p', text })) },
       })
     }
   }
@@ -415,6 +425,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const { agent } = activeRoute(thread)
   return {
     key: thread.channel_thread_id || threadTag(thread.id),
+    kind: thread.kind,
     live: true,
     channel: thread.channel_tentacle_id,
     project:
@@ -434,7 +445,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     // Directives only go to the console's own channel; anything else is a
     // read-only view of that channel's thread.
     sendKey:
-      thread.channel_tentacle_id === 'trunkline'
+      thread.kind !== 'native_thread' && thread.channel_tentacle_id === 'trunkline'
         ? (thread.channel_thread_id ?? undefined)
         : undefined,
     msgCount: messages.length,

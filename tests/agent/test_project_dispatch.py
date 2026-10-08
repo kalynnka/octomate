@@ -36,9 +36,9 @@ from octomate.managers.workspaces.mirrors import run_git
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import base as codex_base
+from octomate.tentacles.codex import ink as codex_ink
 from tests.agent.test_codex_tentacle import (
     FakeCodex,
     FakeThread,
@@ -67,7 +67,7 @@ async def a_thread(octomate: Octomate, chat_id: str, project: str = "") -> Threa
     """A persisted thread, optionally in a declared project — both its thread row and
     the project it references have to exist, since each is a real foreign key. A
     platform thread, since only work carries a project."""
-    return await octomate.thread_manager.ensure(
+    return await octomate.threads.ensure(
         ThreadKey("im", "thread", chat_id, "t1"),
         project=octomate.projects.get(project) if project else None,
     )
@@ -78,6 +78,16 @@ def a_claude(octomate: Octomate) -> ClaudeCodeTentacle:
         "claude",
         octomate,
         config=ClaudeCodeConfig(),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        mcp=octomate.mcp,
     )
 
 
@@ -100,6 +110,17 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     async with tentacle:
         async with tentacle.run_stream_events(
@@ -112,10 +133,10 @@ async def codex_run(octomate: Octomate, thread: Thread) -> str | None:
 
 @pytest.fixture(autouse=True)
 def _fakes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", RecordingClaudeClient)
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     monkeypatch.setattr(
-        codex_base, "AsyncThread", lambda _client, thread_id: FakeThread(thread_id)
+        codex_ink, "AsyncThread", lambda _client, thread_id: FakeThread(thread_id)
     )
     reset_fake_codex(text_script("done"))
 

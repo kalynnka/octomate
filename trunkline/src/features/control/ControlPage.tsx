@@ -52,8 +52,6 @@ const pages: Record<Exclude<ControlSection, ''>, { title: string; desc: string }
 
 const order: Exclude<ControlSection, ''>[] = ['dash', 'agents', 'mcp', 'profile', 'keys', 'settings']
 
-const effortScale: EffortStep[] = ['minimal', 'low', 'medium', 'high', 'xhigh']
-
 function Effort({ efforts }: { efforts: EffortStep[] }) {
   const description = efforts.length
     ? `Supported effort: ${efforts.join(', ')}`
@@ -66,17 +64,9 @@ function Effort({ efforts }: { efforts: EffortStep[] }) {
       title={description}
       aria-label={description}
     >
-      {effortScale.map((step) => {
-        const name = step === 'xhigh' ? 'Extra high' : step.charAt(0).toUpperCase() + step.slice(1)
-        const supported = efforts.includes(step)
-        return (
-          <span
-            key={step}
-            title={`${name}: ${supported ? 'supported' : 'not supported'}`}
-            data-supported={supported}
-          />
-        )
-      })}
+      {efforts.map((step) => (
+        <span key={step} title={step} data-supported={true} />
+      ))}
     </span>
   )
 }

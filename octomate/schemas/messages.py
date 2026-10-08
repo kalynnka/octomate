@@ -37,7 +37,7 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
-    from octomate.schemas.thread import ThreadMessage
+    from octomate.schemas.thread import ThreadCommand, ThreadMessage
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes
@@ -76,10 +76,12 @@ class ModelMessage(BaseTransmuter, ABC):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    run_id: str | None = None
     conversation_id: str | None = None
+    timestamp: AwareDatetime | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
-    thread_messages: RelationCollection[ThreadMessage] = Relationships()
+    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
 
     @abstractmethod
     def _concrete_message(self) -> None:

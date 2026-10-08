@@ -9,6 +9,8 @@ from unittest.mock import AsyncMock
 import httpx
 import pytest
 from fastapi import UploadFile
+from pydantic_ai import DeferredToolRequests
+from pydantic_ai.messages import ToolCallPart
 
 from octomate.auth import current_user
 from octomate.config.channels import ChannelConfig, TrunklineChannelConfig
@@ -44,9 +46,9 @@ async def client(case: ForkCase) -> AsyncGenerator[httpx.AsyncClient]:
         )
     )
     await channel.probe()
-    thread = await app.thread_manager.get(case.source.thread_id)
+    thread = await app.threads.get(case.source.thread_id)
     assert thread is not None
-    await app.thread_manager.record_outbound(
+    await app.threads.record_outbound(
         thread,
         agent_tentacle_id=CODEX_NATIVE_ID,
         segments=[TextSegment(data={"text": "Native source history"})],
@@ -77,19 +79,118 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Th
         f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
     )
     assert "run_error" not in response.text, response.text
-    listed = await app.thread_manager.list_threads(user_id=case.owner_id)
+    listed = await app.threads.list_threads(user_id=case.owner_id)
     [landed] = [one for one in listed if one.channel_tentacle_id == "trunkline"]
-    stored = await app.thread_manager.get(landed.id)
+    stored = await app.threads.get(landed.id)
     assert stored is not None
     return stored
+
+
+@pytest.mark.parametrize(
+    ("operation", "clear"),
+    [
+        ("permission-mode", False),
+        ("permission-mode", True),
+        ("effort", False),
+        ("effort", True),
+        ("catalog", False),
+        ("execute", False),
+    ],
+)
+async def test_native_session_rejects_direct_operations(
+    case: ForkCase,
+    client: httpx.AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+    clear: bool,
+) -> None:
+    app = case.tentacle.octomate
+    kick = AsyncMock()
+    monkeypatch.setattr(app, "kick", kick)
+    await app.conversations.set_permission_mode(case.source, "auto_review")
+    await app.conversations.set_effort(case.source, "high")
+    if operation in {"catalog", "execute"}:
+        response = await client.post(
+            f"/api/commands/{operation}",
+            json={
+                "agent_id": case.tentacle.id,
+                "conversation_id": str(case.source.id),
+                "address": {
+                    "channel_tentacle_id": "trunkline",
+                    "chat_type": "thread",
+                    "chat_id": str(case.owner_id),
+                    "user_id": str(case.owner_id),
+                },
+                "command_id": "skill",
+                "delivery_id": "native-command",
+            },
+        )
+    else:
+        response = await client.patch(
+            f"/api/trunkline/conversations/{case.source.id}/{operation}",
+            json={operation.replace("-", "_"): None if clear else "unsupported"},
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Synced native sessions are read-only."
+    stored = await app.conversations.get(case.source.id)
+    assert stored.permission_mode == "auto_review"
+    assert stored.effort == "high"
+    assert [run.id for run in stored.runs] == [run.id for run in case.source.runs]
+    assert (
+        await app.threads.find_message(
+            case.source.thread_id, "native-command", "inbound"
+        )
+        is None
+    )
+    kick.assert_not_awaited()
+    case.fork.assert_not_awaited()
+
+
+async def test_native_session_cannot_resolve_a_deferred_batch(
+    case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    app = case.tentacle.octomate
+    kick = AsyncMock()
+    monkeypatch.setattr(app, "kick", kick)
+    thread = await app.threads.get(case.source.thread_id)
+    assert thread is not None
+    address = thread.key.address(str(case.owner_id))
+    batch = await app.deferred_actions.create_batch(
+        conversation=case.source,
+        agent_tentacle_id=case.source.agent_tentacle_id,
+        run_name="native",
+        source_address=address,
+        target_address=address,
+        target_mode="main",
+        decision=None,
+        requests=DeferredToolRequests(
+            approvals=[ToolCallPart(tool_name="test", args={}, tool_call_id="call")]
+        ),
+        response_mode="resume",
+    )
+    response = await client.post(
+        f"/api/trunkline/batches/{batch.id}/resolve",
+        json={"approvals": {str(next(iter(batch.approvals)).id): True}},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "Synced native sessions are read-only."
+    assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
+    kick.assert_not_awaited()
 
 
 async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     case: ForkCase, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     app = case.tentacle.octomate
+    source = await app.threads.get(case.source.thread_id)
+    assert source is not None
+    await app.threads.rename(source, "Native work")
     stored = await teleport_to_trunkline(case, client)
 
+    assert stored.title == "Native work"
+    original = await app.threads.get(source.id)
+    assert original is not None
+    assert original.title == "Native work"
     assert stored.chat_id == str(case.owner_id)
     assert stored.handoffs == []
     assert stored.active_agent_tentacle_id == case.tentacle.id
@@ -98,12 +199,12 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     assert notice.direction == "inbound"
     assert notice.platform_message_id is None
     assert notice.message_text == (
-        f"Forked from conversation {case.source.id}.\n\n"
+        'Forked from "Native work".\n\n'
         "This fork has no server project. The source working directory "
         "and its files were not transferred.\n\n"
         f"Current channel address:\n{stored.key}/{case.owner_id}."
     )
-    pending = await app.thread_manager.pending_prompt_messages(
+    pending = await app.threads.pending_prompt_messages(
         stored, notice.id, case.tentacle.id
     )
     assert [message.id for message in pending] == [notice.id]
@@ -116,10 +217,10 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
     )
     assert sent.status_code == 200
     kick.assert_awaited_once()
-    after = await app.thread_manager.get(stored.id)
+    after = await app.threads.get(stored.id)
     assert after is not None
     assert after.handoffs == []
-    pending = await app.thread_manager.pending_prompt_messages(
+    pending = await app.threads.pending_prompt_messages(
         after, after.messages[-1].id, case.tentacle.id
     )
     assert [message.id for message in pending] == [notice.id, after.messages[-1].id]
@@ -169,7 +270,7 @@ async def test_a_native_session_lands_on_its_project_only_where_it_is_served(
         case.fork.call_args.kwargs["cwd"]
         == app.workspaces.open(stored.id, project if available else None).path
     )
-    stored_source = await app.thread_manager.get(case.source.thread_id)
+    stored_source = await app.threads.get(case.source.thread_id)
     assert stored_source is not None
     assert stored_source.project_id == project.id
 
@@ -179,9 +280,9 @@ async def test_thread_access_does_not_grant_transcript_ownership(
 ) -> None:
     app = case.tentacle.octomate
     other = await a_user("participant")
-    source = await app.thread_manager.get(case.source.thread_id)
+    source = await app.threads.get(case.source.thread_id)
     assert source is not None
-    await app.thread_manager.record_outbound(
+    await app.threads.record_outbound(
         source,
         agent_tentacle_id=CODEX_NATIVE_ID,
         segments=[TextSegment(data={"text": "Shared thread access"})],
@@ -207,7 +308,7 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     # Refused before anything moves: the transcript is its owner's alone.
     assert '"event_kind":"run_error"' in response.text
     case.fork.assert_not_awaited()
-    listed = await app.thread_manager.list_threads(user_id=other.id)
+    listed = await app.threads.list_threads(user_id=other.id)
     assert [thread.id for thread in listed] == [case.source.thread_id]
 
 
@@ -223,7 +324,24 @@ async def test_native_teleport_imports_completed_history_before_resuming(
     """The console's teleport of a native thread and the native session's own
     enter at the same thread and carry the same history."""
     app = case.tentacle.octomate
-    app.connect(CodexTentacle("other-codex", app, config=case.tentacle.config))
+    app.connect(
+        CodexTentacle(
+            "other-codex",
+            app,
+            config=case.tentacle.config,
+            commands=app.commands,
+            projects=app.projects,
+            threads=app.threads,
+            files=app.files,
+            conversations=app.conversations,
+            deferred_actions=app.deferred_actions,
+            workspaces=app.workspaces,
+            users=app.users,
+            bearers=app.bearers,
+            auth=app.auth,
+            gateway_manager=app.gateway,
+        )
+    )
     if destination == "far":
         far = app.connect(
             FakeChannelTentacle(
@@ -261,7 +379,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
             user = await session.get(User, case.owner_id)
         assert user is not None
         owner = await app.users.native_profile(CODEX_NATIVE_ID, user.username)
-        source = await app.thread_manager.get(case.source.thread_id)
+        source = await app.threads.get(case.source.thread_id)
         assert owner is not None
         assert source is not None
         await app.kick(
@@ -276,7 +394,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
                 source=source.key.address(owner.channel_user_id),
             )
         )
-    listed = await app.thread_manager.list_threads(user_id=case.owner_id)
+    listed = await app.threads.list_threads(user_id=case.owner_id)
     [landed] = [
         thread for thread in listed if thread.channel_tentacle_id == destination
     ]
@@ -320,7 +438,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
         user = await session.get(User, case.owner_id)
     assert user is not None
     owner = await app.users.native_profile(CODEX_NATIVE_ID, user.username)
-    source = await app.thread_manager.get(case.source.thread_id)
+    source = await app.threads.get(case.source.thread_id)
     assert owner is not None
     assert source is not None
 

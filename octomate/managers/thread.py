@@ -7,14 +7,15 @@ import uuid
 from datetime import UTC, datetime
 
 from arcanus.expression import Expression
-from arcanus.materia.sqlalchemy import noload, selectinload
+from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
-from sqlalchemy import and_, or_, select
+from sqlalchemy import ColumnElement, and_, or_, select
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.user import UserManager
+from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -27,7 +28,9 @@ from octomate.schemas.thread import (
     MessageBinding,
     MessageBindingKind,
     Thread,
+    ThreadCommand,
     ThreadKey,
+    ThreadLedger,
     ThreadMessage,
     ThreadMessageDirection,
     ThreadMessageFTS,
@@ -75,6 +78,41 @@ def keyed(key: ThreadKey) -> list[Expression[bool]]:
         Thread["channel_thread_id"] == key.channel_thread_id,
         Thread["parent_thread_id"].is_(None),
     ]
+
+
+def shown_by(threads: Expression[bool]) -> ColumnElement[bool]:
+    """The messages shown by the threads `threads` picks out of `thread_ledgers`:
+    those delivered to one of their ledgers, up to that ledger's cut."""
+    return (
+        select(ThreadLedger["thread_id"])
+        .where(
+            threads,
+            ThreadLedger["ledger_id"] == ThreadMessage["thread_id"],
+            or_(
+                ThreadLedger["cut_message_id"].is_(None),
+                ThreadMessage["id"] <= ThreadLedger["cut_message_id"],
+            ),
+        )
+        .exists()
+    )
+
+
+def in_ledger(thread_id: UUID7) -> ColumnElement[bool]:
+    """The messages a thread shows."""
+    return shown_by(ThreadLedger["thread_id"] == thread_id)
+
+
+def in_history_of(senders: list[UUID7]) -> ColumnElement[bool]:
+    """The messages shown by threads that received a message from `senders`.
+
+    Inherited messages are readable history, not participation in the destination.
+    """
+    # Aliased, so the rows said here never correlate with the rows being shown.
+    said = aliased(ThreadMessage)
+    spoken_in = select(said["thread_id"]).where(
+        said["sender_id"].in_(senders),
+    )
+    return shown_by(ThreadLedger["thread_id"].in_(spoken_in))
 
 
 # What a listing can show of an opening line before it stops reading as a name.
@@ -237,7 +275,15 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         return parent
 
-    async def rename(self, thread: Thread, title: str) -> Thread:
+    @staticmethod
+    def fork_title(source: Conversation, thread: Thread) -> str | None:
+        """What a fork of `source`, from `thread`, is first called: what the source
+        goes by, the name its runtime gave the session or else the thread's title.
+        None when it goes by nothing, and the fork takes a name the way a new thread
+        does."""
+        return thread_title(source.name or thread.title)
+
+    async def rename(self, thread: Thread, title: str | None) -> Thread:
         """Give the thread the name the runtime running it grabbed for itself.
 
         Unlike the opening line `store_message` falls back to, this is a name for
@@ -322,6 +368,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         Either way the model ledger stays behind: it hangs off a message, and
         `related_model_messages` is how a caller asks for it — dragging it here
         would put a query per message behind every thread read.
+
+        `user_id` restricts access to participation in the thread's own ledger;
+        messages inherited from another thread grant no access.
         """
         options = (
             [selectinload(Thread["messages"]).noload(ThreadMessage["model_messages"])]
@@ -338,7 +387,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if user_id is not None:
                 expressions.append(
                     Thread["messages"].any(
-                        ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                        (ThreadMessage["thread_id"] == Thread["id"])
+                        & ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
                     )
                 )
             thread = await session.one_or_none(
@@ -370,7 +420,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         if user_id is not None:
             expressions.append(
                 Thread["messages"].any(
-                    ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
+                    (ThreadMessage["thread_id"] == Thread["id"])
+                    & ThreadMessage["sender"].has(UserProfile["user_id"] == user_id)
                 )
             )
         if channel_tentacle_id is not None:
@@ -409,6 +460,25 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 ):
                     row.title = thread_title(message.message_text)
             await session.commit()
+
+    async def record_command_outcome(
+        self, receipt_id: uuid.UUID, outcome: CommandOutcome
+    ) -> None:
+        """Persist an outcome without mutating a caller's receipt snapshot. Under the
+        thread's lock, only the outcome and the thread's `updated_at` are written."""
+        async with async_session() as session:
+            receipt = await session.get(
+                ThreadCommand, receipt_id, options=[noload("*")]
+            )
+            if receipt is None:
+                raise ValueError(f"command receipt {receipt_id} does not exist")
+            thread = await session.get(Thread, receipt.thread_id, options=[noload("*")])
+            if thread is None:
+                raise ValueError(f"unknown thread {receipt.thread_id}")
+            async with self.lock(thread.key):
+                receipt.outcome = outcome
+                thread.updated_at = datetime.now(UTC)
+                await session.commit()
 
     async def record_inbound(
         self,
@@ -532,7 +602,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             return message
         message.platform_message_id = platform_message_id
         async with async_session() as session:
-            stored = await session.get(ThreadMessage, message.id)
+            stored = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == message.id]
+            )
             if stored is None:
                 raise ValueError(f"thread message {message.id} does not exist")
             stored.platform_message_id = platform_message_id
@@ -545,16 +617,23 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         """Overrule a ledger row's clock after the fact: a transcript replay knows
         when a message really happened, while a row the live hooks wrote was stamped
         at receipt — a beat later than the transcript line, which is enough to sort a
-        run's work above the prompt that caused it."""
+        run's work above the prompt that caused it. Under the thread's lock, only the
+        row's `happened_at` is written."""
         if message.happened_at == happened_at:
             return message
-        message.happened_at = happened_at
         async with async_session() as session:
-            stored = await session.get(ThreadMessage, message.id)
-            if stored is None:
-                raise ValueError(f"thread message {message.id} does not exist")
-            stored.happened_at = happened_at
-            await session.commit()
+            thread = await session.get(Thread, message.thread_id, options=[noload("*")])
+            if thread is None:
+                raise ValueError(f"unknown thread {message.thread_id}")
+            async with self.lock(thread.key):
+                stored = await session.get(
+                    ThreadMessage, message.id, options=[noload("*")]
+                )
+                if stored is None:
+                    raise ValueError(f"thread message {message.id} does not exist")
+                stored.happened_at = happened_at
+                await session.commit()
+        message.happened_at = happened_at
         return message
 
     async def pending_prompt_messages(
@@ -569,8 +648,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
         async with async_session() as session:
             expressions = [
-                ThreadMessage["thread_id"] == fresh.id,
+                in_ledger(fresh.id),
                 ThreadMessage["id"] <= trigger_message_id,
+                ThreadMessage["kind"] == "message",
                 or_(
                     ThreadMessage["actor_kind"] != "agent",
                     ThreadMessage["agent_tentacle_id"] != active_agent_id,
@@ -609,7 +689,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         sender: UserProfile,
         title: str | None,
     ) -> Thread:
-        """Publish a user-attributed system notice after a successful fork."""
+        """Publish a user-attributed system notice after a successful fork. It names
+        the source by `title`, the source's own name that the fork starts with, or by
+        the source's id when it goes by nothing."""
         profile = await self.users.ensure_profile(target.channel_tentacle_id, sender)
         async with async_session() as session:
             thread = await session.get(
@@ -620,7 +702,11 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if thread is None:
                 raise ValueError(f"unknown thread {target.id}")
             address = thread.key.address(profile.channel_user_id)
-            text = f"Forked from conversation {source.id}.\n\n"
+            text = (
+                f'Forked from "{title}".\n\n'
+                if title is not None
+                else f"Forked from conversation {source.id}.\n\n"
+            )
             if thread.project_id is None:
                 text += (
                     "This fork has no server project. The source working directory "
@@ -698,14 +784,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             rows = await session.list(
                 ThreadMessage,
                 limit=2,
-                expressions=[
-                    named,
-                    ThreadMessage["thread_id"].in_(
-                        select(ThreadMessage["thread_id"]).where(
-                            ThreadMessage["sender_id"].in_(senders)
-                        )
-                    ),
-                ],
+                expressions=[named, in_history_of(senders)],
             )
         if not rows:
             raise ValueError(f"no message {handle} in this person's history")
@@ -719,8 +798,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         platform_message_id: str,
         direction: ThreadMessageDirection,
     ) -> ThreadMessage | None:
-        """The thread's ledger row for one platform message — a turn's prompt, or
-        the reply that answered it. Oldest wins, as scanning the ordered ledger did.
+        """The row delivered to the thread for one platform message — a turn's
+        prompt, or the reply that answered it. Oldest wins, as scanning the ordered
+        ledger did. A row the thread shows from a ledger a fork froze into it was
+        delivered elsewhere, so it is never this one.
 
         Both halves of the key are indexed. The hooks and tailers ask this per turn,
         on a ledger with no ceiling, so the row has to be found by the index rather
@@ -833,11 +914,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         ]
         expressions = [
             ThreadMessageFTS["message_text"].match(match_query),
-            ThreadMessage["thread_id"].in_(
-                select(ThreadMessage["thread_id"]).where(
-                    ThreadMessage["sender_id"].in_(senders)
-                )
-            ),
+            in_history_of(senders),
         ]
         if actor_kind is not None:
             expressions.append(ThreadMessage["actor_kind"] == actor_kind)
@@ -871,7 +948,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         first. Neighbours in the conversation, which is what the ledger's order means —
         so the anchor is compared on the same key the rows are sorted by."""
         async with async_session() as session:
-            anchor = await session.get(ThreadMessage, anchor_id)
+            anchor = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == anchor_id]
+            )
             if anchor is None:
                 raise ValueError(f"thread message {anchor_id} does not exist")
             rows = await session.list(
@@ -882,7 +961,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                     ThreadMessage["id"].desc(),
                 ],
                 expressions=[
-                    ThreadMessage["thread_id"] == thread_id,
+                    in_ledger(thread_id),
                     or_(
                         ThreadMessage["happened_at"] < anchor.happened_at,
                         and_(
@@ -904,7 +983,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         """The rows standing after `anchor_id` in the thread, oldest first — the mirror
         of `chat_messages_before`, and anchored on the same key."""
         async with async_session() as session:
-            anchor = await session.get(ThreadMessage, anchor_id)
+            anchor = await session.one_or_none(
+                ThreadMessage, expressions=[ThreadMessage["id"] == anchor_id]
+            )
             if anchor is None:
                 raise ValueError(f"thread message {anchor_id} does not exist")
             rows = await session.list(
@@ -912,7 +993,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 limit=limit,
                 order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
                 expressions=[
-                    ThreadMessage["thread_id"] == thread_id,
+                    in_ledger(thread_id),
                     or_(
                         ThreadMessage["happened_at"] > anchor.happened_at,
                         and_(

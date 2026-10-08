@@ -1,26 +1,35 @@
-"""Run-wide context every reflex node reads and writes.
+"""Graph state, dependencies and runtime orchestration.
 
-The state and deps objects a node is handed, plus the two result variants a run
-ends in. Split from the nodes so a node module imports what it operates on
-without importing its siblings.
+The state and deps objects a node is handed, the runtime shared by execution
+entries, and the result variants a run ends in.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+import uuid
+from collections.abc import AsyncGenerator, Iterable, Sequence
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from functools import cached_property
-from typing import Any, TypeVar, overload
+from typing import TYPE_CHECKING, Any, TypeVar, overload
 
 from opentelemetry import trace
 from pydantic import UUID7
-from pydantic_ai import AgentRunResult
+from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
+from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
 from pydantic_ai.tools import DeferredToolRequests
-from pydantic_graph import BaseNode
+from pydantic_graph import BaseNode, End, GraphRunContext
 
-from octomate.capabilities.harness.events import GatewayEvent, RunErrorEvent
+from octomate.capabilities.gateway import GatewayCapability
+from octomate.capabilities.harness.events import (
+    GatewayEvent,
+    MessageSentEvent,
+    RunErrorEvent,
+    RunStartedEvent,
+)
+from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
 from octomate.config.channels import AgentModelConfig
 from octomate.managers.conversation import ConversationManager
@@ -29,22 +38,33 @@ from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.prompts import tagged
+from octomate.reflex.suspender import ReflexSuspender
+from octomate.schemas.commands import CommandError, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.segments import MarkdownSegment
-from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
+    AgentRouteKey,
     ResponseTargetMode,
     RunName,
+    SchemeDecision,
     SummonDecision,
 )
 from octomate.schemas.user import UserProfile
+from octomate.telemetry import reflex_logfire
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import (
     ChannelOutput,
     ChannelTentacle,
     ThreadStrategy,
 )
+from octomate.tentacles.feelers.output import split_reply
+
+if TYPE_CHECKING:
+    from octomate.reflex.nodes.scheme import Scheme
+    from octomate.reflex.nodes.summon import Summon
+    from octomate.reflex.nodes.teleport import Teleport
 from octomate.tentacles.feelers.output import IMMessageID
 
 logger = logging.getLogger(__name__)
@@ -122,7 +142,7 @@ class PendingHandoff:
             to_model=decision.model,
             reason=decision.reason,
             hint=decision.hint,
-            brief=decision.summon,
+            brief=decision.brief,
             source_conversation_id=self.source_conversation_id,
             target_conversation_id=target_conversation.id,
             source_run_id=self.source_run_id,
@@ -154,7 +174,7 @@ class DeferredResult:
     batch_id: UUID7 | None = None
 
 
-type ReflexGraphResult = ReflexResult | DeferredResult
+type ReflexGraphResult = ReflexResult | DeferredResult | CommandOutcome
 # The node a reflex graph is entered at — see `build_reflex_graph`.
 ReflexEntryT = TypeVar(
     "ReflexEntryT",
@@ -174,6 +194,8 @@ class ReflexState:
     target: ResponseTarget | None = None
     run_name: RunName = "react"
     decision: SummonDecision | None = None
+    selection: AgentRouteKey | None = None  # Selected agent and model.
+    conversation_id: uuid.UUID | None = None  # Current invocation's conversation.
     targets: dict[str, ResponseTarget] = field(default_factory=dict)
     summon_routes: list[AgentRoute] = field(default_factory=list)
     thread: Thread | None = None
@@ -206,6 +228,11 @@ class ReflexDeps:
     action_manager: DeferredActionManager
     gateway: GatewayManager
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
+
+    @cached_property
+    def runtime(self) -> ReflexRuntime:
+        """Stateless orchestration shared by this graph's execution entries."""
+        return ReflexRuntime()
 
     @overload
     def channel(self, target: ResponseTarget) -> ChannelTentacle: ...
@@ -240,6 +267,7 @@ class ReflexDeps:
         user_profile: UserProfile | None,
         thread_id: UUID7 | None,
         conversation_address: ChannelAddress,
+        conversation_id: uuid.UUID | None = None,
     ) -> OctomateSession | None:
         """One turn's gateway for `agent`, or None for an agent whose flag is off.
 
@@ -264,7 +292,9 @@ class ReflexDeps:
             threads=self.thread_manager,
             workspaces=self.workspaces,
         )
-        if thread_id is not None:
+        if conversation_id is not None:
+            session.conversation_id = conversation_id
+        elif thread_id is not None:
             # The same (thread, agent) key the run resolves internally, so an
             # external runtime's tool call finds this turn's session by the
             # conversation it already knows.
@@ -297,7 +327,7 @@ class ReflexDeps:
         if not agent.models:
             raise ValueError(f"agent {agent_id!r} has no available model catalog")
         if model is None:
-            return AgentModelConfig(agent=agent_id, model=agent.default_model)
+            return AgentModelConfig(agent=agent_id, model=agent.resolve_model())
         served = agent.served_model(model)
         if served is None:
             raise ValueError(f"agent {agent_id!r} does not serve model {model!r}")
@@ -320,6 +350,8 @@ class ReflexDeps:
         """
         parts: list[str] = []
         for message in messages:
+            if isinstance(message, ThreadCommand):
+                continue
             text = "\n".join(str(segment) for segment in message.segments)
             if not text:
                 continue
@@ -464,3 +496,352 @@ class ReflexDeps:
         )
         rendered = await self.render_chat(messages, ceiling=recap.characters)
         return tagged("chat_recap", f"{RECAP_HEADER}\n\n{rendered}" if rendered else "")
+
+
+class ReflexRuntime:
+    """Stateless orchestration in graph deps; invocation resources stay with callers."""
+
+    async def resources(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+    ) -> tuple[OctomateSession | None, ReflexSuspender, list[AgentCapability[None]]]:
+        """Build fresh gateway, approval and tool context for the selected invocation."""
+        state = ctx.state
+        target = state.target
+        source = state.source_target
+        selection = state.selection
+        if (
+            target is None
+            or target.address is None
+            or source is None
+            or source.address is None
+            or selection is None
+        ):
+            raise ValueError(
+                "a Reflex run requires a selected agent and resolved source and target addresses"
+            )
+        agent = ctx.deps.agent(selection.agent_id)
+        channel = ctx.deps.channel(target)
+        thread_id = state.thread.id if state.thread else None
+        state.summon_routes = [
+            route
+            for route in ctx.deps.available_routes[target.channel_id]
+            if route.agent_id != agent.id
+        ]
+        if state.conversation_id is None and thread_id is not None:
+            conversation = await ctx.deps.conversation_manager.ensure(
+                thread_id, agent_tentacle_id=agent.id, with_history=False
+            )
+            state.conversation_id = conversation.id
+        session = await ctx.deps.octomate_session(
+            agent,
+            user_profile=state.user_profile,
+            thread_id=thread_id,
+            conversation_address=target.address,
+            conversation_id=state.conversation_id,
+        )
+        capabilities: list[AgentCapability[None]] = []
+        if session is not None:
+            capabilities.append(
+                GatewayCapability(
+                    session=session, conversations=ctx.deps.conversation_manager
+                )
+            )
+        suspender = ReflexSuspender(
+            channel=channel,
+            action_manager=ctx.deps.action_manager,
+            conversation_manager=ctx.deps.conversation_manager,
+            agent_tentacle_id=agent.id,
+            run_name=state.run_name,
+            source_address=source.address,
+            target_address=target.address,
+            target_mode=target.mode,
+            decision=state.decision,
+            model=selection.model,
+            thread_id=thread_id,
+            emit_on_stream=channel.config.stream.enabled,
+        )
+        return session, suspender, capabilities
+
+    async def prepare_user(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+        profile: UserProfile,
+        *,
+        session: OctomateSession | None,
+        suspender: ReflexSuspender,
+        capabilities: list[AgentCapability[None]],
+    ) -> None:
+        """Mount capabilities belonging to the user authorized for this invocation."""
+        ctx.state.user_profile = profile
+        if session is not None:
+            session.user_profile = profile
+        agent = ctx.deps.agent(suspender.agent_tentacle_id)
+        capabilities.extend(await agent.user_capabilities(profile))
+
+    async def send(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+        suspender: ReflexSuspender,
+        event: MessageSentEvent,
+    ) -> bool:
+        """Deliver a gateway send away from the active timeline, when possible."""
+        destination = event.destination
+        if destination is None:
+            return False
+        channel = ctx.deps.channel(destination.channel_tentacle_id)
+        dm = await channel.open_dm(destination.user_id)
+        if dm is None:
+            logger.warning(
+                "Channel %s could not open a DM with %s; delivering the send to %s instead",
+                destination.channel_tentacle_id,
+                destination.user_id,
+                suspender.target_address,
+            )
+            return False
+        await channel.feelers.segments.present(dm, event.segments)
+        await ctx.deps.thread_manager.record_outbound(
+            dm,
+            agent_tentacle_id=suspender.agent_tentacle_id,
+            segments=event.segments,
+            sender=channel.self_profile,
+        )
+        return True
+
+    async def drive(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+        suspender: ReflexSuspender,
+        source: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
+    ) -> AgentRunResult[ChannelOutput]:
+        """Consume the same native invocation, closing it before recording its reply."""
+        results: list[AgentRunResult[ChannelOutput]] = []
+        errors: list[Exception] = []
+        address = suspender.target_address
+
+        async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
+            yield RunStartedEvent(address=address)
+            try:
+                async for event in source:
+                    if isinstance(event, AgentRunResultEvent):
+                        results.append(event.result)
+                    if isinstance(event, MessageSentEvent) and await self.send(
+                        ctx, suspender, event
+                    ):
+                        continue
+                    yield event
+            except Exception as error:
+                errors.append(error)
+                raise
+
+        async with aclosing(source):
+            try:
+                async with aclosing(events()) as stream:
+                    await self.present_events(suspender, stream)
+            except AgentRunError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Channel %s: timeline render failed",
+                    suspender.channel.id,
+                    exc_info=True,
+                )
+        if errors:
+            raise errors[0]
+        if not results:
+            raise RuntimeError(f"react stream for {address} completed without a result")
+        return results[-1]
+
+    async def present_events(
+        self,
+        suspender: ReflexSuspender,
+        stream: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
+    ) -> None:
+        """Render a live timeline, or deliver explicit sends while draining a quiet run."""
+        address = suspender.target_address
+        channel = suspender.channel
+        if not channel.config.stream.enabled:
+            async for event in stream:
+                if isinstance(event, MessageSentEvent):
+                    await channel.feelers.segments.present(address, event.segments)
+            return
+        async with channel.feelers.timeline.open(address) as timeline:
+            await timeline.drive(stream)
+
+    async def present_result(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+        suspender: ReflexSuspender,
+        result: AgentRunResult[ChannelOutput],
+        *,
+        streamed: bool,
+    ) -> None:
+        """Record and bind the reply, presenting it once when it was not streamed."""
+        output = result.output
+        address = suspender.target_address
+        channel = suspender.channel
+        segments: list[MessageSegment]
+        if isinstance(output, str):
+            segments = [MarkdownSegment(data={"text": output})] if output else []
+        elif isinstance(output, Iterable):
+            segments = list(output)
+        else:
+            return
+        _reply_to, body = split_reply(segments)
+        message = None
+        if body:
+            message = await ctx.deps.thread_manager.record_outbound(
+                address,
+                agent_tentacle_id=suspender.agent_tentacle_id,
+                segments=body,
+                sender=channel.self_profile,
+                raw=output
+                if isinstance(output, str)
+                else "\n\n".join(str(segment) for segment in body),
+                message_text=output if isinstance(output, str) else None,
+            )
+        await ctx.deps.thread_manager.bind_assistant_replies(
+            [message.id] if message is not None else [],
+            run_id=result.run_id,
+        )
+        if streamed or (isinstance(output, str) and not output):
+            return
+        if isinstance(output, str):
+            message_id = await channel.feelers.markdown.present(address, output)
+        else:
+            message_id = await channel.feelers.segments.present(address, segments)
+        if message is not None:
+            await ctx.deps.thread_manager.mark_presented(message, message_id)
+
+    async def present_command(
+        self, suspender: ReflexSuspender, outcome: CommandOutcome
+    ) -> None:
+        """Deliver direct feedback; its command receipt already owns the output."""
+        segments: list[MessageSegment] = (
+            [TextSegment(data={"text": outcome.message})]
+            if isinstance(outcome, CommandError)
+            else outcome.segments
+        )
+        if not segments:
+            return
+        address = suspender.target_address
+        channel = suspender.channel
+        if not channel.config.stream.enabled:
+            await channel.feelers.segments.present(address, segments)
+            return
+
+        async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
+            yield MessageSentEvent(segments=segments)
+
+        async with (
+            channel.feelers.timeline.open(address) as timeline,
+            aclosing(events()) as stream,
+        ):
+            await timeline.drive(stream)
+
+    async def finish(
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+        session: OctomateSession | None,
+        suspender: ReflexSuspender,
+        run_result: AgentRunResult[ChannelOutput],
+    ) -> Summon | Teleport | Scheme | End[ReflexGraphResult]:
+        """Follow the gateway decision or deferral left by an actual agent run."""
+        # These nodes import the graph types consumed by this runtime.
+        from octomate.reflex.nodes.scheme import Scheme
+        from octomate.reflex.nodes.summon import Summon
+        from octomate.reflex.nodes.teleport import Teleport
+
+        state = ctx.state
+        target = state.target
+        if target is None:
+            raise ValueError("a Reflex run requires a resolved target")
+        decision = state.decision
+        agent_id = suspender.agent_tentacle_id
+        thread_id = state.thread.id if state.thread else None
+        output = run_result.output
+        with reflex_logfire.span("reflex.finish", run_id=run_result.run_id) as span:
+            if session is not None and session.dismissing and state.thread is not None:
+                # The agent said this thread's work is done: its tree goes now
+                # that the run is out of it, saved first and kept if that failed.
+                result = await ctx.deps.workspaces.dismiss(state.thread)
+                span.set_attribute(
+                    "react.dismissed",
+                    result,
+                )
+            if isinstance(output, DeferredToolRequests):
+                # `teleport` is resolved by the graph (fork + resume), not a human. The
+                # suspender classified it by its declared metadata kind and stashed it,
+                # so route on the typed request instead of re-scanning tool names.
+                if suspender.teleport is not None:
+                    return Teleport(
+                        request=suspender.teleport, origin=target, agent_id=agent_id
+                    )
+                return End(
+                    DeferredResult(
+                        requests=output,
+                        target=target,
+                        run_name=state.run_name,
+                        result=run_result,
+                        batch_id=suspender.suspended_batch_id,
+                    )
+                )
+
+            gateway_decision = session.decision if session else None
+            if isinstance(gateway_decision, SchemeDecision | SummonDecision):
+                # Where this handoff came from, as the row records it: the
+                # conversation this turn ran in, as of its last message.
+                conversation = (
+                    await ctx.deps.conversation_manager.ensure(
+                        thread_id, agent_tentacle_id=agent_id
+                    )
+                    if thread_id is not None
+                    else None
+                )
+                last = (
+                    max(
+                        conversation.messages,
+                        key=lambda message: message.id,
+                        default=None,
+                    )
+                    if conversation is not None
+                    else None
+                )
+                state.handoff = PendingHandoff(
+                    source_agent_tentacle_id=agent_id,
+                    source_conversation_id=conversation.id if conversation else None,
+                    source_run_id=last.run_id if last else None,
+                    source_model_message_id=last.id if last else None,
+                )
+            if isinstance(gateway_decision, SchemeDecision):
+                span.set_attribute("react.action", gateway_decision.action)
+                reflex_logfire.info(
+                    "react -> scheme into the asker's dm",
+                    destination=str(gateway_decision.destination),
+                )
+                return Scheme(
+                    request=gateway_decision,
+                    origin=target,
+                    agent_id=agent_id,
+                )
+            if isinstance(gateway_decision, SummonDecision):
+                state.decision = gateway_decision
+                state.target = target
+                state.run_name = "summon"
+                span.set_attribute("react.action", gateway_decision.action)
+                span.set_attribute("react.next_agent_id", gateway_decision.agent_id)
+                reflex_logfire.info(
+                    "react -> {action} agent={agent_id}",
+                    action=gateway_decision.action,
+                    agent_id=gateway_decision.agent_id,
+                    reason=gateway_decision.reason,
+                )
+                return Summon()
+
+            return End(
+                ReflexResult(
+                    decision=decision,
+                    target=target,
+                    result=run_result,
+                )
+            )

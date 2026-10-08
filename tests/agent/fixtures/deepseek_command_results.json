@@ -1,0 +1,34 @@
+{
+  "source": {
+    "repository": "deepseek-ai/deepseek-harness",
+    "revision": "46a7f68b0922371ce7144b668b90e377d8e799f4",
+    "package": "@deepseek-ai/dsh-commands@0.1.7-rc.1",
+    "path": "packages/interaction/commands/src/types.ts",
+    "note": "Source-derived Remote results, not captured live responses."
+  },
+  "replies": {
+    "success": {
+      "ok": true,
+      "value": {
+        "commandId": "command-1",
+        "result": {"kind": "success", "text": "  Goal accepted.\n", "sourceEventSeq": 17}
+      }
+    },
+    "silent": {
+      "ok": true,
+      "value": {"commandId": "command-2", "result": {"kind": "success"}}
+    },
+    "error": {
+      "ok": true,
+      "value": {
+        "commandId": "command-3",
+        "result": {"kind": "error", "text": "Unknown permission preset"}
+      }
+    },
+    "unmatched": {"ok": true, "value": null},
+    "remote_error": {
+      "ok": false,
+      "error": {"code": "gateway/lookup-not-found", "message": "Session is not loaded"}
+    }
+  }
+}

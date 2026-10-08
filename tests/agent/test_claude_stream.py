@@ -92,9 +92,7 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, ClaudeTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, ClaudeTranscriptTailer(
-        octomate.conversations, octomate.thread_manager
-    )
+    return octomate, ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
 
 async def test_remote_feed_assembles_the_same_runs_as_a_local_tail() -> None:
@@ -249,7 +247,21 @@ async def test_a_new_attach_replaces_a_lingering_registration() -> None:
 def stream_client() -> tuple[TestClient, ClaudeCodeTentacle]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = octomate.connect(
-        ClaudeCodeTentacle("claude", octomate, config=ClaudeCodeConfig())
+        ClaudeCodeTentacle(
+            "claude",
+            octomate,
+            config=ClaudeCodeConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            mcp=octomate.mcp,
+        )
     )
 
     @asynccontextmanager
@@ -436,7 +448,19 @@ async def test_driven_sessions_are_accepted_by_both_ingest_endpoints(
     driver = (
         tentacle.octomate.connect(
             ClaudeCodeTentacle(
-                "other-claude", tentacle.octomate, config=ClaudeCodeConfig()
+                "other-claude",
+                tentacle.octomate,
+                config=ClaudeCodeConfig(),
+                commands=tentacle.octomate.commands,
+                projects=tentacle.octomate.projects,
+                threads=tentacle.octomate.threads,
+                conversations=tentacle.octomate.conversations,
+                deferred_actions=tentacle.octomate.deferred_actions,
+                workspaces=tentacle.octomate.workspaces,
+                users=tentacle.octomate.users,
+                bearers=tentacle.octomate.bearers,
+                mcp=tentacle.octomate.mcp,
+                files=tentacle.octomate.files,
             )
         )
         if other_tentacle

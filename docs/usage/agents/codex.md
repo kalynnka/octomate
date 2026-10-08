@@ -1,7 +1,7 @@
 # Codex
 
-`type: codex` drives Codex through the openai-codex SDK's app-server, one warm
-process per conversation, and records the Codex sessions you run yourself.
+`type: codex` drives Codex through one shared openai-codex SDK app-server per
+tentacle and records the Codex sessions you run yourself.
 
 ## Enable
 
@@ -16,11 +16,9 @@ tentacles:
     type: codex
     permission_mode: user_review   # user_review | auto_review | full_access
     approval_timeout: 3600
-    effort: ~                      # none | minimal | low | medium | high | xhigh
+    effort: ~                      # e.g. none | minimal | low | medium | high | xhigh | max | ultra
     summary: ~                     # auto | concise | detailed | none
     personality: ~                 # none | friendly | pragmatic
-    max_clients: 8                 # warm app-servers kept; ~ = unbounded
-    client_idle_ttl: 600           # seconds an idle one lives; ~ = forever
     runtime:
       # codex_bin: /opt/bin/codex
       config_overrides: []
@@ -30,6 +28,10 @@ The app-server supplies the catalog: every non-hidden model with its supported
 reasoning efforts, keyed as `<provider>:<model>`, `openai` unless the Codex config
 names another provider.
 
+Trunkline offers the default model's effort levels before the first message,
+including when you leave the model at Harness default. Existing conversations
+use their selected or last reported model's levels.
+
 Octomate loads this catalog at startup using the SDK's bundled Codex runtime,
 unless `runtime.codex_bin` selects another executable. Updating a separate Codex
 CLI or IDE extension does not update the bundled runtime. Restart Octomate after
@@ -37,10 +39,15 @@ upgrading its Codex dependency to refresh the available models.
 
 ## Driven runs
 
-Each conversation gets its own app-server process from a pool, evicted after
-`client_idle_ttl` idle seconds or when the pool exceeds `max_clients`, least
-recently used first. The Codex thread id is the conversation's resumable handle,
-so a turn on a fresh process resumes the same thread.
+One app-server process handles model discovery, skill discovery and all driven
+conversations. Octomate saves a new native thread ID before starting its first turn.
+Before each later turn, it loads the conversation's native ID from the database,
+asks Codex whether that thread is loaded, and resumes it when needed. The applied
+credential and conversation header are tracked in memory for the life of the
+native thread; tokens also remain in memory. Moving the native handle to another
+conversation causes the next turn to reapply the destination's credential and header.
+The process starts when the tentacle starts and closes when it stops. If the
+process disconnects, requests fail until Octomate restarts.
 
 After each turn, Octomate reads the Codex thread's name through the SDK without
 loading its turn history. When Codex supplies a nonblank name, Octomate updates
@@ -51,16 +58,102 @@ name lookup is logged and does not discard the run's result.
 The run's working directory is the thread's [workspace](../workspaces.md). In
 `user_review` and `auto_review` the sandbox is `workspace_write`, so that directory
 is the write boundary; `full_access` removes the sandbox and the prompts. Both the
-sandbox and the approval policy are reapplied on every turn, so a posture change
-takes effect on the next message even on a warm process.
+sandbox and the approval policy are reapplied on every turn. Changing a mode also
+sends the new settings to the loaded Codex thread immediately, without sending a
+prompt or interrupting work. Codex retains an active turn's permissions; the new
+mode takes effect on the next run. A rejected update leaves the saved selection
+unchanged.
 
 Local customisation is off through config overrides appended after your own:
 hooks, plugins, apps and notifications are disabled, and every MCP server in the
 local Codex config is switched off for the thread. One server is added instead,
 `octomate_driven`, pointing at Octomate over HTTP with a temporary `mcp`-scoped API
-key minted for the asking user and revoked when the process closes. Codex lists
-those tools under `mcp__octomate_driven`. Your `developer_instructions` and
-`base_instructions` are carried on start and on resume.
+key shared by that user's conversations within the tentacle. Each thread receives
+the user's credential and its own conversation header. When the asking user changes
+or the credential expires, Octomate unsubscribes from that idle thread and resumes
+it with the current user's credential. Codex reloads the unsubscribed idle thread
+to apply the changed configuration; Octomate preserves the server's default idle
+unload delay. Changing credentials while the native thread is active is refused.
+Expired keys are replaced once per user; other loaded threads adopt the
+replacement on their next turn. Unloading a thread preserves
+the shared key for the user's other conversations. Remaining credentials are
+revoked when the tentacle shuts down. Codex lists those tools
+under `mcp__octomate_driven`. Your `developer_instructions` and `base_instructions`
+are carried on start and on resume.
+
+## Runtime commands
+
+The command finder lists Codex's app and IDE commands even before the first
+message. The matrix below covers built-in commands that need special handling or
+are unavailable. **Disabled** means the command is visible but cannot execute;
+**omitted** means it is not listed. Planned handling is not available yet.
+
+| Command | Available now | Handling or alternative |
+|---|---|---|
+| `/approve [review-id]` | Available after an automatic-review denial | Approve a denied action from the latest run and retry it through a streamed, recorded run. Omit the ID when there is one denial; multiple denials require choosing an ID. Keeps the conversation's permission mode. |
+| `/compact` | Available in an existing Codex session | Compact the existing Codex context. Reports success only after compaction finishes; keeps the visible conversation history. Takes no arguments. |
+| `/plan [on\|off]` | Available in an existing Codex session | Enter Codex planning mode, or leave it with `off`. Keeps the selected model and effort. Changing mode starts no run; the next prompt uses the mode. |
+| `/review [branch]` | Available in a conversation | Run Codex's built-in review of uncommitted changes, or changes against the named branch, in the conversation's workspace. Streams and records the review like other agent runs. |
+| `/init` | Available in a conversation | Ask Codex to create or update `AGENTS.md` in the conversation's workspace through a recorded agent run. This can write files and follows the conversation's approvals. |
+| `/status` | Available, including before a conversation exists | Show conversation settings, last reported token usage and context capacity, plus ChatGPT account limits and reset times. Account limits are available before the first message when signed in with ChatGPT. Missing usage is marked as not reported. Does not start a run. See the [status reference](../../api/tentacles/base.md#codex-status). |
+| `/mcp` | Available in an existing Codex session | List the driven conversation's MCP servers, tool and resource counts, and authentication status. Starts no run. |
+| `/reasoning [level]` | Available in a conversation | Save the same effort selection as `/effort`, validated against the selected model. Omit the level to restore the default. Use `/effort` before the first message. |
+| `/fork` | Available after a driven run | Create an independent thread on the same channel with copied history, model, effort and permissions. Preserves the source and starts no agent run. Requires a channel that can open a new thread. |
+| `/model` | Available in Trunkline | Open the shared agent/model picker for a new conversation. From an existing thread, open a new composer; the existing conversation is unchanged. |
+| `/project` | Available in Trunkline | Open the shared project picker for a new conversation. An existing thread keeps its project. |
+| `/task` | Available in Trunkline | Open a new, projectless composer with the selected agent and model. |
+| `/worktree` | Available in Trunkline | Open the project picker for a new conversation. The first prompt in the selected project creates its own managed workspace through Octomate's [workspace lifecycle](../workspaces.md). |
+| `/local` | Disabled | Driven runs already use the conversation's local workspace. Execution location is managed by Octomate. |
+| `/fast` | Disabled | Planned: offer fast execution only when the selected model and runtime support it. |
+| `/memories` | Disabled | Planned: expose memory controls only when supported by the runtime. |
+| `/personality` | Disabled | Planned: expose response-style controls only when supported by the model and runtime. |
+| `/cloud` | Disabled | Cloud execution is not integrated. |
+| `/cloud-environment` | Disabled | Cloud environment selection is not integrated. |
+| `/ide-context` | Disabled | Automatic editor context belongs to the Codex IDE extension. |
+| `/feedback` | Disabled | Use Codex's feedback dialog. |
+| `/pet` | Disabled | Manage desktop pets in the Codex app. |
+| `/side` | Disabled | Temporary side conversations are not supported here. |
+| `/goal` | Omitted | Goal execution and automatic continuation are deferred. |
+| CLI-only commands | Omitted | This catalog covers app and IDE commands. |
+
+This matrix concerns driven conversations. Synced native sessions remain
+read-only; use an available [gateway operation](../channels/trunkline.md) to
+continue elsewhere.
+
+The four Trunkline controls take no arguments. They reuse the same selections as
+the buttons and create no thread, workspace or agent run until you send a prompt.
+They cannot be executed through the command API or an IM command entrypoint.
+
+Planning, compaction and MCP inspection work in existing driven sessions, including
+forks. After a runtime restart, the command resumes the saved session; no preliminary
+message is needed. A conversation with no Codex session yet needs its first run.
+
+An approval applies to a denial recorded in this conversation's latest run;
+older denials and denials copied into a fork cannot be retried with `/approve`.
+If the retry fails, its failure is reported through the normal run stream.
+
+After `/fork`, select the new thread to continue. A project-bound fork carries
+the project's workspace snapshot into its own workspace. Without a project,
+the conversation history is copied but the source working files are not.
+
+Enabled skills appear alongside those actions once a conversation workspace
+exists. Inspection does not create a workspace, start a Codex thread or send a
+prompt. Skills keep their native names and descriptions; a skill sharing a name
+with a disabled built-in remains selectable.
+
+The host caches the catalog until explicit refresh, context changes or eviction.
+A `skills/changed` notification or runtime disconnect invalidates the agent's
+catalogs. Preparing a driven turn invalidates that conversation's catalog as well.
+Refresh rescans Codex's own skills cache; use it for changes the runtime has not
+reported. Skill-loading errors appear alongside the known app commands so the
+finder explains why skills are missing.
+
+Explicit skill execution refreshes discovery for the selected conversation and
+resolves the skill from that catalog. Disabled, removed or out-of-scope skills are
+rejected. Codex receives a typed skill reference and the raw argument text, then
+runs through the same streaming, approval and history path as a driven turn.
+Arguments may be empty; attachments are not supported. A skill's path comes from
+discovery, never from a separate client-supplied path.
 
 ## Approvals and questions
 
@@ -73,6 +166,9 @@ go and reading history, say so, and Codex runs those without asking. Choices
 Codex offers, such as MCP consent prompts, are presented as they are. Under
 `auto_review` and `full_access` no request reaches the bridge at all. As with
 Claude, the wait is in process, so an answer is not durable across a restart.
+Requests are routed by native thread ID and answered asynchronously. One person's
+approval wait does not block the shared reader from delivering another
+conversation's events or answering discovery requests.
 
 The gateway's [teleport tool](../gateway.md#teleport) is configured with Codex's
 native `prompt` approval mode. It follows the selected permission policy and

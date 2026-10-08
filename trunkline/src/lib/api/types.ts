@@ -7,6 +7,8 @@
  * the adapters without touching the UI.
  */
 
+import type { ApiThread } from './events'
+
 export type ChannelId = string
 
 export interface ChannelMeta {
@@ -53,6 +55,10 @@ export interface SessionInfo {
   route: string
   /** the agent that owns it, which says which approval vocabulary applies */
   agent: string
+  /** the model it runs, as the agent's routes name it; null when no run says */
+  model: string | null
+  /** the level its runs ask for; null = nothing declared, the runtime decides */
+  effort: EffortStep | null
   /** its approval posture; null = nothing declared, so the agent's own default
    *  decides, and an agent with no vocabulary is always null */
   mode: string | null
@@ -139,7 +145,7 @@ export interface AskQuestion {
 
 export type LedgerItem =
   | { kind: 'divider'; uid: string; label: string }
-  | { kind: 'system'; uid: string; text: string }
+  | { kind: 'system'; uid: string; text: string; tone?: 'info' }
   | {
       kind: 'session-open'
       uid: string
@@ -312,6 +318,8 @@ export interface VsCodeTarget {
 
 export interface ThreadDetail {
   key: string
+  /** Persisted thread kind; native sessions are observed rather than driven. */
+  kind?: ApiThread['kind']
   /** true when this detail was hydrated from the live trunkline API */
   live?: boolean
   /** owning channel tentacle id (live threads) */
@@ -349,7 +357,8 @@ export interface ThreadUsage {
  * What is left here is the two pages whose endpoints do not exist yet.
  * ------------------------------------------------------------------------- */
 
-export type EffortStep = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh'
+/** An effort ID from the selected harness's model catalog. */
+export type EffortStep = string
 
 export interface ProviderRow {
   name: string

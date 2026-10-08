@@ -6,6 +6,7 @@ to be the module that starts the chain.
 """
 
 from octomate.reflex.nodes.awake import Awake
+from octomate.reflex.nodes.command import Command
 from octomate.reflex.nodes.react import React
 from octomate.reflex.nodes.resume_deferred import ResumeDeferred
 from octomate.reflex.nodes.route import Route
@@ -15,6 +16,7 @@ from octomate.reflex.nodes.teleport import Teleport
 
 __all__ = [
     "Awake",
+    "Command",
     "React",
     "ResumeDeferred",
     "Route",

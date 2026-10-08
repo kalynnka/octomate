@@ -50,6 +50,30 @@ def test_foreground_run_passes_bind_and_reload_options(
     assert os.environ["OCTOMATE__PORT"] == "9000"
 
 
+@pytest.mark.parametrize(
+    ("started", "error", "exit_code"),
+    [
+        (True, KeyboardInterrupt(), 0),
+        (False, KeyboardInterrupt(), 3),
+        (False, None, 3),
+        (True, RuntimeError("serve failed"), 1),
+    ],
+    ids=["stop", "stop-before-startup", "startup-failure", "server-error"],
+)
+def test_foreground_exit_status(
+    started: bool, error: BaseException | None, exit_code: int
+) -> None:
+    with patch("octomate.server.Server") as server_type:
+        server = server_type.return_value
+        server.started = started
+        server.run.side_effect = error
+        result = CliRunner().invoke(app, ["service", "serve"])
+
+    assert result.exit_code == exit_code, result.output
+    if isinstance(error, RuntimeError):
+        assert result.exception is error
+
+
 def test_tmux_launches_service_serve(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

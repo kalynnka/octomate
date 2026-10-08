@@ -182,7 +182,7 @@ async def stream_in(
 
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -201,7 +201,7 @@ def drain(state: TailState) -> list[StreamEvents[str]]:
 
 async def test_records_runs_with_byte_ranges() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, TURN_ONE + TURN_TWO)
 
@@ -227,7 +227,7 @@ async def test_a_burst_assembled_turn_reads_back_in_transcript_order() -> None:
     is the ingest stream's ordering guarantee: every reader, including the future
     live UI stream, consumes it as-is rather than re-sorting by clock."""
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
     await stream_in(tailer, TURN_ONE + TURN_TWO)  # one catch-up burst
 
     runs = await runs_of(octomate)
@@ -262,10 +262,10 @@ async def test_the_posture_a_session_runs_under_is_read_off_its_transcript() -> 
     switched = prompt_record("p2", "now commit", 6) | {"permissionMode": "acceptEdits"}
     unmodelled = prompt_record("p3", "and push", 8) | {"permissionMode": "hyperdrive"}
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     async def posture() -> str | None:
-        thread = await octomate.thread_manager.ensure(SESSION_KEY)
+        thread = await octomate.threads.ensure(SESSION_KEY)
         conversation = await octomate.conversations.ensure(
             thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
         )
@@ -289,7 +289,7 @@ async def test_the_posture_a_session_runs_under_is_read_off_its_transcript() -> 
 
 async def test_streams_live_events_to_a_consumer() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     state = await stream_in(tailer, TURN_ONE)
 
@@ -302,7 +302,7 @@ async def test_streams_live_events_to_a_consumer() -> None:
 
 async def test_no_consumer_still_records_every_run() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     # Nobody reads the live stream; drop-on-full must never stall the durable sink.
     await stream_in(tailer, TURN_ONE + TURN_TWO)
@@ -312,7 +312,7 @@ async def test_no_consumer_still_records_every_run() -> None:
 
 async def test_malformed_line_does_not_stall_ingest() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
     state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
     # Splice a garbage (unparseable) line in right after turn one's prompt — the
@@ -330,7 +330,7 @@ async def test_malformed_line_does_not_stall_ingest() -> None:
 
 async def test_restreaming_committed_bytes_is_idempotent() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, TURN_ONE + TURN_TWO)
     # A client that lost its place re-streams the whole file from zero: every turn
@@ -371,7 +371,7 @@ async def test_a_turn_commits_on_its_stop_summary_without_the_hook() -> None:
     """A turn whose `Stop` hook never arrived still ends where the transcript says it
     did, not at the next prompt — so a teleport in between carries it."""
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
     state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
     await feed_records(tailer, state, [*TURN_ONE, stop_summary_record("a2", 5)])
@@ -389,10 +389,14 @@ def wired(octomate: Octomate) -> tuple[ClaudeHookIngest, ClaudeTranscriptTailer]
     """The ingest + tailer as the tentacle wires them: sharing one per-session lock
     registry so hook ledger writes and tailer run commits serialize."""
     locks = SessionLocks()
-    tailer = ClaudeTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, locks
-    )
-    return ClaudeHookIngest(octomate, tailer, locks), tailer
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads, locks)
+    return ClaudeHookIngest(
+        tailer,
+        locks,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    ), tailer
 
 
 def hook_event(
@@ -437,7 +441,7 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
     # The hooks wrote the human ledger for both turns.
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     ledger = {(m.direction, m.platform_message_id) for m in thread.messages}
     assert {("inbound", "p1"), ("outbound", "p1")} <= ledger
     assert {("inbound", "p2"), ("outbound", "p2")} <= ledger
@@ -496,9 +500,7 @@ async def test_a_commit_that_cannot_be_made_propagates_rather_than_skips() -> No
     p1's bytes and stranding p1 where no re-stream could reach it."""
     octomate = Octomate()
     locks = SessionLocks()
-    tailer = ClaudeTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, locks
-    )
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads, locks)
     state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
     offset = await feed_records(tailer, state, TURN_ONE)
 
@@ -521,7 +523,7 @@ async def test_a_commit_that_cannot_be_made_propagates_rather_than_skips() -> No
 
 async def test_shutdown_drops_every_registration() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
     await tailer.attach_remote(SESSION_ID, CLIENT_PATH, SENDER)
 
     await tailer.shutdown()
@@ -551,7 +553,7 @@ def hook(prompt_id: str, **body: str) -> ClaudeHookInput:
 
 async def test_a_streamed_session_reconstructs_full_fidelity() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, [*TURN_ONE, sidechain_record("side", 5), *TURN_TWO])
 
@@ -574,7 +576,7 @@ async def test_a_streamed_session_reconstructs_full_fidelity() -> None:
     assert first.started_at is not None
 
     # The sub-agent line is excluded from the rebuilt timeline.
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY)
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -584,12 +586,12 @@ async def test_a_streamed_session_reconstructs_full_fidelity() -> None:
 
 async def test_a_streamed_session_creates_the_human_ledger() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     # No hooks ever ran, so the commit creates the ledger from the transcript.
     await stream_in(tailer, TURN_ONE + TURN_TWO)
 
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     ledger = [(m.direction, m.platform_message_id) for m in thread.messages]
     assert ledger == [
         ("inbound", "p1"),
@@ -607,10 +609,15 @@ async def test_a_streamed_session_creates_the_human_ledger() -> None:
 
 async def test_the_commit_reuses_live_ledger_rows() -> None:
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     # The hooks already wrote p1's ledger; the commit binds those rows, not duplicates.
-    ingest = ClaudeHookIngest(octomate, tailer)
+    ingest = ClaudeHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
     await ingest.record_prompt(
         hook("p1", prompt="list the files"), "list the files", SENDER
     )
@@ -618,7 +625,7 @@ async def test_the_commit_reuses_live_ledger_rows() -> None:
 
     await stream_in(tailer, TURN_ONE + TURN_TWO)
 
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     inbound_p1 = [
         m
         for m in thread.messages
@@ -651,11 +658,11 @@ async def test_a_backfilled_row_is_dated_by_the_transcript_not_the_replay() -> N
     keeps, so the transcript's clock is what a backfilled row carries.
     """
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, TURN_ONE)
 
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated  # the commit did write the ledger
 
@@ -682,7 +689,7 @@ async def test_commit_redates_the_hooks_ledger_to_the_transcript_clock() -> None
     await stream_in(tailer, TURN_ONE)
 
     (p1,) = await runs_of(octomate)
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     dated = {message.direction: message.happened_at for message in thread.messages}
     assert dated["inbound"] == datetime(2026, 7, 9, 10, 0, 1, tzinfo=UTC)
     assert dated["inbound"] == p1.started_at  # one clock: prompt row == run start
@@ -785,7 +792,7 @@ SUB_TURN_TWO = [
 
 
 async def subagent_runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
-    thread = await octomate.thread_manager.ensure(SESSION_KEY)
+    thread = await octomate.threads.ensure(SESSION_KEY)
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -806,7 +813,7 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
     absent from the human ledger — a subagent has no prompt or answer of its own."""
     turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, turn_one + TURN_TWO, sub=SUB_TURN_ONE)
 
@@ -824,7 +831,7 @@ async def test_a_subagent_transcript_becomes_a_child_run() -> None:
     assert kinds == ["ModelRequest", "ModelResponse", "ModelRequest", "ModelResponse"]
 
     # The child conversation names its parent; the ledger never mentions the child.
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     parent = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
     )
@@ -849,7 +856,7 @@ async def test_a_resumed_subagent_adds_a_second_run_to_one_conversation() -> Non
     tool-result line, which must still open it."""
     turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, turn_one + TURN_TWO, sub=SUB_TURN_ONE + SUB_TURN_TWO)
 
@@ -865,7 +872,7 @@ async def test_a_resumed_subagent_adds_a_second_run_to_one_conversation() -> Non
 async def test_restreaming_a_session_reproduces_the_same_subagent_tree() -> None:
     turn_one = [TURN_ONE[0], *agent_spawn_records("p1", 2), TURN_ONE[3]]
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_in(tailer, turn_one, sub=SUB_TURN_ONE)
     before = [(run.id, run.end_offset) for run in await subagent_runs_of(octomate)]
@@ -997,7 +1004,7 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
         SENDER,
     )
 
-    thread = await a_loaded_thread(octomate.thread_manager, SESSION_KEY)
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     assert thread.messages == []  # no inbound, no outbound: the ledger is the human's
     assert await runs_of(octomate) == []
     assert tailer.sessions == {}

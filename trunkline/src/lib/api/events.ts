@@ -391,6 +391,20 @@ export type WireEvent =
   | RunErrorEvent
   | GatewayEvent
 
+/** A command's saved outcome. During a live run its feedback streams before
+ *  command_outcome, so that terminal event must not display it again. */
+export type CommandOutcome =
+  | { status: 'completed'; segments: WireSegment[] }
+  | { status: 'unsupported' | 'unknown' | 'stale' | 'busy' | 'unavailable' | 'failed'; message: string }
+
+export interface CommandOutcomeEvent {
+  event_kind: 'command_outcome'
+  outcome: CommandOutcome
+}
+
+/** What a command's stream carries: the channel's run events, then its outcome. */
+export type CommandStreamEvent = WireEvent | CommandOutcomeEvent
+
 // ---- REST payloads ---------------------------------------------------------
 
 export interface ApiChannelInfo {
@@ -570,7 +584,7 @@ export interface ApiUserProfile {
   nickname: string | null
 }
 
-export interface ApiThreadMessage {
+export type ApiThreadMessage = {
   id: string
   thread_id: string
   platform_message_id: string | null
@@ -583,7 +597,10 @@ export interface ApiThreadMessage {
   segments: WireSegment[]
   message_text: string | null
   created_at: string
-}
+} & (
+  | { kind: 'message' }
+  | { kind: 'command'; outcome: CommandOutcome | null }
+)
 
 /** One recorded run. `kind` tells an Octomate-driven run from one rebuilt out
  *  of an external runtime's transcript. */
@@ -617,6 +634,9 @@ export interface ApiConversation {
   /** the agent's own approval vocabulary — `agent_tentacle_id` says which;
    *  null is nothing declared, and the agent's configured default decides */
   permission_mode: string | null
+  /** the level its runs ask for; null is nothing declared, and the runtime's
+   *  own default decides */
+  effort: EffortStep | null
   allowed_tools: string[]
   /** oldest first, by start time */
   runs: ApiAgentRun[]
@@ -671,6 +691,8 @@ export type ApiPermissionModes = Record<string, ApiAgentPostures>
 
 export interface DirectiveBody {
   text: string
+  /** Native effort selection for the first run; omission leaves the runtime default. */
+  effort?: string
   message_id?: string
   model?: string
   /** a project name from /projects; honored on a thread's first directive only,
@@ -727,3 +749,45 @@ export interface SummonBody {
 export type GatewayRequest =
   | { action: 'teleport'; body: TeleportBody }
   | { action: 'summon'; body: SummonBody }
+
+/** One command an agent's runtime offers (`CommandDescriptor`). */
+export interface ApiCommandDescriptor {
+  /** opaque; what an execution names, never shown */
+  id: string
+  name: string
+  description: string
+  /** the runtime's own free-form hint for the argument, when it gives one */
+  argument_hint: string | null
+  requires_conversation: boolean
+  unavailable_reason: string | null
+  /** Whether the reason describes missing context or unimplemented runtime support. */
+  unavailable_kind?: 'context' | 'unsupported'
+  accepts_attachments: boolean | null
+}
+
+/** An agent's commands in one context, and how discovering them went. */
+export interface ApiCommandCatalog {
+  descriptors: ApiCommandDescriptor[]
+  status: 'ready' | 'loading' | 'unsupported' | 'unavailable' | 'failed'
+  /** why there is no catalog, when there is none */
+  message: string | null
+  limitations: string[]
+}
+
+/** Who a command is for: the agent, the surface it answers on, and the
+ *  conversation it runs in. */
+export interface CommandContextBody {
+  agent_id: string
+  address: ChannelAddress
+  conversation_id?: string | null
+  model?: string | null
+  permission_mode?: string | null
+}
+
+export interface CommandExecuteBody extends CommandContextBody {
+  command_id: string
+  /** names this delivery; a retry reuses it */
+  delivery_id: string
+  /** raw, passed to the runtime as typed */
+  arguments: string
+}

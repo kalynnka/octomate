@@ -43,6 +43,7 @@ from octomate.managers.workspaces.mirrors import run_git
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
+    ReflexResult,
     ReflexState,
     ResponseTarget,
     SummonDecision,
@@ -60,6 +61,7 @@ from octomate.schemas.awakes import (
     NativeGatewaySignal,
     UserMessageSignal,
 )
+from octomate.schemas.commands import CommandInvocation
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredQuestion
 from octomate.schemas.events import MessageEvent
@@ -70,7 +72,7 @@ from octomate.schemas.segments import (
     MarkdownSegment,
     TextSegment,
 )
-from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     Claim,
@@ -245,7 +247,7 @@ def _summon(
         effort=effort,
         reason="needs work",
         hint="Working on it",
-        summon="Please debug this in reception.",
+        brief="Please debug this in reception.",
     )
 
 
@@ -486,7 +488,7 @@ async def test_route_runs_entry_agent_directly() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "hello"
     assert [stream.run_name for stream in agent.streams] == ["react"]
@@ -741,14 +743,17 @@ class SlowAgent(FakeAgent):
         return await super().run(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
 
-async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts() -> (
-    None
-):
+@pytest.mark.parametrize("gateway", [True, False])
+async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts(
+    gateway: bool,
+) -> None:
     """Nothing serialises two turns of one conversation, so the registry refuses
     the second at the door: the first arrival keeps its session, the second run
     raises before anything is presented, and the slot frees when the first ends."""
     address = _key()
-    agent = SlowAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = SlowAgent(
+        id="other", allow_reception_run=True, reception_output="done", gateway=gateway
+    )
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     registry = GatewayManager()
@@ -833,6 +838,66 @@ async def test_react_passes_the_decision_effort_to_the_run() -> None:
     assert agent.turns[0].effort == "high"
 
 
+@pytest.mark.parametrize("effort", [None, "high"])
+async def test_react_resolves_conversation_and_explicit_effort(
+    effort: ThinkingEffort | None,
+) -> None:
+    address = _key()
+    thread = _thread(address)
+    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    conversations = FakeConversationManager()
+    stored = await conversations.ensure(thread.id, agent_tentacle_id="other")
+    stored.effort = "low"
+    im = FakeChannelTentacle(
+        config=ChannelConfig(
+            type="fake",
+            stream=ChannelStreamConfig(enabled=False),
+            agents=["other"],
+        )
+    )
+    target = _source_target(address)
+
+    await _run(
+        React(),
+        state=ReflexState(
+            source_target=target,
+            target=target,
+            decision=_summon(effort=effort),
+            thread=thread,
+        ),
+        deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
+    )
+
+    assert agent.turns[0].effort == (effort or "low")
+
+
+async def test_react_rejects_saved_effort_unsupported_by_current_model() -> None:
+    address = _key()
+    thread = _thread(address)
+    agent = FakeAgent(
+        id="other",
+        allow_reception_run=True,
+        claims={"test": Claim(ability="Current model", efforts=("low",))},
+    )
+    conversations = FakeConversationManager()
+    stored = await conversations.ensure(thread.id, agent_tentacle_id=agent.id)
+    stored.effort = "high"
+    target = _source_target(address)
+    with pytest.raises(ValueError, match="does not take effort 'high'"):
+        await _run(
+            React(),
+            state=ReflexState(
+                source_target=target, target=target, decision=_summon(), thread=thread
+            ),
+            deps=_deps(
+                conversations=conversations,
+                channels={"im": _channel()},
+                agent=agent,
+            ),
+        )
+    assert not agent.turns
+
+
 async def test_reception_allow_here_false_on_group_main() -> None:
     # A group main channel refuses `summon here` (Case 1): the mounted gate is built
     # with allow_here=False so the model is steered to a thread.
@@ -891,7 +956,7 @@ async def test_summon_here_takes_over_current_conversation() -> None:
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert im.sub_threads == []
     assert second.turns[0].address == address
     # Taken over where it was: the summon names this same thread.
@@ -1068,7 +1133,7 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     [(where, scheme)] = im.presented
     assert where == address
     assert isinstance(scheme, GatewayEvent)
@@ -1122,7 +1187,7 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
         deps=_summon_deps(im, entry, second),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     # No owner to defer to, so the channel's first configured agent takes it.
     assert entry.turns[-1].prompt == "Do it."
     assert entry.turns[-1].address.chat_type == "dm"
@@ -1176,7 +1241,7 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert far.opened_dms == ["ou_alice"]
     assert [turn.prompt for turn in second.turns] == ["Finish the migration write-up."]
     assert second.turns[0].address.channel_tentacle_id == "far"
@@ -1218,7 +1283,7 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
 
     # The platform refused at the moment of asking: nothing moved, nobody was handed
     # anything, and the origin agent's own reply already landed.
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert im.opened_dms == ["alice"]
     assert result.target.address == address
     assert im.presented == []
@@ -1275,7 +1340,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
 
     result = await _run(Awake(signal=signal), state=ReflexState(), deps=deps)
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert far.opened_dms == ["ou_alice"]
     landed = second.turns[0].address
     assert landed.channel_tentacle_id == "far"
@@ -1339,7 +1404,7 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         assert entry.relocated == []
         return
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     # The move is announced where it left, with the line it leaves there.
     [(where, moved)] = im.presented
     assert where == address
@@ -1512,7 +1577,7 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.address is not None
     assert result.target.address.channel_thread_id == "hint-thread"
     # The thread hangs from its opener in the chat, which is the move's line.
@@ -1661,7 +1726,10 @@ async def test_reception_closes_agent_stream_before_releasing_gateway(
     assert registry.sessions == {}
 
 
-async def test_route_runs_in_place_inside_flat_thread() -> None:
+@pytest.mark.parametrize(
+    "prompt", ["continue", pytest.param("context " * 1_200, id="long-context")]
+)
+async def test_route_runs_in_place_inside_flat_thread(prompt: str) -> None:
     address = _key(thread_id="existing-thread")
     agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
@@ -1669,14 +1737,15 @@ async def test_route_runs_in_place_inside_flat_thread() -> None:
 
     result = await _run(
         Route(),
-        state=_state(address, user_prompt="continue"),
+        state=_state(address, user_prompt=prompt),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.target.mode == "sub"
     assert agent.streams[0].address == address
     assert agent.streams[0].run_name == "react"
+    assert agent.streams[0].prompt == prompt
     assert im.sub_threads == []
     assert im.consumed[0][0] == address
 
@@ -1692,7 +1761,7 @@ async def test_awake_short_circuits_on_empty_signal() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision is None
     assert agent.turns == []
     assert im.sent == []
@@ -1721,7 +1790,7 @@ async def test_awake_short_circuits_on_empty_prompt() -> None:
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision is None
     assert agent.turns == []
     assert im.sent == []
@@ -1769,6 +1838,25 @@ async def test_a_picture_reaches_the_prompt_as_itself() -> None:
     assert await deps.render_chat([message]) == (
         "anonymous (alice) #msg:m9:\nlook at this\n[image: shot.png | /tmp/shot.png]"
     )
+
+
+async def test_command_receipts_do_not_enter_room_recaps() -> None:
+    deps = _deps(
+        conversations=FakeConversationManager(),
+        channels={"im": _channel(stream=False)},
+        agent=FakeAgent(id="other"),
+    )
+    command = ThreadCommand(
+        thread_id=uuid7(),
+        platform_message_id="command-1",
+        direction="inbound",
+        actor_kind="human",
+        sender_id=uuid7(),
+        conversation_id=None,
+        invocation=CommandInvocation(command_id="review", arguments="private args"),
+        segments=[TextSegment(data={"text": "/review private args"})],
+    )
+    assert await deps.render_chat([command], ceiling=500) == ""
 
 
 async def test_a_chat_room_kick_runs_in_a_sub_thread() -> None:
@@ -1851,7 +1939,7 @@ async def test_a_chat_rooms_owner_survives_the_next_kick() -> None:
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision is not None
     assert result.decision.agent_id == "second"
     assert owner.turns[0].thread_id == threads.sub_threads[0].id
@@ -1951,7 +2039,7 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
         ),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "resumed answer"
     assert agent.streams[0].prompt is None
@@ -2014,7 +2102,7 @@ async def test_resume_rebinds_the_suspended_run_user() -> None:
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert agent.bound_profiles == [profile]
 
 
@@ -2026,7 +2114,7 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
         model="test",
         reason="resumed",
         hint="resumed",
-        summon="",
+        brief="",
     )
     batch = FakeDeferredBatch(
         source_address=_key(),
@@ -2054,7 +2142,7 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
         ),
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert result.decision == decision
     assert agent.streams == []
     assert action_manager.marked == []
@@ -2251,7 +2339,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     assert workspaces.existing(thread.id) is None
     mirror = workspaces.mirrors.path(project)
     assert await run_git("show", f"{thread_ref(thread.id)}:work.md", cwd=mirror) == (
@@ -2307,7 +2395,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     first, resumed = agent.turns
     assert first.deferred_results is None
     assert resumed.deferred_results is not None
@@ -2387,7 +2475,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
         deps=deps,
     )
 
-    assert not isinstance(result, DeferredResult)
+    assert isinstance(result, ReflexResult)
     _first, resumed = agent.turns
     assert resumed.deferred_results is not None
     assert resumed.deferred_results.calls == {
@@ -2414,7 +2502,10 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     assert [cwd for _, cwd in agent.relocated] == [carried]
 
 
-async def test_fork_follows_its_conversation_without_handoff() -> None:
+@pytest.mark.parametrize(
+    "prompt", ["continue", pytest.param("context " * 1_200, id="long-context")]
+)
+async def test_fork_follows_its_conversation_without_handoff(prompt: str) -> None:
     address = _key(thread_id="forked-thread")
     thread = _thread(address)
     thread.conversations.append(
@@ -2432,11 +2523,14 @@ async def test_fork_follows_its_conversation_without_handoff() -> None:
         threads=threads,
     )
     deps.agents["other"] = entry
-    result = await _run(Route(), state=_state(address, thread=thread), deps=deps)
-    assert not isinstance(result, DeferredResult)
+    result = await _run(
+        Route(), state=_state(address, thread=thread, user_prompt=prompt), deps=deps
+    )
+    assert isinstance(result, ReflexResult)
     assert result.decision is not None
     assert result.decision.agent_id == "forked"
     assert len(forked.streams) == 1
+    assert forked.streams[0].prompt == prompt
     assert entry.streams == []
     assert threads.handoffs == []
     assert thread.handoffs == []

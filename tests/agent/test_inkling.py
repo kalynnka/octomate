@@ -187,6 +187,39 @@ async def test_run_records_its_model_and_effective_permission(
     assert run.permission_mode == (override or configured)
 
 
+@pytest.mark.parametrize("effort", ["minimal", "low", "medium", "high", "xhigh"])
+async def test_inkling_keeps_pydantic_ai_effort_names(effort: str) -> None:
+    agent, _ = build_scripted_agent(["done"])
+    tentacle = _tentacle(agent, FakeConversationManager())
+
+    result = await tentacle.run(
+        "go",
+        conversation_address=_test_conversation_address(),
+        thread_id=_THREAD,
+        output_type=STR_OUTPUT,
+        effort=effort,
+    )
+
+    assert result.output == "done"
+
+
+@pytest.mark.parametrize("effort", ["none", "max", "ultra"])
+async def test_inkling_rejects_other_harness_efforts(effort: str) -> None:
+    agent, script = build_scripted_agent(["done"])
+    tentacle = _tentacle(agent, FakeConversationManager())
+
+    with pytest.raises(ValueError, match="Input should be"):
+        await tentacle.run(
+            "go",
+            conversation_address=_test_conversation_address(),
+            thread_id=_THREAD,
+            output_type=STR_OUTPUT,
+            effort=effort,
+        )
+
+    assert script.cursor == 0
+
+
 async def test_inkling_loop_emits_deferred_question_batch() -> None:
     agent, script = build_scripted_agent(
         [

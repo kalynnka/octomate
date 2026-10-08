@@ -363,7 +363,7 @@ async def test_slack_tentacle_ensures_assistant_thread() -> None:
 
     threads = FakeThreads()
     channel = slack_channel(FakeSlackInk())
-    channel.octomate = cast(Octomate, SimpleNamespace(thread_manager=threads))
+    channel.octomate = cast(Octomate, SimpleNamespace(threads=threads))
 
     await channel.on_assistant_thread_started(
         {

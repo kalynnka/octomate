@@ -219,7 +219,7 @@ async def capture(
     # The host owns the ledger manager, built around its one identity registry —
     # every recorded row references a sender's profile from it.
     host = Octomate(conversations=conversations)
-    threads = host.thread_manager
+    threads = host.threads
     registry = ProviderRegistry(config.providers)
     inkling = config.tentacles.get("inkling")
     if not isinstance(inkling, InklingConfig):

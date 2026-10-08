@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock
 
 from arcanus import Relation
 from pydantic import UUID7
@@ -149,6 +150,7 @@ class FakeConversation:
 
     id: UUID7 = field(default_factory=uuid7)
     messages: list[ModelMessage] = field(default_factory=list)
+    name: str | None = None
     external_id: str | None = None
     thread_id: UUID7 | None = None
     subagent_id: str = ""
@@ -156,11 +158,13 @@ class FakeConversation:
     agent_tentacle_id: str = ""
     runs: list[AgentRun] = field(default_factory=list)
     permission_mode: AgentPermissionMode | None = None
+    effort: str | None = None
     allowed_tools: list[str] = field(default_factory=list)
 
 
 @dataclass
 class FakeConversationManager(ConversationManager):
+    fork: AsyncMock = field(default_factory=lambda: AsyncMock(return_value=None))
     store: dict[tuple[UUID7, str | None, str], FakeConversation] = field(
         default_factory=dict
     )
@@ -169,6 +173,13 @@ class FakeConversationManager(ConversationManager):
         default_factory=list
     )
     parent_links: list[tuple[str, str | None, str | None]] = field(default_factory=list)
+
+    async def latest_model(self, conversation_id: UUID7) -> str | None:
+        conversation = await self.get(conversation_id)
+        return next(
+            (run.model_name for run in reversed(conversation.runs) if run.model_name),
+            None,
+        )
 
     async def ensure(
         self,
@@ -199,6 +210,16 @@ class FakeConversationManager(ConversationManager):
             if conversation.id == conversation_id:
                 return cast(Conversation, conversation)
         raise ValueError(f"unknown conversation {conversation_id}")
+
+    async def set_external_id(
+        self,
+        conversation: Conversation,
+        external_id: str,
+    ) -> Conversation:
+        stored = await self.get(conversation.id)
+        stored.external_id = external_id
+        conversation.external_id = external_id
+        return conversation
 
     async def link_parent_run(
         self,
@@ -357,6 +378,10 @@ class FakeThreadManager(ThreadManager):
             None,
         )
 
+    async def rename(self, thread: Thread, title: str) -> Thread:
+        thread.title = title
+        return thread
+
     async def record_handoff(
         self,
         thread_or_address: Thread | ChannelAddress | ThreadKey,
@@ -432,7 +457,8 @@ class FakeThreadManager(ThreadManager):
             message_text=message_text or message_text_from_segments(segments),
             raw=raw,
         )
-        thread.messages.append(message)
+        # Arcanus's union collection treats a single model as an iterable.
+        thread.messages.extend([message])
         self.outbounds.append(message)
         return message
 

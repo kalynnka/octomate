@@ -246,6 +246,7 @@ type MuxFrame = (
     | QuestionRequestedFrame
     | StreamErrorFrame
     | RemoteCancellation
+    | RemoteNotification
 )
 
 
@@ -670,20 +671,46 @@ class SessionPromptValue(BaseModel):
     accepted: Literal[True]
 
 
-class CommandResult(BaseModel):
-    """What an executed command produced: its kind and text."""
+class CommandSuccess(BaseModel):
+    """A command settled successfully, optionally referencing richer presentation."""
 
     model_config = PERMISSIVE
 
-    kind: str
-    text: str | None = None
+    kind: Literal["success"] = Field(description="The handler's successful outcome.")
+    text: str | None = Field(
+        default=None, description="Optional direct output, preserved verbatim."
+    )
+    source_event_seq: int | None = Field(
+        default=None,
+        ge=0,
+        strict=True,
+        description="Earlier session event that owns a richer presentation of this result.",
+    )
+
+
+class CommandError(BaseModel):
+    """A command-level refusal inside a successful Remote response."""
+
+    model_config = PERMISSIVE
+
+    kind: Literal["error"] = Field(description="The handler's rejected outcome.")
+    text: str = Field(
+        min_length=1, description="The native error text, preserved verbatim."
+    )
+
+
+type CommandResult = Annotated[
+    CommandSuccess | CommandError, Field(discriminator="kind")
+]
 
 
 class CommandExecutionValue(BaseModel):
-    """What the remotes-plane `commands/execute` produced. A null wire value —
-    no command matched the line — parses at the call site, not here."""
+    """A matched `commands/execute` result; Ink maps a null wire value to no match."""
 
     model_config = PERMISSIVE
 
-    command_id: str
-    result: CommandResult | None = None
+    command_id: str = Field(
+        min_length=1,
+        description="Identity pairing the command/run and command/done events.",
+    )
+    result: CommandResult = Field(description="The settled native command outcome.")

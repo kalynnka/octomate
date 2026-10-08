@@ -98,7 +98,7 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
    --strict` must pass. Nothing is excluded from the site.
 5. The README is the pitch and the map. Steps and settings live on a docs page and
    the README links to it, so the two cannot drift.
-6. A page says what a reader can do and what happens. 
+6. A page says what a reader can do and what happens.
    Technical detail — endpoints, payload and event shapes, field and hook names,
    lookup orders, fallbacks, the mechanics
    behind a behaviour — belongs in the docstring or `Field(description=...)` that

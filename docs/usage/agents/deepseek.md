@@ -43,12 +43,13 @@ so custom presets work, and a configured `permission_mode` the harness does not
 know fails the start. The child's launch token is exchanged for a cookie on
 loopback; the login link the child prints is logged once for browser access.
 
-Effort is mapped onto dsh's adapter vocabulary. An Octomate level maps to itself
-when dsh advertises that id, and otherwise through `efforts`, whose default suits
-`llm-deepseek`: `minimal` and `low` to `off`, `medium` and `high` to `high`, `xhigh`
-to `max`.
+Choose effort from the model's advertised names. DSH passes provider-defined
+names unchanged, including plugin-specific levels.
 
 ## Driven runs
+
+You can change a driven conversation's [permission mode](permissions.md) while
+it is running. Ordinary prompts and commands use the selected model and permissions.
 
 A session is created with the thread's [workspace](../workspaces.md) as its
 working directory, and that is fixed for the session's life. Model and effort are
@@ -90,6 +91,61 @@ A trailing interrupted turn is withheld until a later event proves its closing
 records are real, because the gateway synthesises closers for a still-open turn.
 Subagent child sessions are skipped by the tail. Hooks and the tail need dsh's
 launch token: see [Hooks and MCP](../../installation/clients/deepseek.md).
+
+## Runtime commands
+
+Command discovery reads the live registry for the conversation's native DSH
+session. It returns each command's name, description and input hint, and preserves
+the effective definition's plugin identity. Scoped overrides come from DSH.
+Octomate also lists `/fork` as unavailable because DSH cannot yet relocate its
+copy into an independent Octomate workspace. A registry-provided `/fork` stays
+disabled for the same reason.
+
+Discovery requires an existing native session and a running Remote connection.
+It creates no session and submits no prompt. Catalogs refresh after registry-change
+notifications, connection startup or shutdown, and changes to the conversation's
+native session. Repeated registry notifications invalidate the cache; the next
+inspection reloads it. Explicit refresh also reloads the registry.
+
+The contract is checked against `@deepseek-ai/dsh-commands` 0.1.7-rc.1 at
+[revision 46a7f68](https://github.com/deepseek-ai/deepseek-harness/blob/46a7f68b0922371ce7144b668b90e377d8e799f4/packages/interaction/commands/src/types.ts).
+The internal permission command uses Ink's typed execution result. A missing
+command, rejected preset or malformed result stops the run before prompting.
+
+Explicit commands execute through `commands/execute`, preserving raw arguments
+and native result text. Direct controls return their result without creating a
+model turn. Commands such as `/plan <message>` stream their immediate native turn
+through the existing Reflex command entry, including approvals, recording and
+channel delivery. The command's feedback stays out of model history; only the
+native run's actual input and output enter that history. Duplicate deliveries do
+not execute the command again.
+
+Octomate subscribes before dispatch and waits for the matching `command/done`
+record, plus the end of any turn opened by that handler. It then releases the
+subscription and workspace. Native permission-change events update the stored
+conversation posture, so the next ordinary run keeps the new setting.
+
+All `/goal` operations are excluded from discovery and execution. Independently
+scheduled work after a command finishes is outside this command lifecycle.
+Command attachments are unavailable and rejected before dispatch. Client-owned
+log export is shown disabled, directing the user to DSH's web UI. Compaction runs in DSH;
+this proxy does not introduce a second compaction-history model.
+
+| Command, when advertised | Handling |
+|---|---|
+| `/compact` | DSH owns compaction; the command result reports its outcome. |
+| `/plan` | Enters native plan mode without starting a model turn. |
+| `/plan off` | Native control with direct feedback. |
+| `/plan <message>` | Native command followed by its immediate recorded agent run. |
+| `/permission` | Native control; permission events update Octomate's saved posture. |
+| `/feedback <text>` | Records feedback in DSH and returns its acknowledgement without a model turn. |
+| `/fork` | Disabled until a copied session can use an independent Octomate workspace. |
+| Session log export | Disabled for DSH's export plugin; use its web UI. A different plugin with the same display name keeps its own behavior. |
+| `/goal` | Omitted; independently scheduled continuation is not integrated. |
+| Other registry commands | Native execution with direct feedback or an immediate recorded run. |
+
+Plan mode is DSH's own session state, separate from the permission preset.
+Leaving plan mode does not change the conversation's saved permissions.
 
 ## Not yet
 

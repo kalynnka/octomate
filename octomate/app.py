@@ -154,9 +154,38 @@ def create_app() -> Octomate:
                     id, tentacle_config, octomate, registry=registry
                 )
             case ClaudeCodeConfig():
-                tentacle = ClaudeCodeTentacle(id, octomate, config=tentacle_config)
+                tentacle = ClaudeCodeTentacle(
+                    id,
+                    octomate,
+                    config=tentacle_config,
+                    commands=octomate.commands,
+                    projects=octomate.projects,
+                    threads=octomate.threads,
+                    files=octomate.files,
+                    conversations=octomate.conversations,
+                    deferred_actions=octomate.deferred_actions,
+                    workspaces=octomate.workspaces,
+                    users=octomate.users,
+                    bearers=octomate.bearers,
+                    mcp=octomate.mcp,
+                )
             case CodexConfig():
-                tentacle = CodexTentacle(id, octomate, config=tentacle_config)
+                tentacle = CodexTentacle(
+                    id,
+                    octomate,
+                    config=tentacle_config,
+                    commands=octomate.commands,
+                    projects=octomate.projects,
+                    threads=octomate.threads,
+                    files=octomate.files,
+                    conversations=octomate.conversations,
+                    deferred_actions=octomate.deferred_actions,
+                    workspaces=octomate.workspaces,
+                    users=octomate.users,
+                    bearers=octomate.bearers,
+                    auth=octomate.auth,
+                    gateway_manager=octomate.gateway,
+                )
             case DeepseekConfig():
                 tentacle = DeepseekTentacle(id, octomate, config=tentacle_config)
             case (

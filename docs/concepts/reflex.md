@@ -14,9 +14,10 @@ validates that every node is reachable from the entry.
 
 ```mermaid
 flowchart TD
-  START([kick]) -->|message or resume batch| Awake
+  START([kick]) -->|message, command or resume batch| Awake
   START -->|live batch| Live[Deliver to the owning request]
   Awake -->|user message| Route
+  Awake -->|explicit command| Command
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native scheme| Scheme
   Awake -->|thread summon API| Summon
@@ -27,6 +28,11 @@ flowchart TD
   React -->|teleport| Teleport
   React -->|waiting on a batch| Deferred([End: suspended])
   React -->|done| Done([End: result])
+  Command -->|direct outcome or completed run| Done
+  Command -->|summon| Summon
+  Command -->|scheme| Scheme
+  Command -->|teleport| Teleport
+  Command -->|waiting on a batch| Deferred
   Summon --> React
   Scheme --> React
   Teleport -->|resumed where it landed| React
@@ -38,10 +44,10 @@ flowchart TD
 
 ## The nodes
 
-**Awake** resolves the signal once and writes the source context into state. Four
+**Awake** resolves the signal once and writes the source context into state. Five
 signals enter here: a user message from a channel, a resolved action batch coming
 back from a card, a spell a native session cast over MCP, and an authenticated
-thread operation the console asked for, validated by the gateway. A thread
+thread operation the console asked for, validated by the gateway, and an explicit command on a resolved conversation. A thread
 operation, and a native session's teleport of its own thread, enter at the thread
 they act on and go to `Summon` or `Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
 nodes do not retain the signal. A UI teleport opens a fresh turn with an address notice; it
@@ -55,7 +61,7 @@ thread; otherwise the channel's default agent, in the same conversation, with no
 handoff recorded, because a group's main surface is never pinned. There is no
 separate triage pass: the entry agent self-routes with the gateway if it wants to.
 
-**React** is the only node that runs an agent. It resolves the agent against the
+**React** starts ordinary agent runs. It resolves the agent against the
 channel the run will happen on, records the handoff if one is pending, mounts the
 gateway and the user's capabilities, registers the session at the gateway so a
 second concurrent turn is refused, then runs the agent, streaming through the
@@ -64,6 +70,41 @@ channel's feelers or presenting the result once. A streamed run opens with a
 gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a teleport
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
+
+**Command** executes the selected runtime command directly, bypassing `Route` and
+chat prompt construction. The node enters the manager's `validate` scope, prepares
+the user directly, then calls `execute`. The validation scope holds the turn guard
+through setup and execution. Refused and replayed deliveries skip user preparation;
+execution records the receipt before invoking the agent. A setup failure releases
+the guard without recording a command. Direct output is presented as command
+feedback and ends
+with a `CommandResult` or `CommandError`, without a model run. A command that
+starts agent work keeps that same invocation open while Reflex consumes its
+events; it never calls `agent.run` a second time. Direct commands leave the summon
+decision unset. An agent stream or deferral creates its continuation decision
+when needed, preserving the selected agent and model for resume or teleport.
+
+`React` and `Command` use the stateless `ctx.deps.runtime` service for gateway
+capabilities, deferred approvals, channel presentation, reply bindings and post-run
+transitions. State records the selected agent/model and conversation. Each entry
+creates its own session, suspender and capability list; the runtime retains none
+of them across handoffs. Both
+streaming and non-streaming channels receive replies. A command's actual agent
+run can hand off, scheme or teleport, and deferred batches resume through the
+existing `ResumeDeferred` path. Accepted command attempts save their workspace on
+exit; rejected and replayed deliveries do not prepare user tools or save it.
+The inner React graph and its stream contract remain dedicated to agent runs.
+
+Commands submitted through the HTTP API enter this graph for both Trunkline and
+IM destinations. Reflex sends direct feedback, agent output and approval requests
+to the destination channel. Trunkline also streams that output to the browser;
+the HTTP caller receives completion after the graph finishes. A disconnected
+command request cancels execution.
+Cleanup under external graph cancellation is not guaranteed; SDK shutdown, receipt
+persistence and workspace saving may be interrupted.
+
+Explicit command receipts stay in the visible ledger but are omitted from pending
+chat input and automatic room recaps. Their arguments are not another chat turn.
 
 **Summon** hands the current conversation to the agent the decision names, where
 it is, then re-enters `React` with the brief as the new agent's prompt. Moving a

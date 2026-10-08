@@ -29,12 +29,12 @@ from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.claude.ingest import CLAUDE_NATIVE_ID, ClaudeHookIngest
 from octomate.tentacles.claude.tailer import ClaudeTranscriptTailer
 from octomate.tentacles.codex import CodexTentacle
-from octomate.tentacles.codex import base as codex_base
+from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.codex.ingest import CODEX_NATIVE_ID, CodexHookIngest
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer
@@ -69,10 +69,10 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 
 @pytest.fixture
 def _fake_runtimes(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", RecordingClaudeClient)
-    monkeypatch.setattr(codex_base, "AsyncCodex", FakeCodex)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", RecordingClaudeClient)
+    monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     monkeypatch.setattr(
-        codex_base, "AsyncThread", lambda _client, thread_id: FakeThread(thread_id)
+        codex_ink, "AsyncThread", lambda _client, thread_id: FakeThread(thread_id)
     )
     reset_fake_codex(text_script("done"))
 
@@ -80,9 +80,7 @@ def _fake_runtimes(monkeypatch: pytest.MonkeyPatch) -> None:
 async def runs_of(
     octomate: Octomate, tentacle_id: str, session_id: str
 ) -> list[AgentRun]:
-    thread = await octomate.thread_manager.ensure(
-        ThreadKey(tentacle_id, "thread", session_id)
-    )
+    thread = await octomate.threads.ensure(ThreadKey(tentacle_id, "thread", session_id))
     conversation = await octomate.conversations.ensure(
         thread.id, agent_tentacle_id=tentacle_id
     )
@@ -142,8 +140,13 @@ def write_transcript(path: Path, records: Sequence[JsonObject]) -> None:
 
 
 async def claude_hook(octomate: Octomate, cwd: str) -> None:
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    ingest = ClaudeHookIngest(octomate, tailer)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    ingest = ClaudeHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
     await ingest.handle(
         ClaudeHookInput.model_validate(
             {
@@ -206,7 +209,7 @@ async def test_each_claude_turn_records_its_own_prompt_directory(
         ],
     )
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_transcript(tailer, transcript)
 
@@ -231,7 +234,7 @@ async def test_a_claude_turn_keeps_the_directory_it_was_asked_in(
         ],
     )
     octomate = Octomate()
-    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
     await stream_transcript(tailer, transcript)
 
@@ -248,10 +251,14 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
     transcript.write_text("")
     octomate = Octomate()
     locks = SessionLocks()
-    tailer = ClaudeTranscriptTailer(
-        octomate.conversations, octomate.thread_manager, locks
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads, locks)
+    ingest = ClaudeHookIngest(
+        tailer,
+        locks,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
     )
-    ingest = ClaudeHookIngest(octomate, tailer, locks)
 
     await ingest.handle(
         ClaudeHookInput.model_validate(
@@ -324,8 +331,13 @@ def codex_rollout(cwd: str) -> list[JsonObject]:
 
 async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> None:
     octomate = Octomate()
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
-    ingest = CodexHookIngest(octomate, tailer)
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    ingest = CodexHookIngest(
+        tailer,
+        conversations=octomate.conversations,
+        projects=octomate.projects,
+        threads=octomate.threads,
+    )
 
     await ingest.handle(
         CodexHookInput.model_validate(
@@ -347,7 +359,7 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
 async def codex_rollout_run(octomate: Octomate, rollout: Path) -> AgentRun:
     """Stream one rollout the way production reaches it: a tail attaches and feeds
     the file's framed lines, and the turn commits off its own `task_complete`."""
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.thread_manager)
+    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
     await stream_rollout(tailer, CODEX_SESSION, rollout)
     [run] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)
     return run
@@ -379,7 +391,7 @@ async def test_a_codex_rollout_naming_no_directory_records_none(
 
 
 async def a_thread(octomate: Octomate, project: str = "") -> Thread:
-    return await octomate.thread_manager.ensure(
+    return await octomate.threads.ensure(
         ThreadKey("im", "thread", "chat", "t1"),
         project=octomate.projects.get(project) if project else None,
     )
@@ -408,6 +420,16 @@ async def test_a_driven_claude_run_records_where_it_dispatched(
         "claude",
         octomate,
         config=ClaudeCodeConfig(),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        mcp=octomate.mcp,
     )
 
     async with tentacle.run_stream_events(
@@ -435,6 +457,17 @@ async def test_a_driven_codex_run_records_where_it_dispatched() -> None:
         "codex",
         octomate,
         config=CodexConfig(permission_mode="auto_review"),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
 
     async with tentacle:

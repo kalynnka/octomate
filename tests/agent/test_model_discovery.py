@@ -22,7 +22,7 @@ from octomate.config.agents.codex import CodexReasoningEffort
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.tentacles.inkling import InklingTentacle
@@ -48,19 +48,20 @@ async def test_claude_uses_native_metadata_before_config(
                 "value": "future-model",
                 "displayName": "Future",
                 "description": "From the harness",
-                "supportedEffortLevels": ["low", "high"],
+                "supportedEffortLevels": ["low", "high", "max"],
             },
             {"value": "default", "displayName": "Account default"},
             {"value": "small", "displayName": "Small", "supportsEffort": False},
         ],
     }
     client.__aenter__.return_value = client
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", MagicMock(return_value=client))
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", MagicMock(return_value=client))
     prefix = "bedrock" if provider == "bedrock" else "anthropic"
     configured = Claim("Configured fallback", efforts=("medium",))
+    host = Octomate()
     tentacle = ClaudeCodeTentacle(
         "claude",
-        Octomate(),
+        host,
         config=ClaudeCodeConfig(
             claims={
                 f"{prefix}:future-model": configured,
@@ -68,18 +69,30 @@ async def test_claude_uses_native_metadata_before_config(
                 f"{prefix}:small": configured,
             }
         ),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
     )
 
     async with tentacle:
-        assert tentacle.default_model is None
+        assert tentacle.default_model == f"{prefix}:default"
+        assert tentacle.resolve_model() is None
         assert tentacle.models[f"{prefix}:default"] == "default"
+        assert tentacle.info.default_model == f"{prefix}:default"
         assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-            "From the harness", efforts=("minimal", "low", "high")
+            "From the harness", efforts=("low", "high", "max")
         )
         assert tentacle.claims[f"{prefix}:default"] == configured
         assert tentacle.claims[f"{prefix}:small"].efforts == ()
         assert [route.claim.efforts for route in tentacle.routes] == [
-            ("minimal", "low", "high"),
+            ("low", "high", "max"),
             ("medium",),
             (),
         ]
@@ -90,10 +103,25 @@ async def test_claude_uses_native_metadata_before_config(
 async def test_claude_discovery_claims_its_session_through_client_cleanup(
     monkeypatch: pytest.MonkeyPatch, fails: bool
 ) -> None:
-    tentacle = ClaudeCodeTentacle("claude", Octomate(), config=ClaudeCodeConfig())
+    host = Octomate()
+    tentacle = ClaudeCodeTentacle(
+        "claude",
+        host,
+        config=ClaudeCodeConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
+    )
     client = AsyncMock()
     factory = MagicMock(return_value=client)
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", factory)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", factory)
 
     async def enter() -> AsyncMock:
         options = factory.call_args.kwargs["options"]
@@ -145,7 +173,8 @@ def codex_model(
             "hidden": hidden,
             "defaultReasoningEffort": "high",
             "supportedReasoningEfforts": [
-                {"reasoningEffort": "high", "description": "Deep"}
+                {"reasoningEffort": level, "description": level}
+                for level in ("none", "high", "max", "ultra", "future-effort")
             ],
         }
     )
@@ -179,30 +208,52 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         ),
     ]
     prefix = provider or "openai"
+    host = Octomate()
     tentacle = CodexTentacle(
         "codex",
-        Octomate(),
+        host,
         config=CodexConfig(
             claims={f"{prefix}:future-model": Claim("Old metadata", efforts=("low",))}
         ),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
     )
-    await tentacle.discover_models()
-
-    assert tentacle.models == {
-        f"{prefix}:recommended": "recommended",
-        f"{prefix}:future-model": "future-model",
-    }
-    assert tentacle.default_model is None
-    assert tentacle.provider == prefix
-    assert tentacle.claims[f"{prefix}:future-model"] == Claim(
-        "Native description", efforts=("high",), default_effort="high"
-    )
-    assert [route.claim.efforts for route in tentacle.routes] == [("high",), ("high",)]
-    assert codex_catalog.request.call_args_list[2].args == (
-        "model/list",
-        {"includeHidden": False, "cursor": "page-2"},
-    )
+    async with tentacle:
+        assert tentacle.models == {
+            f"{prefix}:recommended": "recommended",
+            f"{prefix}:future-model": "future-model",
+        }
+        assert tentacle.default_model == f"{prefix}:{configured_model or 'recommended'}"
+        assert tentacle.provider == prefix
+        assert (
+            tentacle.info.default_model
+            == f"{prefix}:{configured_model or 'recommended'}"
+        )
+        assert tentacle.resolve_model() is None
+        assert tentacle.claims[f"{prefix}:future-model"] == Claim(
+            "Native description",
+            efforts=("none", "high", "max", "ultra", "future-effort"),
+            default_effort="high",
+        )
+        assert [route.claim.efforts for route in tentacle.routes] == [
+            ("none", "high", "max", "ultra", "future-effort"),
+            ("none", "high", "max", "ultra", "future-effort"),
+        ]
+        assert codex_catalog.request.call_args_list[2].args == (
+            "model/list",
+            {"includeHidden": False, "cursor": "page-2"},
+        )
     codex_catalog.initialize.assert_awaited_once()
+    codex_catalog.close.assert_awaited_once()
 
 
 @pytest.mark.parametrize(
@@ -211,9 +262,9 @@ async def test_codex_reads_provider_configured_default_and_every_catalog_page(
         # The model's own default, unless Codex's setting or ours says otherwise.
         (None, None, "high"),
         (None, "low", "low"),
-        ("medium", "low", "medium"),
+        (CodexReasoningEffort.medium, "low", "medium"),
         # A level the model does not take is no default anyone can be shown.
-        ("xhigh", None, None),
+        (CodexReasoningEffort.xhigh, None, None),
     ],
 )
 async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
@@ -237,7 +288,22 @@ async def test_codex_claims_the_effort_a_turn_runs_at_by_default(
         ),
         ModelListResponse(data=[model]),
     ]
-    tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig(effort=ours))
+    tentacle = CodexTentacle(
+        "codex",
+        Octomate(),
+        config=CodexConfig(effort=ours),
+        commands=Octomate().commands,
+        projects=Octomate().projects,
+        threads=Octomate().threads,
+        files=Octomate().files,
+        conversations=Octomate().conversations,
+        deferred_actions=Octomate().deferred_actions,
+        workspaces=Octomate().workspaces,
+        users=Octomate().users,
+        bearers=Octomate().bearers,
+        auth=Octomate().auth,
+        gateway_manager=Octomate().gateway,
+    )
 
     await tentacle.discover_models()
 
@@ -251,10 +317,29 @@ async def test_codex_empty_catalog_fails_without_fabricating_models(
         ConfigReadResponse.model_validate({"config": {}, "origins": {}}),
         ModelListResponse(data=[]),
     ]
-    tentacle = CodexTentacle("codex", Octomate(), config=CodexConfig())
+    host = Octomate()
+    tentacle = CodexTentacle(
+        "codex",
+        host,
+        config=CodexConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        auth=host.auth,
+        gateway_manager=host.gateway,
+    )
     with pytest.raises(ValueError, match="no available models"):
-        await tentacle.discover_models()
+        async with tentacle:
+            pytest.fail("An empty catalog must not start successfully")
     assert tentacle.models == {}
+    codex_catalog.close.assert_awaited_once()
+    assert tentacle.ink.notification_task is None
 
 
 async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
@@ -274,7 +359,13 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
                             "id": "future-model",
                             "name": "Future",
                             "description": "Native ability",
-                            "reasoning": {"efforts": [{"id": "low"}, {"id": "max"}]},
+                            "reasoning": {
+                                "efforts": [
+                                    {"id": "low"},
+                                    {"id": "max"},
+                                    {"id": "plugin-effort"},
+                                ]
+                            },
                         }
                     ],
                 }
@@ -290,17 +381,22 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
     )
     async with tentacle:
         assert set(tentacle.models) == {"first:future-model", "second:future-model"}
-        assert tentacle.default_model is None
+        assert tentacle.info.default_model == "second:future-model"
+        assert tentacle.default_model == "second:future-model"
+        assert tentacle.resolve_model() is None
         assert tentacle.claims["first:future-model"] == Claim(
-            "Native ability", efforts=("low", "xhigh")
+            "Native ability", efforts=("low", "max", "plugin-effort")
         )
-        assert all(route.claim.efforts == ("low", "xhigh") for route in tentacle.routes)
+        assert all(
+            route.claim.efforts == ("low", "max", "plugin-effort")
+            for route in tentacle.routes
+        )
         await tentacle.run(
             "hello",
             conversation_address=KEY,
             thread_id=uuid7(),
             model="first:future-model",
-            effort="low",
+            effort="plugin-effort",
         )
 
     [selected] = [
@@ -312,7 +408,7 @@ async def test_deepseek_preserves_provider_pairs_and_native_effort_ids(
         "sessionId": "sess-1",
         "provider": "first",
         "model": "future-model",
-        "reasoningEffort": "low",
+        "reasoningEffort": "plugin-effort",
     }
 
 
@@ -357,9 +453,23 @@ def harness(
         }
         client.__aenter__.return_value = client
         monkeypatch.setattr(
-            claude_base, "ClaudeSDKClient", MagicMock(return_value=client)
+            claude_ink, "ClaudeSDKClient", MagicMock(return_value=client)
         )
-        return ClaudeCodeTentacle("claude", octomate, config=ClaudeCodeConfig())
+        return ClaudeCodeTentacle(
+            "claude",
+            octomate,
+            config=ClaudeCodeConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            mcp=octomate.mcp,
+        )
     if request.param == "codex":
         codex_catalog.request.side_effect = [
             ConfigReadResponse.model_validate(
@@ -372,7 +482,22 @@ def harness(
                 data=[codex_model("included"), codex_model("excluded", default=True)]
             ),
         ]
-        return CodexTentacle("codex", octomate, config=CodexConfig())
+        return CodexTentacle(
+            "codex",
+            octomate,
+            config=CodexConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            auth=octomate.auth,
+            gateway_manager=octomate.gateway,
+        )
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset()
     FakeDeepseekApi.results["session/modelCatalog"] = OkResult(
@@ -398,13 +523,17 @@ async def test_harness_catalogs_expose_all_models_and_native_defaults(
 ) -> None:
     tentacle = harness
     assert tentacle.routes == []
+    assert tentacle.default_model is None
     async with tentacle:
         names = ["source:included", "source:excluded"]
         assert list(tentacle.models) == names
         assert list(tentacle.claims) == names
         assert [route.model for route in tentacle.routes] == names
         assert tentacle.routes is tentacle.routes
-        assert tentacle.default_model is None
+        assert tentacle.default_model == (
+            None if tentacle.id == "claude" else "source:excluded"
+        )
+        assert tentacle.resolve_model() is None
         tentacle.octomate.connect(tentacle)
         channel = TrunklineTentacle(
             "console",

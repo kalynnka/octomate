@@ -46,7 +46,6 @@ from pydantic_ai.models.function import (
     FunctionModel,
 )
 from pydantic_ai.output import OutputSpec
-from pydantic_ai.settings import ThinkingEffort
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate import Octomate
@@ -175,7 +174,7 @@ class RecordedRun:
     source_thread_message_ids: list[UUID7] = field(default_factory=list)
     deferred_results: DeferredToolResults | None = None
     model: Model | str | None = None
-    effort: ThinkingEffort | None = None
+    effort: str | None = None
     conversation_id: UUID7 | None = None
     interactive: bool = True
     instructions: str | None = None
@@ -229,7 +228,10 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # ships by default; pass claims={} to fake an agent that advertises nothing.
     claims: dict[AgentRouteModelName, Claim] = field(
         default_factory=lambda: {
-            model: Claim(ability="fake agent")
+            model: Claim(
+                ability="fake agent",
+                efforts=("minimal", "low", "medium", "high", "xhigh"),
+            )
             for model in (
                 "test",
                 "deepseek:deepseek-v4-flash",
@@ -264,7 +266,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         run_name: str | None = None,
         output_type: OutputSpec[FakeRunOutput] | None = None,
         model: Model | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         message_history: Sequence[ModelMessage] | None = None,
@@ -364,7 +366,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 model=summon_decision.model,
                 reason=summon_decision.reason,
                 hint=summon_decision.hint,
-                summon=summon_decision.summon,
+                brief=summon_decision.brief,
             )
             output = ""
         if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
@@ -381,7 +383,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         source_thread_message_ids: Sequence[UUID7] | None = None,
         run_name: str | None = None,
         model: Model | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         message_history: Sequence[ModelMessage] | None = None,
         deferred_tool_results: DeferredToolResults | None = None,
@@ -447,7 +449,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     model=summon_decision.model,
                     reason=summon_decision.reason,
                     hint=summon_decision.hint,
-                    summon=summon_decision.summon,
+                    brief=summon_decision.brief,
                 )
                 yield AgentRunResultEvent(AgentRunResult(""))
 

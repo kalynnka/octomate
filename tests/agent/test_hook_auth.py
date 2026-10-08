@@ -47,12 +47,33 @@ def client_for(path: str) -> TestClient:
             "claude",
             octomate,
             config=ClaudeCodeConfig(),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            mcp=octomate.mcp,
         )
     elif path == CODEX_HOOK_PATH:
         tentacle = CodexTentacle(
             "codex",
             octomate,
             config=CodexConfig(permission_mode="auto_review"),
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+            conversations=octomate.conversations,
+            deferred_actions=octomate.deferred_actions,
+            workspaces=octomate.workspaces,
+            users=octomate.users,
+            bearers=octomate.bearers,
+            auth=octomate.auth,
+            gateway_manager=octomate.gateway,
         )
     else:
         tentacle = DeepseekTentacle(
@@ -103,10 +124,21 @@ def test_the_api_token_is_accepted(path: str) -> None:
 
 
 def test_a_hook_router_mounts_before_any_user_registers() -> None:
+    host = Octomate(config=OctomateConfig(auth=auth_config()))
     tentacle = ClaudeCodeTentacle(
         "claude",
-        Octomate(config=OctomateConfig(auth=auth_config())),
+        host,
         config=ClaudeCodeConfig(),
+        commands=host.commands,
+        projects=host.projects,
+        threads=host.threads,
+        files=host.files,
+        conversations=host.conversations,
+        deferred_actions=host.deferred_actions,
+        workspaces=host.workspaces,
+        users=host.users,
+        bearers=host.bearers,
+        mcp=host.mcp,
     )
     assert len(tentacle.routers()) == 1
 
@@ -114,7 +146,23 @@ def test_a_hook_router_mounts_before_any_user_registers() -> None:
 @pytest.mark.parametrize("token", ["wrong", SECRET.get_secret_value()])
 async def test_stream_authentication_has_its_own_database_context(token: str) -> None:
     app = Octomate(config=OctomateConfig(auth=auth_config()))
-    app.connect(ClaudeCodeTentacle("claude", app, config=ClaudeCodeConfig()))
+    app.connect(
+        ClaudeCodeTentacle(
+            "claude",
+            app,
+            config=ClaudeCodeConfig(),
+            commands=app.commands,
+            projects=app.projects,
+            threads=app.threads,
+            files=app.files,
+            conversations=app.conversations,
+            deferred_actions=app.deferred_actions,
+            workspaces=app.workspaces,
+            users=app.users,
+            bearers=app.bearers,
+            mcp=app.mcp,
+        )
+    )
     user = await a_user()
     await a_api_key(user, SECRET.get_secret_value())
 

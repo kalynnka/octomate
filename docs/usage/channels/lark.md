@@ -2,6 +2,7 @@
 
 Lark connects over the SDK's **long connection**, a WebSocket the bot opens.
 Messages and card actions arrive on it, so no request URL is needed.
+Stopping Octomate shuts down the connection without retrying it.
 
 ## Create the app
 

@@ -61,7 +61,7 @@ SUMMON_ARGUMENTS = {
     "model": "opus",
     "hint": "Working on it",
     "reason": "needs coding",
-    "summon": "Please investigate the failing test.",
+    "brief": "Please investigate the failing test.",
 }
 
 
@@ -251,7 +251,7 @@ async def test_summon_records_the_decision_it_validated() -> None:
         effort=None,
         hint="Working on it",
         reason="needs coding",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
 
@@ -274,11 +274,11 @@ async def test_arguments_are_validated_before_policy_runs() -> None:
     server, session, _channel, _threads = a_turn()
 
     async with Client(server) as client:
-        # The bad effort level is the input under test: the server validates
+        # A non-string effort is the input under test: the server validates
         # against the tool's own schema before any policy is consulted.
         with pytest.raises(ToolError, match="effort"):
             await client.call_tool(
-                "gateway_summon", {**SUMMON_ARGUMENTS, "effort": "everything"}
+                "gateway_summon", {**SUMMON_ARGUMENTS, "effort": ["everything"]}
             )
 
     assert session.decision is None
@@ -292,7 +292,7 @@ async def test_a_brief_over_the_cap_is_refused_before_policy_runs() -> None:
         # does any other bad argument, before the spell runs.
         with pytest.raises(ToolError, match="at most 8000 characters"):
             await client.call_tool(
-                "gateway_summon", {**SUMMON_ARGUMENTS, "summon": "x" * 8_001}
+                "gateway_summon", {**SUMMON_ARGUMENTS, "brief": "x" * 8_001}
             )
 
     assert session.decision is None

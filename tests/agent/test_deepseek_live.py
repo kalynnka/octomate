@@ -141,7 +141,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         first_session = conversation.external_id
         assert first_session is not None
         assert conversation.name == "Test integration"
-        stored_thread = await octomate.thread_manager.get(thread, with_messages=False)
+        stored_thread = await octomate.threads.get(thread, with_messages=False)
         assert stored_thread is not None
         assert stored_thread.title == conversation.name
         resumed = await tentacle.run(
@@ -163,7 +163,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             "DSH_LAUNCH_TOKEN", tentacle.process.launch_token.get_secret_value()
         )
         history = await asyncio.to_thread(
-            DshHistoryClient, str(tentacle.client.base_url)
+            DshHistoryClient, str(tentacle.ink.client.base_url)
         )
         records = await asyncio.to_thread(new_entries, history, first_session, 0)
         kinds = [
@@ -173,7 +173,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
         ]
         assert kinds.count("turn/end") == 2
         assert "tool/result" in kinds
-        tailer = DeepseekEventTailer(conversations, octomate.thread_manager)
+        tailer = DeepseekEventTailer(conversations, octomate.threads)
         state, _ = await tailer.attach_remote(
             first_session,
             home / "session.jsonl",
@@ -245,13 +245,13 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             )
         )
         await asyncio.wait_for(waiting.wait(), 10)
-        reply = await tentacle.client.remote(
+        reply = await tentacle.ink.client.remote(
             "session/cancel", {"request": {"sessionId": first_session}}
         )
         assert isinstance(reply, OkResult)
         await asyncio.wait_for(running, 10)
         await asyncio.wait_for(cancelled.wait(), 10)
-        assert not tentacle.subscribers
+        assert not tentacle.ink.subscribers
         assert not tentacle.bridge_contexts
     assert tentacle.process is None
     assert (home / "cordis.patch.yml").read_text() == native_patch

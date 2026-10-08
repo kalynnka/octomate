@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
+from octomate.models.conversation import ConversationRun as ConversationRunModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -100,6 +101,16 @@ class ConversationKey(NamedTuple):
     subagent_id: str = ""
 
 
+@sqlalchemy_materia.bless(ConversationRunModel)
+class ConversationRun(BaseTransmuter):
+    """A run in a conversation's history: one it ran, or one it was forked with."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    conversation_id: Annotated[UUID7, Identity]
+    run_id: Annotated[str, Identity]
+
+
 @sqlalchemy_materia.bless(ConversationModel)
 class Conversation(BaseTransmuter):
     """One agent's model context within a thread, keyed by thread, agent and
@@ -157,6 +168,15 @@ class Conversation(BaseTransmuter):
             "after, so a change made mid-thread is never revoked by a later ensure."
         ),
     )
+    effort: str | None = Field(
+        default=None,
+        description=(
+            "Reasoning effort this conversation's runs ask for, one of the levels its "
+            "agent's route claims for the model. None declares nothing, and the "
+            "runtime's own default decides. A run given an effort of its own, as a "
+            "summon is, uses that one instead."
+        ),
+    )
     allowed_tools: list[str] = Field(
         default_factory=list,
         description=(
@@ -167,6 +187,11 @@ class Conversation(BaseTransmuter):
 
     runs: RelationCollection[AgentRun | ExternalAgentRun] = Relationships()
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
+
+    @property
+    def latest_run(self) -> AgentRun | ExternalAgentRun | None:
+        """The last run in the loaded, ordered history, or None before the first run."""
+        return self.runs[-1] if self.runs else None
 
     @property
     def key(self) -> ConversationKey:

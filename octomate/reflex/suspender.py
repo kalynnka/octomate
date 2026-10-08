@@ -90,13 +90,27 @@ class ReflexSuspender:
     target_address: ChannelAddress
     target_mode: ResponseTargetMode
     decision: SummonDecision | None
+    model: str | None = None  # Selected model when a command has no routing decision.
     thread_id: UUID7 | None = None
     emit_on_stream: bool = False
     suspended_batch_id: UUID7 | None = field(default=None, init=False)
     # The deferred `teleport`, for the graph to perform instead of a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)
 
+    def continuation_decision(self) -> SummonDecision:
+        """Preserve an actual agent run's selection for resume and teleport."""
+        if self.decision is None:
+            self.decision = SummonDecision(
+                agent_id=self.agent_tentacle_id,
+                model=self.model,
+                reason="Continue the selected agent run.",
+                hint="",
+                brief="",
+            )
+        return self.decision
+
     async def suspend(self, requests: DeferredToolRequests) -> ActionBatchEvent | None:
+        self.continuation_decision()
         teleport = TeleportRequest.of(requests)
         if teleport is not None:
             # The agent's own permission check already let the call through, so

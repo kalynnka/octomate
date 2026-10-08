@@ -26,6 +26,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from octomate.config.base import OctomateConfig
 from octomate.managers.auth import AuthManager
+from octomate.managers.commands import CommandManager
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.files import FileManager
@@ -139,8 +140,9 @@ class Octomate(FastAPI):
     # Scoped API tokens, shared by MCP verification and hook guards.
     bearers: KnownBearers = field(init=False)
 
-    thread_manager: ThreadManager = field(init=False)
+    threads: ThreadManager = field(init=False)
     conversations: ConversationManager = field(default_factory=ConversationManager)
+    commands: CommandManager = field(init=False)
     deferred_actions: DeferredActionManager = field(
         default_factory=DeferredActionManager
     )
@@ -168,7 +170,16 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
-        self.thread_manager = ThreadManager(users=self.users)
+        self.openapi_version = "3.2.0"  # Per-event SSE response schemas use itemSchema.
+        self.threads = ThreadManager(users=self.users)
+        self.commands = CommandManager(
+            tentacles=self.tentacles,
+            users=self.users,
+            conversations=self.conversations,
+            threads=self.threads,
+            workspaces=self.workspaces,
+            gateway=self.gateway,
+        )
         self.auth = (
             AuthManager(self.config.auth) if self.config.auth is not None else None
         )
@@ -309,7 +320,7 @@ class Octomate(FastAPI):
                 agents=self.agents,
                 channels=self.channels,
                 conversation_manager=self.conversations,
-                thread_manager=self.thread_manager,
+                thread_manager=self.threads,
                 action_manager=self.deferred_actions,
                 gateway=self.gateway,
             )
@@ -420,6 +431,7 @@ class Octomate(FastAPI):
                         if not isinstance(tentacle, ChannelTentacle)
                     )
                 )
+                outer_stack.push_async_callback(self.commands.close)
                 await asyncio.gather(
                     *(
                         start(channel_stack, tentacle)
@@ -438,7 +450,7 @@ class Octomate(FastAPI):
         # endpoint outright until a user is registered.
         octoate_mcp = octomate_mcp(
             served_session(self),
-            self.thread_manager,
+            self.threads,
             kick=self.kick_soon,
             bearers=self.bearers,
             manager=self.mcp,
@@ -451,11 +463,13 @@ class Octomate(FastAPI):
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
         from octomate.auth import auth_router
+        from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import TrunklineTentacle
 
         self.include_router(auth_router)
+        self.include_router(command_router)
         self.include_router(mcp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted

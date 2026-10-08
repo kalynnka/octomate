@@ -16,7 +16,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING, ClassVar, Self, get_args, overload
 
-from pydantic import UUID7
+from pydantic import UUID7, TypeAdapter
 from pydantic_ai import (
     AgentCapability,
     AgentModelSettings,
@@ -84,6 +84,7 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
+    from octomate.managers.mcp import McpManager
 
 logger = logging.getLogger(__name__)
 
@@ -93,6 +94,8 @@ logger = logging.getLogger(__name__)
 MCP_WARM_TIMEOUT = 20.0
 
 type InklingOutput = str | list[MessageSegment] | DeferredToolRequests
+
+thinking_effort_adapter = TypeAdapter(ThinkingEffort)
 
 
 @dataclass(frozen=True)
@@ -162,6 +165,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
     brand_color: ClassVar[Style | None] = Style(color="#C29145", bold=True)
 
     agent: Agent[None, InklingOutput] = field(init=False)
+    mcp: McpManager = field(init=False)
     # Held on the tentacle, not baked into the Agent: every run decides what to
     # mount — an accomplice run gets none of them.
     capabilities: list[AgentCapability[None]] = field(init=False)
@@ -222,7 +226,16 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         request_limit: int = 256,
         gateway: bool = True,
     ) -> None:
-        super().__init__(id=id, octomate=octomate)
+        super().__init__(
+            id=id,
+            octomate=octomate,
+            commands=octomate.commands,
+            projects=octomate.projects,
+            threads=octomate.threads,
+            files=octomate.files,
+        )
+        self.mcp = octomate.mcp
+        self.workspaces = octomate.workspaces
         self.permission_mode = permission_mode
         self.request_limit = request_limit
         self.gateway = gateway
@@ -255,6 +268,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # one source of truth with the thread ledger and the rest of Octomate; an
         # explicit manager still wins.
         self.conversation_manager = conversation_manager or octomate.conversations
+        self.conversations = self.conversation_manager
         self.deferred_resolver = deferred_resolver
         self.description = description or self.description
         # Not `dict(...)`, which C416 asks for: each config's claims are keyed by that
@@ -429,7 +443,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -461,7 +475,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -492,7 +506,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -554,7 +568,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         conversation_id: UUID7,
         run_name: str | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         instructions: str | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> AgentRunResult[InklingOutput]:
@@ -598,7 +612,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -629,7 +643,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -659,7 +673,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -718,7 +732,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         deferred_tool_results: DeferredToolResults | None = None,
         deferred_suspender: DeferredSuspender | None = None,
         model: Model | KnownModelName | str | None = None,
-        effort: ThinkingEffort | None = None,
+        effort: str | None = None,
         conversation_id: UUID7 | None = None,
         interactive: bool = True,
         instructions: AgentInstructions[None] = None,
@@ -749,7 +763,8 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
                     "effort cannot be combined with callable model_settings"
                 )
             model_settings = merge_model_settings(
-                model_settings, ModelSettings(thinking=effort)
+                model_settings,
+                ModelSettings(thinking=thinking_effort_adapter.validate_python(effort)),
             )
         react_output_type: OutputSpec[InklingOutput | RunOutputDataT] = (
             [str, list[MessageSegment], DeferredToolRequests]
@@ -773,7 +788,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
             capabilities.append(
                 tentacles_capability(
                     octomate_session,
-                    manager=self.octomate.mcp,
+                    manager=self.mcp,
                 )
             )
         # The react graph carries only the thread/agent identity; each node fetches
@@ -794,7 +809,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         # somewhere its file tools are rooted rather than somewhere a subprocess is
         # started, and a project's workspace has no ending for a run to scope.
         workspace = (
-            await self.octomate.workspaces.open(thread_id, project).prepare()
+            await self.workspaces.open(thread_id, project).prepare()
             if project is not None
             else None
         )
@@ -803,7 +818,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         graph_deps = ReactDeps(
             agent=self.agent,
             conversation_manager=self.conversation_manager,
-            thread_manager=self.octomate.thread_manager,
+            thread_manager=self.threads,
             agent_deps=deps,
             choose_resolvers=InklingDeferrals(
                 interactive=interactive,
@@ -912,9 +927,7 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         await self.conversation_manager.set_name(conversation, title)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.octomate.thread_manager.get(
-            conversation.thread_id, with_messages=False
-        )
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
         if thread is None:
             raise ValueError(f"unknown thread {conversation.thread_id}")
-        await self.octomate.thread_manager.rename(thread, title)
+        await self.threads.rename(thread, title)

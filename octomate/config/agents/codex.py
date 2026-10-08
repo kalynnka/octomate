@@ -5,22 +5,13 @@ from __future__ import annotations
 from typing import Literal
 
 from openai_codex import CodexConfig as CodexSdkConfig
+from openai_codex.generated.v2_all import ReasoningEffort as CodexReasoningEffort
 from pydantic import ConfigDict, Field, model_validator
 
 from octomate.config.agents.common import AgentConfig, Claim
 from octomate.types.permissions import CodexPermissionMode
 
 type CodexPersonality = Literal["none", "friendly", "pragmatic"]
-
-
-type CodexReasoningEffort = Literal[
-    "none",
-    "minimal",
-    "low",
-    "medium",
-    "high",
-    "xhigh",
-]
 
 
 type CodexReasoningSummary = Literal[
@@ -107,22 +98,6 @@ class CodexConfig(AgentConfig):
             "answering is the ordinary case rather than the exotic one, and an "
             "unbounded wait leaves the thread unusable for good. None waits "
             "indefinitely."
-        ),
-    )
-    max_clients: int | None = Field(
-        default=8,
-        ge=1,
-        description=(
-            "Max warm Codex app-server processes kept in the per-thread client "
-            "pool. When exceeded, the least-recently-used idle client is closed. "
-            "None keeps every thread's client until shutdown."
-        ),
-    )
-    client_idle_ttl: float | None = Field(
-        default=600.0,
-        description=(
-            "Seconds a pooled Codex client may sit idle before it is closed on the "
-            "next pool access. None keeps idle clients until shutdown."
         ),
     )
 

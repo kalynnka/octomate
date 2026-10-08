@@ -59,11 +59,22 @@ async def case(
         "codex",
         octomate,
         config=CodexConfig(runtime=RuntimeConfig(env={"CODEX_HOME": str(home)})),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        auth=octomate.auth,
+        gateway_manager=octomate.gateway,
     )
     # The model the native session ran, which its fork resumes on.
     tentacle.models = {"openai:gpt-6-luna": "gpt-6-luna"}
     owner = await a_user()
-    source_thread = await octomate.thread_manager.ensure(
+    source_thread = await octomate.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", str(owner.id), uuid7().hex)
     )
     source = await octomate.conversations.ensure(
@@ -446,6 +457,34 @@ async def test_fork_requires_a_matching_terminal_event(
     assert case.fork.call_args.kwargs["last_turn_id"] == (
         run_id if terminal else completed_id
     )
+
+
+async def test_latest_completed_turn_does_not_validate_stale_older_offsets(
+    case: ForkCase,
+) -> None:
+    source = case.source.model_copy(
+        update={
+            "runs": [
+                ExternalAgentRun(
+                    id=str(uuid7()),
+                    conversation_id=case.source.id,
+                    native_session_id=case.source.external_id,
+                    model_name="other-model",
+                    permission_mode="full_access",
+                    end_offset=len(case.prefix) - 1,
+                ),
+                *case.source.runs,
+            ]
+        }
+    )
+    data, completed = await case.tentacle.read_fork_transcript(
+        source, owner_id=case.owner_id
+    )
+    completed_id = json.loads(case.prefix.splitlines()[-1])["payload"]["turn_id"]
+    assert completed.id == completed_id
+    assert completed.end_offset == len(case.prefix)
+    assert completed.permission_mode == "auto_review"
+    assert data == case.prefix + case.pending
 
 
 async def test_fork_rejects_an_offset_inside_a_line(

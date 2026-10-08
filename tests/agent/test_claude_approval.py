@@ -47,7 +47,7 @@ from octomate.schemas.deferred import (
     DeferredQuestion,
 )
 from octomate.tentacles.claude import ClaudeCodeTentacle
-from octomate.tentacles.claude import base as claude_base
+from octomate.tentacles.claude import ink as claude_ink
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -195,6 +195,16 @@ def _build(
         "claude",
         octomate,
         config=config or ClaudeCodeConfig(),
+        commands=octomate.commands,
+        projects=octomate.projects,
+        threads=octomate.threads,
+        files=octomate.files,
+        conversations=octomate.conversations,
+        deferred_actions=octomate.deferred_actions,
+        workspaces=octomate.workspaces,
+        users=octomate.users,
+        bearers=octomate.bearers,
+        mcp=octomate.mcp,
     )
     octomate.connect(tentacle)
     return tentacle, dam, suspender
@@ -228,7 +238,7 @@ async def _wait_for_pending(
 async def test_approval_allow_lets_the_tool_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
@@ -254,7 +264,7 @@ async def test_approval_allow_lets_the_tool_run(
 async def test_approval_deny_feeds_reason_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
@@ -276,7 +286,7 @@ async def test_approval_deny_feeds_reason_back(
 async def test_allow_session_suppresses_repeat_prompts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval_twice")
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
@@ -306,7 +316,7 @@ async def test_allow_session_suppresses_repeat_prompts(
 async def test_persisted_allowed_tool_skips_the_card(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     seeded = FakeConversation(allowed_tools=["Bash"])
     tentacle, _dam, suspender = _build(FakePresentedBatch(), conversation=seeded)
@@ -321,7 +331,7 @@ async def test_persisted_allowed_tool_skips_the_card(
 async def test_permission_mode_drives_the_sdk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")  # no can_use_tool
     seeded = FakeConversation(permission_mode="plan")
     question = DeferredQuestion(
@@ -370,7 +380,7 @@ async def test_the_conversations_posture_reaches_the_sdk(
     configured: str,
     expected: str,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     tentacle, _dam, suspender = _build(
         FakePresentedBatch(),
@@ -394,7 +404,7 @@ async def test_the_conversations_posture_reaches_the_sdk(
 async def test_approval_timeout_denies_and_expires(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "approval")
     approval = DeferredApproval(
         tool_name="Bash", tool_call_id="t1", args=ApprovalRequest(tool_name="Bash")
@@ -416,7 +426,7 @@ async def test_approval_timeout_denies_and_expires(
 async def test_ask_user_question_hook_feeds_answer_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
     question = DeferredQuestion(
         tool_name="AskUserQuestion",
@@ -447,7 +457,7 @@ async def test_ask_user_question_keeps_every_option_under_the_cap(
 ) -> None:
     # Claude's AskUserQuestion offers up to 4 options, all within octomate's cap, so
     # the card presents every one of them.
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
     monkeypatch.setattr(
         ScriptedClaudeClient, "question_option_labels", ["A", "B", "C", "D"]
@@ -477,7 +487,7 @@ async def test_ask_user_question_keeps_every_option_under_the_cap(
 async def test_ask_user_question_keeps_a_multi_select(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(claude_base, "ClaudeSDKClient", ScriptedClaudeClient)
+    monkeypatch.setattr(claude_ink, "ClaudeSDKClient", ScriptedClaudeClient)
     monkeypatch.setattr(ScriptedClaudeClient, "mode", "question")
     monkeypatch.setattr(ScriptedClaudeClient, "question_multi_select", True)
     question = DeferredQuestion(

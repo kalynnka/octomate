@@ -242,7 +242,7 @@ async def create_batch(
             model="test",
             reason="needs input",
             hint="needs input",
-            summon="needs input",
+            brief="needs input",
         ),
         requests=requests,
     )

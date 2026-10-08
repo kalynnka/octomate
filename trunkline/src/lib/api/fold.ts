@@ -7,11 +7,11 @@
  */
 import type {
   ApiModelMessage,
+  CommandStreamEvent,
   ModelResponsePart,
   ToolCallPart,
   WireDeferredApproval,
   WireDeferredQuestion,
-  WireEvent,
   WireSegment,
   WireTodo,
 } from '@/lib/api/events'
@@ -80,7 +80,7 @@ export interface FoldSink {
   done(): void
 }
 
-function segmentText(segment: WireSegment): string {
+export function segmentText(segment: WireSegment): string {
   // Text-ish segments carry `text`; reply segments carry `content`.
   const text = segment.data.text ?? segment.data.content
   return typeof text === 'string' ? text : JSON.stringify(segment.data)
@@ -404,7 +404,7 @@ export class TurnFold {
     }
   }
 
-  feed(event: WireEvent) {
+  feed(event: CommandStreamEvent) {
     // No early return on `ended`: the suspend path emits its action_batch
     // after run_result, and those feeler cards must still land.
     switch (event.event_kind) {
@@ -544,6 +544,15 @@ export class TurnFold {
         this.closeThink()
         this.closeStream()
         this.sink.push({ kind: 'notice', text: `run failed — ${event.message}`, tone: 'error' })
+        this.ended = true
+        this.sink.done()
+        break
+      // A command's feedback, refusal included, has already streamed as a channel
+      // message; its outcome only says the command is done.
+      case 'command_outcome':
+        if (this.ended) break
+        this.closeThink()
+        this.closeStream()
         this.ended = true
         this.sink.done()
         break
