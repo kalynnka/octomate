@@ -12,11 +12,17 @@ from openai_codex._run import _collect_async_turn_result
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import CodexError
 from openai_codex.generated.v2_all import (
+    Account,
+    ApiKeyAccount,
+    GetAccountRateLimitsResponse,
+    GetAccountResponse,
     ItemCompletedNotification,
     ListMcpServerStatusResponse,
     ReasoningEffort,
     ReviewTarget,
     SkillsListEntry,
+    ThreadTokenUsage,
+    ThreadTokenUsageUpdatedNotification,
     TurnCompletedNotification,
     TurnStatus,
 )
@@ -42,6 +48,7 @@ from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.schemas import ThreadSettingsUpdateResponse
+from tests.agent.test_codex_adapter import token_breakdown
 from tests.agent.test_codex_tentacle import (
     KEY,
     FakeCodex,
@@ -555,11 +562,19 @@ async def test_rejected_codex_permission_update_does_not_save_the_selection(
     assert stored.permission_mode is None
 
 
+@pytest.mark.parametrize("account", [None, Account(ApiKeyAccount(type="apiKey"))])
 async def test_status_before_a_conversation_does_not_start_codex(
     execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    account: Account | None,
 ) -> None:
     agent, context, _ = execution
     context = replace(context, conversation=None, cwd=None)
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    request.side_effect = [
+        GetAccountResponse(account=account, requires_openai_auth=True)
+    ]
     events = [
         event
         async for event in agent.execute_command(
@@ -568,9 +583,181 @@ async def test_status_before_a_conversation_does_not_start_codex(
     ]
     assert len(events) == 1
     assert isinstance(events[0], CommandResult)
-    assert "Conversation: not created" in events[0].model_dump_json()
+    text = events[0].model_dump_json()
+    assert "Conversation: not created" in text
+    assert "Token usage: not reported yet." in text
+    assert "Account limits: unavailable (not signed in with ChatGPT)." in text
+    request.assert_awaited_once_with(
+        "account/read", {"refreshToken": False}, response_model=GetAccountResponse
+    )
     assert not FakeCodex.thread_calls
     assert not FakeCodex.turn_calls
+
+
+@pytest.mark.parametrize("multiple_buckets", [False, True])
+async def test_status_reads_account_limits_without_a_conversation(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], multiple_buckets: bool
+) -> None:
+    agent, context, _ = execution
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    response = GetAccountRateLimitsResponse.model_validate(
+        {
+            "rateLimits": {
+                "primary": {
+                    "usedPercent": 25,
+                    "windowDurationMins": 300,
+                    "resetsAt": 0,
+                },
+                "secondary": {"usedPercent": 100, "windowDurationMins": 10080},
+            },
+            "rateLimitsByLimitId": {
+                "other": {
+                    "limitName": "Other model",
+                    "primary": {"usedPercent": 42, "windowDurationMins": 15},
+                    "secondary": {"usedPercent": 0},
+                }
+            }
+            if multiple_buckets
+            else None,
+        }
+    )
+    request.side_effect = [
+        GetAccountResponse.model_validate(
+            {
+                "account": {"type": "chatgpt", "email": None, "planType": "pro"},
+                "requiresOpenaiAuth": True,
+            }
+        ),
+        response,
+    ]
+    result = await agent.command_control(
+        replace(context, conversation=None, cwd=None),
+        CommandInvocation(command_id="builtin:status"),
+    )
+    assert isinstance(result, CommandResult)
+    text = result.model_dump_json()
+    assert "Account plan: pro" in text
+    if multiple_buckets:
+        assert "Other model 15m limit: 58% left; resets not reported" in text
+        assert "Other model secondary limit: 100% left; resets not reported" in text
+        assert "codex 5h limit" not in text
+    else:
+        assert "codex 5h limit: 75% left; resets 1970-01-01 00:00 UTC" in text
+        assert "codex 7d limit: 0% left; resets not reported" in text
+    assert [call.args for call in request.await_args_list] == [
+        ("account/read", {"refreshToken": False}),
+        ("account/rateLimits/read", None),
+    ]
+    assert not FakeCodex.thread_calls
+    assert not FakeCodex.turn_calls
+
+
+@pytest.mark.parametrize("context_window", [None, 200_000])
+@pytest.mark.parametrize("copied_history", [False, True])
+async def test_status_uses_latest_recorded_native_usage(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+    context_window: int | None,
+    copied_history: bool,
+) -> None:
+    agent, context, _ = execution
+    conversation = context.conversation
+    assert conversation is not None
+    for input_tokens in (1_200, 2_400):
+        FakeCodex.script.insert(
+            -1,
+            Notification(
+                "thread/tokenUsage/updated",
+                ThreadTokenUsageUpdatedNotification(
+                    thread_id="thread-new",
+                    turn_id="turn-1",
+                    token_usage=ThreadTokenUsage(
+                        last=token_breakdown(input_tokens=110, output_tokens=10),
+                        total=token_breakdown(
+                            input_tokens=input_tokens,
+                            output_tokens=600,
+                            cached_input_tokens=1_000,
+                        ),
+                        model_context_window=context_window,
+                    ),
+                ),
+            ),
+        )
+    await agent.run(
+        "review",
+        conversation_address=context.address,
+        conversation_id=conversation.id,
+        thread_id=conversation.thread_id,
+    )
+    conversation = await agent.conversations.get(conversation.id, with_history=False)
+    if copied_history:
+        await agent.conversations.set_external_id(conversation, "forked-thread")
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.side_effect = [GetAccountResponse(account=None, requires_openai_auth=True)]
+    result = await agent.command_control(
+        replace(context, conversation=conversation),
+        CommandInvocation(command_id="builtin:status"),
+    )
+    assert isinstance(result, CommandResult)
+    text = result.model_dump_json()
+    if copied_history:
+        assert "Token usage: not reported yet." in text
+        assert "3,000 total" not in text
+    else:
+        assert (
+            "Token usage: 3,000 total (2,400 input, 600 output; 1,000 cached input, 3 reasoning output)"
+            in text
+        )
+        assert "Last request: 120 tokens" in text
+        assert (
+            "Context window: 200,000 tokens"
+            if context_window
+            else "Context window: not reported"
+        ) in text
+    assert len(FakeCodex.thread_calls) == 1
+    assert len(FakeCodex.turn_calls) == 1
+
+
+@pytest.mark.parametrize("reported", [False, True])
+async def test_status_does_not_invent_missing_quota_windows(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock], reported: bool
+) -> None:
+    agent, context, _ = execution
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.side_effect = [
+        GetAccountResponse.model_validate(
+            {
+                "account": {"type": "chatgpt", "email": None, "planType": "pro"},
+                "requiresOpenaiAuth": True,
+            }
+        ),
+        GetAccountRateLimitsResponse.model_validate(
+            {"rateLimits": {}, "rateLimitsByLimitId": {} if reported else None}
+        ),
+    ]
+    result = await agent.command_control(
+        context, CommandInvocation(command_id="builtin:status")
+    )
+    assert isinstance(result, CommandResult)
+    assert "Account limits: not reported." in result.model_dump_json()
+
+
+async def test_status_rejects_arguments_before_reading_account(
+    execution: tuple[CodexTentacle, CommandContext, AsyncMock],
+) -> None:
+    agent, context, _ = execution
+    request = agent.ink.client._client.request
+    assert isinstance(request, AsyncMock)
+    request.reset_mock()
+    result = await agent.command_control(
+        context, CommandInvocation(command_id="builtin:status", arguments="extra")
+    )
+    assert isinstance(result, CommandError)
+    assert result.status == "unsupported"
+    request.assert_not_awaited()
 
 
 @pytest.mark.parametrize("argument", ["", "high", "invalid"])

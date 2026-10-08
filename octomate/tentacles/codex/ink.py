@@ -8,6 +8,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from dataclasses import replace
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 
@@ -24,10 +25,13 @@ from openai_codex.generated.v2_all import (
     ApprovalsReviewer,
     AskForApproval,
     AskForApprovalValue,
+    ChatgptAccount,
     CollaborationMode,
     CommandGuardianApprovalReviewAction,
     ConfigReadResponse,
     ExecveGuardianApprovalReviewAction,
+    GetAccountRateLimitsResponse,
+    GetAccountResponse,
     GuardianApprovalReviewStatus,
     IdleThreadStatus,
     ItemGuardianApprovalReviewCompletedNotification,
@@ -38,6 +42,7 @@ from openai_codex.generated.v2_all import (
     NetworkAccessGuardianApprovalReviewAction,
     NotLoadedThreadStatus,
     Personality,
+    RateLimitSnapshot,
     ReasoningEffort,
     ReasoningSummary,
     ReviewTarget,
@@ -518,6 +523,65 @@ class CodexInk:
             },
             response_model=ThreadSettingsUpdateResponse,
         )
+
+    async def account_status(self) -> str:
+        """Read ChatGPT quota windows without creating a thread or refreshing auth.
+
+        Each bucket reports its own remaining percentage and UTC reset time.
+        Other authentication modes have no ChatGPT quota; RPC failures propagate.
+        The SDK leaves the multi-bucket map untyped, so validate it before use.
+        """
+        account = await self.client._client.request(
+            "account/read", {"refreshToken": False}, response_model=GetAccountResponse
+        )
+        if account.account is None or not isinstance(
+            account.account.root, ChatgptAccount
+        ):
+            return "Account limits: unavailable (not signed in with ChatGPT)."
+        response = await self.client._client.request(
+            "account/rateLimits/read", None, response_model=GetAccountRateLimitsResponse
+        )
+        buckets = (
+            TypeAdapter(dict[str, RateLimitSnapshot]).validate_python(
+                response.rate_limits_by_limit_id
+            )
+            if response.rate_limits_by_limit_id is not None
+            else {response.rate_limits.limit_id or "codex": response.rate_limits}
+        )
+        lines = [f"Account plan: {account.account.root.plan_type.value}"]
+        for bucket_id, bucket in buckets.items():
+            name = bucket.limit_name or bucket_id
+            for label, window in (
+                ("primary", bucket.primary),
+                ("secondary", bucket.secondary),
+            ):
+                if window is None:
+                    continue
+                minutes = window.window_duration_mins
+                duration = (
+                    (
+                        f"{minutes // 1440}d"
+                        if minutes % 1440 == 0
+                        else f"{minutes // 60}h"
+                        if minutes % 60 == 0
+                        else f"{minutes}m"
+                    )
+                    if minutes
+                    else label
+                )
+                reset = (
+                    datetime.fromtimestamp(window.resets_at, UTC).strftime(
+                        "%Y-%m-%d %H:%M UTC"
+                    )
+                    if window.resets_at is not None
+                    else "not reported"
+                )
+                lines.append(
+                    f"{name} {duration} limit: {100 - window.used_percent}% left; resets {reset}"
+                )
+        if len(lines) == 1:
+            lines.append("Account limits: not reported.")
+        return "\n".join(lines)
 
     async def mcp_status(self, thread_id: str) -> str:
         """Inspect only this thread's MCP connections, including paginated servers."""

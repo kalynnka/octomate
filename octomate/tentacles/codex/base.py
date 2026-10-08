@@ -54,6 +54,7 @@ from openai_codex.generated.v2_all import (
     ReasoningSummary,
     ReasoningSummaryValue,
     ReviewTarget,
+    ThreadTokenUsageUpdatedNotification,
     TurnStatus,
     UncommittedChangesReviewTarget,
 )
@@ -913,7 +914,9 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"Permissions: {context.permission_mode or self.default_permission_mode}\n"
                 f"Effort: {effort or 'runtime default'}\n"
                 f"Conversation: {conversation.id if conversation else 'not created'}\n"
-                f"Workspace: {context.cwd or 'not created'}"
+                f"Workspace: {context.cwd or 'not created'}\n"
+                f"{await self.token_usage_status(conversation)}\n"
+                f"{await self.ink.account_status()}"
             )
             return CommandResult(segments=[TextSegment(data={"text": text})])
         if conversation is None:
@@ -1064,6 +1067,49 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
         text = f"Planning mode {'disabled' if argument == 'off' else 'enabled'} for subsequent turns."
         return CommandResult(segments=[TextSegment(data={"text": text})])
+
+    async def token_usage_status(self, conversation: Conversation | None) -> str:
+        """Render the latest recorded native usage snapshot for this Codex session.
+
+        Native totals count all requests, including tool loops. The last request
+        and context capacity are separate from those cumulative totals. Copied
+        events from another native session do not describe this session's usage.
+        """
+        if conversation is None or conversation.external_id is None:
+            return "Token usage: not reported yet."
+        conversation = await self.conversations.get(conversation.id)
+        events = (
+            event
+            for message in reversed(conversation.messages)
+            if (metadata := message.metadata) is not None
+            and metadata.get("source") == CODEX_METADATA_SOURCE
+            and isinstance(recorded := metadata.get("events"), list)
+            for event in reversed(recorded)
+            if isinstance(event, dict)
+            and event.get("method") == "thread/tokenUsage/updated"
+        )
+        for event in events:
+            snapshot = ThreadTokenUsageUpdatedNotification.model_validate(
+                event["payload"]
+            )
+            if snapshot.thread_id != conversation.external_id:
+                continue
+            usage = snapshot.token_usage
+            total = usage.total
+            context = (
+                f"{usage.model_context_window:,} tokens"
+                if usage.model_context_window is not None
+                else "not reported"
+            )
+            return (
+                f"Token usage: {total.total_tokens:,} total "
+                f"({total.input_tokens:,} input, {total.output_tokens:,} output; "
+                f"{total.cached_input_tokens:,} cached input, "
+                f"{total.reasoning_output_tokens:,} reasoning output)\n"
+                f"Last request: {usage.last.total_tokens:,} tokens\n"
+                f"Context window: {context}"
+            )
+        return "Token usage: not reported yet."
 
     async def command_approval(
         self, conversation: Conversation, review_id: str

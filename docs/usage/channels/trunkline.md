@@ -224,8 +224,10 @@ The console's HTTP API, its request bodies and the events it streams are in the
 One screen: a threads sidebar with a channel rail, the chat ledger in the middle, a
 timeline on the right that groups each conversation's messages under the turns
 that drew them, each group folding on its own, a control rail for agents, MCP, profile,
-keys and settings, and a review panel for a workspace's changes. Ordinary chat runs
-stream over server-sent events; a browser that disconnects mid-run only stops
+keys and settings, and a review panel for a workspace's changes. On desktop, hover
+over the channel rail to replace its initials with channel names and thread counts;
+moving away restores the initials. Teleport continuation notices use information blue.
+Ordinary chat runs stream over server-sent events; a browser that disconnects mid-run only stops
 watching, and the run finishes and records regardless.
 
 Explicit commands submitted through `POST /api/commands/execute` use Reflex for

@@ -880,6 +880,33 @@ select.trk-input option::checkmark { color: var(--color-accent); }
 select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 
 /* The full channel rail widens together, including its background and controls. */
+.trk-chrail-letter {
+  opacity: 1;
+  transform: none;
+  transition: opacity 90ms var(--ease-out) 90ms, transform 180ms var(--ease-out) 90ms;
+}
+.trk-chrail-name {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(6px);
+  transition: opacity 90ms var(--ease-out), transform 180ms var(--ease-out);
+}
+.trk-sb[data-rail-expanded] .trk-chrail-letter {
+  opacity: 0;
+  transform: translateX(-4px);
+  transition-delay: 0s;
+}
+.trk-sb[data-rail-expanded] .trk-chrail-name {
+  opacity: 1;
+  transform: none;
+  transition-delay: 90ms;
+}
 .trk-control-label {
   flex-shrink: 0;
   white-space: nowrap;
@@ -892,6 +919,12 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
   transform: none;
 }
 @media (prefers-reduced-motion: reduce) {
+  .trk-chrail-letter,
+  .trk-chrail-name,
+  .trk-sb[data-rail-expanded] .trk-chrail-letter {
+    transform: none;
+    transition-property: opacity;
+  }
   .trk-control-label { transition: none; }
 }
 @media (hover: hover) and (pointer: fine) {

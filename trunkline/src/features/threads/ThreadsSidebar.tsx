@@ -333,6 +333,8 @@ export function ThreadsSidebar() {
                     }}
                   >
                     <span
+                      className="trk-chrail-letter"
+                      aria-hidden="true"
                       style={{
                         width: 'var(--trk-rail-letter, 22px)',
                         height: 'var(--trk-rail-letter, 22px)',
@@ -351,25 +353,33 @@ export function ThreadsSidebar() {
                       {c.id === 'codex' ? 'X' : c.label[0].toUpperCase()}
                     </span>
                     <span
-                      style={{
-                        ...label(8, '.12em'),
-                        color: c.brand,
-                        whiteSpace: 'nowrap',
-                        flex: 1,
-                        textAlign: 'left',
-                      }}
+                      className="trk-chrail-name"
+                      aria-hidden="true"
+                      style={{ background: focused ? c.brand : undefined }}
                     >
-                      {c.label}
-                    </span>
-                    <span
-                      style={{
-                        ...mono(7.5),
-                        color: 'var(--fg-3)',
-                        whiteSpace: 'nowrap',
-                        textAlign: 'right',
-                      }}
-                    >
-                      {(threadsByCh[c.id] ?? []).length}
+                      <span
+                        style={{
+                          ...label(8, '.12em'),
+                          ...ellipsis,
+                          minWidth: 0,
+                          color: focused ? 'var(--trk-on-fill)' : c.brand,
+                          flex: 1,
+                          textAlign: 'left',
+                        }}
+                      >
+                        {c.label}
+                      </span>
+                      <span
+                        style={{
+                          ...mono(7.5),
+                          color: focused ? 'var(--trk-on-fill)' : 'var(--fg-3)',
+                          whiteSpace: 'nowrap',
+                          textAlign: 'right',
+                          flexShrink: 0,
+                        }}
+                      >
+                        {(threadsByCh[c.id] ?? []).length}
+                      </span>
                     </span>
                   </button>
                 </div>
