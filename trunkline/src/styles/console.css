@@ -480,23 +480,15 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
     opacity: 1;
   }
 }
-@keyframes trkCover {
-  0%,
-  55% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
-  }
+/* A loaded timeline row scans in from its top; TimelinePanel staggers the rows
+   down the rail. */
+.trk-scan {
+  animation: trkScan var(--motion-base) var(--ease-out) backwards;
 }
-@keyframes trkBar {
-  0% {
-    clip-path: inset(0 100% 0 0);
-  }
-  50%,
-  100% {
-    clip-path: inset(0 0 0 0);
-  }
+@keyframes trkScan {
+  from { clip-path: inset(0 0 100% 0); opacity: 0; }
+  60% { opacity: 1; }
+  to { clip-path: inset(0); opacity: 1; }
 }
 @keyframes trkWait {
   0%,
@@ -508,8 +500,8 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  [data-trk-cover] {
-    display: none;
+  .trk-scan {
+    animation: none;
   }
 }
 @keyframes trkFlash {

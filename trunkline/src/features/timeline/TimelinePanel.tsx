@@ -86,8 +86,8 @@ const WAIT_ROW: TlEvent = { k: 'wait', title: 'awaiting next message…', sub: '
 const DASH_V = 'repeating-linear-gradient(180deg, var(--trk-vline) 0 3px, transparent 3px 6px)'
 const DASH_H = 'repeating-linear-gradient(90deg, var(--trk-vline) 0 2px, transparent 2px 4px)'
 const FOLD_MOTION = 'opacity var(--motion-base) var(--ease-out), transform var(--motion-base) var(--ease-out)'
-const COVER_STEP = 60
-const COVER_WIDTHS = ['58%', '44%', '66%', '50%', '38%']
+const SCAN_STEP = 12
+const SCAN_ROWS = 20
 
 const KIND_COLOR: Record<SessionKind, string> = {
   entry: 'var(--fg-3)',
@@ -214,42 +214,6 @@ const skeletonBars = [
   { w: '61%', delay: '1.2s' },
 ]
 
-/** Load-in skeleton over a row from `left` rightward: its bars draw in, then
- *  the cover fades to reveal the row beneath. */
-function Cover({ left, delay, bars }: { left: number; delay: number; bars: [top: number, width: string][] }) {
-  return (
-    <span
-      data-trk-cover=""
-      style={{
-        position: 'absolute',
-        zIndex: 2,
-        top: 0,
-        bottom: 0,
-        left,
-        right: 0,
-        background: 'var(--card-bg)',
-        pointerEvents: 'none',
-        animation: `trkCover 640ms var(--ease-out) ${delay}ms both`,
-      }}
-    >
-      {bars.map(([top, width]) => (
-        <i
-          key={top}
-          style={{
-            position: 'absolute',
-            left: 0,
-            top,
-            height: 5,
-            width,
-            background: 'var(--skeleton-bed)',
-            animation: `trkBar 640ms var(--ease-out) ${delay}ms both`,
-          }}
-        />
-      ))}
-    </span>
-  )
-}
-
 /** The right-hand timeline rail — per-session event index of the thread. */
 export function TimelinePanel() {
   const selThreadId = useConsole((s) => s.selThreadId)
@@ -270,9 +234,6 @@ export function TimelinePanel() {
   const dragTrace = useRailDrag('trace', 'trk-trace-panel', 240, 480, true)
   const opened = useRef({ thread: selThreadId, at: Date.now() })
   if (opened.current.thread !== selThreadId) opened.current = { thread: selThreadId, at: Date.now() }
-  // For two seconds after a thread opens its rows draw in one after another; a
-  // row arriving later, such as a live message, draws in at once.
-  const stagger = Date.now() - opened.current.at < 2000 ? COVER_STEP : 0
 
   const show = (traceOn ?? true) && !mgmtSec && !pvOpen
   const ntAgent = useConsole((s) => s.ntAgent)
@@ -365,9 +326,15 @@ export function TimelinePanel() {
     return runs
   })
   const runCount = runsBySession.reduce((n, runs) => n + runs.length, 0)
-  // Every cover draws in one step after the one above it, so `cover` counts
-  // them in render order: a conversation's header, then each run head and its rows.
-  let cover = 0
+  // A loaded row scans in from its top. For two seconds after a thread opens the
+  // rows scan one after another down the rail; a row arriving later, such as a
+  // live message, scans at once. The rail opens on its tail, so only its last
+  // SCAN_ROWS take turns: waiting on the rows above, off screen, would leave the
+  // rows in view blank.
+  const scanFrom = Math.max(0, runCount + eventCount - SCAN_ROWS)
+  const stagger = Date.now() - opened.current.at < 2000 ? SCAN_STEP : 0
+  // Counts run heads and rows in render order.
+  let entry = 0
 
   return (
     <aside
@@ -458,15 +425,6 @@ export function TimelinePanel() {
                         border: `2px solid ${kColor}`,
                         background: 'var(--card-bg)',
                       }}
-                    />
-                    <Cover
-                      left={28}
-                      delay={stagger * cover++}
-                      bars={[
-                        [9, '48%'],
-                        [24, '72%'],
-                        [41, '36%'],
-                      ]}
                     />
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
                       <Disclose
@@ -580,7 +538,7 @@ export function TimelinePanel() {
                             data-uid={run.head?.uid}
                             onClick={() => toggleTimelineFold(key)}
                             title="Fold / unfold run"
-                            className="hov-wash"
+                            className="hov-wash trk-scan"
                             style={{
                               position: 'relative',
                               padding: '6px 12px 6px 48px',
@@ -589,6 +547,7 @@ export function TimelinePanel() {
                               transform: folded ? 'translateY(-4px)' : 'none',
                               transition: FOLD_MOTION,
                               transitionDelay: `${40 + ri * 50}ms`,
+                              animationDelay: `${Math.max(0, entry++ - scanFrom) * stagger}ms`,
                             }}
                           >
                             {!runFolded && rows.length > 0 && (
@@ -606,14 +565,6 @@ export function TimelinePanel() {
                                 background: user ? 'var(--color-teal)' : 'var(--card-bg)',
                                 border: `1.5px solid ${user ? 'var(--color-teal)' : 'var(--color-terra)'}`,
                               }}
-                            />
-                            <Cover
-                              left={48}
-                              delay={stagger * cover++}
-                              bars={[
-                                [7, '42%'],
-                                [21, '74%'],
-                              ]}
                             />
                             <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                               <span
@@ -692,12 +643,16 @@ export function TimelinePanel() {
                                       ? 'Waiting for the next message from the live run'
                                       : 'Jump to this moment in the ledger'
                                   }
-                                  className="hov-wash"
+                                  className={wait ? 'hov-wash' : 'hov-wash trk-scan'}
                                   style={{
                                     position: 'relative',
                                     padding: '4px 12px 4px 60px',
                                     cursor: wait ? undefined : 'pointer',
-                                    animation: wait ? 'trkWait 1.6s ease-in-out infinite' : undefined,
+                                    // One or the other: React warns on a shorthand and
+                                    // its longhand in one style, even undefined.
+                                    ...(wait
+                                      ? { animation: 'trkWait 1.6s ease-in-out infinite' }
+                                      : { animationDelay: `${Math.max(0, entry++ - scanFrom) * stagger}ms` }),
                                     opacity: runFolded ? 0 : 1,
                                     transform: runFolded ? 'translateY(-4px)' : 'none',
                                     transition: FOLD_MOTION,
@@ -729,14 +684,6 @@ export function TimelinePanel() {
                                       borderColor: tone ?? ks.bd,
                                       borderStyle: ks.bs,
                                     }}
-                                  />
-                                  <Cover
-                                    left={60}
-                                    delay={stagger * cover++}
-                                    bars={[
-                                      [6, COVER_WIDTHS[ei % COVER_WIDTHS.length]],
-                                      [17, ev.sub || wait ? COVER_WIDTHS[(ei + 2) % COVER_WIDTHS.length] : '0'],
-                                    ]}
                                   />
                                   <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                                     <span style={{ width: 28, flexShrink: 0, ...label(6.5, '.14em'), color: tone ?? ks.tagColor }}>

@@ -54,8 +54,9 @@ as `trk-theme`).
 - `--trk-on-fill` — text on saturated fills (accent/terra/teal chips and
   buttons): cream `#F6F1E5` in both themes, because the fill never flips.
 - `trkBlink` (composer caret), `trkPulse` (working/pending pulse),
-  `trkFlash` (timeline-jump highlight ring) — the only console-specific
-  keyframes; everything else uses the DS `lt-*` set.
+  `trkFlash` (timeline-jump highlight ring), `trkScan` (timeline row
+  entry) — the only console-specific keyframes; everything else uses the DS
+  `lt-*` set.
 
 ## Label roles (`components/text.ts`)
 
@@ -123,7 +124,9 @@ Lonetrail's contract: entries rise 8px once (380ms `--ease-out`, staggered
 70ms via `--i`), folds are 240ms grid-template transitions, hovers are 150ms
 color swaps, and the only loops are functional status — `trkPulse` on
 anything waiting/running, `lt-dots` while an agent works, `lt-caret` while a
-reply streams, skeleton rows for a pending session. The console adds exactly
+reply streams, skeleton rows for a pending session. Timeline rows do not
+rise: each scans in from its top (`trkScan`, a `clip-path` wipe with a fade,
+240ms), the rail's last 20 rows 12ms apart, top to bottom. The console adds
 one flourish inside that contract: `trkFlash`, a 1.4s accent ring on the
 ledger row a timeline jump lands on. All motion honors
 `prefers-reduced-motion`.
