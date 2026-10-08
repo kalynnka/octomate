@@ -955,7 +955,10 @@ export function Composer() {
                   }}
                 >
                   {composerText.slice(0, caretAt)}
+                  {/* The zero-width space gives an empty line its height; without
+                      it the line collapses and the block draws above the input. */}
                   <span style={{ position: 'relative' }}>
+                    {'\u200b'}
                     <span
                       style={{
                         position: 'absolute',
