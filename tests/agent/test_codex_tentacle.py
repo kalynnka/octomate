@@ -83,7 +83,7 @@ from octomate.telemetry import TraceEnvironment
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.codex import ink as codex_ink
-from octomate.tentacles.codex.client import RequestHandler
+from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.types.json import JsonObject
 from tests.support.channels import FakeChannelTentacle, RecordingTimeline
 from tests.support.managers import (
@@ -2594,7 +2594,7 @@ async def test_a_turn_without_a_octomate_session_launches_clean(
 async def test_local_config_cannot_claim_the_driven_mcp_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client = AsyncCodex()
+    client = SharedCodex(CodexSdkConfig(), AsyncMock(return_value={}), instrument=False)
     request = AsyncMock(
         return_value=ConfigReadResponse.model_validate(
             {
@@ -3041,7 +3041,7 @@ async def test_sdk_turns_replace_both_permission_axes_on_the_same_thread(
     skill: bool,
 ) -> None:
     tentacle = _tentacle(FakeConversationManager())
-    client = AsyncCodex()
+    client = SharedCodex(CodexSdkConfig(), AsyncMock(return_value={}), instrument=False)
     client._client = AsyncMock()
     client._client._start_turn.return_value = (
         SimpleNamespace(turn=SimpleNamespace(id="turn-1")),

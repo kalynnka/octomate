@@ -11,9 +11,15 @@ import anyio
 import pytest
 from pydantic import UUID7
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
-from pydantic_ai.messages import ModelMessage, ToolCallPart
+from pydantic_ai.messages import (
+    ModelMessage,
+    ModelRequest,
+    ModelResponse,
+    ToolCallPart,
+    ToolReturnPart,
+)
 from pydantic_ai.models.function import AgentInfo, FunctionModel
-from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
+from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults, ToolDenied
 from pydantic_graph import End, Graph, GraphRunContext
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -49,7 +55,7 @@ from tests.support.agents import (
     build_non_stream_agent,
     build_scripted_agent,
 )
-from tests.support.managers import FakeConversationManager
+from tests.support.managers import FakeConversation, FakeConversationManager
 
 
 @dataclass
@@ -159,19 +165,28 @@ def _graph(
     return build_react_graph(start_node)
 
 
-async def test_start_turn_drops_trailing_deferral_on_new_prompt() -> None:
-    @dataclass
-    class DropRecorder(FakeConversationManager):
-        dropped: list[Conversation] = field(default_factory=list)
-
-        async def drop_trailing_deferral(
-            self,
-            conversation: Conversation,
-        ) -> None:
-            self.dropped.append(conversation)
-            return None
-
-    recorder = DropRecorder()
+@pytest.mark.parametrize("answered", [0, 1, 2])
+async def test_start_turn_denies_only_unanswered_calls_on_new_prompt(
+    answered: int,
+) -> None:
+    calls = [
+        ToolCallPart("ask_questions", {}, tool_call_id="first"),
+        ToolCallPart("ask_questions", {}, tool_call_id="second"),
+    ]
+    history: list[ModelMessage] = [ModelResponse(parts=list(calls))]
+    if answered:
+        history.append(
+            ModelRequest(
+                parts=[
+                    ToolReturnPart(
+                        call.tool_name, "answered", tool_call_id=call.tool_call_id
+                    )
+                    for call in calls[:answered]
+                ]
+            )
+        )
+    conversation = FakeConversation(messages=list(history))
+    recorder = FakeConversationManager(store={(_THREAD, "inkling", ""): conversation})
     node: StartTurn[ScriptedOutput, None] = StartTurn(user_prompt="hi")
 
     nxt = await node.run(_ctx(_deps(conversations=recorder)))
@@ -179,16 +194,27 @@ async def test_start_turn_drops_trailing_deferral_on_new_prompt() -> None:
     assert isinstance(nxt, RunAgent)
     assert nxt.user_prompt == "hi"
     assert [tid for tid, _ in recorder.ensured] == [_THREAD]
-    assert len(recorder.dropped) == 1
+    assert conversation.messages == history
+    if answered == len(calls):
+        assert nxt.deferred_results is None
+    else:
+        assert nxt.deferred_results is not None
+        assert nxt.deferred_results.approvals == {
+            call.tool_call_id: ToolDenied(
+                "Not carried out: a new message arrived before this call was answered."
+            )
+            for call in calls[answered:]
+        }
 
-    # Without a fresh prompt there is nothing to supersede: no conversation IO.
-    silent = DropRecorder()
+
+async def test_start_turn_without_new_prompt_leaves_deferrals_alone() -> None:
+    silent = FakeConversationManager()
     nxt = await StartTurn[ScriptedOutput, None](user_prompt=None).run(
         _ctx(_deps(conversations=silent))
     )
     assert isinstance(nxt, RunAgent)
     assert silent.ensured == []
-    assert silent.dropped == []
+    assert nxt.deferred_results is None
 
 
 async def test_resume_turn_requires_resolved_calls_or_approvals() -> None:

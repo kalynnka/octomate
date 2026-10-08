@@ -11,6 +11,7 @@ from pydantic_ai.messages import (
     ModelResponse,
     TextPart,
     ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from sqlalchemy import delete, event
@@ -231,7 +232,11 @@ async def test_fork_shares_the_source_history_and_grows_apart(
             statement.split()[2]
             for statement in statements
             if statement.startswith("INSERT")
-        } == {"conversation_runs", "thread_ledger"}
+        } == (
+            {"conversation_runs"}
+            if subthread
+            else {"conversation_runs", "thread_ledgers"}
+        )
         source = await manager.get(target.id)
     forked = source
     assert forked.external_id == f"copied-session-{copies - 1}"
@@ -248,14 +253,18 @@ async def test_fork_shares_the_source_history_and_grows_apart(
     assert [context.id for context in contexts] == [forked.id]
     landed = await threads.get(forked.thread_id)
     assert landed is not None
-    assert [message.id for message in landed.messages] == [
-        question.id,
-        answer.id,
-        followup.id,
-        receipt.id,
-    ]
-    assert (await landed.messages[0].sender).name == "Alice"
-    assert landed.source_cursor_message_id == followup.id
+    if subthread:
+        assert not landed.messages
+        assert landed.source_cursor_message_id is None
+    else:
+        assert [message.id for message in landed.messages] == [
+            question.id,
+            answer.id,
+            followup.id,
+            receipt.id,
+        ]
+        assert (await landed.messages[0].sender).name == "Alice"
+        assert landed.source_cursor_message_id == followup.id
     assert not landed.handoffs
 
     # From here each side's history grows on its own.
@@ -360,7 +369,7 @@ async def test_native_fork_leaves_unfinished_turns_behind(bound: bool) -> None:
 async def test_abandoning_a_shared_tool_call_leaves_the_fork_resuming_it() -> None:
     manager = ConversationManager()
     source = await manager.ensure(await a_thread("source"), agent_tentacle_id="inkling")
-    await manager.record_agent_run(
+    pending = await manager.record_agent_run(
         source,
         str(uuid7()),
         [
@@ -368,23 +377,26 @@ async def test_abandoning_a_shared_tool_call_leaves_the_fork_resuming_it() -> No
             ModelResponse(parts=[ToolCallPart("teleport", {}, tool_call_id="move")]),
         ],
     )
+    assert pending is not None
     target = await manager.ensure(await a_thread("target"), agent_tentacle_id="inkling")
     await manager.fork(source, target)
 
-    dropped = await manager.drop_trailing_deferral(await manager.get(source.id))
-    assert dropped is not None
+    denial = ToolReturnPart("teleport", "Not carried out", tool_call_id="move")
+    prompt = UserPromptPart("never mind")
     await manager.record_agent_run(
         source,
         str(uuid7()),
-        [ModelRequest(parts=[UserPromptPart("never mind")])],
+        [ModelRequest(parts=[denial, prompt])],
     )
-    # The source's history ends before the call, even once it is no longer last…
-    assert [
-        type(message).__name__ for message in (await manager.get(source.id)).messages
-    ] == ["ModelRequest", "ModelRequest"]
-    # …while the fork still holds the call it resumes.
+    source = await manager.get(source.id)
+    assert [message.id for message in source.messages[:-1]] == [
+        message.id for message in pending.messages
+    ]
+    assert source.messages[-1].parts == [denial, prompt]
     forked = await manager.get(target.id)
-    assert forked.messages[-1].id == dropped.id
+    assert [message.id for message in forked.messages] == [
+        message.id for message in pending.messages
+    ]
 
 
 @pytest.mark.parametrize("removal", ["conversation", "thread", "run"])

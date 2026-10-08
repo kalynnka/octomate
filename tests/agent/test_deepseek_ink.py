@@ -58,8 +58,12 @@ async def test_subscriptions_capture_early_frames_and_isolate_sessions() -> None
         await ink.start(answer_interaction=AsyncMock(), invalidate_commands=invalidate)
         first = await ink.subscribe("first")
         second = await ink.subscribe("second")
-        assert first.get_nowait().session_id == "first"
-        assert second.get_nowait().session_id == "second"
+        first_frame = first.get_nowait()
+        second_frame = second.get_nowait()
+        assert isinstance(first_frame, SessionEventFrame)
+        assert isinstance(second_frame, SessionEventFrame)
+        assert first_frame.session_id == "first"
+        assert second_frame.session_id == "second"
         failure = StreamErrorFrame(
             type="stream/error",
             session_id="second",

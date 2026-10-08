@@ -17,7 +17,7 @@ from pydantic_ai.messages import (
 from pydantic_ai.messages import (
     ModelResponse as RawModelResponse,
 )
-from pydantic_ai.messages import TextPart, ToolCallPart, UserPromptPart
+from pydantic_ai.messages import TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
@@ -591,7 +591,7 @@ async def test_record_second_run_keeps_prior_run_messages() -> None:
     assert len(list(reloaded.messages)) == 4
 
 
-async def test_drop_trailing_deferral_removes_from_db() -> None:
+async def test_record_tool_denial_preserves_the_original_call() -> None:
     service = ConversationManager()
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
     await service.record_agent_run(
@@ -619,20 +619,24 @@ async def test_drop_trailing_deferral_removes_from_db() -> None:
 
     # ensure() re-reads the conversation record_agent_run persisted.
     conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
-    dropped = await service.drop_trailing_deferral(conversation)
-    assert dropped is not None
+    original_ids = [message.id for message in conversation.messages]
+    denial = ToolReturnPart("ask_questions", "Not carried out", tool_call_id="call_1")
+    prompt = UserPromptPart("never mind")
+    await service.record_agent_run(
+        conversation,
+        run_id="run-followup",
+        messages=[
+            RawModelRequest(parts=[denial, prompt], timestamp=datetime.now(UTC)),
+        ],
+    )
 
-    # The deferral is gone for a re-ensure and for a fresh manager alike.
     hot = await service.ensure(await _thread(), agent_tentacle_id="inkling")
-    assert [type(m).__name__ for m in hot.messages] == ["ModelRequest"]
     cold = await ConversationManager().ensure(
         await _thread(), agent_tentacle_id="inkling"
     )
-    assert [type(m).__name__ for m in cold.messages] == ["ModelRequest"]
-
-    # The trailing message is now a request, not a deferral — nothing to drop.
-    conversation = await service.ensure(await _thread(), agent_tentacle_id="inkling")
-    assert await service.drop_trailing_deferral(conversation) is None
+    for reloaded in (hot, cold):
+        assert [message.id for message in reloaded.messages[:-1]] == original_ids
+        assert reloaded.messages[-1].parts == [denial, prompt]
 
 
 async def test_fork_copies_history_preserving_trailing_deferral() -> None:
