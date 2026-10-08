@@ -547,9 +547,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 external_id is None or external_id == source.external_id
             ):
                 raise ValueError("The runtime did not create an independent session.")
-            await self.conversations.fork(
-                source, target, external_id=external_id, model_name=model
-            )
+            await self.conversations.fork(source, target, external_id=external_id)
             await threads.record_handoff(
                 thread,
                 to_agent_tentacle_id=self.id,

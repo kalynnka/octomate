@@ -173,7 +173,6 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 conversation,
                 carry_external_id=carry,
                 external_id=None if carry else external_id,
-                model_name=state.decision.model if state.decision is not None else None,
             )
             await agent.relocate(conversation, cwd=cwd)
             state.thread = await ctx.deps.thread_manager.rename(

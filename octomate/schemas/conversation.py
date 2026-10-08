@@ -14,6 +14,7 @@ from typing_extensions import TypedDict
 from uuid_utils.compat import uuid7
 
 from octomate.models.conversation import Conversation as ConversationModel
+from octomate.models.conversation import ConversationRun as ConversationRunModel
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -98,6 +99,22 @@ class ConversationKey(NamedTuple):
     thread_id: UUID7
     agent_id: str
     subagent_id: str = ""
+
+
+@sqlalchemy_materia.bless(ConversationRunModel)
+class ConversationRun(BaseTransmuter):
+    """A run in a conversation's history: one it ran, or one it was forked with."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    conversation_id: Annotated[UUID7, Identity]
+    run_id: Annotated[str, Identity]
+    through_message_id: UUID7 | None = Field(
+        default=None,
+        description=(
+            "The run's last message this history includes; None is the whole run."
+        ),
+    )
 
 
 @sqlalchemy_materia.bless(ConversationModel)

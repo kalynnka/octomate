@@ -684,7 +684,6 @@ class CodexTentacle(AgentTentacle[str, None]):
                     target,
                     external_id=external_id,
                     transcript=Jsonl.model_validate(snapshot),
-                    model_name=completed_run.model_name,
                     permission_mode=completed_run.permission_mode,
                 )
             return await conversations.get(target.id)

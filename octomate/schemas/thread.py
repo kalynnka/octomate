@@ -123,6 +123,25 @@ class ThreadMessageFTS(BaseTransmuter):
     rank: float | None = None
 
 
+@sqlalchemy_materia.bless(thread_models.ThreadLedger)
+class ThreadLedger(BaseTransmuter):
+    """A ledger a thread shows: the messages delivered to one thread, up to a cut."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    thread_id: Annotated[UUID7, Identity]
+    ledger_id: Annotated[UUID7, Identity] = Field(
+        description="The thread whose delivered messages make up this ledger."
+    )
+    cut_message_id: UUID7 | None = Field(
+        default=None,
+        description=(
+            "The ledger's last message the thread shows, frozen at the fork that "
+            "shared it; None for the thread's own ledger, shown whole as it grows."
+        ),
+    )
+
+
 @sqlalchemy_materia.bless(thread_models.ThreadMessage)
 class ThreadMessage(BaseTransmuter):
     """One line of the thread ledger: who said what, when, and the model messages

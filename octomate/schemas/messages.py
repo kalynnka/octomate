@@ -76,7 +76,9 @@ class ModelMessage(BaseTransmuter, ABC):
     model_config = ConfigDict(from_attributes=True)
 
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
+    run_id: str | None = None
     conversation_id: str | None = None
+    timestamp: AwareDatetime | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
     thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()

@@ -327,6 +327,9 @@ async def test_fork_copies_history_settings_and_preserves_source(
     tmp_path: Path,
 ) -> None:
     agent, context, _ = execution
+    reported_model = next(iter(agent.models.values()))
+    assert isinstance(reported_model, str)
+    FakeCodex.model_name = reported_model
     if trunkline:
         app = agent.octomate
         app.connect(
@@ -408,10 +411,12 @@ async def test_fork_copies_history_settings_and_preserves_source(
     assert [message.parts for message in copied.messages] == [
         message.parts for message in source.messages
     ]
-    assert not (
-        {message.id for message in copied.messages}
-        & {message.id for message in source.messages}
-    )
+    assert [run.model_name for run in copied.runs] == [
+        run.model_name for run in source.runs
+    ]
+    assert [message.id for message in copied.messages] == [
+        message.id for message in source.messages
+    ]
     assert target.active_agent_tentacle_id == agent.id
     assert target.active_model == context.model
     assert target.project_id == source_thread.project_id

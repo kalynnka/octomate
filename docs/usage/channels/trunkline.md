@@ -202,8 +202,10 @@ turn, keeping its model and permissions. Native DeepSeek sessions, and driven
 agents that cannot fork their session, cannot teleport yet. The thread a move
 lands in shows up in your thread list and is about the same project as the one it
 left. A new destination starts with the title **Fork of …**, keeping the source
-title unchanged. Copying the original chat ledger into the destination is not
-supported yet; the agent's conversation context is carried over.
+title unchanged. The destination shows the original chat, with its senders and
+attachments, and the agent's history run by run; work its subagents did stays with
+the source. From there the two threads grow apart: what happens in one never
+appears in the other.
 The continuation notice appears in the destination; the source Trunkline thread
 gets no extra chat message.
 

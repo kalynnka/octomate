@@ -8,7 +8,7 @@ from octomate.models.auth import (
     UserSession,
 )
 from octomate.models.base import Base
-from octomate.models.conversation import Conversation
+from octomate.models.conversation import Conversation, ConversationRun
 from octomate.models.deferred import (
     DeferredAction,
     DeferredActionBatch,
@@ -47,6 +47,7 @@ from octomate.models.thread import (
     MessageBinding,
     Thread,
     ThreadCommand,
+    ThreadLedger,
     ThreadMessage,
 )
 from octomate.models.todos import Todo
@@ -58,6 +59,7 @@ __all__ = [
     "BearerMcp",
     "Binary",
     "Conversation",
+    "ConversationRun",
     "DeferredAction",
     "DeferredActionBatch",
     "DeferredApprovalAction",
@@ -86,6 +88,7 @@ __all__ = [
     "Text",
     "Thread",
     "ThreadCommand",
+    "ThreadLedger",
     "ThreadMessage",
     "Todo",
     "ToolOutputSpill",

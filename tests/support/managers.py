@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
+from unittest.mock import AsyncMock
 
 from arcanus import Relation
 from pydantic import UUID7
@@ -162,6 +163,7 @@ class FakeConversation:
 
 @dataclass
 class FakeConversationManager(ConversationManager):
+    fork: AsyncMock = field(default_factory=lambda: AsyncMock(return_value=None))
     store: dict[tuple[UUID7, str | None, str], FakeConversation] = field(
         default_factory=dict
     )

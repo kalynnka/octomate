@@ -575,7 +575,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 source,
                 target,
                 external_id=external_id,
-                model_name=completed.model_name,
+                end_offset=completed.end_offset,
                 permission_mode=completed.permission_mode,
             )
             return await conversations.get(target.id)

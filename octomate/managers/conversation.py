@@ -3,27 +3,29 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import replace
 from pathlib import Path
 from typing import Literal, TypeVar
 
-from arcanus import RelationCollection
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from fastapi import UploadFile
 from pydantic import UUID7
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 from pydantic_ai.messages import ToolCallPart
-from sqlalchemy import select
-from uuid_utils.compat import uuid7
+from sqlalchemy import and_, func, insert, literal, or_, select
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
-from octomate.schemas.conversation import Conversation
+from octomate.schemas.conversation import Conversation, ConversationRun
 from octomate.schemas.files import FileVariant, Jsonl
 from octomate.schemas.messages import ModelMessage, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
-from octomate.schemas.thread import ThreadMessage
+from octomate.schemas.thread import (
+    MessageBinding,
+    Thread,
+    ThreadLedger,
+    ThreadMessage,
+)
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
@@ -46,7 +48,11 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             return await session.scalar(
                 select(AgentRun["model_name"])
                 .where(
-                    AgentRun["conversation_id"] == conversation_id,
+                    AgentRun["id"].in_(
+                        select(ConversationRun["run_id"]).where(
+                            ConversationRun["conversation_id"] == conversation_id
+                        )
+                    ),
                     AgentRun["model_name"].is_not(None),
                 )
                 .order_by(AgentRun["started_at"].desc(), AgentRun["id"].desc())
@@ -357,8 +363,9 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         conversation_id: UUID7,
         external_id: str | None,
     ) -> RunT:
-        """Persist a freshly built run. `external_id`, when given, updates the
-        resumable agent-session handle in the same commit.
+        """Persist a freshly built run, in the history of the conversation it ran
+        in. `external_id`, when given, updates the resumable agent-session handle in
+        the same commit.
 
         Only the new run and its messages are added, never the caller's whole
         conversation graph: re-merging it (prior runs and their message
@@ -377,6 +384,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 ],
             )
             if reloaded is not None:
+                # Arcanus's union collection treats a single model as an iterable.
+                reloaded.runs.extend([run])
                 reloaded.external_id = external_id
             await session.commit()
         return run
@@ -389,27 +398,26 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         carry_external_id: bool = False,
         external_id: str | None = None,
         transcript: Jsonl | None = None,
-        model_name: str | None = None,
+        end_offset: int | None = None,
         permission_mode: AgentPermissionMode | None = None,
-    ) -> AgentRun | None:
-        """Fork `source`'s full message history into `target` as one new run, so a
-        same-agent `teleport` resumes seamlessly against the copy.
+    ) -> str | None:
+        """Continue `source`'s history in an empty `target`, in one transaction.
 
-        Every message is copied as a fresh transmuter — a new id, keyed to the new
-        run and the target — and the run is added the way every recorded run is,
-        so the trailing deferred `ModelResponse` (the pending `teleport` call) comes
-        along like any other message and the resume stays valid. Fails fast if
-        `target` already holds messages: copying onto an existing history would
-        splice two unrelated conversations.
+        Nothing is copied. The target's history points at the source's runs through
+        `conversation_runs`, and its thread shows the source thread's ledgers through
+        `thread_ledgers`, each frozen where it stands now: whatever either side says
+        afterwards is its own. Only the selected conversation receives the
+        independently forked runtime handle.
 
-        `carry_external_id` moves the resumable external-runtime handle from `source`
-        to `target` in the same commit, so a driven external session continues in
-        the new place — and the handle keeps naming exactly one conversation. The
-        move matters even when the mirror history is empty: the runtime holds its
-        own transcript, and the handle is what resumes it. `external_id` instead
-        attaches an independently forked runtime session, preserving the source.
-        An uploaded `transcript` is committed with the target and limits copied
-        messages to completed external runs within its byte boundary."""
+        A native import passes `end_offset`, where the transcript's last completed
+        turn ends (an uploaded snapshot's size by default), to leave out the turns
+        that end past it and cut the source's ledger before their chat.
+        `carry_external_id` moves the existing handle instead, for runtimes whose
+        continuation requires it. Return the id of the last run the target's history
+        includes, if any.
+        """
+        if source.thread_id == target.thread_id:
+            raise ValueError("A fork requires an independent destination thread")
         if transcript is not None and (external_id is None or carry_external_id):
             raise ValueError("An imported transcript requires an independent session")
         if external_id is not None and (
@@ -418,83 +426,182 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             raise ValueError(
                 "a fork requires a new external id without carrying the source"
             )
-        if target.messages:
-            raise ValueError(
-                f"fork target {target.id} already holds "
-                f"{len(target.messages)} messages; refusing to splice histories"
-            )
-        messages = list(source.messages)
-        if transcript is not None:
-            included_runs = {
-                run.id
-                for run in source.runs
-                if isinstance(run, ExternalAgentRun)
-                and run.native_session_id == source.external_id
-                and run.end_offset is not None
-                and run.end_offset <= transcript.size
-            }
-            messages = [
-                message for message in messages if message.run_id in included_runs
-            ]
-        carry_handle = carry_external_id and source.external_id is not None
-        if not messages and not carry_handle and external_id is None:
-            return None
+        if end_offset is None and transcript is not None:
+            end_offset = transcript.size
 
-        forked_run: AgentRun | None = None
-        if messages:
-            run_id = str(uuid7())
-            forked_run = AgentRun(
-                id=run_id,
-                conversation_id=target.id,
-                name="fork",
-                model_name=model_name,
-                permission_mode=permission_mode or source.permission_mode,
-                started_at=messages[0].timestamp,
-                # New uuid7 ids minted in source order stay monotonic, so the copies
-                # keep their ordering under the id-ordered messages relation.
-                messages=RelationCollection(
-                    replace(
-                        message,
-                        id=uuid7(),
-                        run_id=run_id,
-                        conversation_id=str(target.id),
-                    )
-                    for message in messages
-                ),
-            )
-        # Only the new run is added, never the caller's conversations themselves: the
-        # same reasoning as `persist_run`, and the handle moves by mutating the two
-        # conversations as this session loads them.
         async with async_session() as session:
-            stored_target = await session.get(Conversation, target.id)
+            stored_target = await session.get(
+                Conversation,
+                target.id,
+                options=[
+                    noload(Conversation["runs"]),
+                    noload(Conversation["messages"]),
+                ],
+            )
             if stored_target is None:
                 raise ValueError(f"unknown conversation {target.id}")
-            stored_target.permission_mode = permission_mode or source.permission_mode
-            stored_target.effort = source.effort
+            target_thread = await session.get(Thread, target.thread_id)
+            if target_thread is None:
+                raise ValueError(f"unknown thread {target.thread_id}")
+            if await session.count(
+                Conversation,
+                expressions=[
+                    Conversation["thread_id"] == target.thread_id,
+                    or_(Conversation["id"] != target.id, Conversation["runs"].any()),
+                ],
+            ) or await session.count(
+                Thread,
+                expressions=[
+                    Thread["id"] == target.thread_id,
+                    Thread["messages"].any(ThreadMessage["actor_kind"] != "system"),
+                ],
+            ):
+                raise ValueError(
+                    "fork target already holds history; refusing to splice histories"
+                )
+
+            source_thread = await session.get(Thread, source.thread_id)
+            if source_thread is None:
+                raise ValueError(f"unknown thread {source.thread_id}")
+            origin = await session.get(
+                Conversation,
+                source.id,
+                options=[
+                    noload(Conversation["messages"]),
+                    selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
+                ],
+            )
+            if origin is None:
+                raise ValueError(f"unknown conversation {source.id}")
+            dropped: set[str] = set()
+            # Without an end offset the cut is the ledger's last message. With one,
+            # it falls after the last chat of a completed turn: bound to one, or
+            # neither bound to nor filed under an unfinished turn (a native ledger
+            # names a turn's prompt by the turn's id), and said no later than the last
+            # message the fork keeps.
+            cut = select(func.max(ThreadMessage["id"])).where(
+                ThreadMessage["thread_id"] == source.thread_id
+            )
+            if end_offset is not None:
+                # A turn of the origin's own session that ends past the offset is
+                # unfinished, and so is the subagent work it spawned. The offset is a
+                # position in that session's transcript, so it judges no other run.
+                unfinished = (
+                    select(ExternalAgentRun["id"])
+                    .where(
+                        ExternalAgentRun["id"].in_(
+                            select(ConversationRun["run_id"]).where(
+                                ConversationRun["conversation_id"] == source.id
+                            )
+                        ),
+                        ExternalAgentRun["native_session_id"] == origin.external_id,
+                        or_(
+                            ExternalAgentRun["end_offset"].is_(None),
+                            ExternalAgentRun["end_offset"] > end_offset,
+                        ),
+                    )
+                    .cte(recursive=True)
+                )
+                unfinished = unfinished.union(
+                    select(AgentRun["id"]).where(
+                        AgentRun["parent_run_id"] == unfinished.c.id
+                    )
+                )
+                dropped = set(await session.scalars(select(unfinished.c.id)))
+                # Every run in the history of a conversation in the source thread,
+                # but the unfinished ones.
+                kept = select(ConversationRun["run_id"]).where(
+                    ConversationRun["conversation_id"].in_(
+                        select(Conversation["id"]).where(
+                            Conversation["thread_id"] == source.thread_id
+                        )
+                    ),
+                    ConversationRun["run_id"].not_in(dropped),
+                )
+                bound = select(MessageBinding["thread_message_id"])
+                cut = cut.where(
+                    or_(
+                        ThreadMessage["id"].in_(
+                            bound.where(MessageBinding["run_id"].in_(kept))
+                        ),
+                        and_(
+                            ThreadMessage["id"].not_in(
+                                bound.where(MessageBinding["run_id"].in_(dropped))
+                            ),
+                            or_(
+                                ThreadMessage["platform_message_id"].is_(None),
+                                ThreadMessage["platform_message_id"].not_in(dropped),
+                            ),
+                            ThreadMessage["happened_at"]
+                            <= select(func.max(ModelMessage["timestamp"]))
+                            .where(ModelMessage["run_id"].in_(kept))
+                            .scalar_subquery(),
+                        ),
+                    )
+                )
+            own_cut = await session.scalar(cut)
+            ledgers = await session.list(
+                ThreadLedger,
+                limit=None,
+                order_bys=[ThreadLedger["ledger_id"]],
+                expressions=[ThreadLedger["thread_id"] == source.thread_id],
+            )
+            # Every ledger the source shows reaches the fork frozen: its own at the
+            # cut, and the ones a fork froze into it where they already stop.
+            cuts = {ledger.ledger_id: ledger.cut_message_id for ledger in ledgers}
+            cuts[source.thread_id] = own_cut
+            session.add_all(
+                ThreadLedger(
+                    thread_id=target.thread_id,
+                    ledger_id=ledger_id,
+                    cut_message_id=cut,
+                )
+                for ledger_id, cut in cuts.items()
+                if cut is not None
+            )
+
+            await session.execute(
+                insert(ConversationRun).from_select(
+                    ["conversation_id", "run_id", "through_message_id"],
+                    select(
+                        literal(target.id),
+                        ConversationRun["run_id"],
+                        ConversationRun["through_message_id"],
+                    ).where(
+                        ConversationRun["conversation_id"] == source.id,
+                        ConversationRun["run_id"].not_in(dropped),
+                    ),
+                )
+            )
+            # The cursor stops where the source's did, within what the fork shows.
+            shown = max(
+                (cut for cut in cuts.values() if cut is not None),
+                default=None,
+            )
+            cursor = source_thread.source_cursor_message_id
+            target_thread.source_cursor_message_id = (
+                shown if cursor is None or shown is None else min(cursor, shown)
+            )
+            stored_target.name = origin.name
+            stored_target.permission_mode = permission_mode or origin.permission_mode
+            stored_target.effort = origin.effort
+            stored_target.allowed_tools = list(origin.allowed_tools)
             if transcript is not None:
                 session.add(transcript)
                 await session.flush()
-            if forked_run is not None:
-                session.add(forked_run)
-            if carry_handle:
-                moving_source = await session.get(Conversation, source.id)
-                if moving_source is None:
-                    raise ValueError(
-                        "fork can only carry a handle between persisted conversations"
-                    )
-                stored_target.external_id = moving_source.external_id
-                moving_source.external_id = None
+                stored_target.transcript_file_id = transcript.id
+            if carry_external_id:
+                stored_target.external_id = origin.external_id
+                origin.external_id = None
             elif external_id is not None:
                 stored_target.external_id = external_id
-                if transcript is not None:
-                    stored_target.transcript_file_id = transcript.id
             await session.commit()
-        if carry_handle:
-            # The caller's transmuter mirrors the committed move.
+        if carry_external_id:
             source.external_id = None
         elif external_id is not None:
             target.external_id = external_id
-        return forked_run
+        forked = [run.id for run in origin.runs if run.id not in dropped]
+        return forked[-1] if forked else None
 
     async def store_transcript(
         self,
@@ -628,10 +735,12 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         conversation: Conversation,
     ) -> ModelResponse | None:
         """If the conversation's last message is an abandoned deferred-tool
-        ModelResponse (a tool-call request a new user turn supersedes), delete
-        it from the database, remove it from the caller's copy, and return it.
-        Without the delete the orphan would resurface mid-history on a cold
-        reload, where it can no longer be recognized as a trailing deferral.
+        ModelResponse (a tool-call request a new user turn supersedes), end the
+        conversation's history just before it, remove it from the caller's copy,
+        and return it. Without the bound the orphan would resurface mid-history on
+        a cold reload, where it can no longer be recognized as a trailing deferral.
+
+        The message itself stays: a fork may share its run and resume the call.
         """
         messages = conversation.messages
         if not messages:
@@ -641,13 +750,34 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             return None
         if not any(isinstance(part, ToolCallPart) for part in last.parts):
             return None
+        previous = next(
+            (
+                message
+                for message in reversed(messages)
+                if message is not last and message.run_id == last.run_id
+            ),
+            None,
+        )
         async with async_session() as session:
-            await session.delete(last)
+            entry = await session.one_or_none(
+                ConversationRun,
+                expressions=[
+                    ConversationRun["conversation_id"] == conversation.id,
+                    ConversationRun["run_id"] == last.run_id,
+                ],
+            )
+            if entry is None:
+                raise ValueError(
+                    f"run {last.run_id} is not in conversation {conversation.id}"
+                )
+            if previous is None:
+                # Nothing of the run comes before the call, so the run leaves this
+                # history whole.
+                await session.delete(entry)
+            else:
+                entry.through_message_id = previous.id
             await session.commit()
         conversation.messages.remove(last)
-        for run in conversation.runs:
-            if last in run.messages:
-                run.messages.remove(last)
         return last
 
     async def search_messages(

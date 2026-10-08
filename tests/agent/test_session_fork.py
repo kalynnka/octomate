@@ -30,7 +30,7 @@ async def test_inkling_fork_needs_no_external_session(tmp_path: Path) -> None:
         await tentacle.fork_session(conversation, cwd=tmp_path)
 
 
-async def test_shared_fork_can_copy_history_without_an_external_session(
+async def test_shared_fork_can_share_history_without_an_external_session(
     in_memory_engine: AsyncEngine,
 ) -> None:
     app = Octomate()
@@ -70,6 +70,5 @@ async def test_shared_fork_can_copy_history_without_an_external_session(
         target_thread.id, agent_tentacle_id=agent.id
     )
     assert source.external_id is target.external_id is None
-    assert source.messages[0].parts == target.messages[0].parts
-    assert source.messages[0].id != target.messages[0].id
+    assert source.messages[0].id == target.messages[0].id
     assert target_thread.active_model == "test"

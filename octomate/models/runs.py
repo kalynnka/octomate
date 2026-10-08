@@ -118,8 +118,10 @@ class AgentRun(Base, TransmuterProxiedMixin):
         String, nullable=True, index=True
     )
 
+    # The conversation the run ran in; `Conversation.runs` is every history that
+    # includes it.
     conversation: Mapped[Conversation] = relationship(
-        "Conversation", back_populates="runs", lazy="raise_on_sql"
+        "Conversation", lazy="raise_on_sql"
     )
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",

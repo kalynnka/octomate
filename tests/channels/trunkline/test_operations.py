@@ -20,6 +20,7 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
@@ -140,6 +141,22 @@ async def test_teleport_creates_independent_owned_destination(
             )
         )
     await case.app.threads.rename(case.thread, "Radio check")
+    await case.app.threads.record_inbound(
+        MessageEvent(
+            tentacle_id="trunkline",
+            chat_type=case.thread.chat_type,
+            chat_id=case.thread.chat_id,
+            channel_thread_id=case.thread.channel_thread_id,
+            message_id="radio-check",
+            user_id=str(case.owner.id),
+            sender=UserProfile(
+                channel_user_id=str(case.owner.id),
+                user_id=case.owner.id,
+                name=case.owner.name,
+            ),
+            segments=[TextSegment(data={"text": "radio check"})],
+        )
+    )
     source = (await case.app.conversations.for_thread(case.thread.id))[0]
     case.agent.models["opus"] = "picked-model"
     await case.app.conversations.record_agent_run(
@@ -191,8 +208,20 @@ async def test_teleport_creates_independent_owned_destination(
     )
     assert source_messages.status_code == 200
     assert [message["message_text"] for message in source_messages.json()] == [
-        "Original history"
+        "Original history",
+        "radio check",
     ]
+    destination_messages = await client.get(
+        f"/api/trunkline/threads/{landed.id}/messages"
+    )
+    assert destination_messages.status_code == 200
+    question = next(
+        message
+        for message in destination_messages.json()
+        if message["actor_kind"] == "human"
+    )
+    assert question["message_text"] == "radio check"
+    assert question["sender"]["name"] == case.owner.name
     copied = (await case.app.conversations.for_thread(landed.id))[0]
     assert copied.id != source.id
     assert copied.permission_mode == "default"
@@ -203,7 +232,11 @@ async def test_teleport_creates_independent_owned_destination(
     assert stored is not None
     assert [
         (message.actor_kind, message.message_text) for message in stored.messages
-    ] == [("system", "Work here")]
+    ] == [
+        ("agent", "Original history"),
+        ("human", "radio check"),
+        ("system", "Work here"),
+    ]
     assert stored.latest_handoff is not None
     assert stored.latest_handoff.to_agent_tentacle_id == "first"
     assert stored.latest_handoff.to_model == "opus"

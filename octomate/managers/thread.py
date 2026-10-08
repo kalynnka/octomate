@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import noload, selectinload
 from pydantic import UUID7
-from sqlalchemy import and_, or_, select
+from sqlalchemy import ColumnElement, and_, inspect, or_, select
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
@@ -30,6 +30,7 @@ from octomate.schemas.thread import (
     Thread,
     ThreadCommand,
     ThreadKey,
+    ThreadLedger,
     ThreadMessage,
     ThreadMessageDirection,
     ThreadMessageFTS,
@@ -77,6 +78,48 @@ def keyed(key: ThreadKey) -> list[Expression[bool]]:
         Thread["channel_thread_id"] == key.channel_thread_id,
         Thread["parent_thread_id"].is_(None),
     ]
+
+
+def shown_by(threads: Expression[bool]) -> ColumnElement[bool]:
+    """The messages shown by the threads `threads` picks out of `thread_ledgers`:
+    those delivered to one of their ledgers, up to that ledger's cut."""
+    return (
+        select(ThreadLedger["thread_id"])
+        .where(
+            threads,
+            ThreadLedger["ledger_id"] == ThreadMessage["thread_id"],
+            or_(
+                ThreadLedger["cut_message_id"].is_(None),
+                ThreadMessage["id"] <= ThreadLedger["cut_message_id"],
+            ),
+        )
+        .exists()
+    )
+
+
+def in_ledger(thread_id: UUID7) -> ColumnElement[bool]:
+    """The messages a thread shows."""
+    return shown_by(ThreadLedger["thread_id"] == thread_id)
+
+
+def in_history_of(senders: list[UUID7]) -> ColumnElement[bool]:
+    """The messages in a person's history: everything shown by a thread that shows
+    something one of `senders` said."""
+    # Aliased, so the rows said here never correlate with the rows being shown.
+    ledgers = inspect(ThreadLedger, raiseerr=True).local_table.alias()
+    said = inspect(ThreadMessage, raiseerr=True).local_table.alias()
+    spoken_in = (
+        select(ledgers.c.thread_id)
+        .join(said, said.c.thread_id == ledgers.c.ledger_id)
+        .where(
+            or_(
+                ledgers.c.cut_message_id.is_(None),
+                said.c.id <= ledgers.c.cut_message_id,
+            ),
+            said.c.sender_id.in_(senders),
+        )
+    )
+    return shown_by(ThreadLedger["thread_id"].in_(spoken_in))
 
 
 # What a listing can show of an opening line before it stops reading as a name.
@@ -589,7 +632,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
         async with async_session() as session:
             expressions = [
-                ThreadMessage["thread_id"] == fresh.id,
+                in_ledger(fresh.id),
                 ThreadMessage["id"] <= trigger_message_id,
                 ThreadMessage["kind"] == "message",
                 or_(
@@ -719,14 +762,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             rows = await session.list(
                 ThreadMessage,
                 limit=2,
-                expressions=[
-                    named,
-                    ThreadMessage["thread_id"].in_(
-                        select(ThreadMessage["thread_id"]).where(
-                            ThreadMessage["sender_id"].in_(senders)
-                        )
-                    ),
-                ],
+                expressions=[named, in_history_of(senders)],
             )
         if not rows:
             raise ValueError(f"no message {handle} in this person's history")
@@ -740,8 +776,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         platform_message_id: str,
         direction: ThreadMessageDirection,
     ) -> ThreadMessage | None:
-        """The thread's ledger row for one platform message — a turn's prompt, or
-        the reply that answered it. Oldest wins, as scanning the ordered ledger did.
+        """The row delivered to the thread for one platform message — a turn's
+        prompt, or the reply that answered it. Oldest wins, as scanning the ordered
+        ledger did. A row the thread shows from a ledger a fork froze into it was
+        delivered elsewhere, so it is never this one.
 
         Both halves of the key are indexed. The hooks and tailers ask this per turn,
         on a ledger with no ceiling, so the row has to be found by the index rather
@@ -854,11 +892,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         ]
         expressions = [
             ThreadMessageFTS["message_text"].match(match_query),
-            ThreadMessage["thread_id"].in_(
-                select(ThreadMessage["thread_id"]).where(
-                    ThreadMessage["sender_id"].in_(senders)
-                )
-            ),
+            in_history_of(senders),
         ]
         if actor_kind is not None:
             expressions.append(ThreadMessage["actor_kind"] == actor_kind)
@@ -905,7 +939,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                     ThreadMessage["id"].desc(),
                 ],
                 expressions=[
-                    ThreadMessage["thread_id"] == thread_id,
+                    in_ledger(thread_id),
                     or_(
                         ThreadMessage["happened_at"] < anchor.happened_at,
                         and_(
@@ -937,7 +971,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 limit=limit,
                 order_bys=[ThreadMessage["happened_at"], ThreadMessage["id"]],
                 expressions=[
-                    ThreadMessage["thread_id"] == thread_id,
+                    in_ledger(thread_id),
                     or_(
                         ThreadMessage["happened_at"] > anchor.happened_at,
                         and_(

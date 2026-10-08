@@ -21,6 +21,36 @@ if TYPE_CHECKING:
     from octomate.models.thread import Thread
 
 
+class ConversationRun(Base, TransmuterProxiedMixin):
+    """A run in a conversation's history. Every run is in the history of the
+    conversation it ran in; a fork adds the runs it was forked with, so the fork
+    and its source read the same rows."""
+
+    __tablename__ = "conversation_runs"
+
+    conversation_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    run_id: Mapped[str] = mapped_column(
+        String,
+        ForeignKey("agent_runs.id", ondelete="CASCADE"),
+        primary_key=True,
+        index=True,
+    )
+    through_message_id: Mapped[UUID7 | None] = mapped_column(
+        Uuid,
+        ForeignKey("model_messages.id"),
+        nullable=True,
+        comment=(
+            "The run's last message this conversation's history includes; NULL is "
+            "the whole run. A conversation that abandons a pending tool call stops "
+            "short of it here, rather than deleting a message a fork may resume."
+        ),
+    )
+
+
 class Conversation(Base, TransmuterProxiedMixin):
     """One agent's context within a thread, unique per (thread, agent, subagent)."""
 
@@ -130,13 +160,16 @@ class Conversation(Base, TransmuterProxiedMixin):
     )
 
     transcript_file: Mapped[File | None] = relationship("File", lazy="raise")
+    # The runs of this conversation's history: the ones it ran, and the ones it was
+    # forked with. Deleting either side leaves its `conversation_runs` rows to the
+    # database's cascade.
     runs: Mapped[list[AgentRun]] = relationship(
         "AgentRun",
-        back_populates="conversation",
-        cascade="all, delete-orphan",
+        secondary="conversation_runs",
         # `id` breaks started_at ties so two reads never disagree on the order; at
         # equal stamps chronology is unknowable, and stability is what is owed.
         order_by="(AgentRun.started_at, AgentRun.id)",
+        passive_deletes=True,
         lazy="selectin",
     )
     thread: Mapped[Thread | None] = relationship(
@@ -144,13 +177,17 @@ class Conversation(Base, TransmuterProxiedMixin):
         back_populates="conversations",
         lazy="raise_on_sql",
     )
-    # Read-only flat view of every message in the conversation, joined through
-    # agent_runs. Writes go through `runs` and each run's `messages`.
+    # Read-only flat view of every message in the conversation's history, up to
+    # each run's bound.
     messages: Mapped[list[ModelMessage]] = relationship(
         "ModelMessage",
-        secondary="agent_runs",
-        primaryjoin="Conversation.id == AgentRun.conversation_id",
-        secondaryjoin="AgentRun.id == ModelMessage.run_id",
+        secondary="join(ConversationRun, AgentRun, ConversationRun.run_id == AgentRun.id)",
+        primaryjoin="Conversation.id == ConversationRun.conversation_id",
+        secondaryjoin=(
+            "and_(AgentRun.id == ModelMessage.run_id, "
+            "or_(ConversationRun.through_message_id.is_(None), "
+            "ModelMessage.id <= ConversationRun.through_message_id))"
+        ),
         order_by="(AgentRun.started_at, AgentRun.id, ModelMessage.id)",
         viewonly=True,
         lazy="selectin",
