@@ -201,8 +201,10 @@ A native Codex or Claude Code session teleports with its latest fully uploaded
 turn, keeping its model and permissions. Native DeepSeek sessions, and driven
 agents that cannot fork their session, cannot teleport yet. The thread a move
 lands in shows up in your thread list and is about the same project as the one it
-left. A new destination starts with the title **Fork of …**, keeping the source
-title unchanged. The destination shows the original chat, with its senders and
+left. A new destination starts with the source's name: the one its agent gave the
+session, or else the source thread's title. An agent that names its sessions renames
+the destination as its work goes on, and a source with no name leaves the
+destination to take one from the first thing you say in it. The destination shows the original chat, with its senders and
 attachments, and the agent's history run by run; work its subagents did stays with
 the source. From there the two threads grow apart: what happens in one never
 appears in the other.

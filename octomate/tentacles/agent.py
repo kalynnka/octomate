@@ -563,7 +563,7 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
             source,
             thread,
             sender=sender,
-            title=f"Fork of {source_thread.title or 'conversation'}",
+            title=threads.fork_title(source, source_thread),
         )
 
     async def validate_fork(self, source: Conversation, *, sender: UserProfile) -> None:

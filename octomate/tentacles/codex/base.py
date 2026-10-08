@@ -950,7 +950,8 @@ class CodexTentacle(AgentTentacle[str, None]):
                 ):
                     parent = replace(parent, chat_type="group")
                 destination = await channel.start_thread(
-                    parent, f"Fork of {source_thread.title or 'conversation'}"
+                    parent,
+                    self.threads.fork_title(conversation, source_thread) or "Fork",
                 )
                 target = await self.fork(
                     conversation,
@@ -962,7 +963,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 segments=[
                     TextSegment(
                         data={
-                            "text": f"Created {target.title} ({target.id}). Select the new thread to continue; this conversation is unchanged."
+                            "text": f"Forked into a new thread ({target.id}). Select it to continue; this conversation is unchanged."
                         }
                     )
                 ]

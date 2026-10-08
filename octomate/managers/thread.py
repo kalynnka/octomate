@@ -282,7 +282,15 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         return parent
 
-    async def rename(self, thread: Thread, title: str) -> Thread:
+    @staticmethod
+    def fork_title(source: Conversation, thread: Thread) -> str | None:
+        """What a fork of `source`, from `thread`, is first called: what the source
+        goes by, the name its runtime gave the session or else the thread's title.
+        None when it goes by nothing, and the fork takes a name the way a new thread
+        does."""
+        return thread_title(source.name or thread.title)
+
+    async def rename(self, thread: Thread, title: str | None) -> Thread:
         """Give the thread the name the runtime running it grabbed for itself.
 
         Unlike the opening line `store_message` falls back to, this is a name for

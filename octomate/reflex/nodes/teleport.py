@@ -176,7 +176,8 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             )
             await agent.relocate(conversation, cwd=cwd)
             state.thread = await ctx.deps.thread_manager.rename(
-                state.thread, f"Fork of {source.title or 'conversation'}"
+                state.thread,
+                ctx.deps.thread_manager.fork_title(source_conversation, source),
             )
         elif not self.request.new_thread:
             external_id = await agent.fork_session(conversation, cwd=cwd)
