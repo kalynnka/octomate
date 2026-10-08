@@ -257,6 +257,27 @@ export function ThreadsSidebar() {
           }}
         />
       )}
+      {!sidebarFolded && (
+        <span
+          onClick={() => startNewThread()}
+          title="New trunkline thread"
+          className="hov-accent-border-wash"
+          style={{
+            display: 'grid',
+            placeItems: 'center',
+            margin: '3px 14px 3px calc(var(--trk-rail-w, 26px) + 14px)',
+            height: 20,
+            flexShrink: 0,
+            boxSizing: 'border-box',
+            border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
+            color: 'var(--color-accent)',
+            ...label(8, '.14em'),
+            cursor: 'pointer',
+          }}
+        >
+          <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
+        </span>
+      )}
       <div
         ref={channelList}
         className="trk-quiet-scroll"
@@ -434,29 +455,6 @@ export function ThreadsSidebar() {
                 {!sidebarFolded && (
                   <div data-channel-threads={c.id} aria-hidden={folded || undefined} inert={folded} style={{ gridColumn: 2, minWidth: 0 }}>
                     <Fold open={!folded}>
-                    {c.id === 'trunkline' && (
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          startNewThread()
-                        }}
-                        title="New trunkline thread"
-                        className="hov-accent-border-wash"
-                        style={{
-                          display: 'grid',
-                          placeItems: 'center',
-                          margin: '3px 14px',
-                          height: 20,
-                          boxSizing: 'border-box',
-                          border: '1px dashed color-mix(in srgb, var(--color-accent) 55%, transparent)',
-                          color: 'var(--color-accent)',
-                          ...label(8, '.14em'),
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <span style={{ lineHeight: 1, paddingLeft: '.14em', paddingTop: 1 }}>+ new</span>
-                      </span>
-                    )}
                     {/* Each channel scrolls under its own header, so a channel with
                         a hundred threads still leaves the ones below it reachable —
                         and gives out its rows a page at a time as one scrolls it. */}
