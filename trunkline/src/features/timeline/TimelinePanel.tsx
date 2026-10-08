@@ -442,8 +442,8 @@ export function TimelinePanel() {
                 {/* The sticky header needs an opaque bed; the hover wash rides on top of it. */}
                 <div style={{ position: 'sticky', top: 0, zIndex: 3, background: 'var(--card-bg)' }}>
                   <div
-                    onClick={() => goLedgerTarget(ses.anchor)}
-                    title="Jump to conversation start"
+                    onClick={() => toggleTimelineFold(ses.id)}
+                    title="Fold / unfold conversation"
                     className="hov-wash"
                     style={{ position: 'relative', padding: '8px 10px 8px 28px', cursor: 'pointer' }}
                   >
@@ -469,17 +469,10 @@ export function TimelinePanel() {
                       ]}
                     />
                     <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
-                      <span
-                        onClick={(e) => {
-                          e.stopPropagation()
-                          toggleTimelineFold(ses.id)
-                        }}
-                        title="Fold / unfold conversation"
-                        className="hov-accent"
-                        style={{ color: 'var(--fg-3)', cursor: 'pointer', flexShrink: 0 }}
-                      >
-                        <Disclose open={!folded} style={{ ...mono(10), width: 11, textAlign: 'center' }} />
-                      </span>
+                      <Disclose
+                        open={!folded}
+                        style={{ ...mono(10), color: 'var(--fg-3)', width: 11, textAlign: 'center', flexShrink: 0 }}
+                      />
                       <span title={ses.name ?? ses.id} style={{ ...mono(10, 700), color: 'var(--color-accent)', minWidth: 0, ...ellipsis }}>
                         {ses.name ?? ses.id}
                       </span>
