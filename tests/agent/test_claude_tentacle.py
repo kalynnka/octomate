@@ -65,7 +65,7 @@ _SUMMON_OUTPUT = {
     "agent_id": "inkling",
     "model": "opus",
     "hint": "help with code",
-    "summon": "please take over",
+    "brief": "please take over",
 }
 
 KEY = ChannelAddress(

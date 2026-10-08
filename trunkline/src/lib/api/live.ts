@@ -12,7 +12,7 @@ import type {
   ApiThread,
   ApiThreadMessage,
 } from './events'
-import { batchFeelers, replayRun, type ReplayChild } from './fold'
+import { batchFeelers, replayRun, segmentText, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -306,6 +306,14 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           label: message.agent_tentacle_id ?? 'agent',
           blocks: [{ type: 'p', text }],
         },
+      })
+    }
+    if (message.kind === 'command' && message.outcome) {
+      const outcome = message.outcome
+      const feedback = outcome.status === 'completed' ? outcome.segments.map(segmentText) : [outcome.message]
+      if (feedback.length) dated.push({
+        at,
+        item: { kind: 'agent', label: 'relay', blocks: feedback.map((text) => ({ type: 'p', text })) },
       })
     }
   }

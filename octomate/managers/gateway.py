@@ -561,7 +561,7 @@ class OctomateSession:
         model: str,
         hint: str,
         reason: str,
-        summon: str,
+        brief: str,
         effort: str | None = None,
     ) -> str:
         """Validate and record a handoff of this conversation, where it is, for the
@@ -582,7 +582,7 @@ class OctomateSession:
             effort=effort,
             hint=hint,
             reason=reason,
-            summon=summon,
+            brief=brief,
         )
         return f"Summoning {route.agent_id} ({route.model}) to take over here."
 

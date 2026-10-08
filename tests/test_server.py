@@ -176,7 +176,8 @@ async def test_bind_failure_does_not_enter_tentacles(
 
 
 @pytest.mark.parametrize("reload", [True, False])
-def test_subprocesses_use_the_octomate_server(reload: bool) -> None:
+@pytest.mark.parametrize("interrupted", [False, True])
+def test_subprocesses_use_the_octomate_server(reload: bool, interrupted: bool) -> None:
     config = uvicorn.Config(
         "octomate.app:create_app",
         factory=True,
@@ -189,7 +190,12 @@ def test_subprocesses_use_the_octomate_server(reload: bool) -> None:
         patch(f"octomate.server.{supervisor}") as supervisor_type,
         patch.object(config, "bind_socket") as bind_socket,
     ):
-        run(config)
+        if interrupted:
+            supervisor_type.return_value.run.side_effect = KeyboardInterrupt
+        try:
+            run(config)
+        except KeyboardInterrupt:
+            pytest.fail("The server runner must handle the shutdown interrupt")
 
     supervisor_type.assert_called_once_with(
         config,
@@ -198,3 +204,4 @@ def test_subprocesses_use_the_octomate_server(reload: bool) -> None:
     )
     supervisor_type.return_value.run.assert_called_once_with()
     server_type.return_value.run.assert_not_called()
+    bind_socket.return_value.__exit__.assert_called_once()

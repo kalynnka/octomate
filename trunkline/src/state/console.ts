@@ -29,6 +29,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
+import { groupLiveThreads } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 
@@ -454,7 +455,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   /** Your thread at `address`, if your list holds it, with both ends' details refetched. */
   const landedThread = async (from: string, address: ChannelAddress) => {
     await queryClient.invalidateQueries({ queryKey: ['thread-detail', from] })
-    const landed = (await fetchThreads()).find((thread) =>
+    const threads = await fetchThreads()
+    queryClient.setQueryData(['threads'], groupLiveThreads(threads))
+    const landed = threads.find((thread) =>
       thread.channel_tentacle_id === address.channel_tentacle_id
       && thread.chat_type === address.chat_type
       && thread.chat_id === address.chat_id
@@ -492,6 +495,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let received = 0
     let terminal = false
     let landing: ChannelAddress | undefined
+    let summoning = get().gatewayPending?.action === 'summon'
     const turnFold = () => new TurnFold({
       push: (item) => {
         clearDots()
@@ -502,9 +506,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (!alive()) return
         patchLive((x) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x))
       },
-      done: () => {
-        if (alive() && openRuns === 1) set({ running: false })
-      },
+      // The graph releases its active turn after the result, before stream EOF.
+      done: () => {},
     })
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
@@ -517,13 +520,38 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // Opening the thread a run started in; what streams meanwhile waits for it.
     let following: Promise<void> | undefined
     const held: CommandStreamEvent[] = []
+    const openSummon = async () => {
+      fold = turnFold()
+      terminal = false
+      const detail = await api.getThreadDetail(selId)
+      if (alive()) {
+        const opening = detail.ledger.findLast((item) => item.kind === 'session-open')
+        const anchor = opening ? push({ ...opening, uid: nextUid() }) : undefined
+        set((s) => ({ detail: {
+          ...detail,
+          ledger: s.detail?.ledger ?? [],
+          sessions: detail.sessions.map((session) => session.id === opening?.sessionId ? { ...session, anchor } : session),
+        } }))
+      }
+      following = undefined
+      held.splice(0).forEach(feed)
+    }
     const follow = async (address: ChannelAddress) => {
       const landed = await landedThread(selId, address)
       if (landed && alive()) {
-        await actions.selectThread(landed.channel_tentacle_id, landed.id)
-        selId = landed.id
-        set({ running: true })
-        fold = turnFold()
+        if (get().ntOn && address.channel_tentacle_id === 'trunkline' && address.channel_thread_id === selId) {
+          const detail = await api.getThreadDetail(landed.id)
+          if (alive()) {
+            selId = landed.id
+            // The live overlay already owns this panel's prompt and feedback.
+            set({ selThreadId: selId, detail: { ...detail, ledger: [] }, ntOn: false, ntStarted: false, ntMenu: null, ntRouteId: null })
+          }
+        } else {
+          await actions.selectThread(landed.channel_tentacle_id, landed.id)
+          selId = landed.id
+          set({ running: true })
+          fold = turnFold()
+        }
       }
       following = undefined
       held.splice(0).forEach(feed)
@@ -532,6 +560,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       await request((event) => {
         if (event.event_kind === 'gateway') {
           landing = event.destination
+          summoning = event.action === 'summon'
           return
         }
         if (following) {
@@ -540,7 +569,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }
         if (event.event_kind === 'custom' && event.name === 'run_started') {
           const { channel_tentacle_id, channel_thread_id } = event.address
-          if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
+          if (summoning) {
+            summoning = false
+            following = openSummon()
+          } else if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
             following = follow(event.address)
           }
           return
@@ -571,9 +603,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           // reload the ledger from the relay instead of showing a torn turn.
           void actions.selectThread(get().selChannel, selId)
         } else if (openRuns === 0) {
-          set({ running: false })
+          set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
         }
       }
+      void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
       refreshThreads()
     }
   }
@@ -843,7 +876,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (!landed) {
           throw new Error(`${request.action} completed, but its destination is not visible in your thread list.`)
         }
-        if (get().selThreadId === threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        if (get().selThreadId === threadId && landed.id !== threadId) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       } catch (error) {
         actions.reportThreadError(threadId, error instanceof Error ? error.message : String(error))
       } finally {

@@ -192,7 +192,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 model=None if thread.kind == "native_thread" else model,
                 reason=f"Teleport requested from {requested_from}",
                 hint=decision.hint,
-                summon="",
+                brief="",
             )
             return Teleport(
                 request=TeleportRequest(

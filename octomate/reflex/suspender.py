@@ -105,7 +105,7 @@ class ReflexSuspender:
                 model=self.model,
                 reason="Continue the selected agent run.",
                 hint="",
-                summon="",
+                brief="",
             )
         return self.decision
 

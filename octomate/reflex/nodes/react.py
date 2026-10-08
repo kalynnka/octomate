@@ -121,7 +121,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
         user_prompt: str | Sequence[UserContent] | None = (
             None
             if deferred_results is not None
-            else decision.summon or str(state.user_prompt or "")
+            else decision.brief or str(state.user_prompt or "")
         )
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:

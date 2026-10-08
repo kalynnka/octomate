@@ -88,7 +88,7 @@ class SummonDecision(BaseModel):
     )
     effort: str | None = None
     hint: str
-    summon: str = Field(
+    brief: str = Field(
         max_length=8_000,
         description="The receiver's whole opening prompt, refused over the cap rather "
         "than trimmed: what it leaves out, the receiver reads back through the "

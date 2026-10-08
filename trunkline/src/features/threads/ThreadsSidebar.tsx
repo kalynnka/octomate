@@ -281,7 +281,7 @@ export function ThreadsSidebar() {
               ...(c.id === 'trunkline' && ntOn && !ths.some(selected)
                 ? [
                     {
-                      id: ntStarted ? selThreadId : 'THR-NEW',
+                      id: 'THR-NEW',
                       tag: ntStarted ? selThreadId : 'THR-NEW',
                       title: ntTitle || 'untitled — new thread',
                       stColor: 'var(--color-gold)',
@@ -470,8 +470,9 @@ export function ThreadsSidebar() {
                       }}
                     >
                     {rows.slice(0, shown[c.id] ?? THREAD_PAGE).map((t) => (
+                      <div key={t.id} className={t.id === 'THR-NEW' ? 'trk-thread-enter' : undefined}>
+                      <div style={{ overflow: 'hidden' }}>
                       <div
-                        key={t.id}
                         onClick={t.pick}
                         className="hov-wash"
                         style={{ position: 'relative', padding: 'var(--trk-th-pad, 7px 14px)', cursor: 'pointer' }}
@@ -531,6 +532,8 @@ export function ThreadsSidebar() {
                             {t.agent}
                           </span>
                         </div>
+                      </div>
+                      </div>
                       </div>
                     ))}
                     {rows.length > (shown[c.id] ?? THREAD_PAGE) && (

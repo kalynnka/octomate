@@ -512,7 +512,7 @@ class GatewayCapability(AbstractCapability[None]):
         model: str,
         hint: str,
         reason: str,
-        summon: Annotated[str, Field(max_length=8_000)],
+        brief: Annotated[str, Field(max_length=8_000)],
         effort: str | None = None,
     ) -> str:
         """Hand this conversation to another Octomate agent, who takes it over where
@@ -525,7 +525,7 @@ class GatewayCapability(AbstractCapability[None]):
             hint: A short, user-facing note announcing the handoff, recorded with it.
             reason: One line on why this agent fits — recorded with the handoff, not
                 shown to the user as the reply.
-            summon: The self-contained brief the other agent starts from. It becomes
+            brief: The self-contained brief the other agent starts from. It becomes
                 their opening prompt and they cannot see this conversation, so give
                 the goal, the relevant context and decisions, what's been tried, and
                 what a finished result looks like. If anything you carry says how to
@@ -544,7 +544,7 @@ class GatewayCapability(AbstractCapability[None]):
                 model=model,
                 hint=hint,
                 reason=reason,
-                summon=summon,
+                brief=brief,
                 effort=effort,
             )
         except GatewayRefusal as refusal:

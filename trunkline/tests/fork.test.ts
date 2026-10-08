@@ -45,7 +45,7 @@ test('an imported session displays its conversation agent without a handoff', ()
 
 test('an import notice of several lines reads as a system row per line', () => {
   const notice: ApiThreadMessage = {
-    id: 'notice', thread_id: thread.id, platform_message_id: null,
+    kind: 'message', id: 'notice', thread_id: thread.id, platform_message_id: null,
     happened_at: '2026-09-29T00:00:00Z', direction: 'inbound', actor_kind: 'system',
     agent_tentacle_id: null, sender: null, segments: [], created_at: '2026-09-29T00:00:00Z',
     message_text: 'Forked from conversation native-session.\n\nCurrent channel address:\ntrunkline/thread/owner/landed/owner.',

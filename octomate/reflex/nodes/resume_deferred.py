@@ -90,7 +90,7 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 model=model,
                 reason="Resuming deferred human input.",
                 hint="Resuming deferred human input.",
-                summon="",
+                brief="",
             )
         if not isinstance(decision, SummonDecision):
             raise ValueError("react deferred batch requires a summon decision")

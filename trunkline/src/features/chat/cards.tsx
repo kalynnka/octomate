@@ -1080,6 +1080,43 @@ function Rule({ children }: { children?: ReactNode }) {
   )
 }
 
+function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'stream' }>; cardMax: string }) {
+  const running = useConsole((s) => s.running)
+  const streaming = item.streaming && running
+  const target = useRef(item.text)
+  const printed = useRef('')
+  const [text, setText] = useState('')
+  useLayoutEffect(() => { target.current = item.text }, [item.text])
+  useLayoutEffect(() => {
+    if (!streaming) return
+    const reduced = window.matchMedia('(prefers-reduced-motion: reduce)')
+    let at = performance.now()
+    let frame: number
+    let scroll = 0
+    const print = (now: number) => {
+      if (printed.current !== target.current) {
+        if (!target.current.startsWith(printed.current)) printed.current = ''
+        const remaining = Array.from(target.current.slice(printed.current.length))
+        const count = reduced.matches ? remaining.length : Math.max(1, Math.ceil(remaining.length * Math.min((now - at) / 60, 1)))
+        printed.current += remaining.slice(0, count).join('')
+        const log = document.getElementById('trk-chatlog')
+        const pinned = log && log.scrollHeight - log.scrollTop - log.clientHeight < 48
+        setText(printed.current)
+        if (pinned) scroll = requestAnimationFrame(() => { log.scrollTop = log.scrollHeight })
+      }
+      at = now
+      frame = requestAnimationFrame(print)
+    }
+    frame = requestAnimationFrame(print)
+    return () => { cancelAnimationFrame(frame); cancelAnimationFrame(scroll) }
+  }, [streaming])
+  return (
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
+      <Markdown text={streaming ? text : item.text} cursor={streaming} />
+    </div>
+  )
+}
+
 /** Dispatch a ledger item to its card. `i` staggers entry animations. */
 export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: string; i?: number }) {
   switch (item.kind) {
@@ -1100,7 +1137,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
     case 'session-open':
       if (item.tone === 'summon') {
         return (
-          <div id={item.uid} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0' }}>
+          <div id={item.uid} className={i === undefined ? 'trk-summon-enter' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '4px 0' }}>
             <span style={{ flex: 1, borderTop: '2px solid var(--color-terra)', opacity: 0.65 }} />
             <span style={{ ...label(9, '.16em'), color: 'var(--color-terra)' }}>{item.text}</span>
             <span style={{ flex: 1, borderTop: '2px solid var(--color-terra)', opacity: 0.65 }} />
@@ -1148,12 +1185,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
         </div>
       )
     case 'stream':
-      return (
-        <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)' }}>
-          <Markdown text={item.text} />
-          {item.streaming && <span className="lt-caret" style={{ verticalAlign: 'text-bottom', marginLeft: 3 }} />}
-        </div>
-      )
+      return <StreamRow item={item} cardMax={cardMax} />
     case 'end':
       return (
         <div id={`pm-${item.uid}`} style={{ display: 'flex', alignItems: 'center', gap: 12, marginTop: 2 }}>

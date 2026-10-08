@@ -391,8 +391,8 @@ export type WireEvent =
   | RunErrorEvent
   | GatewayEvent
 
-/** How a command ended. Its feedback has already streamed as channel events,
- *  so this only says the command is done — it is not shown again. */
+/** A command's saved outcome. During a live run its feedback streams before
+ *  command_outcome, so that terminal event must not display it again. */
 export type CommandOutcome =
   | { status: 'completed'; segments: WireSegment[] }
   | { status: 'unsupported' | 'unknown' | 'stale' | 'busy' | 'unavailable' | 'failed'; message: string }
@@ -584,7 +584,7 @@ export interface ApiUserProfile {
   nickname: string | null
 }
 
-export interface ApiThreadMessage {
+export type ApiThreadMessage = {
   id: string
   thread_id: string
   platform_message_id: string | null
@@ -597,7 +597,10 @@ export interface ApiThreadMessage {
   segments: WireSegment[]
   message_text: string | null
   created_at: string
-}
+} & (
+  | { kind: 'message' }
+  | { kind: 'command'; outcome: CommandOutcome | null }
+)
 
 /** One recorded run. `kind` tells an Octomate-driven run from one rebuilt out
  *  of an external runtime's transcript. */

@@ -366,7 +366,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 model=summon_decision.model,
                 reason=summon_decision.reason,
                 hint=summon_decision.hint,
-                summon=summon_decision.summon,
+                brief=summon_decision.brief,
             )
             output = ""
         if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
@@ -449,7 +449,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                     model=summon_decision.model,
                     reason=summon_decision.reason,
                     hint=summon_decision.hint,
-                    summon=summon_decision.summon,
+                    brief=summon_decision.brief,
                 )
                 yield AgentRunResultEvent(AgentRunResult(""))
 

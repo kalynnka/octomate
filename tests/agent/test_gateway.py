@@ -124,7 +124,7 @@ def _decision(
         effort=effort,
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
 
@@ -137,7 +137,7 @@ def test_summon_decision_requires_model_field() -> None:
             agent_id="claude",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -149,7 +149,7 @@ def test_summon_decision_rejects_empty_model() -> None:
             model="",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -164,7 +164,7 @@ async def test_summon_capability_accepts_exact_route() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
     assert capability.decision == _decision()
@@ -259,7 +259,7 @@ async def test_a_native_session_cannot_be_summoned() -> None:
             model="test",
             hint="Continue",
             reason="replacement",
-            summon="Carry on from this brief.",
+            brief="Carry on from this brief.",
         )
     assert session.decision is None
 
@@ -276,7 +276,7 @@ async def test_summon_capability_rejects_self_summon() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -302,7 +302,7 @@ async def test_summon_tool_retries_invalid_route(agent_id: str, model: str) -> N
             model=model,
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
 
 
@@ -317,7 +317,7 @@ async def test_summon_carries_a_claimed_effort() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
         effort="high",
     )
 
@@ -336,7 +336,7 @@ async def test_summon_refuses_an_unclaimed_effort() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
             effort="low",
         )
     assert capability.decision is None
@@ -387,7 +387,7 @@ async def test_summon_here_refused_when_disallowed() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon="Please investigate the failing test.",
+            brief="Please investigate the failing test.",
         )
     assert capability.decision is None
 
@@ -403,7 +403,7 @@ async def test_summon_here_allowed_on_bounded_surface() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
     assert capability.decision == _decision()
@@ -420,7 +420,7 @@ async def test_summon_tool_records_decision() -> None:
         model="opus",
         reason="needs coding",
         hint="Working on it",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
     assert result == "Summoning claude (opus) to take over here."
@@ -996,9 +996,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
     tool = capability.toolset.tools[GatewayTool.SUMMON]
     over = "Please investigate the failing test. " * 300
 
-    assert (
-        tool.function_schema.json_schema["properties"]["summon"]["maxLength"] == 8_000
-    )
+    assert tool.function_schema.json_schema["properties"]["brief"]["maxLength"] == 8_000
     with pytest.raises(ValidationError, match="at most 8000 characters"):
         tool.function_schema.validator.validate_python(
             {
@@ -1006,7 +1004,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
                 "model": "opus",
                 "reason": "needs coding",
                 "hint": "Working on it",
-                "summon": over,
+                "brief": over,
             }
         )
     with pytest.raises(ValidationError, match="at most 8000 characters"):
@@ -1016,7 +1014,7 @@ async def test_summon_refuses_a_brief_over_the_cap() -> None:
             model="opus",
             reason="needs coding",
             hint="Working on it",
-            summon=over,
+            brief=over,
         )
 
     assert capability.decision is None
@@ -1050,12 +1048,15 @@ def test_a_decision_carries_no_brief_over_the_cap() -> None:
         "model": "opus",
         "reason": "needs coding",
         "hint": "Working on it",
-        "summon": "x" * 8_000,
+        "brief": "x" * 8_000,
     }
 
-    assert len(SummonDecision.model_validate(fields).summon) == 8_000
+    decision = SummonDecision.model_validate(fields)
+    assert len(decision.brief) == 8_000
+    assert decision.model_dump()["brief"] == fields["brief"]
+    assert "summon" not in decision.model_dump()
     with pytest.raises(ValidationError, match="at most 8000 characters"):
-        SummonDecision.model_validate({**fields, "summon": "x" * 8_001})
+        SummonDecision.model_validate({**fields, "brief": "x" * 8_001})
 
 
 @pytest.mark.parametrize("offered", [False, True])

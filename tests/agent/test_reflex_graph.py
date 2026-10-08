@@ -247,7 +247,7 @@ def _summon(
         effort=effort,
         reason="needs work",
         hint="Working on it",
-        summon="Please debug this in reception.",
+        brief="Please debug this in reception.",
     )
 
 
@@ -1726,7 +1726,10 @@ async def test_reception_closes_agent_stream_before_releasing_gateway(
     assert registry.sessions == {}
 
 
-async def test_route_runs_in_place_inside_flat_thread() -> None:
+@pytest.mark.parametrize(
+    "prompt", ["continue", pytest.param("context " * 1_200, id="long-context")]
+)
+async def test_route_runs_in_place_inside_flat_thread(prompt: str) -> None:
     address = _key(thread_id="existing-thread")
     agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
@@ -1734,7 +1737,7 @@ async def test_route_runs_in_place_inside_flat_thread() -> None:
 
     result = await _run(
         Route(),
-        state=_state(address, user_prompt="continue"),
+        state=_state(address, user_prompt=prompt),
         deps=_deps(conversations=conversations, channels={"im": im}, agent=agent),
     )
 
@@ -1742,6 +1745,7 @@ async def test_route_runs_in_place_inside_flat_thread() -> None:
     assert result.target.mode == "sub"
     assert agent.streams[0].address == address
     assert agent.streams[0].run_name == "react"
+    assert agent.streams[0].prompt == prompt
     assert im.sub_threads == []
     assert im.consumed[0][0] == address
 
@@ -2110,7 +2114,7 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
         model="test",
         reason="resumed",
         hint="resumed",
-        summon="",
+        brief="",
     )
     batch = FakeDeferredBatch(
         source_address=_key(),
@@ -2498,7 +2502,10 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     assert [cwd for _, cwd in agent.relocated] == [carried]
 
 
-async def test_fork_follows_its_conversation_without_handoff() -> None:
+@pytest.mark.parametrize(
+    "prompt", ["continue", pytest.param("context " * 1_200, id="long-context")]
+)
+async def test_fork_follows_its_conversation_without_handoff(prompt: str) -> None:
     address = _key(thread_id="forked-thread")
     thread = _thread(address)
     thread.conversations.append(
@@ -2516,11 +2523,14 @@ async def test_fork_follows_its_conversation_without_handoff() -> None:
         threads=threads,
     )
     deps.agents["other"] = entry
-    result = await _run(Route(), state=_state(address, thread=thread), deps=deps)
+    result = await _run(
+        Route(), state=_state(address, thread=thread, user_prompt=prompt), deps=deps
+    )
     assert isinstance(result, ReflexResult)
     assert result.decision is not None
     assert result.decision.agent_id == "forked"
     assert len(forked.streams) == 1
+    assert forked.streams[0].prompt == prompt
     assert entry.streams == []
     assert threads.handoffs == []
     assert thread.handoffs == []

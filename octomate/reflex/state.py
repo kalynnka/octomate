@@ -142,7 +142,7 @@ class PendingHandoff:
             to_model=decision.model,
             reason=decision.reason,
             hint=decision.hint,
-            brief=decision.summon,
+            brief=decision.brief,
             source_conversation_id=self.source_conversation_id,
             target_conversation_id=target_conversation.id,
             source_run_id=self.source_run_id,

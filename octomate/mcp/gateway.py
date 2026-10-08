@@ -257,7 +257,7 @@ def mount_gateway(
         model: str,
         hint: str,
         reason: str,
-        summon: Annotated[str, Field(max_length=8_000)],
+        brief: Annotated[str, Field(max_length=8_000)],
         effort: str | None = None,
         session: OctomateSession = octomate_session,
     ) -> str:
@@ -266,7 +266,7 @@ def mount_gateway(
             model=model,
             hint=hint,
             reason=reason,
-            summon=summon,
+            brief=brief,
             effort=effort,
         )
 

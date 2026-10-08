@@ -426,7 +426,18 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
   from { transform: none; }
   to { transform: translateY(8px); }
 }
+.trk-thread-enter { display: grid; grid-template-rows: 1fr; }
+@keyframes trkThreadEnter {
+  from { grid-template-rows: 0fr; opacity: 0; }
+  to { grid-template-rows: 1fr; opacity: 1; }
+}
+@keyframes trkSummonEnter {
+  from { opacity: 0; clip-path: inset(0 48%); }
+  to { opacity: 1; clip-path: inset(0); }
+}
 @media (prefers-reduced-motion: no-preference) {
+  .trk-thread-enter { animation: trkThreadEnter 260ms var(--ease-out); }
+  .trk-summon-enter { animation: trkSummonEnter 300ms var(--ease-out); }
   .trk-tab-indicator { transition: transform var(--motion-base) var(--ease-out); }
   .trk-bracket-tabs button span { transition: opacity var(--motion-fast) linear; }
   .trk-mcp-tab {
@@ -690,6 +701,7 @@ html[data-theme='dark'] .trk-dialog { --trk-dialog-panel: #baa58a; }
    voice inherits from the ledger card; these rules give the generated
    elements their rhythm and the console's data-voice for code and tables.
    -------------------------------------------------------------------------- */
+.trk-print-caret { vertical-align: text-bottom; margin-left: 3px; }
 .trk-md > :first-child {
   margin-top: 0;
 }

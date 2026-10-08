@@ -9,6 +9,7 @@ import type { LedgerItem } from '../src/lib/api/types.ts'
 let server: ViteDevServer
 let Markdown: typeof import('../src/components/Markdown.tsx').Markdown
 let LedgerRow: typeof import('../src/features/chat/cards.tsx').LedgerRow
+let useConsole: typeof import('../src/state/console.ts').useConsole
 
 before(async () => {
   server = await createServer({
@@ -17,6 +18,7 @@ before(async () => {
   })
   ;({ Markdown } = await server.ssrLoadModule('/src/components/Markdown.tsx'))
   ;({ LedgerRow } = await server.ssrLoadModule('/src/features/chat/cards.tsx'))
+  ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
 })
 after(async () => { await server?.close() })
 
@@ -30,6 +32,36 @@ test('newline rendering keeps code literal and raw HTML escaped', () => {
   assert.ok(html.includes('<pre><code>a\nb\n</code></pre>'))
   assert.ok(html.includes('&lt;script&gt;'))
   assert.ok(!html.includes('<script>'))
+})
+
+for (const [text, ending] of [
+  ['Hello **world**', '</strong>'],
+  ['- first\n- last', 'last'],
+  ['> last', 'last'],
+  ['# Heading', 'Heading'],
+  ['| One | Two |\n| --- | --- |\n| first | last |', 'last'],
+  ['```\n<script>last</script>', '&lt;script&gt;last&lt;/script&gt;'],
+]) {
+  test(`the printing caret follows the final content in ${JSON.stringify(text)}`, () => {
+    const html = renderToStaticMarkup(createElement(Markdown, { text, cursor: true }))
+    assert.match(html, new RegExp(`${ending}<span[^>]*class="lt-caret trk-print-caret"`))
+    assert.equal((html.match(/trk-print-caret/g) ?? []).length, 1)
+    assert.ok(!html.includes('<script>'))
+  })
+}
+
+test('an idle turn displays all its text without a stale printing cursor', () => {
+  const initial = useConsole.getInitialState()
+  const running = initial.running
+  initial.running = false
+  try {
+    const item: LedgerItem = { kind: 'stream', uid: 'reply', text: 'Finished reply', streaming: true }
+    const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+    assert.ok(html.includes('Finished reply'))
+    assert.ok(!html.includes('lt-caret'))
+  } finally {
+    initial.running = running
+  }
 })
 
 const text = 'First line\n\nSecond line'

@@ -365,7 +365,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
             model="opus",
             reason="Continue with another agent",
             hint="Handing over",
-            summon="Continue this review",
+            brief="Continue this review",
         )
         yield AgentRunResultEvent(AgentRunResult(""))
 

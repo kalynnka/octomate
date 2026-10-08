@@ -80,7 +80,7 @@ export interface FoldSink {
   done(): void
 }
 
-function segmentText(segment: WireSegment): string {
+export function segmentText(segment: WireSegment): string {
   // Text-ish segments carry `text`; reply segments carry `content`.
   const text = segment.data.text ?? segment.data.content
   return typeof text === 'string' ? text : JSON.stringify(segment.data)

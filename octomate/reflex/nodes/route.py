@@ -62,7 +62,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 model=model,
                 reason="Continuing with the active thread owner.",
                 hint="Continuing with the active thread owner.",
-                summon=str(state.user_prompt or ""),
+                brief="",
             )
             state.target = replace(
                 source_target,
@@ -93,7 +93,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 model=model,
                 reason="Continuing in the current thread.",
                 hint="Continuing in the current thread.",
-                summon=str(state.user_prompt or ""),
+                brief="",
             )
             state.target = replace(source_target, mode="sub")
             state.handoff = PendingHandoff()
@@ -114,7 +114,7 @@ class Route(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             model=resolved.model,
             reason="Entry agent.",
             hint="",
-            summon="",
+            brief="",
         )
         state.target = replace(
             source_target, mode="sub" if source_address.channel_thread_id else "main"

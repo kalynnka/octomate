@@ -16,11 +16,10 @@ Use a handoff when you want a different agent to own the task and its follow-ups
 > Hand this to Codex for implementation. Include the plan we agreed on and ask it
 > to show me the changes before committing.
 
-The receiving agent gets a brief with the goal and relevant context. Be explicit
-about decisions it must preserve. It takes over this conversation where it is; to
-continue somewhere else as well, [teleport](#teleport) first and hand over from
-there. The agent can only choose from the agents this channel runs. A group's main
-channel and a native session cannot be handed over: teleport into a thread first.
+The receiver starts from your brief: include the goal, relevant context and key
+decisions. It takes over this conversation; to move elsewhere, [teleport](#teleport)
+first. Choose an agent available on this channel. For a group's main channel or a
+native session, teleport into a thread first.
 
 The tool for this is **summon**. A handoff does not transfer a running process or
 copy files from your machine.

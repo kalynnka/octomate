@@ -178,7 +178,7 @@ async def test_summon_here_transmits_current_dm_ownership() -> None:
             model="opus",
             reason="you own this DM now",
             hint="Taking over",
-            summon="Continue with the user directly.",
+            brief="Continue with the user directly.",
         ),
         allow_reception_run=True,
     )
@@ -208,7 +208,7 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
             model="opus",
             reason="needs code work",
             hint="Working on it",
-            summon="Please debug this.",
+            brief="Please debug this.",
         ),
     )
     claude = FakeAgent(id="claude")
@@ -239,7 +239,7 @@ async def test_owner_survives_cold_manager_reload() -> None:
                 model="opus",
                 reason="needs code work",
                 hint="Working on it",
-                summon="Please debug this.",
+                brief="Please debug this.",
             ),
         )
         claude = FakeAgent(id="claude")
@@ -273,7 +273,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
             model="test",
             reason="needs first pass",
             hint="First pass",
-            summon="First agent brief.",
+            brief="First agent brief.",
         ),
         allow_reception_run=True,
     )
@@ -285,7 +285,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
             model="test",
             reason="needs second pass",
             hint="Second pass",
-            summon="Second agent brief.",
+            brief="Second agent brief.",
         ),
         allow_reception_run=True,
     )
@@ -376,7 +376,7 @@ async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> No
             model="opus",
             reason="needs work",
             hint="needs work",
-            summon="Please investigate this in main.",
+            brief="Please investigate this in main.",
         ),
     )
     channel = MainOnlyChannelTentacle(config=_summon_config(stream=True))
@@ -419,7 +419,7 @@ async def test_reception_model_is_resolved_from_agent() -> None:
             model="openai:gpt-4o-mini",
             reason="needs stronger model",
             hint="needs stronger model",
-            summon="Use the stronger model.",
+            brief="Use the stronger model.",
         ),
     )
     claude = FakeAgent(

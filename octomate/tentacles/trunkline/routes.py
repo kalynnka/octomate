@@ -318,7 +318,7 @@ def build_trunkline_router(
                 model=body["model"],
                 hint=body["hint"],
                 reason="Summon requested from Trunkline",
-                summon=body["brief"],
+                brief=body["brief"],
                 effort=body.get("effort"),
             )
         except GatewayRefusal as exc:

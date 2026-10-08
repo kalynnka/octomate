@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { after, afterEach, before, beforeEach, mock, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer, type ViteDevServer } from 'vite'
+import type { ApiThread, WireEvent } from '../src/lib/api/events.ts'
 import type { ThreadDetail } from '../src/lib/api/types.ts'
 
 let server: ViteDevServer
@@ -85,4 +86,54 @@ test('a delayed response cannot replace the newly selected thread', async () => 
   await switching
   assert.equal(useConsole.getState().selThreadId, 'thread-b')
   assert.equal(useConsole.getState().detail?.key, 'thread-b')
+})
+
+test('a new thread adopts its saved identity without a transition or replacing its live messages', async () => {
+  let sendKey = ''
+  const saved: ApiThread = {
+    id: 'saved-thread', kind: 'thread', chat_type: 'thread', chat_id: 'owner',
+    channel_tentacle_id: 'trunkline', channel_thread_id: null, title: 'hello',
+    project_id: null, status: 'active', created_at: '', updated_at: '', handoffs: [],
+  }
+  const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== 'POST') return Response.json([{ ...saved, channel_thread_id: sendKey }])
+    sendKey ||= useConsole.getState().selThreadId
+    const events: WireEvent[] = [
+      { event_kind: 'custom', name: 'run_started', address: {
+        channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: sendKey, shared: false,
+      } },
+      { event_kind: 'run_result', output: 'Hello back', usage: { requests: 1, tool_calls: 0, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } },
+    ]
+    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+  })
+  mock.method(api, 'getThreadDetail', async () => ({
+    ...detail, key: 'saved-thread', live: true, sendKey,
+    sessions: [{ n: '1', id: 'session', conversationId: 'conversation', route: 'codex', agent: 'codex', model: null, effort: 'high', mode: null, kind: 'entry', t: '', reason: '', status: 'active', tone: 'accent' }],
+    ledger: [{ kind: 'user', uid: 'persisted-prompt', text: 'hello', t: '', who: 'operator' }],
+  } satisfies ThreadDetail))
+  const transition = mock.method(document, 'startViewTransition')
+  useConsole.setState({ ntOn: true, ntStarted: false, ntRouteId: 'codex:', ntProject: null, ntPermissionMode: null, ntEffort: 'high', selThreadId: 'THR-NEW', live: [], running: false })
+  const actions = useConsole.getState().actions
+  actions.sendDirective('hello')
+  const prompt = useConsole.getState().live.find((item) => item.kind === 'user')
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+  assert.equal(useConsole.getState().running, false)
+  assert.equal(transition.mock.callCount(), 0)
+  assert.equal(useConsole.getState().ntOn, false)
+  assert.equal(useConsole.getState().selThreadId, saved.id)
+  assert.equal(useConsole.getState().detail?.sessions[0].conversationId, 'conversation')
+  assert.equal(useConsole.getState().detail?.sessions[0].effort, 'high')
+  assert.deepEqual(useConsole.getState().detail?.ledger, [])
+  assert.equal(useConsole.getState().live.find((item) => item.kind === 'user'), prompt)
+  assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 1)
+
+  actions.sendDirective('continue')
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+  const sent = fetch.mock.calls.filter((call) => call.arguments[1]?.method === 'POST')
+  assert.equal(sent.length, 2)
+  assert.equal(String(sent[0].arguments[0]), String(sent[1].arguments[0]))
+  assert.equal(transition.mock.callCount(), 0)
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.text), ['hello', 'continue'])
+  assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 2)
+  assert.equal(useConsole.getState().running, false)
 })

@@ -72,7 +72,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
         model="test",
         reason="needs input",
         hint="needs input",
-        summon="needs input",
+        brief="needs input",
     )
 
     suspender = ReflexSuspender(

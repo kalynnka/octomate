@@ -17,6 +17,7 @@ let commands: typeof import('../src/features/chat/commands.ts')
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let useAuth: typeof import('../src/state/auth.ts').useAuth
+let api: typeof import('../src/lib/api/index.ts').api
 let ChatHeader: typeof import('../src/features/chat/ChatHeader.tsx').ChatHeader
 let SummonRoute: typeof import('../src/features/chat/GatewayRoute.tsx').SummonRoute
 let DestinationPicker: typeof import('../src/features/chat/GatewayDestination.tsx').DestinationPicker
@@ -62,6 +63,7 @@ before(async () => {
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
   ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
+  ;({ api } = await server.ssrLoadModule('/src/lib/api/index.ts'))
   ;({ ChatHeader } = await server.ssrLoadModule('/src/features/chat/ChatHeader.tsx'))
   ;({ SummonRoute } = await server.ssrLoadModule('/src/features/chat/GatewayRoute.tsx'))
   ;({ DestinationPicker } = await server.ssrLoadModule('/src/features/chat/GatewayDestination.tsx'))
@@ -259,6 +261,73 @@ test('arrival does not navigate away from a different thread selected during the
   await useConsole.getState().actions.gateway('source', request)
   assert.equal(select.mock.callCount(), 0)
 })
+
+test('a result keeps the thread busy until the stream closes, then refreshes operation availability', async () => {
+  const stream = new TransformStream<Uint8Array>()
+  const writer = stream.writable.getWriter()
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(stream.readable) : Response.json([]))
+  useConsole.setState({ detail: { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } } })
+  queryClient.setQueryData(['thread-operations', 'source'], options)
+  useConsole.getState().actions.sendDirective('radio check')
+  try {
+    await writer.write(new TextEncoder().encode(`data: ${JSON.stringify(result)}\n\n`))
+    await writer.write(new TextEncoder().encode(`data: ${JSON.stringify({ event_kind: 'result_text_delta', delta: 'Closing feedback' })}\n\n`))
+    assert.equal(useConsole.getState().running, true)
+    assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, false)
+  } finally {
+    await writer.close()
+    for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+  }
+  assert.equal(useConsole.getState().running, false)
+  assert.ok(useConsole.getState().live.filter((item) => item.kind === 'stream').every((item) => !item.streaming))
+  assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, true)
+})
+
+for (const initiator of ['operator', 'agent']) {
+  test(`${initiator} summon inserts its recorded divider before the reply and keeps the panel in place`, async () => {
+    const detail = { key: 'source', live: true, sendKey: here.channel_thread_id!, msgCount: 0, sessions: [session], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
+    useConsole.setState({ detail })
+    const opening = { kind: 'session-open' as const, uid: 'saved-divider', sessionId: 'new-session', text: 'codex · new-model', tone: 'summon' as const }
+    mock.method(api, 'getThreadDetail', async () => ({ ...detail, sessions: [...detail.sessions, { ...session, id: opening.sessionId, conversationId: 'new-conversation', agent: 'codex', route: opening.text }], ledger: [opening] }))
+    const transport = mock.method(globalThis, 'fetch', async (url: RequestInfo | URL) => String(url).endsWith('/summon') || String(url).endsWith('/messages')
+      ? sse(...(initiator === 'agent' ? [{ ...result, output: 'Handing over.' }] : []), { ...gateway, action: 'summon', destination: here }, { event_kind: 'custom', name: 'run_started', address: here }, result)
+      : Response.json([{ ...destination, id: 'source', channel_tentacle_id: here.channel_tentacle_id, chat_id: here.chat_id, channel_thread_id: here.channel_thread_id }]))
+    const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+    let beforeReply: string[] = []
+    const unsubscribe = useConsole.subscribe((state) => {
+      if (state.live.some((item) => item.kind === 'stream')) beforeReply = state.live.map((item) => item.kind)
+    })
+    try {
+      if (initiator === 'operator') {
+        await useConsole.getState().actions.gateway('source', { action: 'summon', body: { agent_id: 'codex', model: 'new-model', hint: 'Continuing here.', brief: 'Continue' } })
+      } else {
+        useConsole.getState().actions.sendDirective('summon codex')
+        for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+      }
+    } finally {
+      unsubscribe()
+    }
+    assert.ok(beforeReply.indexOf('session-open') >= 0)
+    assert.ok(beforeReply.indexOf('session-open') < beforeReply.lastIndexOf('stream'))
+    assert.equal(useConsole.getState().live.filter((item) => item.kind === 'session-open').length, 1)
+    const replies = useConsole.getState().live.filter((item) => item.kind === 'stream')
+    assert.deepEqual(replies.map((item) => item.text), initiator === 'agent' ? ['Handing over.', 'Arrived'] : ['Arrived'])
+    assert.ok(replies.every((item) => !item.streaming))
+    assert.equal(useConsole.getState().detail?.sessions.at(-1)?.conversationId, 'new-conversation')
+    assert.equal(useConsole.getState().detail?.ledger, detail.ledger)
+    assert.equal(select.mock.callCount(), 0)
+    assert.equal(useConsole.getState().gatewayMode, null)
+    if (initiator === 'operator') {
+      transport.mock.mockImplementation(async () => sse(result))
+      useConsole.getState().actions.sendDirective('who are you?')
+      for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+      assert.ok(String(transport.mock.calls.at(-1)?.arguments[0]).endsWith('/messages'))
+      assert.equal(useConsole.getState().gatewayMode, null)
+      assert.equal(useConsole.getState().running, false)
+    }
+  })
+}
 
 test('a turn the agent moved opens where it landed, and one that stayed opens nothing', async () => {
   for (const events of [[result, gateway], [result]]) {

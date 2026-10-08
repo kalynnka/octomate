@@ -35,11 +35,15 @@ class Server(uvicorn.Server):
 def run(config: uvicorn.Config) -> None:
     """Serve Octomate, including the same lifecycle in reload subprocesses."""
     server = Server(config)
-    if config.should_reload or config.workers > 1:
-        supervisor = ChangeReload if config.should_reload else Multiprocess
-        with config.bind_socket() as sock:
-            supervisor(config, target=server.run, sockets=[sock]).run()
-    else:
-        server.run()
-        if not server.started:
-            raise SystemExit(3)
+    try:
+        if config.should_reload or config.workers > 1:
+            supervisor = ChangeReload if config.should_reload else Multiprocess
+            with config.bind_socket() as sock:
+                supervisor(config, target=server.run, sockets=[sock]).run()
+        else:
+            server.run()
+    except KeyboardInterrupt:
+        # Match uvicorn.run: captured SIGINT is re-raised after shutdown.
+        pass
+    if not server.started and not config.should_reload and config.workers == 1:
+        raise SystemExit(3)

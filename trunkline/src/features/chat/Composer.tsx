@@ -638,7 +638,7 @@ export function Composer() {
   }
   const openGateway = (action: GatewayAction, change: Partial<GatewayForm> = {}) => {
     const missing = action === 'teleport' ? !change.destination : !change.agent
-    seedForm(action, { ...change, ...(missing ? { menu: action === 'teleport' ? 'destination' : 'route' } as const : {}) })
+    seedForm(action, { ...change, menu: missing ? action === 'teleport' ? 'destination' : 'route' : change.menu ?? null })
     if (!missing) write('')
     void eligibility.refetch()
     setGatewayMode({ threadId: selThreadId, action })

@@ -121,6 +121,7 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
     assert updated is not None
     assert updated.active_agent_tentacle_id == "second"
     assert updated.latest_handoff is not None
+    assert updated.latest_handoff.brief == "Investigate the existing work"
     assert updated.latest_handoff.source_conversation_id is not None
 
 

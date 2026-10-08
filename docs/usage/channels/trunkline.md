@@ -52,6 +52,7 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Start a thread** with a message, picking an agent and model, and optionally a
   project and reasoning effort on the first message. The effort applies to the
   first run and stays selected for following turns; Auto leaves it to the agent.
+  New threads open in place.
   In the agent/model picker, drag the effort slider or focus it and use ←→.
   A thread keeps its agent and model; a different
   pick on an owned thread is refused, because a mid-thread model switch busts the
@@ -93,6 +94,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   show their direct feedback in the message panel without opening a thread; this
   feedback is not saved in thread history. `/effort` sets the first message's
   effort locally. Summon and Teleport require an existing conversation.
+  In existing conversations, native commands and their results remain in thread
+  history.
   Synced native sessions are read-only: messages, native commands, permission
   and effort changes, and approval answers are unavailable. Use an available
   gateway operation such as Teleport to continue elsewhere. Type to narrow the
@@ -160,7 +163,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   levels the model advertises. The scale
   starts at the route's default effort where the agent reports one. Where it does
   not, the scale starts at Auto, which leaves the level to the agent.
-  Run output streams into the message panel. After the server confirms arrival,
+  Replies stream into the message panel with a cursor while the agent is running.
+  After the server confirms arrival,
   the console opens the destination thread if you are still viewing the source.
   It does the same when the agent moves the conversation itself in the middle of
   a turn. When a run starts there, the console opens the thread then and streams

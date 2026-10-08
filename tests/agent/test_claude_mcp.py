@@ -53,7 +53,7 @@ SUMMON_ARGUMENTS = {
     "model": "opus",
     "hint": "Working on it",
     "reason": "needs coding",
-    "summon": "Please investigate the failing test.",
+    "brief": "Please investigate the failing test.",
 }
 
 
@@ -157,7 +157,7 @@ async def test_summon_records_the_decision_and_answers_with_the_sentence() -> No
         effort=None,
         hint="Working on it",
         reason="needs coding",
-        summon="Please investigate the failing test.",
+        brief="Please investigate the failing test.",
     )
 
 

@@ -78,7 +78,7 @@ async def _create_batch(
             model="test",
             reason="needs input",
             hint="needs input",
-            summon="needs input",
+            brief="needs input",
         )
         if response_mode == "resume"
         else None,
@@ -174,7 +174,7 @@ def test_deferred_action_batch_accepts_validated_actions() -> None:
             model="test",
             reason="needs input",
             hint="needs input",
-            summon="needs input",
+            brief="needs input",
         ),
         requests=requests,
         questions=RelationCollection(questions),
