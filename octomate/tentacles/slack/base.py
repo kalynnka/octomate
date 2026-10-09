@@ -412,8 +412,8 @@ class SlackTentacle(
         hangs off a message, and `opener` is the message — which is why a caller with
         nothing to say gets the root, where posting still works fine.
 
-        The pane an inbound DM arrives in is already a thread, so this only bites
-        where Octomate opens the conversation itself.
+        An inbound DM is already a thread, the pane's or the one its own message
+        heads, so this only bites where Octomate opens the conversation itself.
         """
         address = await super().open_dm(user_id, opener)
         if address is None or not opener:

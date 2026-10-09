@@ -43,7 +43,7 @@ OCTOMATE__TENTACLES__SLACK__APP_TOKEN=xapp-...
 
 Name agents you have already enabled and set `enabled: true` if this channel was
 generated disabled. Check the configuration, restart Octomate, invite the bot to a
-channel and `@`-mention it, or open its assistant pane. Verify a reply.
+channel and `@`-mention it, or send it a direct message. Verify a reply.
 
 ## Where things land
 
@@ -51,8 +51,11 @@ channel and `@`-mention it, or open its assistant pane. Verify a reply.
 |---|---|---|
 | A channel or group message | A group chat room | A new thread under a message the bot posts |
 | A reply in a thread | That thread | In the same thread |
-| The bot's DM | A direct message | A thread in the DM, because Slack only streams into threads |
+| A message at the top of the bot's DM | A private thread that message starts | In a thread under your message |
 | The assistant pane | A private thread | In the pane |
+
+Each message you send at the top of the bot's DM starts a new conversation. To
+continue one, reply in its thread.
 
 Slack's streaming API takes a thread and nothing else, so the bot never streams
 into a channel root. When it opens a sub-thread it posts the hint as a message and
