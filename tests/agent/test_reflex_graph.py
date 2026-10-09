@@ -497,6 +497,33 @@ async def test_route_runs_entry_agent_directly() -> None:
     assert im.sent[-1][2][0]["text"] == "hello"
 
 
+async def test_a_streamed_reply_is_recorded_with_the_id_it_was_rendered_as() -> None:
+    """Only the timeline that rendered a streamed reply knows the platform id it got,
+    and the reply's row needs it, as a reply that was sent whole already has."""
+    address = _key()
+    agent = FakeAgent(id="other", reception_output="hello")
+    threads = FakeThreadManager()
+    im = _channel()
+
+    await _run(
+        Route(),
+        state=_state(address, user_prompt="hi"),
+        deps=_deps(
+            conversations=FakeConversationManager(),
+            channels={"im": im},
+            agent=agent,
+            threads=threads,
+        ),
+    )
+
+    [(_, rendered)] = im.consumed
+    [reply] = [
+        message for message in threads.outbounds if message.message_text == "hello"
+    ]
+    assert rendered is not None
+    assert reply.platform_message_id == rendered
+
+
 async def test_route_entry_run_claims_no_ownership() -> None:
     address = _key()
     agent = FakeAgent(id="other", reception_output="hello")

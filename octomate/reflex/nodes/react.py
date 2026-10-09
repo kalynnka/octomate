@@ -152,8 +152,9 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             async with ctx.deps.gateway.driving(
                 session, conversation_id=state.conversation_id
             ):
+                presented = None
                 if suspender.channel.config.stream.enabled:
-                    result = await runtime.drive(ctx, suspender, events())
+                    result, presented = await runtime.drive(ctx, suspender, events())
                 else:
                     result = await agent.run(
                         user_prompt,
@@ -177,6 +178,7 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     suspender,
                     result,
                     streamed=suspender.channel.config.stream.enabled,
+                    presented=presented,
                 )
                 if self.resume_batch_id is not None:
                     await ctx.deps.action_manager.mark_batch(
