@@ -75,6 +75,10 @@ create a subthread. With `mention_only: true`, each group request needs an
 `@`-mention. A quoted reply alone does not count as addressing the bot. DMs need
 no mention.
 
+Heartbeat and connection lifecycle notifications are ignored without warnings.
+Their [event envelope](../../api/tentacles.md#octomate.tentacles.napcat.schema.NapcatMetaEvent)
+is documented in the API reference.
+
 Nothing can be teleported onto NapCat: QQ has no threads to hold a moved
 conversation. Trunkline's destination browser lists the channel disabled,
 with that reason.

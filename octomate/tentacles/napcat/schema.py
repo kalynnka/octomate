@@ -231,14 +231,28 @@ class NapcatMessageEvent(BaseModel):
     raw_message: str = ""
 
 
+class NapcatMetaEvent(BaseModel):
+    """A OneBot heartbeat or lifecycle notification.
+
+    The message pipeline only needs this envelope to discard connection-status
+    notifications; their event-specific fields are ignored.
+    """
+
+    post_type: Literal["meta_event"] = "meta_event"
+    meta_event_type: Literal["heartbeat", "lifecycle"]
+
+
 def _inbound_discriminator(raw: JsonObject) -> str:
     if isinstance(raw, dict) and raw.get("post_type") == "message":
         return "message"
+    if isinstance(raw, dict) and raw.get("post_type") == "meta_event":
+        return "meta_event"
     return "response"
 
 
 InboundFrame = Annotated[
     Annotated[NapcatMessageEvent, Tag("message")]
+    | Annotated[NapcatMetaEvent, Tag("meta_event")]
     | Annotated[ActionResponse[JsonObject], Tag("response")],
     Discriminator(_inbound_discriminator),
 ]
