@@ -18,12 +18,15 @@ import type {
   ApiMcpAuthorization,
   ApiMcpAuthorizationResult,
   ApiMcpTentacle,
+  ApiModelMessage,
+  ApiPage,
   ApiPermissionModes,
   ApiProfileInfo,
   ApiProject,
   ApiRoute,
   ApiThread,
   ApiThreadMessage,
+  ApiUsage,
   BatchResponseBody,
   ChannelAddress,
   CommandContextBody,
@@ -174,9 +177,25 @@ async function threadRead<T>(id: string, suffix: string): Promise<T | null> {
 
 export const fetchThread = (id: string) => threadRead<ApiThread>(id, '')
 
-/** The thread's chat ledger, oldest first — its own request, never inlined. */
-export const fetchThreadMessages = (id: string) =>
-  threadRead<ApiThreadMessage[]>(id, '/messages')
+/** A page of the model messages of the thread's own conversations, newest first,
+ *  each with the chat rows bound to it; `cursor` reads on from a page's end. */
+export const fetchThreadModelMessages = (id: string, cursor?: string) =>
+  threadRead<ApiPage<ApiModelMessage>>(
+    id,
+    `/conversations/messages${cursor === undefined ? '' : `?cursor=${encodeURIComponent(cursor)}`}`,
+  )
+
+/** A page of the thread's chat rows no model message carries — its notices, or a
+ *  chat room's talk — newest first. */
+export const fetchThreadUnbound = (id: string, cursor?: string) =>
+  threadRead<ApiPage<ApiThreadMessage>>(
+    id,
+    `/messages?unbound=true${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`,
+  )
+
+/** What the thread's own conversations spent, summed by the relay — the pages
+ *  in hand are never the whole thread. */
+export const fetchThreadUsage = (id: string) => threadRead<ApiUsage>(id, '/usage')
 
 /** The thread's conversations, each carrying its runs. */
 export const fetchThreadConversations = (id: string) =>

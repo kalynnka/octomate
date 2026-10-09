@@ -380,23 +380,3 @@ class Thread(BaseTransmuter):
         if handoff is None:
             return None
         return handoff.to_model
-
-
-from octomate.schemas.messages import (  # noqa: E402
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-)
-
-ThreadMessage.model_rebuild(
-    _types_namespace={
-        "ModelRequest": ModelRequest,
-        "ModelResponse": ModelResponse,
-    }
-)
-ThreadCommand.model_rebuild(
-    _types_namespace={"ModelRequest": ModelRequest, "ModelResponse": ModelResponse}
-)
-ModelMessage.model_rebuild(
-    _types_namespace={"ThreadMessage": ThreadMessage, "ThreadCommand": ThreadCommand}
-)

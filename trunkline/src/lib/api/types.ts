@@ -6,6 +6,7 @@
  * console renders. Mock adapters fill them today; real endpoints can replace
  * the adapters without touching the UI.
  */
+import type { ThreadReads } from './live'
 
 import type { ApiThread } from './events'
 
@@ -326,7 +327,12 @@ export interface ThreadDetail {
   channel?: string
   /** trunkline directive key; absent = read-only (another channel's thread) */
   sendKey?: string
+  /** chat messages in the ledger pages read so far */
   msgCount: number
+  /** older ledger pages remain on the relay */
+  earlier?: boolean
+  /** the relay's reads this detail was folded from, which an older page folds onto */
+  reads?: ThreadReads
   sessions: SessionInfo[]
   ledger: LedgerItem[]
   project?: ProjectRef

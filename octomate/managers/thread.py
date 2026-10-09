@@ -6,6 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
+from arcanus import Cursor, Page
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
@@ -14,11 +15,12 @@ from sqlalchemy import ColumnElement, and_, or_, select
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
+from octomate.managers.conversation import own_runs
 from octomate.managers.user import UserManager
 from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
-from octomate.schemas.messages import ModelRequest, ModelResponse
+from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import (
@@ -1004,6 +1006,61 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 ],
             )
         return list(rows)
+
+    async def messages_page(
+        self,
+        thread_id: UUID7,
+        cursor: str | None = None,
+        *,
+        unbound: bool = False,
+        limit: int,
+    ) -> Page[ThreadMessage]:
+        """The rows the thread shows — its own ledger's, and a forked parent's up to
+        the cut — a page at a time, newest first, continued from an Arcanus
+        `cursor`. Ids are uuid7 and a ledger is appended to, so id order is the
+        order rows were written in.
+
+        `unbound` keeps to the rows no model message of the thread's own
+        conversations was built from or answered with: a fork or teleport notice,
+        or a chat room's talk, whose work runs in sub-threads. Everything else is
+        read through those model messages, which carry the rows bound to them.
+        """
+        scope: list[Expression[bool] | ColumnElement[bool]]
+        scope = [in_ledger(thread_id)]
+        if unbound:
+            scope.append(
+                ~ThreadMessage["model_messages"].any(
+                    ModelMessage["run_id"].in_(own_runs(thread_id))
+                )
+            )
+        bookmark = None if cursor is None else Cursor[ThreadMessage](cursor).bookmark
+        after = (
+            []
+            if bookmark is None or bookmark.expression is None
+            else [bookmark.expression]
+        )
+        newest_first = (ThreadMessage["id"].desc(),)
+        async with async_session() as session:
+            rows = await session.list(
+                ThreadMessage,
+                limit=limit + 1,
+                order_bys=newest_first,
+                options=[noload(ThreadMessage["model_messages"])],
+                expressions=[*scope, *after],
+            )
+            total = await session.count(ThreadMessage, expressions=scope)
+        items = tuple(rows[:limit])
+        last = ThreadMessage["id"] < items[-1].id if items else None
+        return Page(
+            items=items,
+            total=total,
+            next_cursor=str(
+                Cursor[ThreadMessage].from_expressions(
+                    bookmark=last, order_bys=newest_first, limit=limit
+                )
+            ),
+            has_more=len(rows) > limit,
+        )
 
     async def related_model_messages(
         self,
