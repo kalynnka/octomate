@@ -127,6 +127,8 @@ export const useAuth = create<AuthState>()((set, get) => {
 
     async signOut() {
       await logout()
+      // The address names what this operator had open; the next boots into their own.
+      history.replaceState(null, '', '/')
       set({ status: 'signed-out', user: null, page: 'login', notice: null })
     },
 

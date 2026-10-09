@@ -120,29 +120,35 @@ export interface ReplayChild {
   agentId: string
 }
 
-/** One replayed card with the clock of the message that produced it, so the
- * caller can date each card at its own moment — the order a live stream would
- * have delivered — instead of piling a whole run onto its start time. */
+/** One replayed card with the message that produced it, which is where it sorts:
+ * message ids are uuid7 and a run is only appended to, so their order is the
+ * order a live stream would have delivered. `id` names the message and part it
+ * came from, the same on every replay. */
 export interface ReplayCard {
-  at: string | null
+  id: string
+  message: string
   item: LedgerItemDraft
 }
 
 /**
  * A finished run's thinking, text, and tool cards, rebuilt from the model
- * messages the run recorded. This is the reload path: the chat ledger keeps what
- * was said, so a reader coming back to a thread would otherwise see a prompt, an
- * answer, and no sign of the work between them.
+ * messages the run recorded. This is the reload path: what a live stream showed
+ * of the run, read back.
  *
- * The middle is rebuilt whole — including the narration between tool calls —
- * but the trailing answer text is left out: the thread ledger already carries
- * it, and pushing it again would double every answer. Returns are indexed first
- * so each tool card is born settled; one with no return stays `run`, which is
- * what a run that died mid-call actually left behind. A call a `children` entry
- * names is a subagent spawn and renders as a subagent card instead of a tool.
+ * The narration between tool calls renders as the run's own text; what follows
+ * its last real work is its answer, and renders as `agent`'s message. Returns are
+ * indexed first so each tool card is born settled; one with no return stays
+ * `run`, which is what a run that died mid-call actually left behind. A call a
+ * `children` entry names is a subagent spawn and renders as a subagent card
+ * instead of a tool.
+ *
+ * `messages` may be only the run's newest stretch, since its messages are paged
+ * back from the end; both rules hold on one, as a return follows its call and
+ * the answer closes the run.
  */
 export function replayRun(
   messages: ApiModelMessage[],
+  agent: string,
   children?: Map<string, ReplayChild>,
 ): ReplayCard[] {
   const returns = new Map<string, { result: string; failed: boolean }>()
@@ -216,9 +222,8 @@ export function replayRun(
     }
   }
 
-  // Everything after the last real work is the answer the ledger already shows;
-  // text before that mark is the run's own narration and must render, or every
-  // block between two tool calls silently vanishes on reload.
+  // Everything after the last real work is the answer; text before that mark is
+  // the run's own narration between its tool calls.
   let lastWork = -1
   let index = 0
   for (const message of messages) {
@@ -233,9 +238,9 @@ export function replayRun(
   index = 0
   for (const message of messages) {
     if (message.kind !== 'response') continue
-    const at = message.timestamp
-    const push = (item: LedgerItemDraft) => cards.push({ at, item })
-    for (const part of message.parts) {
+    for (const [n, part] of message.parts.entries()) {
+      const push = (item: LedgerItemDraft) =>
+        cards.push({ id: `${message.id}.${n}`, message: message.id, item })
       switch (part.part_kind) {
         case 'thinking':
           // No duration survives the row, and a made-up one would be a claim.
@@ -260,9 +265,12 @@ export function replayRun(
           push({ kind: 'divider', label: 'context compacted' })
           break
         case 'text':
-          if (index < lastWork && part.content) {
-            push({ kind: 'stream', text: part.content, streaming: false })
-          }
+          if (!part.content) break
+          push(
+            index < lastWork
+              ? { kind: 'stream', text: part.content, streaming: false }
+              : { kind: 'agent', label: agent, blocks: [{ type: 'p', text: part.content }] },
+          )
           break
         case 'file':
           break

@@ -17,7 +17,6 @@ from typing import TypeVar
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 from fastmcp.server.http import StarletteWithLifespan
 from pydantic import SecretStr
 from rich.color import Color
@@ -466,7 +465,7 @@ class Octomate(FastAPI):
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
-        from octomate.tentacles.trunkline.base import TrunklineTentacle
+        from octomate.tentacles.trunkline.base import ConsoleFiles, TrunklineTentacle
 
         self.include_router(auth_router)
         self.include_router(command_router)
@@ -491,7 +490,7 @@ class Octomate(FastAPI):
             ):
                 self.mount(
                     "/",
-                    StaticFiles(directory=channel.config.static_dir, html=True),
+                    ConsoleFiles(directory=channel.config.static_dir, html=True),
                     name=channel.id,
                 )
                 break

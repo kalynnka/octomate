@@ -31,7 +31,10 @@ after(async () => { await server?.close() })
 
 test('native thread kind keeps a synced session read-only regardless of its channel name', () => {
   const native: ApiThread = { ...thread, kind: 'native_thread', channel_tentacle_id: 'trunkline', channel_thread_id: 'key' }
-  const detail = liveThreadDetail({ thread: native, conversations: [], messages: [], project: null, batches: [] })
+  const detail = liveThreadDetail({
+      thread: native, conversations: [], modelMessages: [], unbound: [], cursors: { model: null, unbound: null },
+      totals: { model: 0, unbound: 0 }, project: null, batches: [], usage: {},
+    })
   assert.equal(detail.kind, 'native_thread')
   assert.equal(detail.sendKey, undefined)
 })
@@ -50,7 +53,10 @@ test('an import notice keeps the address label and value in one system paragraph
     agent_tentacle_id: null, sender: null, segments: [], created_at: '2026-09-29T00:00:00Z',
     message_text: 'Forked from conversation native-session.\n\nCurrent channel address:\ntrunkline/thread/owner/landed/owner.',
   }
-  const detail = liveThreadDetail({ thread, conversations: [], messages: [notice], project: null, batches: [] })
+  const detail = liveThreadDetail({
+    thread, conversations: [], modelMessages: [], unbound: [notice], cursors: { model: null, unbound: null },
+    totals: { model: 0, unbound: 1 }, project: null, batches: [], usage: {},
+  })
   assert.deepEqual(detail.ledger.flatMap((item) => (item.kind === 'system' ? [item.text] : [])), [
     'Forked from conversation native-session.',
     'Current channel address:\ntrunkline/thread/owner/landed/owner.',
@@ -66,10 +72,13 @@ for (const agent of ['codex-native', 'codex']) {
         conversation_id: conversation.id, name: 'fork', cwd: null,
         model_name: 'gpt-6-luna', permission_mode: 'auto_review',
         parent_run_id: null, parent_tool_call_id: null,
-        started_at: '2026-09-29T00:00:00Z', messages: [],
+        started_at: '2026-09-29T00:00:00Z',
       }],
     }
-    const detail = liveThreadDetail({ thread, conversations: [source], messages: [], project: null, batches: [] })
+    const detail = liveThreadDetail({
+      thread, conversations: [source], modelMessages: [], unbound: [], cursors: { model: null, unbound: null },
+      totals: { model: 0, unbound: 0 }, project: null, batches: [], usage: {},
+    })
     assert.equal(detail.sessions.at(-1)?.route, `${agent} · gpt-6-luna`)
     assert.equal(detail.sessions.at(-1)?.mode, 'auto_review')
   })

@@ -274,15 +274,18 @@ export function TimelinePanel() {
     // nothing for the rails to line up on. A thread of a thousand turns then
     // costs a page of rows rather than a thousand of them.
     const page = Math.max(0, detail.ledger.length - ledgerN)
-    let si = 0
+    // The ledger in hand may open mid-thread, after sessions whose cards are all
+    // on older relay pages; it opens in the first session it holds a card of.
+    let si = Math.max(0, sessions.findIndex((session) => session.anchor !== undefined))
     detail.ledger.forEach((item, index) => {
       const isOpen = item.kind === 'session-open'
       // A session starts at its own first card, whatever kind that is: the claim
       // that opened it, or — for a session nothing claimed — its first turn. The
       // walk covers the whole ledger, so a window opening mid-thread still knows
       // which session it opened in.
-      const opening = sessions[si + 1]?.anchor === item.uid
-      if (opening) si++
+      const next = sessions.findIndex((session, k) => k > si && session.anchor === item.uid)
+      const opening = next >= 0
+      if (opening) si = next
       const e = isOpen ? null : eventOf(item, operator, sessions[si]?.route.split(' ')[0])
       // A turn heads its run rather than being one of its messages.
       if (e && e.k !== 'turn') indexed++
@@ -314,8 +317,11 @@ export function TimelinePanel() {
   }
   const eventCount = buckets.reduce((n, b) => n + b.filter((ev) => ev.k !== 'turn').length, 0)
   // What the window holds, over what the thread has, when they differ — an index
-  // that silently showed 40 of a thousand would read as a short thread.
-  const eventTally = eventCount === indexed ? `${eventCount}` : `${eventCount}/${indexed}`
+  // that silently showed 40 of a thousand would read as a short thread. Pages not
+  // read off the relay yet are more again.
+  const more = detail?.earlier ? '+' : ''
+  const eventTally =
+    eventCount === indexed && !more ? `${eventCount}` : `${eventCount}/${indexed}${more}`
   const runsBySession = buckets.map((events) => {
     const runs: TlRun[] = []
     for (const ev of events) {

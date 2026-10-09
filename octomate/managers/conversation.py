@@ -6,18 +6,20 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal, TypeVar
 
+from arcanus import Cursor, Page
 from arcanus.materia.sqlalchemy import lazyload, noload, selectinload
 from fastapi import UploadFile
-from pydantic import UUID7
+from pydantic import UUID7, TypeAdapter
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
-from sqlalchemy import and_, func, insert, literal, or_, select
+from pydantic_ai.usage import RequestUsage
+from sqlalchemy import Select, and_, func, insert, literal, or_, select
 
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.files import FileManager
 from octomate.schemas.conversation import Conversation, ConversationRun
 from octomate.schemas.files import FileVariant, Jsonl
-from octomate.schemas.messages import ModelMessage
+from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.thread import (
     MessageBinding,
@@ -28,6 +30,21 @@ from octomate.schemas.thread import (
 from octomate.types.permissions import AgentPermissionMode
 
 RunT = TypeVar("RunT", bound=AgentRun)
+
+request_usage_adapter: TypeAdapter[RequestUsage] = TypeAdapter(RequestUsage)
+
+
+def own_runs(thread_id: UUID7) -> Select[tuple[str]]:
+    """The runs in the history of the thread's own conversations — its agents', not
+    the subagents' those agents spawned. A fork's history holds the runs it was
+    forked with, so those are its own too."""
+    return (
+        select(ConversationRun["run_id"])
+        .join(Conversation, Conversation["id"] == ConversationRun["conversation_id"])
+        .where(
+            Conversation["thread_id"] == thread_id, Conversation["subagent_id"] == ""
+        )
+    )
 
 
 class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
@@ -174,30 +191,95 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             )
         return list(rows)
 
-    async def for_thread(
-        self, thread_id: UUID7, *, with_run_messages: bool = False
-    ) -> list[Conversation]:
+    async def for_thread(self, thread_id: UUID7) -> list[Conversation]:
         """The thread's agent conversations, subagents included, each with its runs.
 
         Both message relations here are lazy="selectin", so the plain query would read
         every model message the thread ever produced twice over — once under the
-        conversation and once under the run that owns it. The conversation's copy is
-        always dropped; the run's is what `with_run_messages` asks for, and it is the
-        only place the thinking and the tool calls are, so a reader rebuilding a
-        thread's middle needs it and a reader listing conversations does not.
+        conversation and once under the run that owns it. Both are dropped: a reader
+        after the messages pages through them with `messages_page`.
         """
-        runs = selectinload(Conversation["runs"])
         async with async_session() as session:
             rows = await session.list(
                 Conversation,
                 limit=None,
                 options=[
                     noload(Conversation["messages"]),
-                    runs if with_run_messages else runs.noload(AgentRun["messages"]),
+                    selectinload(Conversation["runs"]).noload(AgentRun["messages"]),
                 ],
                 expressions=[Conversation["thread_id"] == thread_id],
             )
         return list(rows)
+
+    async def messages_page(
+        self, thread_id: UUID7, cursor: str | None = None, *, limit: int
+    ) -> Page[ModelRequest | ModelResponse]:
+        """The model messages of the thread's own conversations, newest first, a
+        page at a time and continued from an Arcanus `cursor`. Ids are uuid7 and a
+        run's messages are only appended, so id order is the order they happened
+        in, across every conversation the thread has had.
+
+        Each carries the chat rows bound to it — the ones a request was built from,
+        the ones a response was delivered as — so a reader has who said what
+        without the prompt's dressing. A subagent's messages stay out: they are its
+        own conversation's, and the spawn call in its parent's run stands for them.
+        """
+        scope = ModelMessage["run_id"].in_(own_runs(thread_id))
+        bookmark = None if cursor is None else Cursor[ModelMessage](cursor).bookmark
+        after = (
+            []
+            if bookmark is None or bookmark.expression is None
+            else [bookmark.expression]
+        )
+        newest_first = (ModelMessage["id"].desc(),)
+        async with async_session() as session:
+            rows = await session.list(
+                ModelMessage,
+                limit=limit + 1,
+                order_bys=newest_first,
+                options=[
+                    selectinload(ModelMessage["thread_messages"]).noload(
+                        ThreadMessage["model_messages"]
+                    )
+                ],
+                expressions=[scope, *after],
+            )
+            total = await session.count(ModelMessage, expressions=[scope])
+            # The polymorphic read materializes every row as one of the two.
+            items = tuple(
+                row
+                for row in rows[:limit]
+                if isinstance(row, ModelRequest | ModelResponse)
+            )
+            for item in items:
+                await item.thread_messages
+        last = ModelMessage["id"] < items[-1].id if items else None
+        return Page(
+            items=items,
+            total=total,
+            next_cursor=str(
+                Cursor[ModelMessage].from_expressions(
+                    bookmark=last, order_bys=newest_first, limit=limit
+                )
+            ),
+            has_more=len(rows) > limit,
+        )
+
+    async def usage(self, thread_id: UUID7) -> RequestUsage:
+        """The tokens the thread's own conversations spent, every response's usage
+        summed. A subagent's are left to its own conversation, as its messages are.
+        Only the usage column is read: summing a thread must not load its parts."""
+        async with async_session() as session:
+            usages = await session.scalars(
+                select(ModelResponse["usage"]).where(
+                    ModelResponse["run_id"].in_(own_runs(thread_id)),
+                    ModelResponse["usage"].is_not(None),
+                )
+            )
+            return sum(
+                map(request_usage_adapter.validate_python, usages),
+                RequestUsage(),
+            )
 
     async def thread_id(self, conversation_id: UUID7) -> UUID7 | None:
         async with async_session() as session:

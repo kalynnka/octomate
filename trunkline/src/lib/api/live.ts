@@ -8,15 +8,17 @@ import type {
   ApiConversation,
   ApiDeferredBatch,
   ApiHandoff,
+  ApiModelMessage,
+  ApiPage,
   ApiProject,
   ApiThread,
   ApiThreadMessage,
+  ApiUsage,
 } from './events'
 import { batchFeelers, replayRun, segmentText, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
-  LedgerItemDraft,
   SessionInfo,
   ThreadDetail,
   ThreadSummary,
@@ -241,33 +243,62 @@ function liveSessions(
     })
 }
 
-/** One thread as the console reads it: the row, then the sub-resources that
- *  hang off it, each its own request. */
+/** One thread as the console reads it: the row, the newest stretch of its
+ *  two paged reads, and the sub-resources that hang off it, each its own request. */
 export interface ThreadReads {
   thread: ApiThread
-  messages: ApiThreadMessage[]
+  /** the model messages of the thread's own conversations read so far, oldest first */
+  modelMessages: ApiModelMessage[]
+  /** its chat rows no model message carries, read so far, oldest first */
+  unbound: ApiThreadMessage[]
+  /** where each read goes on from; null once it has reached the thread's start */
+  cursors: Record<ThreadRead, string | null>
+  /** how many rows each read holds on the relay */
+  totals: Record<ThreadRead, number>
   conversations: ApiConversation[]
   project: ApiProject | null
   batches: ApiDeferredBatch[]
+  usage: ApiUsage
+}
+
+export type ThreadRead = 'model' | 'unbound'
+
+/** One more page of either read, newest first as the relay serves it. */
+export type OlderPage =
+  | { read: 'model'; page: ApiPage<ApiModelMessage> }
+  | { read: 'unbound'; page: ApiPage<ApiThreadMessage> }
+
+/**
+ * The read holding the other back: of those with more to give, the one whose
+ * oldest row in hand is newest. Nothing older than that row can show yet — the
+ * other read may still hold rows newer than it — and it is the one to page next.
+ */
+export function holdingBack(reads: ThreadReads): ThreadRead | null {
+  const model = reads.cursors.model === null ? undefined : reads.modelMessages[0]?.id
+  const unbound = reads.cursors.unbound === null ? undefined : reads.unbound[0]?.id
+  if (model === undefined) return unbound === undefined ? null : 'unbound'
+  return unbound === undefined || model > unbound ? 'model' : 'unbound'
 }
 
 export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
-  const { thread, messages, conversations, project, batches } = reads
-  let uid = 0
-  const next = () => `h${++uid}`
+  const { thread, modelMessages, unbound, conversations, project, batches, usage: spent } = reads
 
-  // `session` is the conversation the card belongs to, which is what the
-  // timeline buckets on: each session's first card is where it starts.
-  type Dated = { at: number; item: LedgerItemDraft; session?: string }
-  const dated: Dated[] = []
+  // Every row is keyed by its uuid7, which is when it was written; a run and the
+  // ledger are only appended to, so that is the order things happened in. A
+  // card's uid comes from the row it was read off, so reading further back never
+  // renames the cards already shown. `session` is the conversation the card
+  // belongs to, which is what the timeline buckets on.
+  type Keyed = { key: string; item: LedgerItem; session?: string }
+  const keyed: Keyed[] = []
 
   thread.handoffs.forEach((handoff, index) => {
     const opened = handoff.target_conversation_id
-    dated.push({
-      at: Date.parse(handoff.created_at),
+    keyed.push({
+      key: handoff.id,
       session: opened ?? undefined,
       item: {
         kind: 'session-open',
+        uid: handoff.id,
         // The session the claim opened, not the claim — a re-summon reopens a
         // session that already has this tag, and says so by carrying it.
         sessionId: sessionTag(opened ?? handoff.id),
@@ -276,47 +307,6 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       },
     })
   })
-
-  // The chat ledger is what was said — the prompt and the answer. The work
-  // between them comes from the runs below, so nothing here pushes a card the
-  // replay will push again.
-  for (const message of messages) {
-    const at = Date.parse(message.happened_at)
-    const text = message.message_text ?? ''
-    if (message.direction === 'inbound' && message.actor_kind === 'human') {
-      dated.push({
-        at,
-        item: {
-          kind: 'user',
-          t: clock(message.happened_at),
-          who: message.sender?.name || 'operator',
-          text,
-        },
-      })
-    } else if (message.actor_kind === 'system') {
-      // Each paragraph gets one bullet; line breaks within it stay together.
-      for (const [index, paragraph] of text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).entries()) {
-        dated.push({ at, item: { kind: 'system', text: paragraph, tone: index === 0 ? 'info' : undefined } })
-      }
-    } else {
-      dated.push({
-        at,
-        item: {
-          kind: 'agent',
-          label: message.agent_tentacle_id ?? 'agent',
-          blocks: [{ type: 'p', text }],
-        },
-      })
-    }
-    if (message.kind === 'command' && message.outcome) {
-      const outcome = message.outcome
-      const feedback = outcome.status === 'completed' ? outcome.segments.map(segmentText) : [outcome.message]
-      if (feedback.length) dated.push({
-        at,
-        item: { kind: 'agent', label: 'relay', blocks: feedback.map((text) => ({ type: 'p', text })) },
-      })
-    }
-  }
 
   // The agent's own conversations: a subagent's runs surface through the
   // parent's tool call, not as the thread's own history — the spawn call each
@@ -331,41 +321,122 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       }
     }
   }
+  const ranIn = new Map(
+    own.flatMap((conversation) => conversation.runs.map((run) => [run.id, conversation] as const)),
+  )
 
-  // The work between a prompt and its answer, rebuilt from what each run
-  // recorded. Each card is dated at its own message's clock — the order a live
-  // stream would have delivered it — so a card can never sort above the prompt
-  // that caused it, whatever clock stamped that prompt's ledger row.
-  for (const conversation of own) {
-    for (const run of conversation.runs) {
-      const started = run.started_at ? Date.parse(run.started_at) : 0
-      for (const card of replayRun(run.messages ?? [], children)) {
-        dated.push({
-          at: card.at !== null ? Date.parse(card.at) : started,
-          item: card.item,
-          session: conversation.id,
+  // What was said: a row no model message carries stands at its own place, and
+  // the rows a request was built from stand at the request's — in their senders'
+  // own words, not the prompt's dressing. A row an agent said is answered by its
+  // own response, so only what came in is read off a request.
+  const said = [
+    ...unbound.map((message) => ({ key: message.id, message, session: undefined })),
+    ...modelMessages.flatMap((request) =>
+      request.kind !== 'request'
+        ? []
+        : request.thread_messages
+            .filter((message) => message.direction === 'inbound')
+            .map((message) => ({ key: request.id, message, session: ranIn.get(request.run_id)?.id })),
+    ),
+  ]
+  for (const { key, message, session } of said) {
+    const text = message.message_text ?? ''
+    if (message.direction === 'inbound' && message.actor_kind === 'human') {
+      keyed.push({
+        key,
+        session,
+        item: {
+          kind: 'user',
+          uid: message.id,
+          t: clock(message.happened_at),
+          who: message.sender?.name || 'operator',
+          text,
+        },
+      })
+    } else if (message.actor_kind === 'system') {
+      // Each paragraph gets one bullet; line breaks within it stay together.
+      for (const [n, paragraph] of text.split(/\n\s*\n/).map((part) => part.trim()).filter(Boolean).entries()) {
+        keyed.push({
+          key,
+          session,
+          item: { kind: 'system', uid: `${message.id}.${n}`, text: paragraph, tone: n === 0 ? 'info' : undefined },
         })
       }
+    } else {
+      keyed.push({
+        key,
+        item: {
+          kind: 'agent',
+          uid: message.id,
+          label: message.agent_tentacle_id ?? 'agent',
+          blocks: [{ type: 'p', text }],
+        },
+      })
+    }
+    if (message.kind === 'command' && message.outcome) {
+      const outcome = message.outcome
+      const feedback = outcome.status === 'completed' ? outcome.segments.map(segmentText) : [outcome.message]
+      if (feedback.length) keyed.push({
+        key,
+        session,
+        item: {
+          kind: 'agent',
+          uid: `${message.id}.outcome`,
+          label: 'relay',
+          blocks: feedback.map((text) => ({ type: 'p', text })),
+        },
+      })
+    }
+  }
+  // A request nothing was bound to speaks for itself — a turn whose chat row was
+  // never tied to it.
+  for (const request of modelMessages) {
+    if (request.kind !== 'request' || request.thread_messages.some((m) => m.direction === 'inbound')) continue
+    for (const [n, part] of request.parts.entries()) {
+      if (part.part_kind !== 'user-prompt') continue
+      const text = typeof part.content === 'string' ? part.content : part.content.filter((c) => typeof c === 'string').join('\n')
+      keyed.push({
+        key: request.id,
+        session: ranIn.get(request.run_id)?.id,
+        item: { kind: 'user', uid: `${request.id}.${n}`, t: request.timestamp ? clock(request.timestamp) : '', who: 'operator', text },
+      })
     }
   }
 
-  // Stable sort: a handoff and the directive that caused it can share a
-  // millisecond, and insertion order settles the tie.
-  dated.sort((a, b) => a.at - b.at)
-  const ledger: LedgerItem[] = dated.map(
-    ({ item }) => ({ ...item, uid: next() }) as LedgerItem,
-  )
+  // The work between a prompt and its answer, and the answer, rebuilt from what
+  // each run recorded — as much of it as the pages in hand reach.
+  const recorded = new Map<string, ApiModelMessage[]>()
+  for (const message of modelMessages) {
+    const run = recorded.get(message.run_id)
+    if (run === undefined) recorded.set(message.run_id, [message])
+    else run.push(message)
+  }
+  for (const [runId, messages] of recorded) {
+    const conversation = ranIn.get(runId)
+    for (const card of replayRun(messages, conversation?.agent_tentacle_id ?? 'agent', children)) {
+      keyed.push({ key: card.message, item: { ...card.item, uid: card.id } as LedgerItem, session: conversation?.id })
+    }
+  }
+
+  // Stable sort, so the cards of one message keep the order of its parts. Rows
+  // older than what the read holding the other back has reached wait for it.
+  const back = holdingBack(reads)
+  const horizon = back === null ? '' : back === 'model' ? modelMessages[0].id : unbound[0].id
+  keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
+  const shown = new Set<string>()
+  const ledger: LedgerItem[] = []
   // Where each session starts in the ledger — its first card, which the timeline
   // jumps to and splits its buckets on.
   const anchors = new Map<string, string>()
-  dated.forEach(({ session }, index) => {
-    if (session !== undefined && !anchors.has(session)) {
-      anchors.set(session, ledger[index].uid)
-    }
-  })
+  for (const { key, item, session } of keyed) {
+    if (key < horizon || shown.has(item.uid)) continue
+    shown.add(item.uid)
+    ledger.push(item)
+    if (session !== undefined && !anchors.has(session)) anchors.set(session, item.uid)
+  }
   for (const batch of batches) {
-    for (const item of batchFeelers(batch.id, batch.questions, batch.approvals)) {
-      ledger.push({ ...item, uid: next() } as LedgerItem)
+    for (const [n, item] of batchFeelers(batch.id, batch.questions, batch.approvals).entries()) {
+      ledger.push({ ...item, uid: `${batch.id}.${n}` } as LedgerItem)
     }
   }
 
@@ -394,33 +465,25 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         ? lastCwd.slice(root.length + 1)
         : lastCwd
 
-  // What the thread cost, and what its last turn was carrying. Both come off the
-  // model messages the runs already hold for the replay — the provider's own
-  // numbers, summed here because nothing else reports them.
+  // What the thread cost, as the relay summed it over every response, and what
+  // its last turn was carrying — the newest response's own input, which is the
+  // context it ran with. Summing those would add every turn's context together,
+  // which is not a window.
   const usage: ThreadUsage = {
-    input: 0,
-    output: 0,
-    cacheRead: 0,
-    cacheWrite: 0,
+    input: spent.input_tokens ?? 0,
+    output: spent.output_tokens ?? 0,
+    cacheRead: spent.cache_read_tokens ?? 0,
+    cacheWrite: spent.cache_write_tokens ?? 0,
     cacheRate: null,
-  }
-  let context = 0
-  for (const run of runs) {
-    for (const message of run.messages ?? []) {
-      if (message.kind !== 'response' || !message.usage) continue
-      const { input_tokens, output_tokens, cache_read_tokens, cache_write_tokens } =
-        message.usage
-      usage.input += input_tokens ?? 0
-      usage.output += output_tokens ?? 0
-      usage.cacheRead += cache_read_tokens ?? 0
-      usage.cacheWrite += cache_write_tokens ?? 0
-      // The last turn's own input is the context it ran with. Summing them would
-      // add every turn's context together, which is not a window.
-      context = (input_tokens ?? 0) + (cache_read_tokens ?? 0) + (cache_write_tokens ?? 0)
-    }
   }
   const read = usage.input + usage.cacheRead + usage.cacheWrite
   usage.cacheRate = read > 0 ? usage.cacheRead / read : null
+  const turn = modelMessages.findLast(
+    (message): message is Extract<ApiModelMessage, { kind: 'response' }> =>
+      message.kind === 'response' && !!message.usage,
+  )?.usage
+  const context =
+    (turn?.input_tokens ?? 0) + (turn?.cache_read_tokens ?? 0) + (turn?.cache_write_tokens ?? 0)
 
   const { agent } = activeRoute(thread)
   return {
@@ -448,10 +511,42 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       thread.kind !== 'native_thread' && thread.channel_tentacle_id === 'trunkline'
         ? (thread.channel_thread_id ?? undefined)
         : undefined,
-    msgCount: messages.length,
+    msgCount: reads.totals.model + reads.totals.unbound,
+    earlier: reads.cursors.model !== null || reads.cursors.unbound !== null,
+    reads,
     sessions: liveSessions(thread.handoffs, own, anchors),
     ledger,
     usage,
     ctxK: Math.round(context / 1000),
+  }
+}
+
+/**
+ * `detail` with one more page of either read folded on. The cards it already
+ * shows stay as they are — an answer marked on a feeler survives — and the new
+ * ones go above them: a page only reaches further back, and a row waits until
+ * both reads are past it. Sessions keep what was changed on them and take their
+ * anchors afresh, since a session's first card may be on this page.
+ */
+export function withOlderPage(detail: ThreadDetail, reads: ThreadReads, older: OlderPage): ThreadDetail {
+  const cursor = older.page.has_more ? older.page.next_cursor : null
+  const cursors = { ...reads.cursors, [older.read]: cursor }
+  const totals = { ...reads.totals, [older.read]: older.page.total }
+  const fresh = liveThreadDetail(
+    older.read === 'model'
+      ? { ...reads, cursors, totals, modelMessages: [...older.page.items].reverse().concat(reads.modelMessages) }
+      : { ...reads, cursors, totals, unbound: [...older.page.items].reverse().concat(reads.unbound) },
+  )
+  const shown = new Set(detail.ledger.map((item) => item.uid))
+  return {
+    ...detail,
+    msgCount: fresh.msgCount,
+    earlier: fresh.earlier,
+    reads: fresh.reads,
+    ledger: [...fresh.ledger.filter((item) => !shown.has(item.uid)), ...detail.ledger],
+    sessions: detail.sessions.map((session) => ({
+      ...session,
+      anchor: fresh.sessions.find((each) => each.conversationId === session.conversationId)?.anchor,
+    })),
   }
 }
