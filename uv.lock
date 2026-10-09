@@ -1999,7 +1999,7 @@ wheels = [
 
 [[package]]
 name = "octomate"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "aiohttp" },
@@ -2120,7 +2120,7 @@ docs = [
 
 [[package]]
 name = "octomate-cli"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "cli" }
 dependencies = [
     { name = "octomate-protocol" },
@@ -2155,7 +2155,7 @@ requires-dist = [
 
 [[package]]
 name = "octomate-protocol"
-version = "0.0.3"
+version = "0.1.0"
 source = { editable = "protocol" }
 dependencies = [
     { name = "pydantic" },
