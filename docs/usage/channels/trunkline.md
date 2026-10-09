@@ -239,6 +239,11 @@ Each paragraph has one bullet; wrapped lines stay within it.
 Ordinary chat runs stream over server-sent events; a browser that disconnects mid-run only stops
 watching, and the run finishes and records regardless.
 
+The address bar names what is open — a thread, a new thread being composed, or a
+control page — so a reload, a shared link, or signing back in after a session
+expires returns there, and Back and Forward step through what you opened. Signing
+out returns the address to the console's start.
+
 Explicit commands submitted through `POST /api/commands/execute` use Reflex for
 user tools, approvals and reply history. Direct feedback and agent activity use
 the normal channel stream, followed by a command outcome for completion tracking.

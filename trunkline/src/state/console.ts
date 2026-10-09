@@ -194,6 +194,8 @@ export interface ConsoleActions {
   toggleChannel(id: string): void
   toggleControl(): void
   setControlSection(sec: ControlSection): void
+  /** show a control page, whatever was open: the address names it */
+  openControl(sec: Exclude<ControlSection, ''>): void
   goChat(): void
   toggleTrace(): void
   /** fold/unfold panels when the window crosses width breakpoints */
@@ -838,6 +840,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     },
     setControlSection(sec: ControlSection) {
       set((s) => ({ mgmtSec: s.mgmtSec === sec ? '' : sec }))
+      replayView()
+    },
+    openControl(sec: Exclude<ControlSection, ''>) {
+      set({ mgmtOpen: true, mgmtSec: sec })
       replayView()
     },
     goChat() {

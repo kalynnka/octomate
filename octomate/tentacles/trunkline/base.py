@@ -28,11 +28,16 @@ from anyio import BrokenResourceError, ClosedResourceError
 from anyio.streams.memory import MemoryObjectSendStream
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pydantic_ai import AgentRunResultEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from rich.style import Style
+from starlette.datastructures import Headers
+from starlette.exceptions import HTTPException
+from starlette.responses import Response
+from starlette.types import Scope
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
@@ -321,6 +326,26 @@ SSE_HEADERS = {
     "Connection": "keep-alive",
     "X-Accel-Buffering": "no",
 }
+
+
+class ConsoleFiles(StaticFiles):
+    """The console's build, served at `/`.
+
+    A browser asking for a path that names no file is asking for one of the
+    console's own pages — the thread or control page its address names — so it is
+    answered with `index.html`, and a reload or a shared link opens where it
+    points. Any other miss stays a 404, so an unknown API path is never answered
+    with a page.
+    """
+
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except HTTPException as missing:
+            accept = Headers(scope=scope).get("accept", "")
+            if missing.status_code != 404 or "text/html" not in accept:
+                raise
+            return await super().get_response("index.html", scope)
 
 
 class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):

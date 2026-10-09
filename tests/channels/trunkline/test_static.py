@@ -72,3 +72,36 @@ def test_frontend_rejects_a_missing_static_directory(tmp_path: Path) -> None:
     )
     with pytest.raises(RuntimeError, match=r"Directory .* does not exist"):
         octomate.build_middleware_stack()
+
+
+async def test_a_console_page_reloads_into_the_console(tmp_path: Path) -> None:
+    """A thread or control page the console's address names is no file, so a
+    browser reloading it is answered with the console. A miss nobody navigated to
+    stays a 404 — an unknown API path or asset is never answered with a page."""
+    (tmp_path / "index.html").write_text("<html>Trunkline</html>")
+    (tmp_path / "app.js").write_text("window.trunkline = true;")
+    octomate = Octomate()
+    octomate.connect(
+        TrunklineTentacle(
+            "trunkline",
+            octomate,
+            config=TrunklineChannelConfig(static_dir=tmp_path, agents=["codex"]),
+        )
+    )
+    page = {"Accept": "text/html,application/xhtml+xml"}
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate), base_url="http://test"
+    ) as client:
+        thread = await client.get(
+            "/threads/01a117fb-8ed6-7b82-be5f-6db7923b94d9", headers=page
+        )
+        control = await client.get("/control/agents", headers=page)
+        asset = await client.get("/app.js", headers=page)
+        missing_asset = await client.get("/missing.js")
+        missing_api = await client.get(
+            "/api/trunkline/missing", headers={"Accept": "application/json"}
+        )
+    assert (thread.status_code, thread.text) == (200, "<html>Trunkline</html>")
+    assert (control.status_code, control.text) == (200, "<html>Trunkline</html>")
+    assert asset.text == "window.trunkline = true;"
+    assert (missing_asset.status_code, missing_api.status_code) == (404, 404)
