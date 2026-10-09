@@ -21,6 +21,7 @@ from octomate.schemas.segments import (
 )
 from octomate.tentacles.napcat import NapcatChromo
 from octomate.tentacles.napcat.schema import NapcatOutboundMessage
+from octomate.types.json import JsonObject
 
 
 async def test_napcat_chromo_decodes_group_message_segments() -> None:
@@ -101,7 +102,9 @@ async def test_napcat_chromo_decodes_private_message() -> None:
     assert [type(seg) for seg in event.segments] == [TextSegment]
 
 
-async def test_napcat_chromo_ignores_responses_and_non_message_events() -> None:
+async def test_napcat_chromo_ignores_responses_and_non_message_events(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     chromo = NapcatChromo()
 
     response = await chromo.sip(json.dumps({"status": "ok", "retcode": 0}))
@@ -117,6 +120,47 @@ async def test_napcat_chromo_ignores_responses_and_non_message_events() -> None:
 
     assert response is None
     assert notice is None
+    assert not caplog.records
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "meta_event_type": "heartbeat",
+            "status": {"online": False, "good": True},
+            "interval": 30000,
+        },
+        {
+            "meta_event_type": "heartbeat",
+            "status": {"online": True, "good": True},
+            "interval": 30000,
+        },
+        {"meta_event_type": "lifecycle", "sub_type": "connect"},
+    ],
+    ids=["offline-heartbeat", "online-heartbeat", "lifecycle"],
+)
+async def test_napcat_chromo_ignores_meta_events_without_warnings(
+    payload: JsonObject, caplog: pytest.LogCaptureFixture
+) -> None:
+    raw = json.dumps(
+        {"post_type": "meta_event", "time": 1710000000, "self_id": 42, **payload}
+    )
+
+    assert await NapcatChromo().sip(raw) is None
+    assert not caplog.records
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["{", '{"post_type": "message"}', '{"status": {"online": false}}'],
+    ids=["invalid-json", "invalid-message", "invalid-response"],
+)
+async def test_napcat_chromo_warns_on_invalid_frames(
+    raw: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert await NapcatChromo().sip(raw) is None
+    assert "NapcatChromo: failed to parse frame" in caplog.text
 
 
 def test_napcat_chromo_renders_markdown_as_plain_text() -> None:
