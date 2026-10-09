@@ -1095,17 +1095,18 @@ async def test_threads_and_detail_endpoints(
         assert detail.status_code == 200
         assert "messages" not in detail.json()
 
-        messages = await client.get(f"/api/trunkline/threads/{console['id']}/messages")
+        base = f"/api/trunkline/threads/{console['id']}"
+        messages = await client.get(f"{base}/messages")
         assert messages.status_code == 200
-        ledger = messages.json()
+        ledger = messages.json()["items"]
         assert [entry["message_text"] for entry in ledger] == [
-            "triage the failing checks",
             "all done!",
+            "triage the failing checks",
         ]
-        assert [entry["direction"] for entry in ledger] == ["inbound", "outbound"]
+        assert [entry["direction"] for entry in ledger] == ["outbound", "inbound"]
         assert [entry["sender"]["name"] for entry in ledger] == [
-            "Operator",
             "Trunkline",
+            "Operator",
         ]
         # The model ledger is the agent's own history, never a reader's.
         assert all("model_messages" not in entry for entry in ledger)
@@ -1120,13 +1121,50 @@ async def test_threads_and_detail_endpoints(
         [run] = conversation["runs"]
         assert run["kind"] == "octomate"
         assert run["started_at"].endswith("Z") or "+" in run["started_at"]
-        # A run carries its model messages: the thinking and the tool calls are in
-        # there, and a reader reloading the thread rebuilds its middle from them.
-        assert [message["kind"] for message in run["messages"]] == [
-            "request",
-            "response",
+        # A run can hold thousands of model messages, so they are paged on their
+        # own rather than carried by the run.
+        assert "messages" not in run
+
+        page = (await client.get(f"{base}/conversations/messages")).json()
+        assert (page["total"], page["has_more"]) == (2, False)
+        response, request = page["items"]
+        assert (request["kind"], response["kind"]) == ("request", "response")
+        assert response["run_id"] == run["id"]
+        assert response["parts"][0]["part_kind"] == "text"
+        # The prompt carries who asked, in their own words, and the answer what
+        # was delivered.
+        [asked] = request["thread_messages"]
+        assert (asked["message_text"], asked["sender"]["name"]) == (
+            "triage the failing checks",
+            "Operator",
+        )
+        assert [said["message_text"] for said in response["thread_messages"]] == [
+            "all done!"
         ]
-        assert run["messages"][1]["parts"][0]["part_kind"] == "text"
+        assert "model_messages" not in asked
+        # A page's cursor reads on from where it stopped.
+        first = (
+            await client.get(f"{base}/conversations/messages", params={"limit": 1})
+        ).json()
+        rest = (
+            await client.get(
+                f"{base}/conversations/messages",
+                params={"cursor": first["next_cursor"]},
+            )
+        ).json()
+        assert [m["id"] for m in first["items"] + rest["items"]] == [
+            m["id"] for m in page["items"]
+        ]
+        assert (first["has_more"], rest["has_more"]) == (True, False)
+        # Everything said here rides on a model message, so none of it is unbound.
+        unbound = (
+            await client.get(f"{base}/messages", params={"unbound": True})
+        ).json()
+        assert (unbound["items"], unbound["total"]) == ([], 0)
+
+        usage = await client.get(f"/api/trunkline/threads/{console['id']}/usage")
+        assert usage.status_code == 200
+        assert set(usage.json()) >= {"input_tokens", "output_tokens"}
 
         batches = await client.get(f"/api/trunkline/threads/{console['id']}/batches")
         assert batches.json() == []
@@ -1143,9 +1181,22 @@ async def test_threads_and_detail_endpoints(
         # Every read hangs off a thread, so a stray id is a 404 on all of them
         # rather than an empty list that reads as "nothing here yet".
         stray = uuid.UUID("00000000-0000-7000-8000-000000000007")
-        for suffix in ("", "/messages", "/conversations", "/project", "/batches"):
+        for suffix in (
+            "",
+            "/messages",
+            "/conversations/messages",
+            "/usage",
+            "/conversations",
+            "/project",
+            "/batches",
+        ):
             missing = await client.get(f"/api/trunkline/threads/{stray}{suffix}")
             assert missing.status_code == 404, suffix
+        # A cursor is checked before any query runs.
+        forged = await client.get(
+            f"{base}/conversations/messages", params={"cursor": "not-a-cursor"}
+        )
+        assert forged.status_code == 422
 
         connected = await client.get("/api/trunkline/channels")
         assert connected.status_code == 200
@@ -1169,10 +1220,9 @@ async def test_console_reads_never_load_the_model_ledger(
     loader options each read would fetch every model message the thread ever
     produced and then drop it on the floor.
 
-    `/conversations` is the one read that wants them — the thinking and the tool
-    calls are in there, and a reader rebuilding a thread's middle has nowhere else
-    to get them. It reads them once, under the run that owns them, never also under
-    the conversation."""
+    `/conversations/messages` is the one read that wants them, and it reads one
+    page of them in one statement. The unbound chat filter asks only whether a
+    binding exists, and `/usage` sums the usage column alone."""
     octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!"])
     channel = await _register(octomate, agent)
@@ -1204,6 +1254,7 @@ async def test_console_reads_never_load_the_model_ledger(
             "/api/trunkline/threads",
             base,
             f"{base}/messages",
+            f"{base}/conversations",
             f"{base}/project",
             f"{base}/batches",
         ):
@@ -1212,10 +1263,18 @@ async def test_console_reads_never_load_the_model_ledger(
             assert not any("model_messages" in select for select in selects), url
 
         selects.clear()
-        assert (await client.get(f"{base}/conversations")).status_code == 200
-        ledger_reads = [select for select in selects if "model_messages" in select]
-        assert len(ledger_reads) == 1
-        assert "agent_runs" in ledger_reads[0] or "run_id" in ledger_reads[0]
+        assert (await client.get(f"{base}/conversations/messages")).status_code == 200
+        [parts_read] = [s for s in selects if "model_messages.parts" in s]
+        assert "LIMIT" in parts_read
+
+        for url in (f"{base}/messages?unbound=true", f"{base}/usage"):
+            selects.clear()
+            assert (await client.get(url)).status_code == 200
+            assert not any("model_messages.parts" in s for s in selects), url
+
+        selects.clear()
+        assert (await client.get(f"{base}/usage")).status_code == 200
+        assert any("model_messages.usage" in select for select in selects)
 
         # Routing reads conversation metadata in one batch, without histories.
         selects.clear()

@@ -18,8 +18,10 @@ import {
   fetchThread,
   fetchThreadBatches,
   fetchThreadConversations,
-  fetchThreadMessages,
+  fetchThreadModelMessages,
   fetchThreadProject,
+  fetchThreadUnbound,
+  fetchThreadUsage,
   fetchThreads,
   patchEffort,
   patchPermissionMode,
@@ -31,7 +33,7 @@ import type {
   ApiProject,
   ApiRoute,
 } from './events'
-import { channelMeta, groupLiveThreads, liveThreadDetail } from './live'
+import { channelMeta, groupLiveThreads, liveThreadDetail, type OlderPage, type ThreadRead } from './live'
 import type { ChannelMeta, EffortStep, ThreadDetail, ThreadSummary } from './types'
 
 export interface RoutesResult {
@@ -92,27 +94,51 @@ export const api = {
   },
 
   /**
-   * One thread, read as the relay shapes it: the row, its ledger, its
-   * conversations, its project and its waiting feelers. Five requests in
-   * parallel rather than one fat payload — the ledger is the only large one,
-   * and keeping it separate is what lets a listing stay small.
+   * One thread, read as the relay shapes it: the row, the latest page of its own
+   * model messages and of the chat rows none of them carries, its conversations,
+   * its project, its waiting feelers and what it cost. Seven requests in parallel
+   * rather than one fat payload — the two pages are the only large ones, and they
+   * come a page at a time.
    */
   async getThreadDetail(id: string): Promise<ThreadDetail> {
-    const [thread, messages, conversations, project, batches] = await Promise.all([
+    const [thread, model, unbound, conversations, project, batches, usage] = await Promise.all([
       fetchThread(id),
-      fetchThreadMessages(id),
+      fetchThreadModelMessages(id),
+      fetchThreadUnbound(id),
       fetchThreadConversations(id),
       fetchThreadProject(id),
       fetchThreadBatches(id),
+      fetchThreadUsage(id),
     ])
-    if (thread === null) throw new Error(`thread ${id} not found on the relay`)
+    if (thread === null || model === null || unbound === null) {
+      throw new Error(`thread ${id} not found on the relay`)
+    }
     return liveThreadDetail({
       thread,
-      messages: messages ?? [],
+      modelMessages: [...model.items].reverse(),
+      unbound: [...unbound.items].reverse(),
+      cursors: {
+        model: model.has_more ? model.next_cursor : null,
+        unbound: unbound.has_more ? unbound.next_cursor : null,
+      },
+      totals: { model: model.total, unbound: unbound.total },
       conversations: conversations ?? [],
       project: project ?? null,
       batches: batches ?? [],
+      usage: usage ?? {},
     })
+  },
+
+  /** The next page of one of a thread's reads; `withOlderPage` folds it on. */
+  async olderPage(id: string, read: ThreadRead, cursor: string): Promise<OlderPage> {
+    if (read === 'model') {
+      const page = await fetchThreadModelMessages(id, cursor)
+      if (page !== null) return { read, page }
+    } else {
+      const page = await fetchThreadUnbound(id, cursor)
+      if (page !== null) return { read, page }
+    }
+    throw new Error(`thread ${id} not found on the relay`)
   },
 }
 

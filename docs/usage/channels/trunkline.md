@@ -58,7 +58,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   pick on an owned thread is refused, because a mid-thread model switch busts the
   provider's cache. Hand off explicitly instead.
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
-  handoffs, and the pending actions.
+  handoffs, and the pending actions. A thread opens on its latest messages and
+  the agent's work between them; earlier ones load as you scroll up.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.

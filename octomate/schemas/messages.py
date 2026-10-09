@@ -101,6 +101,9 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
+    # The chat rows this request was built from: who said them, and what they
+    # said before the prompt dressed it.
+    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:
@@ -133,6 +136,8 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
+    # The chat rows that delivered this response's answer.
+    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:

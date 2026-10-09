@@ -698,6 +698,41 @@ async def test_a_kick_never_reads_the_rooms_whole_ledger(
     assert len(list(thread.messages)) == 12
 
 
+async def test_unbound_chat_is_what_no_model_message_of_the_thread_carries() -> None:
+    """A prompt is read through the request it was bound into; a notice nothing
+    was built from stays on the thread's own ledger, a page at a time."""
+    threads = ThreadManager(users=UserManager())
+    conversations = ConversationManager()
+    asked = await threads.record_inbound(event("m-1", "alice", "fix the build"))
+    notice = await threads.record_inbound(
+        event("m-2", "alice", "forked from elsewhere")
+    )
+    thread = await threads.ensure(address())
+    own = await conversations.ensure(thread.id, agent_tentacle_id="claude")
+    run = await conversations.record_agent_run(
+        own,
+        "run-1",
+        [
+            RawModelRequest(parts=[UserPromptPart("fix the build")]),
+            RawModelResponse(parts=[TextPart("fixed")]),
+        ],
+    )
+    assert run is not None
+    request = next(message for message in run.messages if message.kind == "request")
+    await threads.bind_messages(
+        [asked.id], request.id, kind="request_source", run_id="run-1"
+    )
+
+    unbound = await threads.messages_page(thread.id, unbound=True, limit=10)
+    assert [message.id for message in unbound] == [notice.id]
+    assert (unbound.total, unbound.has_more) == (1, False)
+
+    newest = await threads.messages_page(thread.id, limit=1)
+    rest = await threads.messages_page(thread.id, newest.next_cursor, limit=1)
+    assert [message.id for message in (*newest, *rest)] == [notice.id, asked.id]
+    assert (newest.has_more, rest.total) == (True, 2)
+
+
 async def test_a_row_is_never_undated() -> None:
     """The order is only total if every row carries a `happened_at` — and every outbound
     caller but the tailers passes none, so the manager owns the answer rather than the

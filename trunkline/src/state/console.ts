@@ -29,7 +29,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
-import { groupLiveThreads } from '@/lib/api/live'
+import { groupLiveThreads, holdingBack, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 
@@ -348,6 +348,10 @@ const nextUid = () => `v${++uidN}`
 /** Ledger items rendered per page — the latest page first, earlier pages on scroll-top. */
 const LEDGER_PAGE = 40
 
+/** Relay pages a thread opens with: the latest of each read, and two more behind
+ *  them read while the reader looks. Further pages are read as scrolling nears them. */
+const PRELOAD_PAGES = 3
+
 /* Width lines the shell folds at: below TRACE_BREAK the timeline gives its
    column to the chat, below SIDEBAR_BREAK the thread tree collapses to the
    letter-rail, below PANEL_BREAK the dossier and control close outright. */
@@ -423,6 +427,35 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   const refreshThreads = () => {
     void queryClient.invalidateQueries({ queryKey: ['threads'] })
+  }
+
+  // Threads with a ledger page in flight; one page at a time for each.
+  const paging = new Set<string>()
+
+  /** Fold one more page onto the open thread — of the read holding the other back. */
+  const pageBack = async (thId: string) => {
+    const reads = get().detail?.reads
+    const read = reads === undefined ? null : holdingBack(reads)
+    const cursor = read === null ? null : reads?.cursors[read]
+    if (paging.has(thId) || get().selThreadId !== thId || read === null || !cursor) return
+    paging.add(thId)
+    try {
+      const older = await api.olderPage(thId, read, cursor)
+      const current = get().detail
+      // A reader who moved on, or a refresh that replaced the pages, has no use for it.
+      if (get().selThreadId !== thId || !current?.reads || current.reads.cursors[read] !== cursor) return
+      const detail = withOlderPage(current, current.reads, older)
+      set({ detail })
+      queryClient.setQueryData(['thread-detail', thId], detail)
+      // A reader already at the top is waiting on this page.
+      const log = document.getElementById('trk-chatlog')
+      if (log !== null && log.scrollTop < 40) actions.loadOlder()
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      actions.reportThreadError(thId, `earlier messages did not load — ${reason}`)
+    } finally {
+      paging.delete(thId)
+    }
   }
 
   /**
@@ -681,6 +714,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (selection !== threadSelection || get().selThreadId !== thId) return
         set({ detail })
         scrollChatBottom()
+        void (async () => {
+          for (let page = 1; page < PRELOAD_PAGES; page++) await pageBack(thId)
+        })()
       }
       if (!animate) {
         update()
@@ -702,7 +738,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
     loadOlder() {
       const s = get()
-      if (!s.detail || s.ledgerN >= s.detail.ledger.length) return
+      if (!s.detail) return
+      // The next relay page is read while a page of cards is still in hand, so a
+      // reader scrolling back seldom waits on one.
+      if (s.ledgerN + LEDGER_PAGE >= s.detail.ledger.length) void pageBack(s.selThreadId)
+      if (s.ledgerN >= s.detail.ledger.length) return
       // Reveal the next page above, keeping both rails anchored on the rows the
       // reader was looking at — the timeline indexes the same window, so a page
       // grows it from the top too and it drifts by the same amount.

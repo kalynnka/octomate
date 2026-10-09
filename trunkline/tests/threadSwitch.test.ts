@@ -2,11 +2,13 @@ import assert from 'node:assert/strict'
 import { after, afterEach, before, beforeEach, mock, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiThread, WireEvent } from '../src/lib/api/events.ts'
+import type { ApiThread, ApiThreadMessage, WireEvent } from '../src/lib/api/events.ts'
+import type { OlderPage } from '../src/lib/api/live.ts'
 import type { ThreadDetail } from '../src/lib/api/types.ts'
 
 let server: ViteDevServer
 let api: typeof import('../src/lib/api/index.ts').api
+let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let callbackResult: void | Promise<void>
@@ -22,6 +24,7 @@ before(async () => {
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
   ;({ api } = await server.ssrLoadModule('/src/lib/api/index.ts'))
+  ;({ liveThreadDetail } = await server.ssrLoadModule('/src/lib/api/live.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
 })
@@ -136,4 +139,58 @@ test('a new thread adopts its saved identity without a transition or replacing i
   assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.text), ['hello', 'continue'])
   assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 2)
   assert.equal(useConsole.getState().running, false)
+})
+
+const thread: ApiThread = {
+  id: 'thread-a', kind: 'thread', chat_type: 'thread', chat_id: 'owner', channel_tentacle_id: 'trunkline',
+  channel_thread_id: 'trunkline-a', title: null, project_id: null, status: 'active',
+  created_at: '2026-10-09T10:00:00Z', updated_at: '2026-10-09T10:00:00Z', handoffs: [],
+  active_agent_tentacle_id: 'claude',
+}
+const said = (id: string): ApiThreadMessage => ({
+  kind: 'message', id, thread_id: 'thread-a', platform_message_id: null, happened_at: '2026-10-09T10:00:00Z',
+  direction: 'inbound', actor_kind: 'human', agent_tentacle_id: null, sender: null, segments: [],
+  message_text: id, created_at: '2026-10-09T10:00:00Z',
+})
+const opened = (unbound: ApiThreadMessage[], cursor: string | null) =>
+  liveThreadDetail({
+    thread, modelMessages: [], unbound, cursors: { model: null, unbound: cursor }, totals: { model: 0, unbound: 4 },
+    conversations: [], project: null, batches: [], usage: {},
+  })
+const older = (id: string, cursor: string | null): OlderPage => ({
+  read: 'unbound', page: { items: [said(id)], total: 4, next_cursor: cursor ?? 'end', has_more: cursor !== null },
+})
+const settle = async () => {
+  for (let tick = 0; tick < 5; tick++) await new Promise((done) => setTimeout(done, 0))
+}
+
+test('a thread opens on three pages and leaves the rest to scrolling', async () => {
+  const pages: Record<string, OlderPage> = { c4: older('m3', 'c3'), c3: older('m2', 'c2'), c2: older('m1', null) }
+  const asked: string[] = []
+  mock.method(api, 'getThreadDetail', () => Promise.resolve(opened([said('m4')], 'c4')))
+  mock.method(api, 'olderPage', (_: string, read: string, cursor: string) => {
+    asked.push(`${read}:${cursor}`)
+    return Promise.resolve(pages[cursor])
+  })
+  await useConsole.getState().actions.selectThread('trunkline', 'thread-a')
+  await settle()
+  assert.deepEqual(asked, ['unbound:c4', 'unbound:c3'])
+  const held = useConsole.getState().detail
+  assert.deepEqual(held?.ledger.map((item) => item.kind === 'user' && item.text), ['m2', 'm3', 'm4'])
+  assert.equal(held?.earlier, true)
+  // A revisit opens on what was read, not on the first page alone.
+  assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', 'thread-a'])?.ledger.length, 3)
+})
+
+test('a page landing after the reader moved on is dropped', async () => {
+  let land!: (page: OlderPage) => void
+  mock.method(api, 'getThreadDetail', (id: string) =>
+    Promise.resolve(id === 'thread-a' ? opened([said('m4')], 'c4') : { ...detail, key: id }))
+  mock.method(api, 'olderPage', () => new Promise((done) => { land = done }))
+  await useConsole.getState().actions.selectThread('trunkline', 'thread-a')
+  await useConsole.getState().actions.selectThread('codex', 'thread-b')
+  land(older('m3', null))
+  await settle()
+  assert.equal(useConsole.getState().detail?.key, 'thread-b')
+  assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', 'thread-a'])?.ledger.length, 1)
 })

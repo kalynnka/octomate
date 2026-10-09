@@ -172,7 +172,7 @@ async def test_inherited_chat_does_not_grant_access_to_a_private_fork(
     assert str(destination.id) in {
         thread["id"] for thread in (await client.get("/api/trunkline/threads")).json()
     }
-    messages = (await client.get(f"{path}/messages")).json()
+    messages = (await client.get(f"{path}/messages")).json()["items"]
     assert inherited.message_text in {message["message_text"] for message in messages}
     assert (
         await case.app.threads.chat_message(owner, str(inherited.id))
@@ -287,7 +287,9 @@ async def test_teleport_creates_independent_owned_destination(
         f"/api/trunkline/threads/{case.thread.id}/messages"
     )
     assert source_messages.status_code == 200
-    assert [message["message_text"] for message in source_messages.json()] == [
+    assert [
+        message["message_text"] for message in reversed(source_messages.json()["items"])
+    ] == [
         "Original history",
         "radio check",
     ]
@@ -297,7 +299,7 @@ async def test_teleport_creates_independent_owned_destination(
     assert destination_messages.status_code == 200
     question = next(
         message
-        for message in destination_messages.json()
+        for message in destination_messages.json()["items"]
         if message["actor_kind"] == "human"
     )
     assert question["message_text"] == "radio check"
