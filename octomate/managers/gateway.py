@@ -166,7 +166,7 @@ class OctomateSession:
         channel = self.channels.get(address.channel_tentacle_id)
         if channel is None or not channel.surfaces.direct_message:
             return "no_surface"
-        # Read the surface, not the type: a Slack assistant pane and a Lark p2p topic
+        # Read the surface, not the type: a thread in a Slack DM and a Lark p2p topic
         # are threads that only one person can read, and moving them to "their direct
         # messages" would land beside where they already are, under another owner.
         if not address.shared:

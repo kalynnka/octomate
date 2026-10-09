@@ -25,7 +25,6 @@ Start a separate thread when the subject changes.
 | Where you start | Where to continue |
 |---|---|
 | Slack channel or bot DM | In the bot's reply thread |
-| Slack assistant pane | In that pane's conversation |
 | Lark / Feishu group | In the reply thread the bot opens |
 | Lark / Feishu one-to-one chat | In that chat |
 | Discord server text channel | In the public reply thread |

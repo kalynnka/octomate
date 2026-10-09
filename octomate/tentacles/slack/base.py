@@ -20,7 +20,6 @@ from slack_bolt.async_app import AsyncApp, AsyncSay
 from octomate.config import SlackChannelConfig
 from octomate.oauth.flows import AuthorizationCodeFlow
 from octomate.schemas.awakes import DeferredActionBatchResponse
-from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.tentacles.channel import (
@@ -52,7 +51,6 @@ from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.oauth import SlackOAuthConnector, SlackTokenExchange
 from octomate.tentacles.slack.schema import (
     SlackApprovalActionBody,
-    SlackAssistantThreadEvent,
     SlackMessageEvent,
     SlackOutboundMessage,
     SlackQuestionActionBody,
@@ -67,9 +65,8 @@ SlackQuestionActionBodyAdapter = TypeAdapter(SlackQuestionActionBody)
 
 IGNORED_SUBTYPES = frozenset(
     {
-        # The root Slack writes when someone opens the assistant pane or starts a new
-        # chat in it. It carries the thread's title, never the person's own words, and
-        # `assistant_thread_started` already created the thread it heads.
+        # The root Slack writes when someone opens the assistant pane, in a workspace
+        # still on it. It carries the thread's title, never the person's own words.
         "assistant_app_thread",
         "bot_message",
         "message_changed",
@@ -126,7 +123,7 @@ class SlackTentacle(
         config: SlackChannelConfig,
     ) -> None:
         ink = SlackInk(config.bot_token)
-        chromo = SlackChromo()
+        chromo = SlackChromo(mention_only=config.mention_only)
         super().__init__(
             id=id,
             octomate=octomate,
@@ -137,10 +134,6 @@ class SlackTentacle(
         self.app_id = config.app_id
         self.app = AsyncApp(token=config.bot_token.get_secret_value())
         self.app.event("message")(self.on_message)
-        self.app.event("assistant_thread_started")(self.on_assistant_thread_started)
-        self.app.event("assistant_thread_context_changed")(
-            self.on_assistant_thread_context_changed
-        )
         self.app.action(SlackBlockAction.APPROVAL_APPROVE.value)(
             self.on_approval_action
         )
@@ -238,6 +231,10 @@ class SlackTentacle(
             self.handler = None
         await super().__aexit__(*exc)
 
+    async def probe(self) -> None:
+        await super().probe()
+        self.chromo.bot_user_id = self.self_profile.channel_user_id
+
     @property
     def serving(self) -> bool:
         return self.config.mcp
@@ -259,18 +256,6 @@ class SlackTentacle(
         task = asyncio.create_task(self.ingest(event))
         self.ingest_tasks.add(task)
         task.add_done_callback(self.ingest_tasks.discard)
-
-    async def on_assistant_thread_started(
-        self,
-        event: SlackAssistantThreadEvent,
-    ) -> None:
-        await self.ensure_assistant_thread(event)
-
-    async def on_assistant_thread_context_changed(
-        self,
-        event: SlackAssistantThreadEvent,
-    ) -> None:
-        await self.ensure_assistant_thread(event)
 
     async def on_link_action(self, ack) -> None:
         """A url button opens the link client-side; Slack still expects the ack."""
@@ -368,38 +353,6 @@ class SlackTentacle(
             blocks=submitted_blocks(actions, answers),
         )
 
-    async def ensure_assistant_thread(
-        self,
-        event: SlackAssistantThreadEvent,
-    ) -> None:
-        thread = event.get("assistant_thread", {})
-        channel_id = thread.get("channel_id", "")
-        thread_ts = thread.get("thread_ts", "")
-        user_id = thread.get("user_id", "")
-        if not channel_id or not thread_ts or not user_id:
-            logger.debug(
-                "Channel %s: ignored incomplete Slack assistant thread event %s",
-                self.id,
-                event,
-            )
-            return
-
-        address = ChannelAddress(
-            channel_tentacle_id=self.id,
-            chat_type="thread",
-            chat_id=channel_id,
-            user_id=user_id,
-            channel_thread_id=thread_ts,
-            # An assistant pane is a chat inside the bot's own DM channel: a thread
-            # by type, and nobody but its one user can read it.
-            shared=False,
-        )
-        with sqlalchemy_materia():
-            # Pre-create the thread that owns this assistant chat's conversations;
-            # the first message would otherwise create it on ingest.
-            await self.octomate.threads.ensure(address)
-        logger.info("Channel %s: ensured Slack assistant thread %s", self.id, address)
-
     async def open_dm(
         self, user_id: str, opener: str | None = None
     ) -> ChannelAddress | None:
@@ -412,8 +365,8 @@ class SlackTentacle(
         hangs off a message, and `opener` is the message — which is why a caller with
         nothing to say gets the root, where posting still works fine.
 
-        The pane an inbound DM arrives in is already a thread, so this only bites
-        where Octomate opens the conversation itself.
+        An inbound DM is already a thread, the one its own message heads, so this
+        only bites where Octomate opens the conversation itself.
         """
         address = await super().open_dm(user_id, opener)
         if address is None or not opener:
@@ -421,8 +374,8 @@ class SlackTentacle(
         return await self.start_sub_thread(address, opener)
 
     def is_shared(self, address: ChannelAddress) -> bool:
-        """Slack names a direct message `D…`, and a thread in one, the assistant
-        pane included, keeps that channel id."""
+        """Slack names a direct message `D…`, and a thread in one keeps that
+        channel id."""
         return not address.chat_id.startswith("D")
 
     async def start_sub_thread(

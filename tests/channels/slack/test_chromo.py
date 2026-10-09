@@ -7,6 +7,7 @@ import pytest
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import AtSegment, ImageSegment, TextSegment
 from octomate.tentacles.slack import SlackChromo
+from octomate.tentacles.slack.schema import SlackMessageEvent
 from octomate.types.conversations import ChatType
 from tests.channels.slack.fakes import FakeSlackInk, slack_channel
 
@@ -42,10 +43,10 @@ async def test_slack_chromo_decodes_mentions_and_images() -> None:
 @pytest.mark.parametrize(
     ("channel_type", "channel_id", "thread_ts", "chat_type", "shared"),
     [
-        ("im", "D1", "", "dm", False),
+        ("im", "D1", "", "thread", False),
         # The assistant pane: a DM whose every message is a thread reply.
         ("im", "D1", "1710000000.000001", "thread", False),
-        ("app_home", "D1", "", "dm", False),
+        ("app_home", "D1", "", "thread", False),
         ("channel", "C1", "", "group", True),
         ("channel", "C1", "1710000000.000001", "thread", True),
         ("group", "G1", "", "group", True),
@@ -82,6 +83,32 @@ async def test_slack_chromo_reads_the_surface_a_thread_sits_in(
     assert slack_channel(FakeSlackInk()).is_shared(address) is shared
 
 
+async def test_a_top_level_dm_heads_the_thread_its_reply_streams_into() -> None:
+    """Slack streams only into a thread, and a DM to an agent app arrives at the
+    root. The message heads its own thread, and a reply under it continues it."""
+    chromo = SlackChromo()
+    dm: SlackMessageEvent = {
+        "user": "U1",
+        "channel": "D1",
+        "channel_type": "im",
+        "text": "hi",
+    }
+    root = await chromo.sip({**dm, "ts": "1710000000.000100"})
+    reply = await chromo.sip(
+        {**dm, "ts": "1710000000.000200", "thread_ts": "1710000000.000100"}
+    )
+
+    assert root is not None
+    assert reply is not None
+    assert root.channel_thread_id == reply.channel_thread_id == "1710000000.000100"
+    assert root.reply_id == ""
+    assert [type(seg) for seg in root.segments] == [TextSegment]
+    address = ChannelAddress(
+        "slack", root.chat_type, "D1", "U1", root.channel_thread_id
+    )
+    assert chromo.thread_context(address).thread_ts == "1710000000.000100"
+
+
 def test_slack_chromo_renders_markdown_result() -> None:
     chromo = SlackChromo()
     markdown = (
@@ -96,3 +123,39 @@ def test_slack_chromo_renders_markdown_result() -> None:
     assert messages[0].text == markdown
     assert messages[0].markdown_text == markdown
     assert messages[0].blocks is None
+
+
+@pytest.mark.parametrize(
+    ("text", "mention_only", "heads_thread"),
+    [
+        ("<@B1> look at this", True, True),
+        ("just chatting", True, False),
+        ("just chatting", False, True),
+    ],
+)
+async def test_a_channel_message_the_bot_answers_heads_its_own_thread(
+    text: str, mention_only: bool, heads_thread: bool
+) -> None:
+    """Slack cannot stream into a channel's root either, so a top-level message the
+    bot will answer starts a thread; the rest stay in the channel's chat room."""
+    chromo = SlackChromo(mention_only=mention_only)
+    chromo.bot_user_id = "B1"
+    event = await chromo.sip(
+        {
+            "ts": "1710000000.000100",
+            "user": "U1",
+            "channel": "C1",
+            "channel_type": "channel",
+            "text": text,
+        }
+    )
+
+    assert event is not None
+    assert event.shared is True
+    if heads_thread:
+        assert (event.chat_type, event.channel_thread_id) == (
+            "thread",
+            "1710000000.000100",
+        )
+    else:
+        assert (event.chat_type, event.channel_thread_id) == ("group", None)

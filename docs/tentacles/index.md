@@ -22,7 +22,7 @@ routes and permissions.
 
 | Channel | Where you use it | Before enabling |
 |---|---|---|
-| [Slack](../usage/channels/slack.md) | Channels, threads, direct messages and the assistant pane | Create a Socket Mode app and supply its app and bot tokens |
+| [Slack](../usage/channels/slack.md) | Channels, threads and direct messages | Create a Socket Mode app and supply its app and bot tokens |
 | [Lark / Feishu](../usage/channels/lark.md) | Groups, threads and one-to-one chats | Create a bot app with a long connection and supply its app credentials |
 | [Discord](../usage/channels/discord.md) | Server channels, public threads and direct messages | Add a bot to your server and supply its token |
 | [NapCat](../usage/channels/napcat.md) | Group chats and direct messages (QQ bridge) | Log in through NapCat and enable its HTTP and forward WebSocket servers |
