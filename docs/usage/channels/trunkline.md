@@ -195,7 +195,7 @@ disabled: QQ has no threads, so nothing can land there.
 Teleport is unavailable when the conversation's agent is not connected or cannot
 fork its session, when the conversation is shared and its chat can start no
 sub-thread, or when no connected channel runs an agent that can continue it. A
-Slack assistant pane, a thread in a Slack DM, a Lark one-to-one topic and a Discord
+thread in a Slack DM, a Lark one-to-one topic and a Discord
 private thread are private and can teleport; a public Discord thread and a thread
 in a Slack channel or Lark group are shared and cannot. A shared thread's full
 history is never carried to another channel.

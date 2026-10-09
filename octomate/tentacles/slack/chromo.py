@@ -33,8 +33,13 @@ AT_RE = re.compile(r"<@(U[A-Z0-9]+)>")
 
 class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
     """Slack translation: `<@U…>` mentions mapped both ways, thread replies keyed
-    on `thread_ts`, and an assistant pane, or a top-level DM, read as a private
-    thread."""
+    on `thread_ts`, and a top-level message the bot answers read as the head of its
+    own thread: private in a DM, shared in a channel."""
+
+    def __init__(self, *, mention_only: bool = True) -> None:
+        self.mention_only = mention_only
+        # The bot's own user id, set once the tentacle has probed Slack.
+        self.bot_user_id = ""
 
     async def sip(self, raw: SlackMessageEvent) -> MessageEvent | None:
         try:
@@ -43,18 +48,20 @@ class SlackChromo(Chromo[SlackMessageEvent, SlackOutboundMessage]):
             message_id = raw.get("ts", "")
             thread_ts = raw.get("thread_ts", "")
             thread_id = thread_ts if thread_ts and thread_ts != message_id else None
+            text: str = raw.get("text", "")
 
-            # An assistant pane is an `im` whose every message is a thread reply, so
-            # the promotion below would otherwise read a private chat as a group one.
+            # Every conversation in a DM is a thread, so the promotion below would
+            # otherwise read a private chat as a group one.
             shared = channel_type not in {"im", "app_home"}
-            # Slack streams a reply only into a thread, so a top-level DM heads its own.
-            if not shared and not thread_id:
+            # Slack streams a reply only into a thread, so a top-level message the bot
+            # answers heads its own: any in a DM, and in a channel one addressed to it.
+            answered = not shared or not self.mention_only
+            if not thread_id and (answered or f"<@{self.bot_user_id}>" in text):
                 thread_id = message_id or None
             chat_type: ChatType = "group" if shared else "dm"
             if thread_id:
                 chat_type = "thread"
 
-            text: str = raw.get("text", "")
             segments: list[MessageSegment] = []
             if text:
                 cursor = 0

@@ -6,6 +6,7 @@ from collections.abc import AsyncGenerator
 from typing import cast
 
 import pytest
+from pydantic import SecretStr
 from slack_sdk.errors import SlackApiError
 from slack_sdk.web.async_chat_stream import AsyncChatStream
 from slack_sdk.web.async_client import AsyncWebClient
@@ -131,3 +132,31 @@ async def test_slack_says_which_scope_a_refused_listing_needs() -> None:
 
     with pytest.raises(ValueError, match="missing_scope, needs channels:read"):
         await ink.list_addresses(ChannelAddress("slack", "dm", "", "alice"))
+
+
+async def test_slack_ink_keeps_every_message_of_a_thread_send_in_the_thread() -> None:
+    client = FakeSlackClient()
+    ink = object.__new__(SlackInk)
+    ink.client = cast(AsyncWebClient, client)
+    messages = [SlackOutboundMessage(text="one"), SlackOutboundMessage(text="two")]
+
+    await ink.send_message(
+        "D1", "thread", messages, channel_thread_id="1710000000.000100"
+    )
+
+    assert [message.get("thread_ts") for message in client.messages] == [
+        "1710000000.000100",
+        "1710000000.000100",
+    ]
+
+
+async def test_slack_suggests_the_dm_a_dm_thread_sits_in() -> None:
+    """A thread holds no thread, but its DM can hold a fresh one; a channel's thread
+    offers nothing, as a conversation there is read by others."""
+    ink = SlackInk(SecretStr("test"))
+    dm = ChannelAddress("slack", "dm", "", "U1")
+    in_dm = ChannelAddress("slack", "thread", "D1", "U1", "1710000000.000100")
+    in_channel = ChannelAddress("slack", "thread", "C1", "U1", "1710000000.000100")
+
+    assert await ink.suggest_addresses(dm, in_dm) == [dm]
+    assert await ink.suggest_addresses(dm, in_channel) == []

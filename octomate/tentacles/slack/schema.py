@@ -41,19 +41,6 @@ class SlackMessageEvent(TypedDict, total=False):
 slack_message_adapter = TypeAdapter(SlackMessageEvent)
 
 
-class SlackAssistantThread(TypedDict, total=False):
-    user_id: str
-    channel_id: str
-    thread_ts: str
-    context: JsonObject
-
-
-class SlackAssistantThreadEvent(TypedDict, total=False):
-    type: Literal["assistant_thread_started", "assistant_thread_context_changed"]
-    assistant_thread: SlackAssistantThread
-    event_ts: str
-
-
 class SlackPostMessageKwargs(TypedDict):
     channel: str
     text: str

@@ -123,3 +123,39 @@ def test_slack_chromo_renders_markdown_result() -> None:
     assert messages[0].text == markdown
     assert messages[0].markdown_text == markdown
     assert messages[0].blocks is None
+
+
+@pytest.mark.parametrize(
+    ("text", "mention_only", "heads_thread"),
+    [
+        ("<@B1> look at this", True, True),
+        ("just chatting", True, False),
+        ("just chatting", False, True),
+    ],
+)
+async def test_a_channel_message_the_bot_answers_heads_its_own_thread(
+    text: str, mention_only: bool, heads_thread: bool
+) -> None:
+    """Slack cannot stream into a channel's root either, so a top-level message the
+    bot will answer starts a thread; the rest stay in the channel's chat room."""
+    chromo = SlackChromo(mention_only=mention_only)
+    chromo.bot_user_id = "B1"
+    event = await chromo.sip(
+        {
+            "ts": "1710000000.000100",
+            "user": "U1",
+            "channel": "C1",
+            "channel_type": "channel",
+            "text": text,
+        }
+    )
+
+    assert event is not None
+    assert event.shared is True
+    if heads_thread:
+        assert (event.chat_type, event.channel_thread_id) == (
+            "thread",
+            "1710000000.000100",
+        )
+    else:
+        assert (event.chat_type, event.channel_thread_id) == ("group", None)
