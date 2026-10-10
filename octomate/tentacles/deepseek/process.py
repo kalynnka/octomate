@@ -48,7 +48,7 @@ UNKNOWN_OPTION = re.compile(r"unknown option '([^']+)'")
 NO_OPEN = "--no-open"
 
 STOP_ESCALATE_SECONDS = 5.0
-TESTED_DSH_VERSION = "0.1.6-alpha.1"
+TESTED_DSH_VERSION = "0.2.1-alpha.2"
 DIAGNOSTIC_LINES = 24
 DIAGNOSTIC_WIDTH = 500
 TOKEN_QUERY = re.compile(r"([?&]token=)[^\s&#]+")

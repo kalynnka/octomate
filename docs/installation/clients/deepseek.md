@@ -10,7 +10,7 @@ first install links it:
 
 ```sh
 octomate deepseek hooks install \
-  --bridge /path/to/deepseek-harness/packages/hooks/hooks-claude-code
+  --bridge /path/to/deepseek-harness/packages/experimental/hooks-claude-code
 octomate deepseek mcp install
 octomate deepseek mcp show
 ```

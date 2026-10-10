@@ -293,6 +293,32 @@ def test_tool_result_reader_reads_error_from_block_or_event() -> None:
     assert tool_result_of(event("tool/result", {"message": {"content": []}})) is None
 
 
+@pytest.mark.parametrize(
+    ("message_error", "event_error", "expected_error"),
+    [(False, None, False), (True, None, True), (False, {"message": "denied"}, True)],
+)
+def test_tool_message_result_preserves_empty_output_and_errors(
+    message_error: bool, event_error: dict[str, str] | None, expected_error: bool
+) -> None:
+    result = tool_result_of(
+        event(
+            "tool/result",
+            {
+                "message": {
+                    "role": "tool",
+                    "toolCallId": "c1",
+                    "content": [],
+                    "isError": message_error,
+                },
+                "error": event_error,
+            },
+        )
+    )
+
+    assert result is not None
+    assert (result.call_id, result.text, result.is_error) == ("c1", "", expected_error)
+
+
 def test_turn_end_reader_names_the_reason_and_error() -> None:
     completed = turn_end_of(
         event("turn/end", {"turn": 1, "reason": {"kind": "completed"}})

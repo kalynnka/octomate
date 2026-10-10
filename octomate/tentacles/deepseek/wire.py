@@ -517,7 +517,7 @@ def tool_call_of(event: SessionEvent) -> ToolCallData | None:
 
 
 class ToolResultBlock(BaseModel):
-    """One tool-result block: the call answered, its content, and its error flag."""
+    """Result fields shared by a tool message and a legacy nested result block."""
 
     model_config = PERMISSIVE
 
@@ -531,8 +531,6 @@ class ToolResultData(BaseModel):
 
     model_config = PERMISSIVE
 
-    # Only the first block is typed — the rest of the list is whatever dsh put
-    # there, and reading past [0] is not something any consumer of ours does.
     message: JsonValue = None
     error: JsonValue = None
 
@@ -558,11 +556,15 @@ def tool_result_of(event: SessionEvent) -> DeepseekToolResult | None:
         return None
     if not isinstance(data.message, dict):
         return None
-    content = data.message.get("content")
-    if not isinstance(content, list) or not content:
-        return None
+    result: JsonValue = data.message
+    # V4 puts results on the tool message; older logs nest a result block.
+    if data.message.get("role") != "tool":
+        content = data.message.get("content")
+        if not isinstance(content, list) or not content:
+            return None
+        result = content[0]
     try:
-        block = tool_result_block_adapter.validate_python(content[0])
+        block = tool_result_block_adapter.validate_python(result)
     except ValidationError:
         return None
     return DeepseekToolResult(

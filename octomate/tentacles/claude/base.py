@@ -1159,7 +1159,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ],
             },
             mcp_servers=mcp_servers,
-            extra_args={"safe-mode": None},
+            extra_args={"safe-mode": None, "thinking-display": "summarized"},
             strict_mcp_config=True,
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token
