@@ -7,8 +7,8 @@ than a console-shaped copy of it, so the payload is the row.
 
 What a read leaves out it leaves out deliberately. A thread's messages are
 their own request, because a listing that carried every thread's ledger would
-be the ledger; and a run's transcript never leaves at all — the model messages
-are the agent's own history, which the history tool owns, not a reader's.
+be the ledger; and a run's model messages leave only a page at a time, since
+one run can hold thousands. Both pages are Arcanus keyset pages, newest first.
 
 Both halves of leaving something out are load-bearing. `response_model_exclude`
 keeps a relation out of the payload; it does nothing about the query, and every
@@ -50,9 +50,11 @@ composed and has no row to switch — carried on the directive that creates it."
 from dataclasses import replace
 from typing import Annotated, NotRequired, TypedDict
 
+from arcanus import Page
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import UUID7, BaseModel, Field
+from pydantic import UUID7, BaseModel, Field, ValidationError
+from pydantic_ai.usage import RequestUsage
 
 from octomate.auth import browser_request, current_user
 from octomate.base import Octomate
@@ -78,6 +80,7 @@ from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
@@ -420,23 +423,67 @@ def build_trunkline_router(
 
     @router.get(
         "/threads/{thread_id}/messages",
-        summary="The thread's chat ledger, oldest first",
-        response_model_exclude={"__all__": {"model_messages"}},
+        summary="The thread's chat ledger, newest first, a page at a time",
+        response_model=Page[ThreadMessage | ThreadCommand],
+        response_model_exclude={"items": {"__all__": {"model_messages"}}},
     )
     async def thread_messages(
-        thread_id: UUID7,
+        thread: Annotated[Thread, Depends(accessible_thread)],
         threads: Annotated[ThreadManager, Depends(thread_manager)],
-        user: Annotated[User, Depends(current_user)],
-    ) -> list[ThreadMessage | ThreadCommand]:
-        thread = await threads.get(thread_id, user_id=user.id)
-        if thread is None:
-            raise HTTPException(status_code=404, detail=f"no thread {thread_id}")
-        return list(thread.messages)
+        cursor: str | None = None,
+        unbound: bool = False,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> Page[ThreadMessage]:
+        """Every row the thread shows, its commands among them. `cursor` is a
+        page's `next_cursor`, read further back. `unbound` keeps to the rows no
+        model message of the thread carries — notices, commands, a chat room's
+        talk — since the rest arrive bound to the model messages they prompted or
+        delivered."""
+        try:
+            return await threads.messages_page(
+                thread.id, cursor, unbound=unbound, limit=limit
+            )
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.get(
+        "/threads/{thread_id}/conversations/messages",
+        summary="The model messages of the thread's own conversations, newest first",
+        response_model=Page[ModelRequest | ModelResponse],
+        response_model_exclude={
+            "items": {"__all__": {"thread_messages": {"__all__": {"model_messages"}}}}
+        },
+    )
+    async def thread_model_messages(
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+        cursor: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 100,
+    ) -> Page[ModelRequest | ModelResponse]:
+        """Every run of the thread's own agents, as one stream across its
+        conversations, a page at a time: where the thinking and the tool calls are.
+        Each message carries the chat rows bound to it — who asked, in their own
+        words, and what was delivered. `cursor` is a page's `next_cursor`."""
+        try:
+            return await conversations.messages_page(thread.id, cursor, limit=limit)
+        except ValidationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @router.get("/threads/{thread_id}/usage")
+    async def thread_usage(
+        thread: Annotated[Thread, Depends(accessible_thread)],
+        conversations: Annotated[ConversationManager, Depends(conversation_manager)],
+    ) -> RequestUsage:
+        """Every token the thread's own conversations spent, summed over their
+        responses — the total a reader paging the ledger cannot add up itself."""
+        return await conversations.usage(thread.id)
 
     @router.get(
         "/threads/{thread_id}/conversations",
         summary="The thread's agent conversations, each with its runs",
-        response_model_exclude={"__all__": {"messages"}},
+        response_model_exclude={
+            "__all__": {"messages": True, "runs": {"__all__": {"messages"}}}
+        },
     )
     async def thread_conversations(
         thread: Annotated[Thread, Depends(accessible_thread)],
@@ -445,12 +492,9 @@ def build_trunkline_router(
         """Subagent conversations included — they name their parent, so a reader
         can fold them under the run whose tool call spawned them.
 
-        Each run carries its model messages, which is where the thinking and the
-        tool calls are: the chat ledger holds what was said, and a reader reloading
-        a thread would otherwise watch a run's whole middle disappear. The
-        conversation's own `messages` stay excluded — that relation is the same rows
-        under a different parent, and one copy is enough."""
-        return await conversations.for_thread(thread.id, with_run_messages=True)
+        The runs come without their model messages: a thread's run can hold
+        thousands, which `/conversations/messages` serves a page at a time."""
+        return await conversations.for_thread(thread.id)
 
     @router.get("/threads/{thread_id}/project")
     async def thread_project(

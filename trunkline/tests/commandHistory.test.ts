@@ -35,7 +35,10 @@ for (const outcome of [
 ] satisfies CommandOutcome[]) {
   test(`reopening a thread restores a command's ${outcome.status} feedback after its invocation`, () => {
     const command = { ...receipt, segments: [...receipt.segments], outcome }
-    const detail = liveThreadDetail({ thread, conversations: [], messages: [command], project: null, batches: [] })
+    const detail = liveThreadDetail({
+      thread, conversations: [], modelMessages: [], unbound: [command], cursors: { model: null, unbound: null },
+      totals: { model: 0, unbound: 0 }, project: null, batches: [], usage: {},
+    })
     assert.deepEqual(detail.ledger.map((item) => item.kind), ['user', 'agent'])
     assert.equal(detail.ledger[0].kind === 'user' && detail.ledger[0].text, '/status')
     const reply = detail.ledger[1]
@@ -55,7 +58,10 @@ for (const outcome of [null, { status: 'completed', segments: [] }] satisfies (C
       ...receipt, kind: 'message', id: 'reply', direction: 'outbound', actor_kind: 'agent',
       segments: [], message_text: 'Review complete.',
     } satisfies ApiThreadMessage
-    const detail = liveThreadDetail({ thread, conversations: [], messages: [command, reply], project: null, batches: [] })
+    const detail = liveThreadDetail({
+      thread, conversations: [], modelMessages: [], unbound: [command, reply], cursors: { model: null, unbound: null },
+      totals: { model: 0, unbound: 0 }, project: null, batches: [], usage: {},
+    })
     assert.deepEqual(detail.ledger.map((item) => item.kind), ['user', 'agent'])
     const answer = detail.ledger[1]
     assert.deepEqual(answer.kind === 'agent' && answer.blocks, [{ type: 'p', text: 'Review complete.' }])

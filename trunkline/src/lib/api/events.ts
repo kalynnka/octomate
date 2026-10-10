@@ -83,13 +83,14 @@ export interface RetryPromptPart {
   timestamp?: string
 }
 
-/** The request-side parts the console rebuilds cards from. Everything else a
- *  request carries — the user prompt, the system prompt — is already in the chat
- *  ledger or belongs to nobody, and arrives as a `part_kind` this ignores. */
+/** The request-side parts the console rebuilds cards from. A user prompt shows
+ *  only when no chat row was bound to its request; the system prompt belongs to
+ *  nobody, and arrives as a `part_kind` this ignores. */
 export type ModelRequestPart =
   | ToolReturnPart
   | RetryPromptPart
-  | { part_kind: 'user-prompt' | 'system-prompt' }
+  | { part_kind: 'user-prompt'; content: string | Array<unknown> }
+  | { part_kind: 'system-prompt' }
 
 /** One persisted model message. This is the agent's own turn history, recorded
  *  under the run: the only place a finished thread's thinking and tool calls
@@ -103,14 +104,31 @@ export interface ApiUsage {
   cache_write_tokens?: number
 }
 
+/** The chat rows a model message is bound to: for a request, the ones it was
+ *  built from, who said them and in their own words; for a response, the ones it
+ *  was delivered as. */
+interface ApiBound {
+  thread_messages: ApiThreadMessage[]
+}
+
 export type ApiModelMessage =
-  | { kind: 'request'; parts: ModelRequestPart[]; timestamp: string | null }
-  | {
+  | ({ id: string; run_id: string; kind: 'request'; parts: ModelRequestPart[]; timestamp: string | null } & ApiBound)
+  | ({
+      id: string
+      run_id: string
       kind: 'response'
       parts: ModelResponsePart[]
       timestamp: string
       usage?: ApiUsage | null
-    }
+    } & ApiBound)
+
+/** An Arcanus keyset page, newest first; `next_cursor` reads on from its last item. */
+export interface ApiPage<T> {
+  items: T[]
+  total: number
+  next_cursor: string
+  has_more: boolean
+}
 
 export interface TextPartDelta {
   part_delta_kind: 'text'
@@ -617,8 +635,6 @@ export interface ApiAgentRun {
   parent_tool_call_id: string | null
   started_at: string | null
   native_session_id?: string | null
-  /** oldest first — what the run actually sent and received */
-  messages: ApiModelMessage[]
 }
 
 export interface ApiConversation {

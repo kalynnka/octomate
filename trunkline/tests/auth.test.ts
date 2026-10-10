@@ -110,12 +110,15 @@ test('reload refreshes an expired access session before restoring the account', 
   assert.deepEqual(fetch.mock.calls.map((call) => call.arguments[0]), ['/api/auth/me', '/api/auth/refresh', '/api/auth/me'])
 })
 
-test('successful logout clears the account', async () => {
+test('successful logout clears the account and the address it had open', async () => {
   useAuth.setState({ status: 'signed-in', user })
+  const replaceState = mock.fn<History['replaceState']>()
+  browser.history = { replaceState }
   mock.method(globalThis, 'fetch', async () => new Response(null, { status: 204 }))
   await useAuth.getState().actions.signOut()
   assert.equal(useAuth.getState().status, 'signed-out')
   assert.equal(useAuth.getState().user, null)
+  assert.deepEqual(replaceState.mock.calls.map((call) => call.arguments[2]), ['/'])
 })
 
 for (const status of [401, 500, 'offline'] as const) {

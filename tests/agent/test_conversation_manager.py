@@ -18,14 +18,18 @@ from pydantic_ai.messages import (
     ModelResponse as RawModelResponse,
 )
 from pydantic_ai.messages import TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.usage import RequestUsage
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
-from octomate.managers import ConversationManager
+from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
+from octomate.schemas.segments import TextSegment
+from octomate.schemas.thread import ThreadKey
+from octomate.schemas.user import UserProfile
 from tests.support.managers import a_thread
 
 
@@ -789,6 +793,95 @@ async def test_a_subagent_conversation_is_its_own_context() -> None:
             parent_conversation_id=own.id,
         )
     ).id == child.id
+
+
+async def test_a_threads_model_messages_page_newest_first_across_its_conversations() -> (
+    None
+):
+    """One stream across every conversation the thread has had, in the order it
+    happened; a subagent's work is its own conversation's and stays out. A request
+    carries the chat rows it was built from."""
+    threads = ThreadManager(users=UserManager())
+    service = ConversationManager()
+    thread_id = await _thread()
+    first = await service.ensure(thread_id, agent_tentacle_id="inkling")
+    child = await service.ensure(
+        thread_id,
+        agent_tentacle_id="inkling",
+        subagent_id="explorer",
+        parent_conversation_id=first.id,
+    )
+    second = await service.ensure(thread_id, agent_tentacle_id="claude")
+    for conversation, run_id in ((first, "run-1"), (child, "run-2"), (second, "run-3")):
+        last = await service.record_agent_run(
+            conversation,
+            run_id,
+            [
+                RawModelRequest(parts=[UserPromptPart(f"ask {run_id}")]),
+                RawModelResponse(parts=[TextPart(f"answer {run_id}")]),
+            ],
+        )
+    assert last is not None
+    said = await threads.record_outbound(
+        ThreadKey(channel_tentacle_id="test", chat_type="dm", chat_id="chat"),
+        agent_tentacle_id="claude",
+        segments=[TextSegment(data={"text": "answer run-3"})],
+        sender=UserProfile(channel_user_id="bot", name="Bot"),
+    )
+    answer = next(m for m in last.messages if m.kind == "response")
+    await threads.bind_messages(
+        [said.id], answer.id, kind="assistant_reply", run_id="run-3"
+    )
+
+    newest = await service.messages_page(thread_id, limit=3)
+    rest = await service.messages_page(thread_id, newest.next_cursor, limit=3)
+
+    assert [m.message_text for m in (*newest, *rest)] == [
+        "answer run-3",
+        "ask run-3",
+        "answer run-1",
+        "ask run-1",
+    ]
+    assert (newest.total, newest.has_more, rest.has_more) == (4, True, False)
+    assert [row.id for row in newest[0].thread_messages] == [said.id]
+
+
+async def test_a_threads_usage_is_its_own_responses_summed() -> None:
+    """What a thread cost is its own conversations' — a subagent's spend is read
+    off its own conversation, as its messages are."""
+    service = ConversationManager()
+    own = await service.ensure(await _thread(), agent_tentacle_id="claude")
+    child = await service.ensure(
+        await _thread(),
+        agent_tentacle_id="claude",
+        subagent_id="explorer",
+        parent_conversation_id=own.id,
+    )
+    for run_id, tokens in (("run-1", 10), ("run-2", 5)):
+        await service.record_agent_run(
+            own,
+            run_id,
+            [
+                RawModelRequest(parts=[UserPromptPart("go")]),
+                RawModelResponse(
+                    parts=[TextPart("done")],
+                    usage=RequestUsage(input_tokens=tokens, cache_read_tokens=1),
+                ),
+            ],
+        )
+    await service.record_agent_run(
+        child,
+        "run-3",
+        [
+            RawModelResponse(
+                parts=[TextPart("looked")], usage=RequestUsage(input_tokens=99)
+            )
+        ],
+    )
+
+    usage = await service.usage(await _thread())
+
+    assert (usage.input_tokens, usage.cache_read_tokens) == (15, 2)
 
 
 async def test_a_subagent_names_its_parent_or_neither() -> None:

@@ -48,7 +48,7 @@ class ChannelAddress:
     channel_thread_id: str | None = None
     # Whether anyone besides `user_id` can read this surface, carried from the
     # message that resolved it. `chat_type` cannot answer it: a thread overwrites
-    # the type it sits in, so a Slack assistant pane and a group thread both arrive
+    # the type it sits in, so a thread in a Slack DM and a group thread both arrive
     # as "thread". False is the safe default — a spell that moves work somewhere
     # private then refuses rather than moving it out of a surface already private.
     shared: bool = False

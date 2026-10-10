@@ -93,9 +93,13 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     await runtime.present_command(suspender, output)
                     return End(output)
                 state.decision = suspender.continuation_decision()
-                result = await runtime.drive(ctx, suspender, output)
+                result, presented = await runtime.drive(ctx, suspender, output)
                 await runtime.present_result(
-                    ctx, suspender, result, streamed=channel.config.stream.enabled
+                    ctx,
+                    suspender,
+                    result,
+                    streamed=channel.config.stream.enabled,
+                    presented=presented,
                 )
                 return await runtime.finish(ctx, session, suspender, result)
         finally:

@@ -1,7 +1,7 @@
 # Slack
 
-Slack connects over **Socket Mode**: the bot dials out, and events, block actions
-and the assistant pane all arrive on that socket. No request URL, no public ingress.
+Slack connects over **Socket Mode**: the bot dials out, and events and block actions
+arrive on that socket. No request URL, no public ingress.
 
 ## Create the app
 
@@ -9,8 +9,8 @@ In [api.slack.com/apps](https://api.slack.com/apps), create an app and:
 
 1. **Socket Mode**: enable it and create an app-level token with
    `connections:write`. That is `app_token`, an `xapp-` value.
-2. **Agents & AI Apps**: enable the assistant feature. This gives the bot its
-   private assistant pane and the status line it sets while working.
+2. **Agents**: turn on the agent experience, so people message the bot as an
+   agent in its DM.
 3. **OAuth & Permissions**, bot token scopes, from what the bot calls:
    `chat:write`, `users:read`, `im:write`, `im:history`, `channels:history`,
    `groups:history`, `mpim:history`, `files:write`, `files:read`, `assistant:write`,
@@ -18,8 +18,7 @@ In [api.slack.com/apps](https://api.slack.com/apps), create an app and:
    can move into.
    Install the app to the workspace; the bot token is `bot_token`, an `xoxb-` value.
 4. **Event Subscriptions**: subscribe the bot to `message.channels`,
-   `message.groups`, `message.im`, `message.mpim`, `assistant_thread_started` and
-   `assistant_thread_context_changed`.
+   `message.groups`, `message.im` and `message.mpim`.
 5. **Interactivity & Shortcuts**: on. With Socket Mode no URL is needed.
 
 The app id from **Basic Information** is `app_id`. If Slack refuses a call, its
@@ -43,16 +42,19 @@ OCTOMATE__TENTACLES__SLACK__APP_TOKEN=xapp-...
 
 Name agents you have already enabled and set `enabled: true` if this channel was
 generated disabled. Check the configuration, restart Octomate, invite the bot to a
-channel and `@`-mention it, or open its assistant pane. Verify a reply.
+channel and `@`-mention it, or send it a direct message. Verify a reply.
 
 ## Where things land
 
 | Slack surface | In Octomate | The reply |
 |---|---|---|
-| A channel or group message | A group chat room | A new thread under a message the bot posts |
+| A channel message that mentions the bot | A thread that message starts | In a thread under it |
+| Any other channel message | The channel's chat room | None, with `mention_only` |
 | A reply in a thread | That thread | In the same thread |
-| The bot's DM | A direct message | A thread in the DM, because Slack only streams into threads |
-| The assistant pane | A private thread | In the pane |
+| A message at the top of the bot's DM | A private thread that message starts | In a thread under your message |
+
+Each message you send at the top of the bot's DM, or that mentions it at the top
+of a channel, starts a new conversation. To continue one, reply in its thread.
 
 Slack's streaming API takes a thread and nothing else, so the bot never streams
 into a channel root. When it opens a sub-thread it posts the hint as a message and

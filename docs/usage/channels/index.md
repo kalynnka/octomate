@@ -53,7 +53,7 @@ platform's other defaults.
 ## Being addressed
 
 The mention gate looks at whether the surface is **shared**, not at its type. A
-direct message, a Slack assistant pane, or a Lark one-to-one chat is never gated.
+direct message, a thread in a Slack DM, or a Lark one-to-one chat is never gated.
 On a shared surface the bot answers when:
 
 - the message `@`-mentions it,

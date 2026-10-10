@@ -645,8 +645,8 @@ async def test_private_threads_and_mutations_are_isolated(
     assert bob_thread["chat_id"] != thread["chat_id"]
     messages = (
         await client.get(f"/api/trunkline/threads/{bob_thread['id']}/messages")
-    ).json()
-    assert messages[0]["sender"]["user_id"] == bob_thread["chat_id"]
+    ).json()["items"]
+    assert messages[-1]["sender"]["user_id"] == bob_thread["chat_id"]
     assert "Alice's private message" not in str(messages)
 
 

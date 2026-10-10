@@ -91,7 +91,8 @@ class SlackInk(Ink[SlackOutboundMessage]):
     ) -> list[ChannelAddress]:
         if source_address is not None:
             if source_address.channel_thread_id or source_address.chat_type == "thread":
-                return []
+                # No thread holds another, but the DM a DM thread is in holds a new one.
+                return [address] if source_address.chat_id.startswith("D") else []
             return [source_address]
         return [address]
 
@@ -265,7 +266,8 @@ class SlackInk(Ink[SlackOutboundMessage]):
         reply_in_thread: bool = False,
     ) -> IMMessageID | None:
         first_msg_id: IMMessageID | None = None
-        thread_ts = reply_to or (channel_thread_id if chat_type == "thread" else None)
+        thread = channel_thread_id if chat_type == "thread" else None
+        thread_ts = reply_to or thread
         for msg in messages:
             try:
                 markdown_text = msg.markdown_text or msg.text
@@ -290,7 +292,8 @@ class SlackInk(Ink[SlackOutboundMessage]):
             except Exception:
                 logger.warning("SlackInk: send_message failed", exc_info=True)
             if not reply_in_thread:
-                thread_ts = None
+                # Only the first message is the reply; the rest stay where it was sent.
+                thread_ts = thread
         return first_msg_id
 
     # Marks where a stream opens, not a round-trip: `chat_stream` only builds the

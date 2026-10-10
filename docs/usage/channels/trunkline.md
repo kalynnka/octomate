@@ -58,7 +58,8 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   pick on an owned thread is refused, because a mid-thread model switch busts the
   provider's cache. Hand off explicitly instead.
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
-  handoffs, and the pending actions.
+  handoffs, and the pending actions. A thread opens on its latest messages and
+  the agent's work between them; earlier ones load as you scroll up.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.
@@ -195,7 +196,7 @@ disabled: QQ has no threads, so nothing can land there.
 Teleport is unavailable when the conversation's agent is not connected or cannot
 fork its session, when the conversation is shared and its chat can start no
 sub-thread, or when no connected channel runs an agent that can continue it. A
-Slack assistant pane, a thread in a Slack DM, a Lark one-to-one topic and a Discord
+thread in a Slack DM, a Lark one-to-one topic and a Discord
 private thread are private and can teleport; a public Discord thread and a thread
 in a Slack channel or Lark group are shared and cannot. A shared thread's full
 history is never carried to another channel.
@@ -237,6 +238,11 @@ blue for the first line and gray for details, without trailing horizontal rules.
 Each paragraph has one bullet; wrapped lines stay within it.
 Ordinary chat runs stream over server-sent events; a browser that disconnects mid-run only stops
 watching, and the run finishes and records regardless.
+
+The address bar names what is open — a thread, a new thread being composed, or a
+control page — so a reload, a shared link, or signing back in after a session
+expires returns there, and Back and Forward step through what you opened. Signing
+out returns the address to the console's start.
 
 Explicit commands submitted through `POST /api/commands/execute` use Reflex for
 user tools, approvals and reply history. Direct feedback and agent activity use

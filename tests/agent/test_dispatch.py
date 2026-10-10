@@ -230,6 +230,10 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
 
 
 async def test_owner_survives_cold_manager_reload() -> None:
+    # The platform outlives the restart, so its message ids carry on rather than
+    # being issued again.
+    platform = RecordingInk()
+
     def _build() -> tuple[Octomate, FakeAgent, FakeAgent]:
         octomate = Octomate()
         entry = FakeAgent(
@@ -243,7 +247,7 @@ async def test_owner_survives_cold_manager_reload() -> None:
             ),
         )
         claude = FakeAgent(id="claude")
-        channel = FakeChannelTentacle(config=_summon_config(stream=True))
+        channel = FakeChannelTentacle(ink=platform, config=_summon_config(stream=True))
         _register_agents(octomate, entry, claude)
         octomate.connect(channel)
         return octomate, entry, claude

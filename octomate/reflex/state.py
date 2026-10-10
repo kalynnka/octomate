@@ -613,10 +613,12 @@ class ReflexRuntime:
         ctx: GraphRunContext[ReflexState, ReflexDeps],
         suspender: ReflexSuspender,
         source: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
-    ) -> AgentRunResult[ChannelOutput]:
-        """Consume the same native invocation, closing it before recording its reply."""
+    ) -> tuple[AgentRunResult[ChannelOutput], IMMessageID | None]:
+        """Consume the same native invocation, closing it before recording its reply,
+        and answer the platform id its timeline rendered the reply as."""
         results: list[AgentRunResult[ChannelOutput]] = []
         errors: list[Exception] = []
+        presented: IMMessageID | None = None
         address = suspender.target_address
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
@@ -637,7 +639,7 @@ class ReflexRuntime:
         async with aclosing(source):
             try:
                 async with aclosing(events()) as stream:
-                    await self.present_events(suspender, stream)
+                    presented = await self.present_events(suspender, stream)
             except AgentRunError:
                 raise
             except Exception:
@@ -650,23 +652,25 @@ class ReflexRuntime:
             raise errors[0]
         if not results:
             raise RuntimeError(f"react stream for {address} completed without a result")
-        return results[-1]
+        return results[-1], presented
 
     async def present_events(
         self,
         suspender: ReflexSuspender,
         stream: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
-    ) -> None:
-        """Render a live timeline, or deliver explicit sends while draining a quiet run."""
+    ) -> IMMessageID | None:
+        """Render a live timeline, or deliver explicit sends while draining a quiet
+        run. Answers the platform id the timeline rendered the reply as."""
         address = suspender.target_address
         channel = suspender.channel
         if not channel.config.stream.enabled:
             async for event in stream:
                 if isinstance(event, MessageSentEvent):
                     await channel.feelers.segments.present(address, event.segments)
-            return
+            return None
         async with channel.feelers.timeline.open(address) as timeline:
             await timeline.drive(stream)
+        return timeline.message_id
 
     async def present_result(
         self,
@@ -675,8 +679,10 @@ class ReflexRuntime:
         result: AgentRunResult[ChannelOutput],
         *,
         streamed: bool,
+        presented: IMMessageID | None = None,
     ) -> None:
-        """Record and bind the reply, presenting it once when it was not streamed."""
+        """Record and bind the reply, presenting it once when it was not streamed.
+        `presented` is the platform id a streamed reply was rendered as."""
         output = result.output
         address = suspender.target_address
         channel = suspender.channel
@@ -705,8 +711,8 @@ class ReflexRuntime:
             run_id=result.run_id,
         )
         if streamed or (isinstance(output, str) and not output):
-            return
-        if isinstance(output, str):
+            message_id = presented
+        elif isinstance(output, str):
             message_id = await channel.feelers.markdown.present(address, output)
         else:
             message_id = await channel.feelers.segments.present(address, segments)

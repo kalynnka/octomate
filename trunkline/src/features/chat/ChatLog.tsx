@@ -23,8 +23,10 @@ export function ChatLog() {
     (sbFold ? 0 : 1) + (mgmtOpen ? 1 : 0) + (traceOn && !pvOpen ? 1 : 0)
   ]
   const ledger = detail?.ledger ?? []
-  // Latest page first; scroll-top reveals earlier pages (loadOlder).
+  // Latest page first; scroll-top reveals earlier pages (loadOlder), reading
+  // them off the relay once the ones in hand run out.
   const visible = ledger.slice(-ledgerN)
+  const earlier = visible.length < ledger.length || detail?.earlier === true
   const blank = ntOn && live.length === 0
 
   return (
@@ -45,12 +47,12 @@ export function ChatLog() {
         } as CSSProperties
       }
     >
-      {ledger.length > 0 && !ntOn && visible.length >= ledger.length && (
+      {ledger.length > 0 && !ntOn && !earlier && (
         <div style={{ textAlign: 'center', ...label(8.5), color: 'var(--fg-3)', padding: '2px 0' }}>
           // start of thread
         </div>
       )}
-      {ledger.length > 0 && !ntOn && visible.length < ledger.length && (
+      {ledger.length > 0 && !ntOn && earlier && (
         <div style={{ textAlign: 'center', ...statusNote, color: 'var(--fg-3)', padding: '2px 0' }}>
           ↑ scroll — earlier messages load step by step
         </div>
