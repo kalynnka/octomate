@@ -11,7 +11,7 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 import httpx2
-from pydantic import UUID7
+from pydantic import UUID7, SecretStr
 
 from octomate.schemas.user import User
 
@@ -35,6 +35,10 @@ class McpBearerAuth(httpx2.Auth):
         self.connector_id = connector_id
         self.url = httpx2.URL(url)
 
+    def headers(self, token: SecretStr) -> dict[str, str]:
+        """Return the upstream's authentication headers for the user's token."""
+        return {"Authorization": f"Bearer {token.get_secret_value()}"}
+
     async def async_auth_flow(
         self, request: httpx2.Request
     ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
@@ -47,7 +51,7 @@ class McpBearerAuth(httpx2.Auth):
             raise ValueError(
                 "This MCP needs authorization; connect it before calling its tools"
             )
-        request.headers["Authorization"] = f"Bearer {token.get_secret_value()}"
+        request.headers.update(self.headers(token))
         response = yield request
         if response.status_code == 401:
             await self.manager.invalidate(
