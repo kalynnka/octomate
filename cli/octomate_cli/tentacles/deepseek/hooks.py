@@ -192,7 +192,7 @@ def install(
         Path | None,
         typer.Option(
             help="Path of the dsh-hooks-claude-code package to link into dsh's "
-            "module fallback (e.g. <harness checkout>/packages/hooks/"
+            "module fallback (e.g. <harness checkout>/packages/experimental/"
             "hooks-claude-code). The bridge ships outside dsh's own bundle, so "
             "the first install needs this once."
         ),
@@ -222,7 +222,7 @@ def install(
         typer.secho(
             f"\n{BRIDGE_PACKAGE} does not resolve from {bridge_link(target_home)} — "
             "dsh will fail to mount the hooks row until it does. Re-run with "
-            "--bridge <harness checkout>/packages/hooks/hooks-claude-code.",
+            "--bridge <harness checkout>/packages/experimental/hooks-claude-code.",
             fg=typer.colors.YELLOW,
             err=True,
         )

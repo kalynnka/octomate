@@ -1,4 +1,4 @@
-"""Opt-in, keyless integration against a built dsh checkout.
+"""Opt-in, keyless integration against an installed or built dsh.
 
 DSH_TEST_EXECUTABLE=/path/to/apps/cli/lib/bin.js pytest tests/agent/test_deepseek_live.py
 All settings, sessions, and tool execution are confined to pytest's temporary tree.
@@ -52,7 +52,16 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     executable = os.environ.get("DSH_TEST_EXECUTABLE")
     if executable is None:
         pytest.skip("set DSH_TEST_EXECUTABLE to run the isolated dsh integration")
-    root = (await asyncio.to_thread(Path(executable).resolve)).parents[3]
+    resolver = await asyncio.create_subprocess_exec(
+        "node",
+        "--input-type=module",
+        "--eval",
+        "console.log(import.meta.resolve('@deepseek-ai/dsh-llm'))",
+        cwd=(await asyncio.to_thread(Path(executable).resolve)).parent,
+        stdout=asyncio.subprocess.PIPE,
+    )
+    module_url, _ = await resolver.communicate()
+    assert resolver.returncode == 0
     for key in list(os.environ):
         if key.startswith(("DSH_", "DEEPSEEK_")):
             monkeypatch.delenv(key)
@@ -76,9 +85,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
     plugin.write_text(
         (Path(__file__).parent / "fixtures/dsh_remote_mock.mjs")
         .read_text()
-        .replace(
-            "__DSH_LLM_MODULE__", (root / "packages/llm/llm/lib/index.js").as_uri()
-        )
+        .replace("__DSH_LLM_MODULE__", module_url.decode().strip())
     )
     patch = tmp_path / "patch.yml"
     patch.write_text(f"- insert:\n    - id: octomate-smoke\n      name: {plugin}\n")
@@ -311,7 +318,7 @@ async def test_real_harness_browser_login_through_a_trusted_proxy(
             assert (await browser.get("/")).status_code == 401
             login = await browser.get(f"/?{link.query}")
             assert login.status_code == 303
-            assert login.headers["location"] == "/"
+            assert login.url.join(login.headers["location"]) == browser.base_url
             assert (await browser.get("/")).status_code == 200
             request = {
                 "type": "client-request",
