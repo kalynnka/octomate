@@ -374,6 +374,31 @@ def test_the_stream_authenticates_like_the_hook_routers() -> None:
     assert denial.value.status_code == 401
 
 
+@pytest.mark.parametrize("failure", ["attach_remote", "feed_remote"])
+def test_stream_failure_closes_socket_and_releases_session(
+    failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, tentacle = stream_client()
+    monkeypatch.setattr(
+        tentacle.session_tailer,
+        failure,
+        AsyncMock(side_effect=RuntimeError("storage failed")),
+    )
+    with client, client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+        websocket.send_text(hello_json())
+        if failure != "attach_remote":
+            websocket.receive_text()
+            websocket.send_text(StreamLine(start=0, end=1, line="{}").model_dump_json())
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_text()
+        assert disconnect.value.code == 1011
+        assert disconnect.value.reason == "transcript sync failed"
+
+    assert tentacle.session_tailer.sessions == {}
+    assert tentacle.native_sessions == {}
+    assert "storage failed" in caplog.text
+
+
 def upload_transcript(
     websocket: WebSocketTestSession, data: bytes, *, start: int = 0
 ) -> None:

@@ -55,6 +55,11 @@ class ModelMessage(Base, TransmuterProxiedMixin):
     provider_response_id: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
+    workspace_ref: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="The provider and identifier of the response's workspace, without credentials.",
+    )
     finish_reason: Mapped[str | None] = mapped_column(String, nullable=True)
     # `state` is response-only on pydantic-ai's side ('complete' | 'interrupted'),
     # but lives on the shared table since responses and requests share the same

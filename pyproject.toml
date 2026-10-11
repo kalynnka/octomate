@@ -20,7 +20,7 @@ dependencies = [
     "websockets>=15",
     "lark-oapi>=1.4.8",
     "discord.py>=2.7.1",
-    "pydantic-ai[bedrock]>=2.44.0,<3",
+    "pydantic-ai[bedrock]>=2.53.0,<3",
     "pydantic-graph>=2.20.0",
     "pydantic-ai-harness[code-mode]>=0.34.0",
     "watchfiles>=1.1.1",
@@ -124,6 +124,7 @@ dev = [
     "pytest-asyncio>=0.24",
     "httpx>=0.28.1",
     "pytest-env>=1.1",
+    "pytest-timeout>=2.4,<3",
     "pytest-xdist>=3.8,<4",
 ]
 
@@ -135,6 +136,7 @@ extraPaths = [".", "cli", "protocol"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+timeout = 180
 # `database_settings` is built when octomate.config.database is imported, which is
 # before any fixture exists — so this is the only place the suite can keep it off
 # the real .octomate/octomate.db. A test that forgets `in_memory_engine` then hits
