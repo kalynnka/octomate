@@ -47,7 +47,7 @@ while preserving other hooks and settings.
 === "DeepSeek Harness (experimental)"
 
     ```sh
-    octomate deepseek hooks install --bridge /path/to/deepseek-harness/packages/hooks/hooks-claude-code
+    octomate deepseek hooks install --bridge /path/to/deepseek-harness/packages/experimental/hooks-claude-code
     octomate deepseek mcp install
     octomate deepseek mcp show
     ```

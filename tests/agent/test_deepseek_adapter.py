@@ -26,7 +26,7 @@ from octomate.capabilities.harness.events import StreamEvents
 from octomate.tentacles.deepseek.adapter import DeepseekRunAccumulator
 from octomate.tentacles.deepseek.wire import SessionEventFrame
 from octomate.tentacles.feelers.output import render_stream_event_delta
-from octomate.types.json import JsonValue
+from octomate.types.json import JsonObject, JsonValue
 
 
 def frame(
@@ -152,8 +152,17 @@ def test_reasoning_then_text_commits_one_response_with_both_parts() -> None:
     ]
 
 
-def test_tool_call_and_result_pair_into_one_native_response() -> None:
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("is_error", [False, True])
+def test_tool_call_and_result_pair_into_one_native_response(
+    legacy: bool, is_error: bool
+) -> None:
     accumulator = DeepseekRunAccumulator()
+    result: JsonObject = {
+        "toolCallId": "c1",
+        "content": [{"type": "text", "text": "a.txt"}],
+        "isError": is_error,
+    }
 
     events = consume_all(
         accumulator,
@@ -168,15 +177,9 @@ def test_tool_call_and_result_pair_into_one_native_response() -> None:
             frame(
                 "tool/result",
                 {
-                    "message": {
-                        "content": [
-                            {
-                                "toolCallId": "c1",
-                                "content": [{"type": "text", "text": "a.txt"}],
-                                "isError": False,
-                            }
-                        ]
-                    }
+                    "message": {"content": [result]}
+                    if legacy
+                    else {"role": "tool", **result}
                 },
             ),
             turn_end(),
@@ -188,7 +191,7 @@ def test_tool_call_and_result_pair_into_one_native_response() -> None:
     [result_event] = [e for e in events if isinstance(e, FunctionToolResultEvent)]
     assert isinstance(result_event.part, ToolReturnPart)
     assert result_event.part.content == "a.txt"
-    assert result_event.part.outcome == "success"
+    assert result_event.part.outcome == ("failed" if is_error else "success")
     [response] = accumulator.messages
     assert isinstance(response, ModelResponse)
     native_call, native_return = response.parts

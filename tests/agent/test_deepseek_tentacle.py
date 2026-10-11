@@ -401,7 +401,7 @@ async def test_driven_names_are_persisted_and_revised(
     async with tentacle:
         for name in names:
             FakeDeepseekApi.results["session/projections"] = OkResult(
-                value={"asOfSeq": 5, "values": {"title": name}}
+                value={"kind": "sequenced", "asOfSeq": 5, "values": {"title": name}}
             )
             result = await tentacle.run(
                 "work", conversation_address=KEY, thread_id=thread_id

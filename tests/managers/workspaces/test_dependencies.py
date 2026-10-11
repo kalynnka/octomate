@@ -1,10 +1,8 @@
 """A tree installs from its lockfile, and only when that lockfile moves.
 
-Nothing here runs a real package manager. What is worth testing is the policy —
-which lockfile picks which manager, when a tree counts as already installed, and
-that a host missing the tool loses its dependencies rather than its workspace —
-so the commands are `tests.support.dependencies`'s probe and the lines it leaves
-behind are how often an install actually happened.
+Most tests use `tests.support.dependencies`'s probe to check manager selection,
+installation stamps and failed commands. The uv tests use real, offline installs
+to check that refreshing dependencies preserves an existing environment.
 
 The `.git` directory in every tree is not decoration: the stamp lives there, which
 is what makes a copied fork skip the install and a cloned one run it.
@@ -13,6 +11,8 @@ is what makes a copied fork skip the install and a cloned one run it.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -39,6 +39,28 @@ def a_tree(path: Path, lock: str = Probe.lockfile, content: str = "one") -> Path
     (path / ".git").mkdir(parents=True, exist_ok=True)
     (path / lock).write_text(content)
     return path
+
+
+@pytest.fixture
+async def uv_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    for name in list(os.environ):
+        if name.startswith("UV_") or name in {
+            "VIRTUAL_ENV",
+            "PYTHONHOME",
+            "PYTHONPATH",
+        }:
+            monkeypatch.delenv(name)
+    monkeypatch.setenv("UV_PYTHON", sys.executable)
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    monkeypatch.setenv("UV_NO_CONFIG", "1")
+    monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "cache"))
+    (tmp_path / ".git").mkdir()
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "workspace-test"\nversion = "0.1.0"\n'
+        'requires-python = ">=3.12"\n'
+    )
+    assert await UV().run(tmp_path, "uv", "lock")
+    return tmp_path
 
 
 @pytest.mark.parametrize("owner", [UV(), Pnpm(), Npm()])
@@ -138,3 +160,76 @@ async def test_a_later_command_does_not_run_after_an_earlier_one_failed(
         await install(tree)
 
     assert runs(tree) == 0
+
+
+async def test_uv_creates_a_relocatable_environment(uv_tree: Path) -> None:
+    await install(uv_tree)
+
+    assert "relocatable = true" in (uv_tree / ".venv/pyvenv.cfg").read_text()
+    assert (uv_tree / ".git" / STAMP).is_file()
+
+
+async def test_uv_refresh_preserves_the_environment_after_a_lockfile_change(
+    uv_tree: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    await install(uv_tree)
+    stamp = uv_tree / ".git" / STAMP
+    previous_stamp = stamp.read_text()
+    marker = uv_tree / ".venv/preserved"
+    marker.write_text("keep this environment")
+    config = uv_tree / ".venv/pyvenv.cfg"
+    previous_config = config.stat().st_mtime_ns
+    project = uv_tree / "pyproject.toml"
+    project.write_text(project.read_text().replace('"0.1.0"', '"0.2.0"'))
+    assert await UV().run(uv_tree, "uv", "lock")
+
+    with caplog.at_level(logging.WARNING):
+        await install(uv_tree)
+
+    assert marker.read_text() == "keep this environment"
+    assert config.stat().st_mtime_ns == previous_config
+    assert stamp.read_text() != previous_stamp
+    assert not caplog.records
+    previous_time = stamp.stat().st_mtime_ns
+    await install(uv_tree)
+    assert stamp.stat().st_mtime_ns == previous_time
+
+
+async def test_uv_failed_sync_preserves_the_previous_stamp(
+    uv_tree: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    await install(uv_tree)
+    stamp = uv_tree / ".git" / STAMP
+    previous_stamp = stamp.read_text()
+    lockfile = uv_tree / UV.lockfile
+    lockfile.write_text(lockfile.read_text() + "\n# Refresh dependencies.\n")
+    project = uv_tree / "pyproject.toml"
+    project.write_text(
+        project.read_text()
+        + '\ndependencies = ["missing-package"]\n'
+        + '\n[tool.uv.sources]\nmissing-package = { path = "absent" }\n'
+    )
+
+    with caplog.at_level(logging.WARNING):
+        await install(uv_tree)
+
+    assert "`uv sync`" in caplog.text
+    assert stamp.read_text() == previous_stamp
+
+
+async def test_uv_preserves_and_rejects_a_non_relocatable_environment(
+    uv_tree: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    assert await UV().run(uv_tree, "uv", "venv")
+    marker = uv_tree / ".venv/preserved"
+    marker.write_text("keep this environment")
+    config = uv_tree / ".venv/pyvenv.cfg"
+    previous_config = config.read_text()
+
+    with caplog.at_level(logging.WARNING):
+        await install(uv_tree)
+
+    assert marker.read_text() == "keep this environment"
+    assert config.read_text() == previous_config
+    assert "not relocatable" in caplog.text
+    assert not (uv_tree / ".git" / STAMP).exists()

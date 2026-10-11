@@ -294,7 +294,10 @@ async def test_model_command_preserves_arguments_context_stream_and_history(
     assert options[-1].resume == ("prior-session" if resumed else None)
     assert options[-1].cwd == str(context.cwd)
     assert options[-1].permission_mode == context.permission_mode
-    assert options[-1].extra_args == {"safe-mode": None}
+    assert options[-1].extra_args == {
+        "safe-mode": None,
+        "thinking-display": "summarized",
+    }
     assert client.get_server_info.await_count == 2
     stored = await agent.conversations.get(conversation.id)
     [run] = await stored.runs

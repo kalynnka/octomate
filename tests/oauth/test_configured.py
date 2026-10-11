@@ -349,6 +349,47 @@ async def test_token_errors_take_precedence_over_success_fields(error: str) -> N
         assert isinstance(result, OAuthPending)
 
 
+@pytest.mark.parametrize(
+    ("error", "description"),
+    [
+        ("invalid_grant", "PKCE code challenge failed."),
+        ("invalid_client", "The client secret is invalid."),
+    ],
+)
+async def test_code_exchange_logs_provider_reason_without_credentials(
+    error: str, description: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    tokens = device_flow(
+        httpx2.MockTransport(
+            lambda request: httpx2.Response(
+                400,
+                json={
+                    "error": error,
+                    "error_description": description,
+                    "access_token": "private-response-token",
+                },
+            )
+        )
+    ).tokens
+    tokens.client.client_secret = "private-client-secret"
+    tokens.client.token_endpoint_auth_method = "client_secret_post"
+    flow = AuthorizationCodeFlow(
+        tokens=tokens, authorization_lifetime=timedelta(minutes=10)
+    )
+    with pytest.raises(OAuthRefreshRejected):
+        await flow.exchange(
+            context(),
+            code="private-code",
+            code_verifier=SecretStr("private-verifier"),
+            callback_uri=AnyHttpUrl("https://octomate.example/oauth/work/callback"),
+        )
+    assert "auth.example" in caplog.text
+    assert "HTTP 400" in caplog.text
+    assert error in caplog.text
+    assert description in caplog.text
+    assert "private-" not in caplog.text
+
+
 @pytest.mark.parametrize("token_type", ["bearer", "Bearer", "BEARER"])
 async def test_sdk_token_normalization_preserves_immediate_expiry(
     token_type: str,

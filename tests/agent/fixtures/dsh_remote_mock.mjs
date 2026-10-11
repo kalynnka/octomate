@@ -13,9 +13,7 @@ class Mock extends LlmAdapter {
   }
 
   async *stream(options) {
-    const result = options.messages.at(-1)?.content.find(
-      (block) => block.type === "tool-result",
-    );
+    const result = options.messages.at(-1)?.role === "tool";
     if (!result) {
       const args = JSON.stringify({
         command: "printf OCTOMATE_SMOKE",
