@@ -356,7 +356,8 @@ export function TimelinePanel() {
         flexDirection: 'column',
         minHeight: 0,
         position: 'relative',
-        boxShadow: 'inset 1px 0 0 var(--line-divider)',
+        borderLeft: show ? '1px solid var(--line-divider)' : 0,
+        boxSizing: 'border-box',
       }}
     >
       <div
