@@ -899,6 +899,11 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         model: Model | str,
     ) -> None:
         """Name prior context and the new prompt alongside the foreground graph."""
+        thread = await self.threads.get(conversation.thread_id, with_messages=False)
+        if thread is None:
+            raise ValueError(f"unknown thread {conversation.thread_id}")
+        if thread.kind in {"group", "dm"} and thread.parent_thread_id is None:
+            return
         messages = [
             *conversation.messages,
             ModelRequest(parts=[UserPromptPart(user_prompt)]),
@@ -927,7 +932,4 @@ class InklingTentacle(AgentTentacle[InklingOutput, None]):
         await self.conversation_manager.set_name(conversation, title)
         if conversation.parent_conversation_id is not None:
             return
-        thread = await self.threads.get(conversation.thread_id, with_messages=False)
-        if thread is None:
-            raise ValueError(f"unknown thread {conversation.thread_id}")
         await self.threads.rename(thread, title)

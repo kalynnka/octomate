@@ -19,15 +19,14 @@ from pydantic_ai_harness.step_persistence.naming import NamingResult
 
 from octomate import Octomate
 from octomate.capabilities.ask import AskCapability
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.inkling import base as inkling_base
-from tests.support.managers import a_thread
 
 pytestmark = pytest.mark.usefixtures("in_memory_engine")
 
 ADDRESS = ChannelAddress(
-    channel_tentacle_id="test", chat_type="dm", chat_id="chat", user_id="test"
+    channel_tentacle_id="test", chat_type="thread", chat_id="chat", user_id="test"
 )
 
 
@@ -82,12 +81,41 @@ def naming_model(naming_requests: list[str]) -> FunctionModel:
     return FunctionModel(function=name, stream_function=reply)
 
 
+@pytest.mark.parametrize("subthread", [False, True])
+@pytest.mark.parametrize("chat_type", ["group", "dm"])
+async def test_group_naming_only_runs_inside_a_work_subthread(
+    naming_model: FunctionModel,
+    naming_requests: list[str],
+    subthread: bool,
+    chat_type: ChatType,
+) -> None:
+    octomate = Octomate()
+    tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
+    address = ChannelAddress("test", chat_type, "room", "test")
+    group = await octomate.threads.ensure(address)
+    thread = await octomate.threads.open_sub_thread(group) if subthread else group
+    await tentacle.run(
+        "Investigate the gateway",
+        conversation_address=address,
+        thread_id=thread.id,
+        output_type=str,
+    )
+    assert len(naming_requests) == int(subthread)
+    saved = await octomate.threads.get(group.id)
+    assert saved is not None
+    assert saved.title is None
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id="inkling"
+    )
+    assert conversation.name == ("Plan gateway MCP exposure" if subthread else None)
+
+
 async def test_new_prompts_name_and_revise_the_session_and_thread(
     naming_model: FunctionModel, naming_requests: list[str]
 ) -> None:
     octomate = Octomate()
     tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
-    thread_id = await a_thread()
+    thread_id = (await tentacle.threads.ensure(ADDRESS)).id
 
     first = await tentacle.run(
         "Investigate the gateway",
@@ -141,7 +169,7 @@ async def test_naming_model_override_and_active_model_default(
     await tentacle.run(
         "Investigate this",
         conversation_address=ADDRESS,
-        thread_id=await a_thread(),
+        thread_id=(await tentacle.threads.ensure(ADDRESS)).id,
         model=TestModel() if configured else naming_model,
         output_type=str,
     )
@@ -175,7 +203,7 @@ async def test_naming_and_foreground_stream_run_concurrently(
 
     octomate = Octomate()
     tentacle = InklingTentacle("inkling", octomate, models={"default": naming_model})
-    thread_id = await a_thread()
+    thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     await tentacle.run(
         "Prior question",
         conversation_address=ADDRESS,
@@ -217,7 +245,7 @@ async def test_child_name_does_not_replace_the_parent_thread_title(
 ) -> None:
     octomate = Octomate()
     tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
-    thread_id = await a_thread()
+    thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     parent = await octomate.conversations.ensure(thread_id, agent_tentacle_id="inkling")
     child = await octomate.conversations.ensure(
         thread_id,
@@ -247,7 +275,7 @@ async def test_naming_failure_preserves_the_reply_and_existing_name(
 ) -> None:
     octomate = Octomate()
     tentacle = InklingTentacle("inkling", octomate, models={"test": naming_model})
-    thread_id = await a_thread()
+    thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     conversation = await octomate.conversations.ensure(
         thread_id, agent_tentacle_id="inkling"
     )
@@ -282,7 +310,7 @@ async def test_cancelling_a_run_cleans_up_its_naming_task(
         tentacle.run(
             "Continue",
             conversation_address=ADDRESS,
-            thread_id=await a_thread(),
+            thread_id=(await tentacle.threads.ensure(ADDRESS)).id,
             output_type=str,
         )
     )
@@ -304,7 +332,7 @@ async def test_a_prompt_names_a_deferred_turn_but_its_resume_does_not(
         naming_model=naming_model,
         capabilities=[AskCapability()],
     )
-    thread_id = await a_thread()
+    thread_id = (await tentacle.threads.ensure(ADDRESS)).id
     result = await tentacle.run(
         "Ask before proceeding",
         conversation_address=ADDRESS,

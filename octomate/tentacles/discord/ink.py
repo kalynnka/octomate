@@ -111,6 +111,12 @@ class DiscordInk(Ink[DiscordOutboundMessage]):
             channel = await self.client.fetch_channel(snowflake)
         return channel
 
+    async def get_group_name(self, chat_id: str) -> str | None:
+        channel = await self.resolve_channel(chat_id)
+        if isinstance(channel, (discord.abc.GuildChannel, discord.GroupChannel)):
+            return channel.name
+        return None
+
     async def resolve_messageable(self, channel_id: str) -> DiscordMessageable:
         channel = await self.resolve_channel(channel_id)
         if not isinstance(

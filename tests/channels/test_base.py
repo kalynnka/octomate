@@ -134,6 +134,33 @@ async def test_ingest_dispatches_event_to_octomate(
     assert thread.messages[-1].message_text == "hello"
 
 
+@pytest.mark.parametrize("previous_title", [None, "Old opening line"])
+async def test_ingest_dm_titles_follow_the_inspected_bot_name(
+    channel: FakeChannelTentacle,
+    in_memory_engine: AsyncEngine,
+    previous_title: str | None,
+) -> None:
+    address = _key()
+    if previous_title is not None:
+        await channel.octomate.threads.ensure(address, title=previous_title)
+
+    for index, bot_name in enumerate(["Bot", "Renamed bot"]):
+        channel.recording_ink.self_profile.name = bot_name
+        await channel.probe()
+        await channel.ingest(
+            {
+                "message_id": f"m{index}",
+                "user_id": "alice",
+                "chat_id": "alice",
+                "chat_type": "dm",
+                "segments": [TextSegment(data={"text": "An opening line"})],
+            }
+        )
+        thread = await a_loaded_thread(channel.octomate.threads, address)
+        assert thread.title == bot_name
+        assert len(thread.messages) == index + 1
+
+
 async def test_ingest_swallows_chromo_errors(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

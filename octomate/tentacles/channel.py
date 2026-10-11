@@ -141,6 +141,10 @@ class Ink[MessageT](ABC):
     @abstractmethod
     async def get_user_profile(self, user_id: str) -> UserProfile: ...
 
+    async def get_group_name(self, chat_id: str) -> str | None:
+        """The platform's group name, or None when this ink does not supply one."""
+        return None
+
     @abstractmethod
     async def upload_media(self, data: bytes) -> str | None:
         """Upload media bytes and return a platform address or URL."""
@@ -314,7 +318,12 @@ class ChannelTentacle(
 
     @channel_logfire.instrument("ChannelTentacle {self.id} ingest")
     async def ingest(self, raw: RawT) -> None:
-        """Inbound pipeline: decode, enrich sender, resolve media, dispatch."""
+        """Inbound pipeline: decode, enrich sender, resolve media, dispatch.
+
+        Before ensuring a group surface, refresh its title from the event's chat
+        name, or ask the ink when the event supplies no name. DM surfaces use the
+        bot's name from its inspected profile.
+        """
         try:
             event = await self.chromo.sip(raw)
             if event is None:
@@ -347,7 +356,12 @@ class ChannelTentacle(
                 chat_type=event.chat_type,
                 shared=event.shared,
             )
-            thread = await self.octomate.threads.ensure(address)
+            title = None
+            if event.chat_type == "group":
+                title = event.chat_name or await self.ink.get_group_name(event.chat_id)
+            elif event.chat_type == "dm":
+                title = self.self_profile.name or None
+            thread = await self.octomate.threads.ensure(address, title=title)
             if event.message_id and await self.octomate.threads.find_message(
                 thread.id, event.message_id, "inbound"
             ):

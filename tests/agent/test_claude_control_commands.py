@@ -167,7 +167,7 @@ async def test_fork_copies_sdk_transcript_and_resumes_from_destination(
     context = replace(context, permission_mode="plan")
     source_thread = await agent.threads.get(conversation.thread_id)
     assert source_thread is not None
-    await agent.threads.rename(source_thread, "Original")
+    await agent.conversations.set_name(conversation, "Original")
     outcome = await deliver(agent, context, "fork")
     assert isinstance(outcome, CommandResult)
     assert await deliver(agent, context, "fork") == outcome

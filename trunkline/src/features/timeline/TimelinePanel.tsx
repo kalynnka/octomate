@@ -81,7 +81,7 @@ const TICK: Partial<Record<TlKind, string>> = {
 }
 
 /** Trailing row of the live run — not a ledger card, so it neither jumps nor counts. */
-const WAIT_ROW: TlEvent = { k: 'wait', title: 'awaiting next message…', sub: '', t: '', uid: '', tgt: '' }
+const WAIT_ROW: TlEvent = { k: 'wait', title: '', sub: '', t: '', uid: '', tgt: '' }
 
 const DASH_V = 'repeating-linear-gradient(180deg, var(--trk-vline) 0 3px, transparent 3px 6px)'
 const DASH_H = 'repeating-linear-gradient(90deg, var(--trk-vline) 0 2px, transparent 2px 4px)'
@@ -356,7 +356,8 @@ export function TimelinePanel() {
         flexDirection: 'column',
         minHeight: 0,
         position: 'relative',
-        boxShadow: 'inset 1px 0 0 var(--line-divider)',
+        borderLeft: show ? '1px solid var(--line-divider)' : 0,
+        boxSizing: 'border-box',
       }}
     >
       <div
@@ -691,7 +692,7 @@ export function TimelinePanel() {
                                       borderStyle: ks.bs,
                                     }}
                                   />
-                                  <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                                  {!wait && <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
                                     <span style={{ width: 28, flexShrink: 0, ...label(6.5, '.14em'), color: tone ?? ks.tagColor }}>
                                       {ks.tag}
                                     </span>
@@ -732,9 +733,9 @@ export function TimelinePanel() {
                                         →
                                       </span>
                                     )}
-                                  </div>
+                                  </div>}
                                   {wait && (
-                                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginTop: 4, paddingLeft: 34 }}>
+                                    <div aria-label="Waiting for the next message" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '4px 0' }}>
                                       <span style={{ width: '46%', height: 5, background: 'var(--surface-sunken)' }} />
                                       <span style={{ width: '18%', height: 5, background: 'var(--surface-sunken)' }} />
                                     </div>
@@ -884,17 +885,6 @@ export function TimelinePanel() {
                   <span style={{ width: 22, height: 5, background: 'var(--surface-sunken)', flexShrink: 0 }} />
                 </div>
               ))}
-            </div>
-            <div
-              style={{
-                padding: '4px 14px 0 14px',
-                ...serif(11),
-                fontStyle: 'italic',
-                color: 'var(--fg-3)',
-                lineHeight: 1.6,
-              }}
-            >
-              messages index here once the first directive starts a conversation — sends, tools, files, approvals.
             </div>
           </div>
         )}

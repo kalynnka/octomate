@@ -148,7 +148,7 @@ const thread: ApiThread = {
   active_agent_tentacle_id: 'claude',
 }
 const said = (id: string): ApiThreadMessage => ({
-  kind: 'message', id, thread_id: 'thread-a', platform_message_id: null, happened_at: '2026-10-09T10:00:00Z',
+  kind: 'message', id, thread_id: 'thread-a', platform_message_id: null, reply_id: '', happened_at: '2026-10-09T10:00:00Z',
   direction: 'inbound', actor_kind: 'human', agent_tentacle_id: null, sender: null, segments: [],
   message_text: id, created_at: '2026-10-09T10:00:00Z',
 })

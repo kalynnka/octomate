@@ -48,6 +48,9 @@ one-to-one chat with the bot or mention it in a group and verify a reply.
 | A message inside a thread | That thread, keyed on its root message | Replied into the thread |
 | A one-to-one chat | A direct message, keyed on your open id | In the chat |
 
+The group chat room follows the Lark group's name, refreshed on incoming root
+messages. Agent work threads keep their own names.
+
 A sub-thread is opened by sending the hint and replying under it. Lark identifies
 a thread reply by its root message id, which is what the continuation is keyed on.
 

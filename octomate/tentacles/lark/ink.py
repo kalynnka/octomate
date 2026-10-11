@@ -26,6 +26,7 @@ from lark_oapi.api.im.v1 import (
     CreateMessageRequest,
     CreateMessageRequestBody,
     GetChatMembersRequest,
+    GetChatRequest,
     GetMessageResourceRequest,
     ListChatRequest,
     PatchMessageRequest,
@@ -319,6 +320,19 @@ class LarkInk(Ink[LarkOutboundMessage]):
             return None
         data, file_name = result
         return DownloadedImage(data=data, file_name=file_name)
+
+    async def get_group_name(self, chat_id: str) -> str | None:
+        im = self.client.im
+        if im is None:
+            raise RuntimeError("Lark IM API is unavailable")
+        response = await im.v1.chat.aget(
+            GetChatRequest.builder().chat_id(chat_id).build()
+        )
+        if not response.success() or response.data is None:
+            raise ValueError(
+                f"Lark refused to read the group: {response.code} {response.msg}"
+            )
+        return response.data.name
 
     async def suggest_addresses(
         self, address: ChannelAddress, source_address: ChannelAddress | None = None

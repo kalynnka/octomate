@@ -9,6 +9,7 @@ import { channelMeta } from '@/lib/api/live'
 import { Icon } from '@/components/Icon'
 import { ellipsis, fieldLabel, label, microSection, mono } from '@/components/text'
 import { CommandPanel } from './CommandPanel'
+import { DraftMarkdown } from './DraftMarkdown'
 import { DestinationPicker } from './GatewayDestination'
 import { EffortSlider, SummonRoute } from './GatewayRoute'
 import { COMMANDS, commandArguments, completeCommand, completion, editArguments, matching, nativeCommand, readCommand, type Argument, type GatewayOp } from './commands'
@@ -718,7 +719,7 @@ export function Composer() {
       resize: 'none',
       background: 'transparent',
       ...composerType,
-      color: 'var(--fg-1)',
+      color: line ? 'var(--fg-1)' : 'transparent',
       caretColor: 'transparent',
     },
   } as const
@@ -940,6 +941,11 @@ export function Composer() {
                 }}
                 {...input}
               />
+              {!line && (
+                <span aria-hidden style={{ position: 'absolute', inset: 0, top: -scrollTop, pointerEvents: 'none', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', ...composerType, color: 'var(--fg-1)' }}>
+                  <DraftMarkdown text={composerText} />
+                </span>
+              )}
               {caretAt !== null && (
                 <span
                   aria-hidden

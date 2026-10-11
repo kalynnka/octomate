@@ -62,7 +62,6 @@ from tests.support.managers import (
     FakeConversationManager,
     FakePresentedBatch,
     RecordingSuspender,
-    a_thread,
 )
 
 KEY = ChannelAddress(
@@ -384,7 +383,7 @@ async def test_driven_names_are_persisted_and_revised(
     patch_gateway(monkeypatch)
     FakeDeepseekApi.reset(turn_events())
     octomate = Octomate()
-    thread_id = await a_thread()
+    thread_id = (await octomate.threads.enter(KEY)).id
     conversation = await octomate.conversations.ensure(
         thread_id, agent_tentacle_id="deepseek"
     )
@@ -429,7 +428,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
         value={"values": {"title": "Child work"}}
     )
     octomate = Octomate()
-    thread_id = await a_thread()
+    thread_id = (await octomate.threads.enter(KEY)).id
     thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
     await octomate.threads.rename(thread, "Parent work")

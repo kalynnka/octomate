@@ -14,8 +14,8 @@ In [api.slack.com/apps](https://api.slack.com/apps), create an app and:
 3. **OAuth & Permissions**, bot token scopes, from what the bot calls:
    `chat:write`, `users:read`, `im:write`, `im:history`, `channels:history`,
    `groups:history`, `mpim:history`, `files:write`, `files:read`, `assistant:write`,
-   and `channels:read` and `groups:read` for listing the channels a conversation
-   can move into.
+   and `channels:read` and `groups:read` for channel names and listing the channels
+   a conversation can move into.
    Install the app to the workspace; the bot token is `bot_token`, an `xoxb-` value.
 4. **Event Subscriptions**: subscribe the bot to `message.channels`,
    `message.groups`, `message.im` and `message.mpim`.
@@ -52,6 +52,9 @@ channel and `@`-mention it, or send it a direct message. Verify a reply.
 | Any other channel message | The channel's chat room | None, with `mention_only` |
 | A reply in a thread | That thread | In the same thread |
 | A message at the top of the bot's DM | A private thread that message starts | In a thread under your message |
+
+The channel's chat room follows its Slack name, refreshed on incoming root
+messages. Agent work threads keep their own names.
 
 Each message you send at the top of the bot's DM, or that mentions it at the top
 of a channel, starts a new conversation. To continue one, reply in its thread.
