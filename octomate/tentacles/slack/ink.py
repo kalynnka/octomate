@@ -86,6 +86,16 @@ class SlackInk(Ink[SlackOutboundMessage]):
             title=profile.get("title") or None,
         )
 
+    async def get_group_name(self, chat_id: str) -> str:
+        response = await self.client.conversations_info(channel=chat_id)
+        channel = response["channel"]
+        if not isinstance(channel, dict):
+            raise ValueError("Slack returned no group")
+        name = channel.get("name")
+        if not isinstance(name, str):
+            raise ValueError("Slack returned a group without a name")
+        return name
+
     async def suggest_addresses(
         self, address: ChannelAddress, source_address: ChannelAddress | None = None
     ) -> list[ChannelAddress]:

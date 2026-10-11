@@ -328,6 +328,7 @@ class FakeThreadManager(ThreadManager):
         address_or_key: ChannelAddress | ThreadKey,
         *,
         project: Project | None = None,
+        title: str | None = None,
     ) -> Thread:
         key = (
             ThreadKey.from_address(address_or_key)
@@ -349,6 +350,8 @@ class FakeThreadManager(ThreadManager):
                 project=Relation(project),
             )
             self.threads_by_key[key] = thread
+        if title is not None:
+            thread.title = title
         return thread
 
     async def open_sub_thread(self, parent: Thread) -> Thread:

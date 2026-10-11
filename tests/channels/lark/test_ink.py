@@ -6,12 +6,14 @@ import asyncio
 import json
 from types import SimpleNamespace
 from typing import cast
+from unittest.mock import AsyncMock
 
 import httpx
 import lark_oapi as lark
 import pytest
 from lark_oapi.api.im.v1 import (
     GetChatMembersRequest,
+    GetChatResponse,
     ListChat,
     ListChatRequest,
     ListMember,
@@ -27,6 +29,20 @@ from octomate.tentacles.lark import LarkTentacle
 from octomate.tentacles.lark.ink import SDK_AEXECUTE, LarkInk, pooled_aexecute, pools
 from octomate.tentacles.lark.schema import LarkOutboundMessage
 from tests.channels.lark.fakes import FakeLarkInk, lark_channel
+
+
+async def test_group_name_reads_the_chat_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    ink = LarkInk("app", SecretStr("secret"))
+    assert ink.client.im is not None
+    lookup = AsyncMock(
+        return_value=GetChatResponse({"code": 0, "data": {"name": "Team"}})
+    )
+    monkeypatch.setattr(ink.client.im.v1.chat, "aget", lookup)
+
+    assert await ink.get_group_name("oc_group") == "Team"
+    lookup.assert_awaited_once()
+    assert lookup.await_args is not None
+    assert lookup.await_args.args[0].chat_id == "oc_group"
 
 
 async def test_lark_ink_selects_group_and_private_targets() -> None:

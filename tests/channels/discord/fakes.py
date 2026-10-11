@@ -53,6 +53,7 @@ def a_text_channel(
 ) -> discord.TextChannel:
     channel = discord.TextChannel.__new__(discord.TextChannel)
     channel.id = channel_id
+    channel.name = "general"
     channel._type = 0
     channel.guild = guild or a_guild()
     return channel

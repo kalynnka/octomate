@@ -69,6 +69,9 @@ the reply arrives in the same chat.
 | Group message | A group chat room | In the same group |
 | Private message | A direct message | In the same DM |
 
+The group chat room uses the QQ group's name and refreshes it when a message
+arrives. Agent work inside the room keeps its own thread names.
+
 NapCat's [message events](https://napneko.github.io/develop/event) distinguish
 private and group messages. A quoted reply references a message; it does not
 create a subthread. With `mention_only: true`, each group request needs an

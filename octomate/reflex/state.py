@@ -693,13 +693,14 @@ class ReflexRuntime:
             segments = list(output)
         else:
             return
-        _reply_to, body = split_reply(segments)
+        reply_to, body = split_reply(segments)
         message = None
         if body:
             message = await ctx.deps.thread_manager.record_outbound(
                 address,
                 agent_tentacle_id=suspender.agent_tentacle_id,
-                segments=body,
+                segments=segments,
+                reply_id=reply_to or "",
                 sender=channel.self_profile,
                 raw=output
                 if isinstance(output, str)

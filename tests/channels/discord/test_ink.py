@@ -32,6 +32,26 @@ def client() -> discord.Client:
     return discord.Client(intents=discord.Intents.none())
 
 
+@pytest.mark.parametrize("cached", [True, False])
+async def test_group_name_uses_cached_or_fetched_channel(
+    client: discord.Client,
+    monkeypatch: pytest.MonkeyPatch,
+    cached: bool,
+) -> None:
+    channel = a_text_channel()
+    fetch = AsyncMock(return_value=channel)
+    monkeypatch.setattr(
+        client, "get_channel", Mock(return_value=channel if cached else None)
+    )
+    monkeypatch.setattr(client, "fetch_channel", fetch)
+
+    assert await DiscordInk(client).get_group_name(str(channel.id)) == "general"
+    if cached:
+        fetch.assert_not_awaited()
+    else:
+        fetch.assert_awaited_once_with(channel.id)
+
+
 @dataclass(frozen=True)
 class SendCall:
     destination_id: int

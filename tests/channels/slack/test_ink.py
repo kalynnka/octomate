@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import SecretStr
@@ -15,6 +16,17 @@ from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.slack.ink import SLACK_MARKDOWN_TEXT_LIMIT, SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
 from tests.channels.slack.fakes import FakeSlackClient
+
+
+async def test_group_name_reads_the_channel_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ink = SlackInk(SecretStr("test"))
+    lookup = AsyncMock(return_value={"channel": {"name": "general"}})
+    monkeypatch.setattr(ink.client, "conversations_info", lookup)
+
+    assert await ink.get_group_name("C1") == "general"
+    lookup.assert_awaited_once_with(channel="C1")
 
 
 async def test_slack_ink_uses_external_destination_as_thread_only_on_threads() -> None:

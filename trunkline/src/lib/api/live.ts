@@ -19,6 +19,7 @@ import { batchFeelers, replayRun, segmentText, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
+  MessageReply,
   SessionInfo,
   ThreadDetail,
   ThreadSummary,
@@ -282,6 +283,40 @@ export function holdingBack(reads: ThreadReads): ThreadRead | null {
 
 export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   const { thread, modelMessages, unbound, conversations, project, batches, usage: spent } = reads
+  const messages = [...unbound, ...modelMessages.flatMap((message) => message.thread_messages)]
+  const profiles = new Map(messages.flatMap(({ sender }) => sender
+    ? [[sender.channel_user_id, sender.name] as const] : []))
+  const targets = new Map(messages.filter((message) => message.platform_message_id)
+    .map((message) => [`${message.thread_id}:${message.platform_message_id}`, message]))
+  const senderOf = (message: ApiThreadMessage): string | undefined => {
+    const name = message.sender?.name
+    const id = message.actor_kind === 'agent' ? message.agent_tentacle_id : null
+    const runtime = id ? channelMeta(id) : null
+    if (runtime?.native) return runtime.label
+    const agent = id ? id.charAt(0).toUpperCase() + id.slice(1) : undefined
+    return name && agent ? `${name} (${agent})` : name || agent
+  }
+  const textOf = (message: ApiThreadMessage): string => {
+    if (!message.segments.some((segment) => segment.type === 'at')) return message.message_text ?? ''
+    return message.segments.map((segment) => {
+      if (segment.type === 'at') {
+        const id = String(segment.data.user_id)
+        return `@${segment.data.name || profiles.get(id) || id}`
+      }
+      return segment.type === 'text' || segment.type === 'markdown' ? segmentText(segment) : ''
+    }).join('')
+  }
+  const replyOf = (message: ApiThreadMessage): MessageReply | undefined => {
+    const segment = message.segments.find((segment) => segment.type === 'reply')
+    const id = message.reply_id || segment?.data.id
+    if (!id) return undefined
+    const target = targets.get(`${message.thread_id}:${id}`)
+    if (target) return { who: senderOf(target), text: textOf(target) || 'Attachment' }
+    return {
+      who: typeof segment?.data.user_id === 'string' ? profiles.get(segment.data.user_id) : undefined,
+      text: typeof segment?.data.content === 'string' && segment.data.content ? segment.data.content : 'Earlier message',
+    }
+  }
 
   // Every row is keyed by its uuid7, which is when it was written; a run and the
   // ledger are only appended to, so that is the order things happened in. A
@@ -340,7 +375,8 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     ),
   ]
   for (const { key, message, session } of said) {
-    const text = message.message_text ?? ''
+    const text = textOf(message)
+    const reply = replyOf(message)
     if (message.direction === 'inbound' && message.actor_kind === 'human') {
       keyed.push({
         key,
@@ -350,7 +386,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           uid: message.id,
           t: clock(message.happened_at),
           who: message.sender?.name || 'operator',
+          userId: message.sender?.user_id,
           text,
+          ...(reply && { reply }),
         },
       })
     } else if (message.actor_kind === 'system') {
@@ -368,8 +406,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         item: {
           kind: 'agent',
           uid: message.id,
-          label: message.agent_tentacle_id ?? 'agent',
+          label: senderOf(message) ?? 'agent',
           blocks: [{ type: 'p', text }],
+          ...(reply && { reply }),
         },
       })
     }
@@ -413,7 +452,18 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   }
   for (const [runId, messages] of recorded) {
     const conversation = ranIn.get(runId)
-    for (const card of replayRun(messages, conversation?.agent_tentacle_id ?? 'agent', children)) {
+    const agent = conversation?.agent_tentacle_id ?? 'agent'
+    const runtime = channelMeta(agent)
+    const deliveries = new Map(messages.flatMap((message) => {
+      const outbound = message.thread_messages.find((row) => row.direction === 'outbound')
+      return outbound ? [[message.id, { label: senderOf(outbound), reply: replyOf(outbound) }] as const] : []
+    }))
+    for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children)) {
+      const delivery = deliveries.get(card.message)
+      if (card.item.kind === 'agent' && delivery) {
+        card.item = { ...card.item, label: delivery.label ?? card.item.label, ...(delivery.reply && { reply: delivery.reply }) }
+        deliveries.set(card.message, { label: delivery.label, reply: undefined })
+      }
       keyed.push({ key: card.message, item: { ...card.item, uid: card.id } as LedgerItem, session: conversation?.id })
     }
   }
@@ -538,12 +588,18 @@ export function withOlderPage(detail: ThreadDetail, reads: ThreadReads, older: O
       : { ...reads, cursors, totals, unbound: [...older.page.items].reverse().concat(reads.unbound) },
   )
   const shown = new Set(detail.ledger.map((item) => item.uid))
+  const refreshed = new Map(fresh.ledger.map((item) => [item.uid, item]))
   return {
     ...detail,
     msgCount: fresh.msgCount,
     earlier: fresh.earlier,
     reads: fresh.reads,
-    ledger: [...fresh.ledger.filter((item) => !shown.has(item.uid)), ...detail.ledger],
+    ledger: [...fresh.ledger.filter((item) => !shown.has(item.uid)), ...detail.ledger.map((item) => {
+      const updated = refreshed.get(item.uid)
+      if (item.kind === 'user' && updated?.kind === 'user') return { ...item, text: updated.text, ...(updated.reply && { reply: updated.reply }) }
+      if (item.kind === 'agent' && updated?.kind === 'agent' && updated.reply) return { ...item, reply: updated.reply }
+      return item
+    })],
     sessions: detail.sessions.map((session) => ({
       ...session,
       anchor: fresh.sessions.find((each) => each.conversationId === session.conversationId)?.anchor,

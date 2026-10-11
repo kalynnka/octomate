@@ -5,7 +5,7 @@
  */
 import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { answerText } from '@/lib/api/fold'
-import type { AgentBlock, AskAnswer, LedgerItem, QueueChip, ToolDetail } from '@/lib/api/types'
+import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
 import { useConsole } from '@/state/console'
 import { Brackets } from '@/components/Brackets'
@@ -88,9 +88,21 @@ function UserChips({ chips, width }: { chips: QueueChip[]; width: string }) {
   )
 }
 
-function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
+function ReplyPreview({ reply }: { reply: MessageReply }) {
   return (
-    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+    <blockquote aria-label="Reply to" style={{ margin: '0 0 10px', padding: '4px 10px', borderLeft: '2px solid var(--fg-3)', color: 'var(--fg-2)', ...serif(12), lineHeight: 1.5, whiteSpace: 'normal' }}>
+      {reply.who && <div style={{ ...mono(10, 700), marginBottom: 4 }}>{reply.who}</div>}
+      <div style={{ display: '-webkit-box', WebkitBoxOrient: 'vertical', WebkitLineClamp: 2, overflow: 'hidden', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{reply.text}</div>
+    </blockquote>
+  )
+}
+
+function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
+  const userId = useAuth((s) => s.user?.id)
+  const group = useConsole((s) => s.detail?.kind === 'group')
+  const incoming = group && (!userId || item.userId !== userId)
+  return (
+    <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', alignItems: incoming ? 'flex-start' : 'flex-end', gap: 6 }}>
       <CapsLabel>{item.who} · {item.t}</CapsLabel>
       {item.chips && item.chips.length > 0 && <UserChips chips={item.chips} width="min(440px,72%)" />}
       <div
@@ -98,7 +110,8 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
           background: 'var(--card-bg)',
           border: '1px solid var(--line-divider)',
           borderRadius: 16,
-          borderBottomRightRadius: 5,
+          borderBottomLeftRadius: incoming ? 5 : 16,
+          borderBottomRightRadius: incoming ? 16 : 5,
           boxShadow: 'var(--shadow-soft)',
           padding: '10px 15px',
           ...serif(13.5),
@@ -107,6 +120,7 @@ function UserRow({ item }: { item: Extract<LedgerItem, { kind: 'user' }> }) {
           maxWidth: '72%',
         }}
       >
+        {item.reply && <ReplyPreview reply={item.reply} />}
         {item.text}
       </div>
     </div>
@@ -169,8 +183,9 @@ function DiffBlock({ uid, index, diff }: { uid: string; index: number; diff: Ext
 function AgentRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'agent' }>; cardMax: string }) {
   return (
     <div id={`pm-${item.uid}`} className="lt-entry lt-message-entry" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-      <CapsLabel>{item.label}</CapsLabel>
+      <CapsLabel style={{ textTransform: 'none' }}>{item.label}</CapsLabel>
       <div style={{ maxWidth: cardMax, ...serif(14.5), lineHeight: 1.75, color: 'var(--fg-1)', textWrap: 'pretty' }}>
+        {item.reply && <ReplyPreview reply={item.reply} />}
         {item.blocks.map((b, i) => {
           if (b.type === 'p')
             return (

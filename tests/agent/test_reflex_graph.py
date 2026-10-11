@@ -26,6 +26,7 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     GatewayEvent,
     MessageSentEvent,
+    ResultSegmentEvent,
     RunErrorEvent,
     RunStartedEvent,
 )
@@ -70,6 +71,7 @@ from octomate.schemas.segments import (
     ImageData,
     ImageSegment,
     MarkdownSegment,
+    ReplySegment,
     TextSegment,
 )
 from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
@@ -522,6 +524,42 @@ async def test_a_streamed_reply_is_recorded_with_the_id_it_was_rendered_as() -> 
     ]
     assert rendered is not None
     assert reply.platform_message_id == rendered
+
+
+@pytest.mark.parametrize("stream", [True, False])
+async def test_reply_target_and_quote_survive_final_output(stream: bool) -> None:
+    segments = [
+        ReplySegment(data={"id": "question", "content": "Earlier question"}),
+        MarkdownSegment(data={"text": "The answer"}),
+    ]
+    agent = FakeAgent(
+        id="other",
+        reception_output="" if stream else segments,
+        reception_script=[
+            *(ResultSegmentEvent(segment=segment) for segment in segments),
+            AgentRunResultEvent(AgentRunResult[ChannelOutput](segments)),
+        ],
+        allow_reception_run=True,
+    )
+    threads = FakeThreadManager()
+    im = _channel(stream=stream)
+
+    await _run(
+        Route(),
+        state=_state(_key(), user_prompt="hi"),
+        deps=_deps(
+            conversations=FakeConversationManager(),
+            channels={"im": im},
+            agent=agent,
+            threads=threads,
+        ),
+    )
+
+    [reply] = threads.outbounds
+    assert reply.reply_id == "question"
+    assert reply.segments == segments
+    assert reply.message_text == "The answer"
+    assert im.sent[-1][3] == "question"
 
 
 async def test_route_entry_run_claims_no_ownership() -> None:

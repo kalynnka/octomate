@@ -48,10 +48,10 @@ const conversation: ApiConversation = {
 }
 
 const said = (id: string, text: string, actor: 'human' | 'system'): ApiThreadMessage => ({
-  kind: 'message', id, thread_id: 'thread', platform_message_id: null, happened_at: at, direction: 'inbound',
+  kind: 'message', id, thread_id: 'thread', platform_message_id: null, reply_id: '', happened_at: at, direction: 'inbound',
   actor_kind: actor, agent_tentacle_id: null, segments: [], message_text: text, created_at: at,
   sender: actor === 'human'
-    ? { id: 'ada', channel_tentacle_id: 'trunkline', channel_user_id: 'ada', name: 'Ada', nickname: null, gender: null, age: null, title: null, user_id: null }
+    ? { id: 'ada', channel_tentacle_id: 'trunkline', channel_user_id: 'ada', name: 'Ada', nickname: null, gender: null, age: null, title: null, user_id: 'account-ada' }
     : null,
 })
 const notice = said('015', 'Forked from conversation elsewhere.', 'system')
@@ -93,6 +93,7 @@ test('a thread is rebuilt from its model messages, in the words its rows were sa
   assert.deepEqual(kinds(whole.ledger), ['session-open', 'system', 'user', 'stream', 'tool', 'agent'])
   const user = whole.ledger.find((item) => item.kind === 'user')
   assert.deepEqual(user?.kind === 'user' && [user.who, user.text], ['Ada', 'fix the build'])
+  assert.equal(user?.kind === 'user' && user.userId, 'account-ada')
   const tool = whole.ledger.find((item) => item.kind === 'tool')
   assert.equal(tool?.kind === 'tool' && tool.detail.type === 'plain' && tool.detail.res, 'built')
   const reply = whole.ledger.at(-1)
@@ -118,6 +119,104 @@ test('older pages fold on above, and the cards already shown keep what was done 
   const once = liveThreadDetail(reads([prompt, narration, built, answer], [notice], { model: null, unbound: null }))
   const twice = withOlderPage(latest, latest.reads!, { read: 'model', page: page([prompt, narration]) })
   assert.deepEqual(twice.ledger, once.ledger)
+})
+
+test('mentions keep their position and use saved names, known profiles, or the platform id', () => {
+  const message = said('060', 'before after', 'human')
+  message.segments = [
+    { type: 'text', data: { text: 'before ' } },
+    { type: 'at', data: { user_id: 'ada' } },
+    { type: 'text', data: { text: ' after\n' } },
+    { type: 'at', data: { user_id: 'ada', name: 'Group nickname' } },
+    { type: 'at', data: { user_id: 'unknown' } },
+  ]
+  const detail = liveThreadDetail(reads([], [message], { model: null, unbound: null }))
+  const user = detail.ledger.find((item) => item.kind === 'user')
+  assert.equal(user?.kind === 'user' && user.text, 'before @Ada after\n@Group nickname@unknown')
+})
+
+for (const direction of ['inbound', 'outbound'] as const) {
+  test(`${direction} replies quote loaded messages, including mentions, without repeating the quote in the body`, () => {
+    const original = { ...said('010', ' question', 'human'), platform_message_id: 'q', segments: [
+      { type: 'at', data: { user_id: 'ada' } }, { type: 'text', data: { text: ' question' } },
+    ] }
+    const reply: ApiThreadMessage = { ...said('060', 'answer', 'human'), direction, reply_id: 'q', segments: [
+      { type: 'reply', data: { id: 'q', content: 'Old quote' } }, { type: 'text', data: { text: 'answer' } },
+    ] }
+    const detail = liveThreadDetail(reads([], [original, reply], { model: null, unbound: null }))
+    const item = detail.ledger.find((item) => item.uid === reply.id)
+    assert.ok(item?.kind === 'user' || item?.kind === 'agent')
+    assert.deepEqual(item.reply, { who: 'Ada', text: '@Ada question' })
+    assert.equal(item.kind === 'user' ? item.text : item.blocks[0].type === 'p' && item.blocks[0].text, 'answer')
+  })
+}
+
+test('replayed model answers carry the reply reference from their bound channel message', () => {
+  const outbound: ApiThreadMessage = { ...said('reply', 'fixed', 'human'), direction: 'outbound', reply_id: 'q' }
+  const request = { ...prompt, thread_messages: [{ ...prompt.thread_messages[0], platform_message_id: 'q' }] }
+  const response = { ...answer, thread_messages: [outbound] }
+  const detail = liveThreadDetail(reads([request, response], [], { model: null, unbound: null }))
+  const item = detail.ledger.find((item) => item.kind === 'agent')
+  assert.deepEqual(item?.kind === 'agent' && item.reply, { who: 'Ada', text: 'fix the build' })
+})
+
+for (const [nativeId, label] of [['codex-native', 'Codex'], ['claude-native', 'Claude'], ['deepseek-native', 'DeepSeek']]) {
+  test(`${nativeId} labels native and imported replies by runtime, while keeping the uploading user's identity on prompts`, () => {
+    const owner = { ...said('owner', '', 'human').sender!, name: 'test', channel_tentacle_id: nativeId }
+    const outbound: ApiThreadMessage = {
+      ...said('045', 'Native answer', 'human'), direction: 'outbound', actor_kind: 'agent',
+      agent_tentacle_id: nativeId, sender: owner, platform_message_id: 'native-answer',
+    }
+    const quoted = { ...said('060', 'Follow-up', 'human'), sender: owner, reply_id: 'native-answer' }
+    const bound = { ...answer, thread_messages: [{ ...outbound, id: '046', platform_message_id: 'bound-answer' }] }
+    const bare = { ...answer, id: '055', thread_messages: [] }
+    const native: ThreadReads = {
+      ...reads([bound, bare], [outbound, quoted], { model: null, unbound: null }),
+      thread: { ...thread, kind: 'native_thread', channel_tentacle_id: nativeId },
+      conversations: [{ ...conversation, agent_tentacle_id: nativeId }],
+    }
+    const imported = { ...native, thread }
+    for (const source of [native, imported]) {
+      const detail = liveThreadDetail(source)
+      assert.deepEqual(detail.ledger.flatMap((item) => item.kind === 'agent' ? [item.label] : []), [label, label, label])
+      const human = detail.ledger.find((item) => item.kind === 'user')
+      assert.ok(human?.kind === 'user')
+      assert.equal(human.who, 'test')
+      assert.equal(human.reply?.who, label)
+    }
+  })
+}
+
+test('channel bot replies retain the bot name and agent name together', () => {
+  const outbound: ApiThreadMessage = {
+    ...said('045', 'Channel answer', 'human'), direction: 'outbound', actor_kind: 'agent', agent_tentacle_id: 'inkling',
+    sender: { ...said('bot', '', 'human').sender!, name: '玥葉', channel_tentacle_id: 'napcat' },
+  }
+  const detail = liveThreadDetail(reads([], [outbound], { model: null, unbound: null }))
+  const item = detail.ledger.find((item) => item.kind === 'agent')
+  assert.equal(item?.kind === 'agent' && item.label, '玥葉 (Inkling)')
+})
+
+test('a reply segment retains its quote even without a reply_id or a loaded original', () => {
+  const message = { ...said('060', 'answer', 'human'), segments: [
+    { type: 'reply', data: { id: 'q', user_id: 'ada', content: '<b>Earlier question</b>' } },
+  ] }
+  const detail = liveThreadDetail(reads([], [message], { model: null, unbound: null }))
+  const item = detail.ledger.find((item) => item.kind === 'user')
+  assert.deepEqual(item?.kind === 'user' && item.reply, { who: 'Ada', text: '<b>Earlier question</b>' })
+})
+
+test('paging in a reply target refreshes the preview and never borrows a message from another thread', () => {
+  const reply = { ...said('060', 'answer', 'human'), reply_id: 'q' }
+  const other = { ...said('055', 'Wrong quote', 'human'), thread_id: 'other', platform_message_id: 'q' }
+  const latest = liveThreadDetail(reads([], [other, reply], { model: null, unbound: 'older' }))
+  const item = latest.ledger.find((item) => item.uid === reply.id)
+  assert.ok(item?.kind === 'user')
+  assert.equal(item.reply?.text, 'Earlier message')
+  const original = { ...said('005', 'Original question', 'human'), platform_message_id: 'q' }
+  const whole = withOlderPage(latest, latest.reads!, { read: 'unbound', page: page([original]) })
+  const loaded = whole.ledger.find((item) => item.uid === reply.id)
+  assert.deepEqual(loaded?.kind === 'user' && loaded.reply, { who: 'Ada', text: 'Original question' })
 })
 
 test('the read to page next is the one whose oldest row is newest', () => {

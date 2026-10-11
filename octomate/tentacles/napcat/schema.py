@@ -57,6 +57,10 @@ class ImageInfo(BaseModel):
     url: str | None = None
 
 
+class GroupInfo(BaseModel):
+    group_name: str
+
+
 class SentMessage(BaseModel):
     model_config = ConfigDict(coerce_numbers_to_str=True)
 
@@ -226,6 +230,10 @@ class NapcatMessageEvent(BaseModel):
     message_id: str
     user_id: str
     group_id: str = ""
+    group_name: str | None = Field(
+        default=None,
+        description="The group name supplied by NapCat, when available.",
+    )
     sender: NapcatSender = Field(default_factory=NapcatSender)
     message: list[NapcatMessageSegment] = Field(default_factory=list)
     raw_message: str = ""
@@ -288,6 +296,7 @@ def to_message_event(event: NapcatMessageEvent) -> MessageEvent:
         timestamp=float(event.time),
         user_id=event.user_id,
         chat_id=chat_id,
+        chat_name=event.group_name if chat_type == "group" else None,
         chat_type=chat_type,
         shared=chat_type == "group",
         self_id=event.self_id,
