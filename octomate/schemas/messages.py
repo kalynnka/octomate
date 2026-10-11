@@ -27,6 +27,7 @@ from pydantic_ai.messages import (
     ToolCallPart,
     UserContent,
     UserPromptPart,
+    WorkspaceRef,
 )
 from uuid_utils.compat import uuid7
 
@@ -134,6 +135,10 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     id: Annotated[UUID7, Identity] = Field(default_factory=uuid7, frozen=True)
     timestamp: AwareDatetime = Field(default_factory=now_utc)
     metadata: Annotated[JsonObject | None, Field(alias="meta")] = None
+    workspace_ref: WorkspaceRef | None = Field(
+        default=None,
+        description="The provider and identifier of the response's workspace, without credentials.",
+    )
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
     # The chat rows that delivered this response's answer.

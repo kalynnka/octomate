@@ -11,6 +11,10 @@ locally; plain `uv run pytest` remains sequential. Docs and Python checks use
 separate uv cache keys so a docs-only installation cannot occupy the package
 checks' cache.
 
+Each test has a 180-second timeout, including setup and teardown. A stalled test
+fails with thread stacks instead of blocking the suite. Each CI unit-test job
+also has a 15-minute limit.
+
 Trunkline has a separate workflow for changes under `trunkline/` or its workflow
 file. Docs build on every pull request targeting `main` and every push to `main`.
 Manual runs of Checks and Trunkline validate their respective parts regardless

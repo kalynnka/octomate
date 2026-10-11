@@ -17,7 +17,13 @@ from pydantic_ai.messages import (
 from pydantic_ai.messages import (
     ModelResponse as RawModelResponse,
 )
-from pydantic_ai.messages import TextPart, ToolCallPart, ToolReturnPart, UserPromptPart
+from pydantic_ai.messages import (
+    TextPart,
+    ToolCallPart,
+    ToolReturnPart,
+    UserPromptPart,
+    WorkspaceRef,
+)
 from pydantic_ai.usage import RequestUsage
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -26,6 +32,7 @@ from uuid_utils.compat import uuid7
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
@@ -40,6 +47,35 @@ async def _db(in_memory_engine: AsyncEngine) -> None:
 
 async def _thread() -> UUID7:
     return await a_thread()
+
+
+@pytest.mark.parametrize("external", [False, True])
+@pytest.mark.parametrize(
+    "workspace_ref", [None, WorkspaceRef(provider="local", id="/work/project")]
+)
+async def test_response_workspace_reference_survives_persistence(
+    external: bool, workspace_ref: WorkspaceRef | None
+) -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(await a_thread(), agent_tentacle_id="inkling")
+    response = RawModelResponse(parts=[TextPart("done")], workspace_ref=workspace_ref)
+    if external:
+        await manager.record_external_run(
+            conversation,
+            run_id=str(uuid7()),
+            messages=[response],
+            native_session_id="session",
+            end_offset=42,
+        )
+    else:
+        await manager.record_agent_run(
+            conversation, run_id=str(uuid7()), messages=[response]
+        )
+
+    stored = await manager.get(conversation.id)
+    [message] = stored.runs[0].messages
+    assert isinstance(message, ModelResponse)
+    assert message.workspace_ref == workspace_ref
 
 
 @pytest.mark.parametrize(

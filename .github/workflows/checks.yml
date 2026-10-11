@@ -68,6 +68,7 @@ jobs:
     name: Unit tests (Python ${{ matrix.python }})
     needs: lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
