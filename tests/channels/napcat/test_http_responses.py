@@ -27,6 +27,21 @@ async def napcat_api() -> AsyncIterator[
         yield ink, responses, requests
 
 
+async def test_group_name_comes_from_the_platform(
+    napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
+) -> None:
+    ink, responses, requests = napcat_api
+    responses.append(
+        httpx.Response(
+            200,
+            json={"status": "ok", "data": {"group_name": "Our group", "group_id": 42}},
+        )
+    )
+    assert await ink.get_group_name("42") == "Our group"
+    assert requests[0].url.path == "/get_group_info"
+    assert requests[0].content == b'{"group_id":"42"}'
+
+
 async def test_inspect_normalizes_login_identity_and_ignores_unknown_fields(
     napcat_api: tuple[NapcatInk, list[httpx.Response], list[httpx.Request]],
 ) -> None:

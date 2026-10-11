@@ -137,3 +137,11 @@ select.trk-input:open::picker(select) { animation: lt-menu-enter var(--motion-fa
 .trk-operation-label { display: inline-flex; align-items: center; justify-content: center; gap: 6px; animation: trk-operation-switch 160ms var(--ease-out); }
 @keyframes trk-operation-switch { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .trk-operation-label { animation: none; } }
+
+.trk-copy-confirm { position: absolute; inset: 0; display: inline-flex; align-items: center; justify-content: center; white-space: nowrap; color: var(--color-sage); animation: trk-copy-confirm 1400ms var(--ease-out) both; }
+@keyframes trk-copy-confirm {
+  0% { opacity: 0; transform: translateY(3px) scale(.94); }
+  15%, 80% { opacity: 1; transform: none; }
+  100% { opacity: 0; transform: translateY(-3px); }
+}
+@media (prefers-reduced-motion: reduce) { .trk-copy-confirm { animation: none; } }

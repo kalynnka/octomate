@@ -1141,6 +1141,7 @@ select.trk-input option:disabled { color: var(--fg-3); cursor: default; }
 .trk-composer-resize:hover::after, .trk-composer-resize:focus-visible::after { background: var(--color-accent); }
 .trk-composer-resize:focus-visible { outline: 1px solid var(--color-accent); }
 .trk-composer-input[data-resized] { max-height: calc(40dvh / var(--trk-zoom, 1)); }
+.trk-composer-input::placeholder { color: var(--fg-3); }
 .trk-gateway button:focus-visible, .trk-gateway-close:focus-visible { outline: 1px solid var(--color-accent); outline-offset: -1px; }
 .trk-gateway-filter input { outline: none; }
 .trk-gateway-filter:focus-within { border-bottom-color: var(--color-accent) !important; }

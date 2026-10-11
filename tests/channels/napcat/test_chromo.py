@@ -35,6 +35,7 @@ async def test_napcat_chromo_decodes_group_message_segments() -> None:
                 "self_id": 42,
                 "message_id": 1001,
                 "group_id": 2002,
+                "group_name": "Our group",
                 "user_id": 3003,
                 "sender": {"user_id": 3003, "nickname": "Alice"},
                 "raw_message": "hello",
@@ -55,6 +56,7 @@ async def test_napcat_chromo_decodes_group_message_segments() -> None:
     assert event is not None
     assert event.chat_type == "group"
     assert event.chat_id == "2002"
+    assert event.chat_name == "Our group"
     assert event.user_id == "3003"
     assert event.self_id == "42"
     assert event.message_id == "1001"
@@ -96,6 +98,7 @@ async def test_napcat_chromo_decodes_private_message() -> None:
     # OneBot's wire `message_type` is "private"; the event it decodes into is a dm.
     assert event.chat_type == "dm"
     assert event.chat_id == "3003"
+    assert event.chat_name is None
     assert event.user_id == "3003"
     assert event.channel_thread_id is None
     assert event.shared is False

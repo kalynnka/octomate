@@ -48,6 +48,7 @@ class MyChromo(Chromo[MyRawEvent, MyOutboundMessage]):
             timestamp=raw.timestamp,
             user_id=raw.author_id,
             chat_id=raw.room_id,
+            chat_name=raw.room_name,
             chat_type="thread" if raw.thread_id else "group",
             shared=True,  # can anyone besides the sender read this?
             segments=[TextSegment(data={"text": raw.body})],
@@ -79,6 +80,7 @@ An `Ink[MessageT]` holds the platform client and does the I/O:
 class MyInk(Ink[MyOutboundMessage]):
     async def inspect(self) -> UserProfile: ...  # the bot itself
     async def get_user_profile(self, user_id: str) -> UserProfile: ...
+    async def get_group_name(self, chat_id: str) -> str | None: ...
     async def upload_media(self, data: bytes) -> str | None: ...
     async def download_image(
         self, seg: ImageSegment, message_id: str

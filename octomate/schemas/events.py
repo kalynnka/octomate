@@ -29,6 +29,10 @@ class MessageEvent(BaseModel):
     user_id: str = ""
     chat_id: str = ""
     chat_type: ChatType = "dm"
+    chat_name: str | None = Field(
+        default=None,
+        description="The platform's chat name, when supplied by the inbound event.",
+    )
     shared: bool = Field(
         default=False,
         description=(

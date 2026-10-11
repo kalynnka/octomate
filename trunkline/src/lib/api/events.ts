@@ -606,6 +606,7 @@ export type ApiThreadMessage = {
   id: string
   thread_id: string
   platform_message_id: string | null
+  reply_id: string
   /** when it happened, and what the ledger orders on */
   happened_at: string
   direction: 'inbound' | 'outbound'

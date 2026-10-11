@@ -51,6 +51,7 @@ async def test_discord_chromo_maps_supported_surfaces(
     assert event is not None
     assert event.chat_type == chat_type
     assert event.chat_id == chat_id
+    assert event.chat_name == ("general" if chat_type == "group" else None)
     assert event.channel_thread_id == channel_thread_id
     assert event.shared is shared
     assert event.message_id == "175928847299117063"

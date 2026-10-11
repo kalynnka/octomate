@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { useConsole } from '@/state/console'
 import { useThreadOperations, useThreads } from '@/lib/api/hooks'
 import { channelMeta } from '@/lib/api/live'
@@ -34,6 +34,13 @@ export function ChatHeader() {
   }
   const { data: threads } = useThreads()
   const [choice, setChoice] = useState<Operation | null>(null)
+  const [copied, setCopied] = useState<{ id: string; version: number } | null>(null)
+  const showingCopied = !ntOn && copied?.id === selThreadId
+  useEffect(() => {
+    if (!copied) return
+    const timer = window.setTimeout(() => setCopied(null), 1400)
+    return () => window.clearTimeout(timer)
+  }, [copied])
   const [menu, setMenu] = useState<{ threadId: string; kind: 'operations' } | null>(null)
   const trigger = useRef<HTMLButtonElement>(null)
   const menuId = useId()
@@ -100,7 +107,20 @@ export function ChatHeader() {
     >
       <span className="trk-head-title">
         <span style={{ ...label(10, '.14em'), color: 'var(--fg-1)', minWidth: 0, maxWidth: '100%', ...ellipsis }}>{title}</span>
-        <span style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0 }}>{detail?.key ?? selThreadId}</span>
+        <button
+          type="button"
+          disabled={ntOn || !detail}
+          aria-label="Copy thread ID"
+          title={showingCopied ? 'Copied' : 'Copy thread ID'}
+          onClick={async () => {
+            await navigator.clipboard.writeText(selThreadId)
+            setCopied((previous) => ({ id: selThreadId, version: (previous?.version ?? 0) + 1 }))
+          }}
+          style={{ ...mono(8.5, 700), color: 'var(--color-accent)', flexShrink: 0, border: 0, padding: 0, background: 'transparent', position: 'relative', minWidth: '8ch', cursor: ntOn || !detail ? 'default' : 'pointer' }}
+        >
+          <span style={{ visibility: showingCopied ? 'hidden' : undefined }}>{detail?.key ?? selThreadId}</span>
+          {showingCopied && <span key={copied.version} role="status" className="trk-copy-confirm">✓ Copied</span>}
+        </button>
       </span>
       <span
         className="trk-head-chip"

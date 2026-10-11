@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.managers.thread import history_match_query
-from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import (
@@ -75,6 +75,35 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
     assert [message.user_id for message in fresh_thread.messages] == ["alice", "bob"]
+
+
+@pytest.mark.parametrize("chat_type", ["group", "dm"])
+async def test_group_titles_come_from_channel_but_subthreads_can_name(
+    chat_type: ChatType,
+) -> None:
+    manager = ThreadManager(users=UserManager())
+    opening = event("group-message", "alice", "An opening line")
+    opening.chat_type = chat_type
+    opening.channel_thread_id = None
+    message = await manager.record_inbound(opening)
+    group = await manager.get(message.thread_id)
+    assert group is not None
+    assert group.title is None
+    group = await manager.ensure(group.key, title="Our group")
+    await manager.rename(group, "Generated title")
+    await manager.ensure(group.key)
+    saved = await manager.get(group.id)
+    assert saved is not None
+    assert saved.title == "Our group"
+    await manager.ensure(group.key, title="Renamed group")
+    saved = await manager.get(group.id)
+    assert saved is not None
+    assert saved.title == "Renamed group"
+    child = await manager.open_sub_thread(group)
+    await manager.rename(child, "Agent work")
+    saved_child = await manager.get(child.id)
+    assert saved_child is not None
+    assert saved_child.title == "Agent work"
 
 
 async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:

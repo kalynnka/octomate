@@ -8,8 +8,10 @@ import type { LedgerItem } from '../src/lib/api/types.ts'
 
 let server: ViteDevServer
 let Markdown: typeof import('../src/components/Markdown.tsx').Markdown
+let DraftMarkdown: typeof import('../src/features/chat/DraftMarkdown.tsx').DraftMarkdown
 let LedgerRow: typeof import('../src/features/chat/cards.tsx').LedgerRow
 let useConsole: typeof import('../src/state/console.ts').useConsole
+let useAuth: typeof import('../src/state/auth.ts').useAuth
 
 before(async () => {
   server = await createServer({
@@ -17,8 +19,10 @@ before(async () => {
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
   ;({ Markdown } = await server.ssrLoadModule('/src/components/Markdown.tsx'))
+  ;({ DraftMarkdown } = await server.ssrLoadModule('/src/features/chat/DraftMarkdown.tsx'))
   ;({ LedgerRow } = await server.ssrLoadModule('/src/features/chat/cards.tsx'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
+  ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
 })
 after(async () => { await server?.close() })
 
@@ -27,12 +31,55 @@ test('Markdown preserves single newlines and paragraph boundaries', () => {
   assert.ok(html.includes('<strong>First</strong><br>\nSecond</p>\n<p>Third</p>'))
 })
 
+test('the draft renders headings and bullets while leaving code and HTML literal', () => {
+  const html = renderToStaticMarkup(createElement(DraftMarkdown, { text: '# Heading\n- one\n  - two\n\n```\n# code\n- code\n```\n<script>literal</script>' }))
+  assert.ok(html.includes('font-weight:700'))
+  assert.equal((html.match(/•/g) ?? []).length, 2)
+  assert.ok(html.includes('# code'))
+  assert.ok(html.includes('- code'))
+  assert.ok(html.includes('&lt;script&gt;literal&lt;/script&gt;'))
+})
+
+test('group participants keep bubbles on the left while linked self messages stay right', () => {
+  const state = useConsole.getInitialState()
+  const auth = useAuth.getInitialState()
+  const previous = { detail: state.detail, user: auth.user }
+  state.detail = { key: 'group', kind: 'group', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
+  auth.user = { id: 'me', username: 'alice', name: 'Alice', nickname: null }
+  try {
+    for (const [userId, alignment] of [['me', 'flex-end'], ['other', 'flex-start'], [null, 'flex-start']] as const) {
+      const item: LedgerItem = { kind: 'user', uid: 'message', t: '12:00', who: 'Alice', userId, text: 'Hello' }
+      const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+      assert.ok(html.includes(`align-items:${alignment}`))
+      assert.ok(html.includes('border-radius:16px'))
+    }
+  } finally {
+    state.detail = previous.detail
+    auth.user = previous.user
+  }
+})
+
 test('newline rendering keeps code literal and raw HTML escaped', () => {
   const html = renderToStaticMarkup(createElement(Markdown, { text: '```\na\nb\n```\n\n<script>alert(1)</script>' }))
   assert.ok(html.includes('<pre><code>a\nb\n</code></pre>'))
   assert.ok(html.includes('&lt;script&gt;'))
   assert.ok(!html.includes('<script>'))
 })
+
+for (const kind of ['user', 'agent'] as const) {
+  test(`${kind} reply previews show the author and escape quoted HTML`, () => {
+    const reply = { who: 'Ada', text: '<script>quoted</script>\nSecond line' }
+    const item: LedgerItem = kind === 'user'
+      ? { kind, uid: 'reply', t: '12:00', who: 'Bob', text: 'Answer', reply }
+      : { kind, uid: 'reply', label: 'inkling', blocks: [{ type: 'p', text: 'Answer' }], reply }
+    const html = renderToStaticMarkup(createElement(LedgerRow, { item, cardMax: '100%' }))
+    assert.ok(html.includes('<blockquote aria-label="Reply to"'))
+    assert.ok(html.includes('Ada'))
+    assert.ok(html.includes('&lt;script&gt;quoted&lt;/script&gt;\nSecond line'))
+    assert.ok(!html.includes('<script>'))
+    assert.ok(html.indexOf('</blockquote>') < html.indexOf('Answer'))
+  })
+}
 
 for (const [text, ending] of [
   ['Hello **world**', '</strong>'],
