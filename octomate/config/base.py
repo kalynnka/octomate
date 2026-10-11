@@ -48,6 +48,7 @@ from octomate.config.auth import AuthConfig
 from octomate.config.channels import (
     ChannelConfig,
     DiscordChannelConfig,
+    LarkChannelConfig,
     SlackChannelConfig,
 )
 from octomate.config.mcp import DiscoveredOAuthMcpConfig, OAuthMcpConfig
@@ -175,7 +176,9 @@ class OctomateConfig(BaseSettings):
         ] + [
             f"tentacles.{name}.oauth"
             for name, channel in self.tentacles.items()
-            if isinstance(channel, (SlackChannelConfig, DiscordChannelConfig))
+            if isinstance(
+                channel, (SlackChannelConfig, DiscordChannelConfig, LarkChannelConfig)
+            )
             and channel.oauth is not None
         ]
         if enabled and self.oauth.encryption_key is None:

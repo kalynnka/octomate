@@ -18,12 +18,15 @@ from lark_oapi.event.callback.model.p2_card_action_trigger import (
     P2CardActionTrigger,
     P2CardActionTriggerResponse,
 )
-from pydantic import TypeAdapter, ValidationError
+from mcp.shared.auth import OAuthClientInformationFull
+from pydantic import AnyHttpUrl, TypeAdapter, ValidationError
 from rich.style import Style
 
 from octomate.config import LarkChannelConfig
+from octomate.oauth.flows import AuthorizationCodeFlow, OAuthTokenExchange
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
 from octomate.tentacles.channel import (
     ChannelSurfaces,
     ChannelTentacle,
@@ -50,12 +53,14 @@ from octomate.tentacles.lark.feelers.questions import (
     submitted_card_data,
 )
 from octomate.tentacles.lark.ink import LarkInk, LarkWebSocketClient
+from octomate.tentacles.lark.oauth import LarkOAuthConnector
 from octomate.tentacles.lark.schema import (
     LarkApprovalActionValue,
     LarkOutboundMessage,
     LarkQuestionActionValue,
     LarkQuestionFormValue,
 )
+from octomate.tentacles.mcp import OAuthMcpTentacle
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
@@ -78,15 +83,25 @@ def log_card_action_result[T](channel_id: str, task: asyncio.Task[T]) -> None:
         )
 
 
-class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
+class LarkTentacle(
+    ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage], OAuthMcpTentacle
+):
     """Lark channel: a long-lived WebSocket event connection translated into core
-    events, with card actions answered by the callback's own response."""
+    events, with optional Feishu MCP tools authorized by each user."""
 
     brand_color: ClassVar[Style | None] = Style(color="#666D82", bold=True)
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
         sub_thread=True, direct_message=True
     )
+    label: str = "Lark / Feishu"
+    upstream: str = "https://mcp.feishu.cn/mcp"
+    instructions: str = (
+        "Feishu tools act as the person who connected their account, from any "
+        "channel. Access is limited to that person's permissions and the tools "
+        "enabled by the deployment. Use gateway_send to speak in a conversation."
+    )
+    config: LarkChannelConfig
     feelers: Feelers
     ink: LarkInk
     chromo: LarkChromo
@@ -146,6 +161,42 @@ class LarkTentacle(ChannelTentacle[P2ImMessageReceiveV1, LarkOutboundMessage]):
             ask_questions=ask_questions,
             oauth=oauth,
         )
+        if config.oauth is not None:
+            octomate.oauth.register(
+                LarkOAuthConnector(
+                    id=id,
+                    mcp_url=AnyHttpUrl(self.upstream),
+                    httpx_client_factory=octomate.oauth.httpx_client_factory,
+                    flows=[
+                        AuthorizationCodeFlow(
+                            tokens=OAuthTokenExchange(
+                                authorization_endpoint=AnyHttpUrl(
+                                    "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+                                ),
+                                token_endpoint=AnyHttpUrl(
+                                    # Feishu documents v2 for PKCE with this authorization endpoint.
+                                    "https://open.feishu.cn/open-apis/authen/v2/oauth/token"
+                                ),
+                                client=OAuthClientInformationFull(
+                                    client_id=config.app_id,
+                                    client_secret=config.app_secret.get_secret_value(),
+                                    token_endpoint_auth_method="client_secret_post",
+                                ),
+                                scopes=config.oauth.scopes,
+                                httpx_client_factory=octomate.oauth.httpx_client_factory,
+                            ),
+                            authorization_lifetime=octomate.oauth.authorization_lifetime,
+                        )
+                    ],
+                    callback_transport=DirectHttpOAuthCallbackTransport(
+                        config.oauth.callback_base_uri
+                    ),
+                )
+            )
+
+    @property
+    def serving(self) -> bool:
+        return self.config.mcp
 
     async def __aenter__(self) -> Self:
         await super().__aenter__()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from base64 import b64encode
 from datetime import UTC, datetime, timedelta
 from typing import Annotated, ClassVar, Literal, Protocol
@@ -33,6 +34,7 @@ from octomate.schemas.oauth import (
 )
 from octomate.types.oauth import HttpsUrl
 
+logger = logging.getLogger(__name__)
 HTTPS_URL: TypeAdapter[HttpsUrl] = TypeAdapter(HttpsUrl)
 
 
@@ -51,6 +53,7 @@ class DeviceCodeResponse(BaseModel):
 
 class TokenError(BaseModel):
     error: str
+    error_description: str | None = None
     interval: int | None = Field(default=None, ge=1)
 
 
@@ -164,6 +167,13 @@ class OAuthTokenExchange:
         if token is None:
             token = self.parse_response(response)
         if isinstance(token, TokenError):
+            logger.warning(
+                "OAuth token request to %s failed (HTTP %s, %s): %s",
+                self.token_endpoint.host,
+                response.status_code,
+                token.error,
+                token.error_description,
+            )
             if token.error in self.invalid_credentials_errors:
                 raise OAuthRefreshRejected(
                     "OAuth credentials were rejected; reconnect this provider"

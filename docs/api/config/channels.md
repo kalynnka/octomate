@@ -12,6 +12,7 @@
         - ChannelConfig
         - SlackOAuthClientConfig
         - SlackChannelConfig
+        - LarkOAuthClientConfig
         - LarkChannelConfig
         - DiscordOAuthClientConfig
         - DiscordChannelConfig

@@ -51,6 +51,8 @@ from octomate.schemas.oauth import (
     OAuthStartResult,
 )
 from octomate.schemas.user import User, UserProfile
+from octomate.tentacles.lark import LarkTentacle
+from octomate.tentacles.lark.oauth import LarkMcpBearerAuth
 from octomate.types.oauth import OAuthFlowKind
 
 if TYPE_CHECKING:
@@ -505,7 +507,9 @@ class McpManager(Manager, Locks[UUID7]):
             if isinstance(current, OAuthMcp) and (
                 self.oauth is None
                 or await self.oauth.connection_status(
-                    user, current.tentacle_id or "mcp", mcp_id=current.id
+                    user,
+                    current.tentacle_id or "mcp",
+                    mcp_id=current.id,
                 )
                 != "active"
             ):
@@ -517,6 +521,7 @@ class McpManager(Manager, Locks[UUID7]):
                 client = None
             if client is None:
                 headers: dict[str, str] = {}
+                tentacle = self.tentacles.get(current.tentacle_id or "")
                 if isinstance(current, BearerMcp):
                     if self.cipher is None:
                         raise ValueError("MCP credential encryption is not configured")
@@ -524,19 +529,29 @@ class McpManager(Manager, Locks[UUID7]):
                         current.encrypted_token, context=f"mcp:{user_id}:{current.id}"
                     )
                     headers["Authorization"] = f"Bearer {token}"
-                client = Client(
-                    transport=StreamableHttpTransport(
-                        url=current.url,
-                        headers=headers,
-                        auth=McpBearerAuth(
+                auth: McpBearerAuth | None = None
+                if isinstance(current, OAuthMcp) and self.oauth is not None:
+                    if isinstance(tentacle, LarkTentacle):
+                        auth = LarkMcpBearerAuth(
+                            manager=self.oauth,
+                            user=user,
+                            mcp_id=current.id,
+                            url=current.url,
+                            tentacle=tentacle,
+                        )
+                    else:
+                        auth = McpBearerAuth(
                             manager=self.oauth,
                             user=user,
                             mcp_id=current.id,
                             connector_id=current.tentacle_id or "mcp",
                             url=current.url,
                         )
-                        if isinstance(current, OAuthMcp) and self.oauth is not None
-                        else None,
+                client = Client(
+                    transport=StreamableHttpTransport(
+                        url=current.url,
+                        headers=headers,
+                        auth=auth,
                         httpx_client_factory=self.httpx_client_factory,
                     ),
                     mode="auto",

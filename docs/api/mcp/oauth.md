@@ -7,3 +7,7 @@
 ::: octomate.oauth.mcp
 
 ::: octomate.oauth.routes
+
+## Lark / Feishu
+
+::: octomate.tentacles.lark.oauth

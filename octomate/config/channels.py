@@ -237,6 +237,26 @@ class SlackChannelConfig(ChannelConfig):
         return self
 
 
+class LarkOAuthClientConfig(BaseModel):
+    """User authorization through the channel's existing Feishu app credentials."""
+
+    callback_base_uri: AnyHttpUrl = Field(
+        default=AnyHttpUrl("http://localhost:8000"),
+        description="Browser-reachable origin. Register <origin>/oauth/<channel key>/callback "
+        "under the app's Security Settings → Redirect URLs.",
+    )
+    scopes: list[str] = Field(
+        default_factory=lambda: [
+            "offline_access",
+            "contact:contact.base:readonly",
+            "contact:user.base:readonly",
+        ],
+        description="User permissions requested during authorization. Enable these in the "
+        "app's User Identity Permissions; reconnect after widening them. The defaults "
+        "allow get-user and token refresh.",
+    )
+
+
 class LarkChannelConfig(ChannelConfig):
     """A Lark app, selected by `type: lark`."""
 
@@ -244,6 +264,23 @@ class LarkChannelConfig(ChannelConfig):
     app_id: str
     app_secret: SecretStr
     stream: LarkStreamConfig = Field(default_factory=LarkStreamConfig)
+    oauth: LarkOAuthClientConfig | None = Field(
+        default=None,
+        description="User OAuth settings, using this channel's app_id and app_secret. "
+        "Required when mcp is enabled; also allows profile linking from Trunkline.",
+    )
+    mcp_tools: list[str] = Field(
+        default_factory=lambda: ["get-user"],
+        min_length=1,
+        description="Feishu remote MCP tool names sent in X-Lark-MCP-Allowed-Tools. "
+        "Their required user permissions must also be listed in oauth.scopes.",
+    )
+
+    @model_validator(mode="after")
+    def validate_mcp_has_a_client(self) -> Self:
+        if self.mcp and self.oauth is None:
+            raise ValueError("a Lark channel with `mcp: true` needs an `oauth` block")
+        return self
 
 
 class DiscordOAuthClientConfig(BaseModel):
