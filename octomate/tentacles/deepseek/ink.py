@@ -13,7 +13,10 @@ from pydantic_ai.exceptions import AgentRunError
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.tentacles.deepseek.catalog import (
     DeepseekCommandDescriptor,
     command_descriptors_adapter,
@@ -34,7 +37,11 @@ from octomate.types.json import JsonObject
 logger = logging.getLogger(__name__)
 
 type TurnFrame = (
-    SessionEventFrame | SessionAssistantFrame | StreamErrorFrame | ActionBatchEvent
+    SessionEventFrame
+    | SessionAssistantFrame
+    | StreamErrorFrame
+    | ActionBatchEvent
+    | ActionBatchAnsweredEvent
 )
 
 type InteractionHandler = Callable[

@@ -19,6 +19,7 @@ import type {
 import { api, resolveBatch, sendDirective } from '@/lib/api'
 import { castGateway, executeCommand, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
+  ActionBatchAnsweredEvent,
   ApiCommandDescriptor,
   BatchResponseBody,
   ChannelAddress,
@@ -513,6 +514,27 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     return landed
   }
 
+  /** The cards a batch's answer settles, marked wherever they were answered — in
+   *  this console, another one, or on the batch's own channel. */
+  const answeredBy = (event: ActionBatchAnsweredEvent) => (it: LedgerItem): LedgerItem => {
+    if ((it.kind !== 'approval' && it.kind !== 'ask') || it.state !== 'waiting' || it.batchId !== event.batch_id) return it
+    const t = nowClock().slice(0, 5)
+    if (it.kind === 'approval') {
+      if (it.actionId === undefined || !(it.actionId in event.approvals)) return it
+      return { ...it, state: event.approvals[it.actionId] ? 'approved' : 'dismissed', resolvedT: t }
+    }
+    const questions = it.questions.map((q) => (q.actionId !== undefined && q.actionId in event.answers ? { ...q, answer: event.answers[q.actionId] } : q))
+    return { ...it, state: 'answered', questions, resolvedT: t }
+  }
+  const markAnswered = (thId: string, event: ActionBatchAnsweredEvent) => {
+    const mark = answeredBy(event)
+    if (get().selThreadId === thId) {
+      set((s) => ({ detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(mark) }, live: s.live.map(mark) }))
+    }
+    const kept = parked.get(thId)
+    if (kept) parked.set(thId, kept.map(mark))
+  }
+
   // The socket on the open thread, of whichever channel: it carries a run kicked
   // from anywhere else — the thread's own channel, another tab — into the
   // overlay. A run this console asked for streams over its own socket instead.
@@ -554,6 +576,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       } else if (event.event_kind === 'reflex_asleep') {
         fold = undefined
         void reloadSettled(thId)
+      } else if (event.event_kind === 'action_batch_answered') {
+        markAnswered(thId, event)
       } else {
         fold?.feed(event)
       }
@@ -699,6 +723,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         return
       }
       if (event.event_kind === 'reflex_awake' || event.event_kind === 'run_ended') return
+      if (event.event_kind === 'action_batch_answered') {
+        markAnswered(selId, event)
+        return
+      }
       if (intercept?.(event)) return
       if (event.event_kind === 'gateway') {
         landing = event.destination

@@ -64,7 +64,11 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+    MessageSentEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig
 from octomate.prompts import tagged
@@ -589,7 +593,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         run_id = str(uuid7())
         while not settled or (accumulator.turn_started and not accumulator.turn_ended):
             frame = await queue.get()
-            if isinstance(frame, ActionBatchEvent):
+            if isinstance(frame, ActionBatchEvent | ActionBatchAnsweredEvent):
                 yield frame
                 continue
             if isinstance(frame, StreamErrorFrame):
@@ -917,6 +921,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         finally:
             self.pendings.pop(batch_id, None)
         await self.deferred_actions.resolve_batch(response)
+        context.frames.put_nowait(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
     @staticmethod
@@ -1115,8 +1120,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         prompted = True
                         while not accumulator.turn_ended:
                             frame = await queue.get()
-                            if isinstance(frame, ActionBatchEvent):
-                                # A batch the turn paused on, for whoever draws the run.
+                            if isinstance(
+                                frame, ActionBatchEvent | ActionBatchAnsweredEvent
+                            ):
+                                # A batch the turn paused on, or its answer, for whoever draws the run.
                                 yield frame
                                 continue
                             if isinstance(frame, StreamErrorFrame):

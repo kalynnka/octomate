@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pydantic_ai import AgentRunResult
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import ActionBatchAnsweredEvent
+from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     DeferredResult,
@@ -48,6 +50,10 @@ class ResumeDeferred(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             span.set_attribute("run_name", batch.run_name)
             span.set_attribute("batch_status", batch.status)
             span.set_attribute("completed", batch.completed)
+        # For every reader still showing the batch's cards, before the run resumes.
+        await ctx.deps.impulses.send(
+            Impulse(ActionBatchAnsweredEvent.of(self.awake), batch.target_address)
+        )
         target_channel = ctx.deps.channels.get(batch.target_address.channel_tentacle_id)
         if target_channel is None:
             raise ValueError(

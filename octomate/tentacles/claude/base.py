@@ -79,7 +79,10 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
@@ -631,6 +634,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         finally:
             self.pendings.pop(batch_id, None)
         await self.deferred_actions.resolve_batch(response)
+        interjections.interject(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
@@ -1234,7 +1238,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 )
                 command_result: ResultMessage | None = None
                 async for message in messages:
-                    if isinstance(message, ActionBatchEvent):
+                    if isinstance(message, ActionBatchEvent | ActionBatchAnsweredEvent):
                         yield message
                         continue
                     if command is not None and isinstance(message, ResultMessage):

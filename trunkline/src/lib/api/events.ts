@@ -3,7 +3,7 @@
 // `event_kind` discriminator; the pydantic-ai members serialize with their own
 // native field names, so these types follow the Python schema exactly.
 import type { ApiUser } from './auth'
-import type { EffortStep } from './types'
+import type { AskAnswer, EffortStep } from './types'
 
 // ---- pydantic-ai response parts -------------------------------------------
 
@@ -360,6 +360,15 @@ export interface RunErrorEvent {
   trace_id: string
 }
 
+/** A batch's actions answered, from whichever surface answered them; every
+ *  console still showing the batch's cards marks them. */
+export interface ActionBatchAnsweredEvent {
+  event_kind: 'action_batch_answered'
+  batch_id: string
+  approvals: Record<string, boolean>
+  answers: Record<string, AskAnswer>
+}
+
 /** A kick's first word: the reflex woken, before anything it does. */
 export interface ReflexAwakeEvent {
   event_kind: 'reflex_awake'
@@ -420,6 +429,7 @@ export type WireEvent =
   | MessageSentEvent
   | OAuthAuthorizationEvent
   | ActionBatchEvent
+  | ActionBatchAnsweredEvent
   | SubagentStartedEvent
   | SubagentSettledEvent
   | RunStartedEvent

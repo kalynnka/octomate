@@ -49,11 +49,13 @@ from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.auth import LinkProfileAuthorization
+from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
     DeferredApproval,
     DeferredQuestion,
+    QuestionAnswer,
 )
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
@@ -339,6 +341,25 @@ class ActionBatchEvent(BaseModel):
         )
 
 
+class ActionBatchAnsweredEvent(BaseModel):
+    """A batch's actions answered, from whichever surface answered them: every
+    reader still showing the batch's cards marks them, so a card answered in one
+    console, or on another channel, stops waiting everywhere."""
+
+    event_kind: Literal["action_batch_answered"] = "action_batch_answered"
+    batch_id: str
+    approvals: dict[UUID7, bool] = Field(default_factory=dict)
+    answers: dict[UUID7, QuestionAnswer] = Field(default_factory=dict)
+
+    @classmethod
+    def of(cls, response: DeferredActionBatchResponse) -> ActionBatchAnsweredEvent:
+        return cls(
+            batch_id=str(response.batch_id),
+            approvals=response.approvals,
+            answers=response.answers,
+        )
+
+
 # The stream a consumer matches on, generic over the run's output type.
 type StreamEvents[OutputT] = (
     AgentStreamEvent
@@ -349,6 +370,7 @@ type StreamEvents[OutputT] = (
     | MessageSentEvent
     | OAuthAuthorizationEvent
     | ActionBatchEvent
+    | ActionBatchAnsweredEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
 )
@@ -379,6 +401,7 @@ type WireEvent = (
     | OAuthDeviceAuthorizationEvent
     | OAuthAuthorizationEvent
     | ActionBatchEvent
+    | ActionBatchAnsweredEvent
     | SubagentStartedEvent
     | SubagentSettledEvent
     | RunResultEvent

@@ -85,7 +85,10 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
@@ -1292,6 +1295,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         finally:
             self.pendings.pop(batch_id, None)
         await self.deferred_actions.resolve_batch(response)
+        context.interjections.interject(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
     async def handle_sdk_request(
@@ -1805,8 +1809,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             interrupted = False
             async for notification in notifications:
-                if isinstance(notification, ActionBatchEvent):
-                    # A batch the turn paused on, for whoever draws the run.
+                if isinstance(
+                    notification, ActionBatchEvent | ActionBatchAnsweredEvent
+                ):
+                    # A batch the turn paused on, or its answer, for whoever draws the run.
                     yield notification
                     continue
                 for event in accumulator.consume(notification):

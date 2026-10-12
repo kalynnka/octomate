@@ -27,7 +27,10 @@ from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.ask import ASK_DEFERR_KIND
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.schemas.conversation import Conversation
 
 
@@ -167,22 +170,28 @@ class Ended:
     error: Exception | None = None
 
 
+# What a live run's callbacks put on its stream: the batch an approval pauses the
+# run on, and its answer once the run takes it.
+type Interjection = ActionBatchEvent | ActionBatchAnsweredEvent
+
+
 class Interjections[T]:
     """What a live run's callbacks put on its stream while it waits on the runtime:
-    the batch an approval pauses the run on, for whoever draws the run to present.
+    the batch an approval pauses the run on, and the answer it resumes on, for
+    whoever draws the run.
 
     The runtime's own stream is read in a task of its own, so a batch gets through
     while the runtime is still waiting for its answer."""
 
     def __init__(self) -> None:
-        self.queue: asyncio.Queue[Read[T] | ActionBatchEvent | Ended] = asyncio.Queue()
+        self.queue: asyncio.Queue[Read[T] | Interjection | Ended] = asyncio.Queue()
 
-    def interject(self, event: ActionBatchEvent) -> None:
+    def interject(self, event: Interjection) -> None:
         self.queue.put_nowait(event)
 
     async def around(
         self, source: AsyncIterable[T]
-    ) -> AsyncGenerator[T | ActionBatchEvent]:
+    ) -> AsyncGenerator[T | Interjection]:
         """`source`'s items in order, with each interjection as it is made."""
         reading = asyncio.create_task(self.read(source))
         try:
