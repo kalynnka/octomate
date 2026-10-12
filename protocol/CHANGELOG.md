@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.3...octomate-protocol-v0.0.4) (2026-10-12)
+
+
+### Features
+
+* **gateway:** carry conversations across channels ([#115](https://github.com/kalynnka/octomate/issues/115)) ([1d48b5e](https://github.com/kalynnka/octomate/commit/1d48b5ed6108959cf7bf1bea8849e539571ac9d1))
+
+
+### Performance Improvements
+
+* **trunkline:** page a thread's messages from the newest and keep the open page in the address ([#122](https://github.com/kalynnka/octomate/issues/122)) ([d1770d3](https://github.com/kalynnka/octomate/commit/d1770d3fe5313e4d836c99fe659cb26c6dcf95ee))
+
 ## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-protocol-v0.0.2...octomate-protocol-v0.0.3) (2026-09-23)
 
 
