@@ -54,6 +54,7 @@ from octomate.tentacles.feelers.output import (
     DefaultTimelineFeeler,
     IMMessageID,
 )
+from octomate.tentacles.siphon import Siphon
 from octomate.utils import guess_image_ext
 
 if TYPE_CHECKING:
@@ -237,6 +238,8 @@ class ChannelTentacle(
     # identity on the channel) — probe() fills it from ink.inspect().
     self_profile: UserProfile
     feelers: Feelers
+    # Where what the nerve carries to this channel leaves for the platform.
+    siphon: Siphon
     ink: Ink[MessageT]
     chromo: Chromo[RawT, MessageT]
     config: ChannelConfig
@@ -278,6 +281,7 @@ class ChannelTentacle(
             ask_questions=questions_feeler,
             oauth=oauth_feeler,
         )
+        self.siphon = Siphon(self)
 
     @property
     def agent_ids(self) -> list[str]:
@@ -303,9 +307,12 @@ class ChannelTentacle(
         # it down); HTTP-driven channels (e.g. the dev UI) need only the probe.
         await self.ink.__aenter__()
         await self.probe()
+        # Before any inbound event, so no run this channel draws is missed.
+        self.siphon.start()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
+        await self.siphon.stop()
         await self.ink.__aexit__(*exc)
 
     @property

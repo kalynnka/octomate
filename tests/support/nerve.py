@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import json
 
-from anyio.streams.memory import MemoryObjectReceiveStream
+from anyio.abc import ObjectReceiveStream
 
 from octomate.capabilities.harness.events import (
     ReflexAsleepEvent,
-    WireEvent,
     wire_event_adapter,
 )
+from octomate.nerve import Impulse
 
 
 async def settled(
-    live: MemoryObjectReceiveStream[WireEvent],
+    live: ObjectReceiveStream[Impulse],
 ) -> list[dict[str, object]]:
     """The kick's events as the console reads them off its socket, up to the
     reflex falling asleep."""
     events: list[dict[str, object]] = []
-    async for event in live:
-        if isinstance(event, ReflexAsleepEvent):
+    async for impulse in live:
+        if isinstance(impulse.event, ReflexAsleepEvent):
             return events
-        events.append(json.loads(wire_event_adapter.dump_json(event, warnings=False)))
+        events.append(
+            json.loads(wire_event_adapter.dump_json(impulse.event, warnings=False))
+        )
     raise AssertionError("the turn never settled")

@@ -18,7 +18,6 @@ from anyio.abc import ObjectSendStream
 from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
-from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
@@ -26,8 +25,6 @@ from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
-    ActionBatchEvent,
-    GatewayEvent,
     MessageSentEvent,
     RunEndedEvent,
     RunErrorEvent,
@@ -49,7 +46,7 @@ from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import CommandError, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     AgentRouteKey,
@@ -72,7 +69,6 @@ if TYPE_CHECKING:
     from octomate.reflex.nodes.scheme import Scheme
     from octomate.reflex.nodes.summon import Summon
     from octomate.reflex.nodes.teleport import Teleport
-from octomate.tentacles.feelers.output import IMMessageID
 
 logger = logging.getLogger(__name__)
 
@@ -214,9 +210,6 @@ class ReflexState:
     handoff: PendingHandoff | None = None
     user_prompt: str | Sequence[UserContent] | None = None
     user_profile: UserProfile | None = None
-    # The channel an operation on another channel's thread was performed in, which
-    # hears how the turn goes; None when the turn came from the source's channel.
-    operated_from: str | None = None
 
 
 @dataclass
@@ -387,58 +380,27 @@ class ReflexDeps:
             parts.append(f"{display_name} ({ids}){platform_id}:\n{text}")
         return "\n\n".join(parts)
 
-    async def announce(
-        self, state: ReflexState, address: ChannelAddress, event: GatewayEvent
-    ) -> IMMessageID | None:
-        """Present a move where the conversation was, and in the channel it was
-        operated from when that is another. Answers the platform id of the line it
-        left."""
-        await self.impulses.send(Impulse(event, ThreadKey.from_address(address)))
-        operated_from = state.operated_from
-        if operated_from is not None and operated_from != address.channel_tentacle_id:
-            await self.channel(operated_from).feelers.present(address, event)
-        # A native session's pseudo-channel has no feelers.
-        channel = self.channels.get(address.channel_tentacle_id)
-        return await channel.feelers.present(address, event) if channel else None
-
     async def report(self, state: ReflexState, error: Exception) -> None:
-        """Tell the channel the turn came from, or the one it was operated from,
-        that it failed. A turn that failed before it knew its source has nobody to
-        tell."""
+        """Publish that the turn failed, on the thread it came from. A turn that
+        failed before it knew its source has nobody to tell."""
         source = state.source_target.address if state.source_target else None
         if source is None:
             return
-        channel = self.channels.get(state.operated_from or source.channel_tentacle_id)
-        if channel is None:
-            return
         trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
         failure = RunErrorEvent(message=str(error), trace_id=trace_id)
-        await self.impulses.send(Impulse(failure, ThreadKey.from_address(source)))
-        try:
-            await channel.feelers.present(source, failure)
-        except Exception:
-            logger.warning(
-                "Channel %s could not report a failed turn", channel.id, exc_info=True
-            )
+        await self.impulses.send(Impulse(failure, source))
 
     async def carry(
         self,
         address: ChannelAddress,
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
-    ) -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-        """Pass a run's stream on as it comes, and send it on the nerve under the
-        thread at `address` as wire events: the run's start before anything it
-        streams, and its end after, whatever happened."""
-        key = ThreadKey.from_address(address)
-        await self.impulses.send(Impulse(RunStartedEvent(address=address), key))
-        try:
-            async for item in stream:
-                wire = self.to_wire(item)
-                if wire is not None:
-                    await self.impulses.send(Impulse(wire, key))
-                yield item
-        finally:
-            await self.impulses.send(Impulse(RunEndedEvent(), key))
+    ) -> None:
+        """Send a run's stream on the nerve at `address` as wire events, item by
+        item, until it ends."""
+        async for item in stream:
+            wire = self.to_wire(item)
+            if wire is not None:
+                await self.impulses.send(Impulse(wire, address))
 
     @staticmethod
     def to_wire(item: ReactStreamEvent[ChannelOutput]) -> WireEvent | None:
@@ -467,7 +429,7 @@ class ReflexDeps:
         *,
         agent_tentacle_id: str,
         platform_message_id: str | None = None,
-    ) -> None:
+    ) -> ThreadMessage:
         """Write the line a move leaves behind to the ledger of the chat it left.
 
         A person already sees it — the channel posted it, and a thread opened here
@@ -477,9 +439,10 @@ class ReflexDeps:
         ago.
 
         The row carries the opener's own platform id, so the ledger and the platform
-        name the same message rather than two.
+        name the same message rather than two; a line still to be posted gets its id
+        from the channel that posts it.
         """
-        await self.thread_manager.record_outbound(
+        return await self.thread_manager.record_outbound(
             address,
             agent_tentacle_id=agent_tentacle_id,
             segments=[MarkdownSegment(data={"text": text})],
@@ -634,7 +597,8 @@ class ReflexRuntime:
         suspender: ReflexSuspender,
         event: MessageSentEvent,
     ) -> bool:
-        """Deliver a gateway send away from the active timeline, when possible."""
+        """Deliver a gateway send to a person's direct messages, when possible:
+        recorded there first, then published for that thread alone."""
         destination = event.destination
         if destination is None:
             return False
@@ -648,20 +612,16 @@ class ReflexRuntime:
                 suspender.target_address,
             )
             return False
-        await ctx.deps.impulses.send(
-            Impulse(
-                MessageSentEvent(segments=event.segments, destination=dm),
-                ThreadKey.from_address(dm),
-                private=True,
-            )
-        )
-        await channel.feelers.segments.present(dm, event.segments)
-        await ctx.deps.thread_manager.record_outbound(
+        message = await ctx.deps.thread_manager.record_outbound(
             dm,
             agent_tentacle_id=suspender.agent_tentacle_id,
             segments=event.segments,
             sender=channel.self_profile,
         )
+        sent = MessageSentEvent(
+            segments=event.segments, destination=dm, thread_message_id=message.id
+        )
+        await ctx.deps.impulses.send(Impulse(sent, dm, private=True))
         return True
 
     async def drive(
@@ -669,98 +629,64 @@ class ReflexRuntime:
         ctx: GraphRunContext[ReflexState, ReflexDeps],
         suspender: ReflexSuspender,
         source: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
-    ) -> tuple[AgentRunResult[ChannelOutput], IMMessageID | None]:
-        """Consume the same native invocation, closing it before recording its reply,
-        and answer the platform id its timeline rendered the reply as."""
+    ) -> AgentRunResult[ChannelOutput]:
+        """Run the native invocation onto the nerve, closing it before recording
+        its reply: the run's start before anything it streams, and its end after,
+        carrying the reply's ledger row, whatever happened."""
         results: list[AgentRunResult[ChannelOutput]] = []
-        errors: list[Exception] = []
-        presented: IMMessageID | None = None
         address = suspender.target_address
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-            try:
-                async for event in source:
-                    if isinstance(event, AgentRunResultEvent):
-                        results.append(event.result)
-                    if isinstance(event, MessageSentEvent) and await self.send(
-                        ctx, suspender, event
-                    ):
-                        continue
-                    yield event
-            except Exception as error:
-                errors.append(error)
-                raise
+            async for event in source:
+                if isinstance(event, AgentRunResultEvent):
+                    results.append(event.result)
+                if isinstance(event, MessageSentEvent) and await self.send(
+                    ctx, suspender, event
+                ):
+                    continue
+                yield event
 
-        async with aclosing(source):
-            try:
-                async with aclosing(ctx.deps.carry(address, events())) as stream:
-                    presented = await self.present_events(suspender, stream)
-            except AgentRunError:
-                raise
-            except Exception:
-                logger.warning(
-                    "Channel %s: timeline render failed",
-                    suspender.channel.id,
-                    exc_info=True,
+        await ctx.deps.impulses.send(Impulse(RunStartedEvent(address=address), address))
+        reply: ThreadMessage | None = None
+        try:
+            async with aclosing(source), aclosing(events()) as stream:
+                await ctx.deps.carry(address, stream)
+            if not results:
+                raise RuntimeError(
+                    f"react stream for {address} completed without a result"
                 )
-        if errors:
-            raise errors[0]
-        if not results:
-            raise RuntimeError(f"react stream for {address} completed without a result")
-        return results[-1], presented
+            reply = await self.record_reply(ctx, suspender, results[-1])
+            return results[-1]
+        finally:
+            ended = RunEndedEvent(
+                thread_message_id=reply.id if reply is not None else None
+            )
+            await ctx.deps.impulses.send(Impulse(ended, address))
 
-    async def present_events(
-        self,
-        suspender: ReflexSuspender,
-        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
-    ) -> IMMessageID | None:
-        """Render a live timeline, or deliver explicit sends and put up batches
-        while draining a quiet run. Answers the platform id the timeline rendered
-        the reply as."""
-        address = suspender.target_address
-        channel = suspender.channel
-        if not channel.config.stream.enabled:
-            async for event in stream:
-                if isinstance(event, MessageSentEvent):
-                    await channel.feelers.segments.present(address, event.segments)
-                elif isinstance(event, ActionBatchEvent):
-                    await channel.feelers.present_actions(
-                        address, event, action_manager=suspender.action_manager
-                    )
-            return None
-        async with channel.feelers.timeline.open(address) as timeline:
-            await timeline.drive(stream)
-        return timeline.message_id
-
-    async def present_result(
+    async def record_reply(
         self,
         ctx: GraphRunContext[ReflexState, ReflexDeps],
         suspender: ReflexSuspender,
         result: AgentRunResult[ChannelOutput],
-        *,
-        streamed: bool,
-        presented: IMMessageID | None = None,
-    ) -> None:
-        """Record and bind the reply, presenting it once when it was not streamed.
-        `presented` is the platform id a streamed reply was rendered as."""
+    ) -> ThreadMessage | None:
+        """Record and bind the run's reply, answering its row for the channel to
+        mark with the platform id it renders the reply as."""
         output = result.output
-        address = suspender.target_address
-        channel = suspender.channel
         segments: list[MessageSegment]
         if isinstance(output, str):
             segments = [MarkdownSegment(data={"text": output})] if output else []
         elif isinstance(output, Iterable):
             segments = list(output)
         else:
-            return
+            return None
         _reply_to, body = split_reply(segments)
         message = None
         if body:
             message = await ctx.deps.thread_manager.record_outbound(
-                address,
+                suspender.target_address,
                 agent_tentacle_id=suspender.agent_tentacle_id,
                 segments=body,
-                sender=channel.self_profile,
+                sender=suspender.channel.self_profile,
                 raw=output
                 if isinstance(output, str)
                 else "\n\n".join(str(segment) for segment in body),
@@ -770,14 +696,7 @@ class ReflexRuntime:
             [message.id] if message is not None else [],
             run_id=result.run_id,
         )
-        if streamed or (isinstance(output, str) and not output):
-            message_id = presented
-        elif isinstance(output, str):
-            message_id = await channel.feelers.markdown.present(address, output)
-        else:
-            message_id = await channel.feelers.segments.present(address, segments)
-        if message is not None:
-            await ctx.deps.thread_manager.mark_presented(message, message_id)
+        return message
 
     async def present_command(
         self,
@@ -785,7 +704,7 @@ class ReflexRuntime:
         suspender: ReflexSuspender,
         outcome: CommandOutcome,
     ) -> None:
-        """Deliver direct feedback; its command receipt already owns the output."""
+        """Publish direct feedback; its command receipt already owns the output."""
         segments: list[MessageSegment] = (
             [TextSegment(data={"text": outcome.message})]
             if isinstance(outcome, CommandError)
@@ -793,26 +712,9 @@ class ReflexRuntime:
         )
         if not segments:
             return
-        address = suspender.target_address
-        channel = suspender.channel
         await ctx.deps.impulses.send(
-            Impulse(
-                MessageSentEvent(segments=segments),
-                ThreadKey.from_address(address),
-            )
+            Impulse(MessageSentEvent(segments=segments), suspender.target_address)
         )
-        if not channel.config.stream.enabled:
-            await channel.feelers.segments.present(address, segments)
-            return
-
-        async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-            yield MessageSentEvent(segments=segments)
-
-        async with (
-            channel.feelers.timeline.open(address) as timeline,
-            aclosing(events()) as stream,
-        ):
-            await timeline.drive(stream)
 
     async def finish(
         self,

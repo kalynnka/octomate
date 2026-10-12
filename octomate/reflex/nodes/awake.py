@@ -61,7 +61,6 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         if isinstance(self.signal, DrivenGatewaySignal):
             signal = self.signal
-            ctx.state.operated_from = signal.operated_from
             return await self.thread_operation(
                 ctx,
                 signal.thread_id,

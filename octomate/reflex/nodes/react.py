@@ -152,17 +152,10 @@ class React(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             async with ctx.deps.gateway.driving(
                 session, conversation_id=state.conversation_id
             ):
-                result, presented = await runtime.drive(ctx, suspender, events())
+                result = await runtime.drive(ctx, suspender, events())
                 span.set_attribute("react.run_id", result.run_id)
                 span.set_attribute(
                     "react.deferred", isinstance(result.output, DeferredToolRequests)
-                )
-                await runtime.present_result(
-                    ctx,
-                    suspender,
-                    result,
-                    streamed=suspender.channel.config.stream.enabled,
-                    presented=presented,
                 )
                 if self.resume_batch_id is not None:
                     await ctx.deps.action_manager.mark_batch(

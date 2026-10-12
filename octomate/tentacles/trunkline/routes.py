@@ -312,7 +312,7 @@ def build_trunkline_router(
             )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
-        octomate.kick_soon(session.thread_operation(channel.id))
+        octomate.kick_soon(session.thread_operation())
 
     @router.post("/threads/{thread_id}/summon", status_code=202, response_model=None)
     async def summon_thread(
@@ -330,7 +330,7 @@ def build_trunkline_router(
             )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
-        octomate.kick_soon(session.thread_operation(channel.id))
+        octomate.kick_soon(session.thread_operation())
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:
@@ -738,6 +738,6 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
                 code=1008, reason="Name the thread by its id or by its key, not both"
             )
             return
-        await channel.stream_thread(websocket, key)
+        await channel.siphon.watch(websocket, key)
 
     return router

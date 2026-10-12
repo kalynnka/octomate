@@ -7,6 +7,7 @@ import logging
 from pydantic_graph import GraphRunContext
 
 from octomate.capabilities.harness.events import GatewayEvent
+from octomate.nerve import Impulse
 from octomate.reflex.state import ReflexDeps, ReflexState
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
@@ -57,10 +58,8 @@ async def open_crossing(
             platform_message_id=opened.channel_thread_id,
         )
         # The thread hangs from its opener there, which is the move's line.
-        await ctx.deps.announce(
-            ctx.state,
-            source_address,
-            GatewayEvent(action="teleport", destination=opened),
+        await ctx.deps.impulses.send(
+            Impulse(GatewayEvent(action="teleport", destination=opened), source_address)
         )
         return opened
     if profile is not None:
@@ -88,24 +87,23 @@ async def open_crossing(
                 actor_kind="system",
                 segments=[MarkdownSegment(data={"text": hint_text})],
             )
-    origin = source_address.channel_tentacle_id
-    try:
-        announced = await ctx.deps.announce(
-            ctx.state,
-            source_address,
-            GatewayEvent(action="teleport", destination=opened, announcement=hint_text),
-        )
-    except Exception:
-        logger.warning(
-            "Channel %s failed to announce the crossing", origin, exc_info=True
-        )
-        return opened
-    # Stream-only channels navigate on the event without posting a source message.
-    if announced is not None:
+    # A native session's pseudo-channel posts no line, and has no one to post it as.
+    line = (
         await ctx.deps.record_move(
-            source_address,
-            hint_text,
-            agent_tentacle_id=agent_tentacle_id,
-            platform_message_id=announced,
+            source_address, hint_text, agent_tentacle_id=agent_tentacle_id
         )
+        if source_address.channel_tentacle_id in ctx.deps.channels
+        else None
+    )
+    await ctx.deps.impulses.send(
+        Impulse(
+            GatewayEvent(
+                action="teleport",
+                destination=opened,
+                announcement=hint_text,
+                thread_message_id=line.id if line is not None else None,
+            ),
+            source_address,
+        )
+    )
     return opened

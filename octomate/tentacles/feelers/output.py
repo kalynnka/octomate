@@ -59,7 +59,7 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     ResultSegmentEvent,
     ResultTextDeltaEvent,
-    StreamEvents,
+    RunResultEvent,
     SubagentActivityStatus,
     SubagentSettledEvent,
     SubagentStartedEvent,
@@ -69,6 +69,7 @@ from octomate.capabilities.harness.events import (
     TodoEvent,
     TodoStatusChangedEvent,
     TodoUpdatedEvent,
+    WireEvent,
 )
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
@@ -670,17 +671,10 @@ class TimelineState:
         except Exception:
             logger.warning("Subagent timeline failed to close", exc_info=True)
 
-    async def drive(
-        self,
-        stream: AsyncIterator[
-            StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-        ],
-    ) -> None:
-        """The single event→render dispatch over the run stream; each typed event is
-        drawn onto this state, which renders itself. Draining the whole stream is
-        mandatory — abandoning it mid-run tears down the agent task group from the
-        wrong task.
-        """
+    async def drive(self, stream: AsyncIterator[WireEvent]) -> None:
+        """The single event→render dispatch over a run's wire events, as the nerve
+        carries them; each typed event is drawn onto this state, which renders
+        itself."""
         skipped_tools: set[str] = set()
         failed = False
         answered = False
@@ -754,10 +748,10 @@ class TimelineState:
                     case ActionBatchEvent():
                         answered = answered or bool(event.questions or event.approvals)
                         await self.present_actions(event)
-                    case AgentRunResultEvent():
-                        final_output = event.result.output  # for the fallback below
+                    case RunResultEvent():
+                        final_output = event.output  # for the fallback below
                     case _:
-                        pass  # FinalResult / PartEnd of other parts / passthrough
+                        pass  # PartEnd of other parts / passthrough
             except Exception:
                 logger.warning(
                     "Channel %s: timeline render failed",

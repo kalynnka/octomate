@@ -43,7 +43,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
+from pydantic import UUID7, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
 from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
@@ -111,6 +111,12 @@ class RunEndedEvent(BaseModel):
     counterpart of `RunStartedEvent`."""
 
     event_kind: Literal["run_ended"] = "run_ended"
+    thread_message_id: UUID7 | None = Field(
+        default=None,
+        description="The ledger row of the run's reply, for the channel to mark "
+        "with the platform id it renders the reply as; None for a run that left "
+        "no reply.",
+    )
 
 
 class RunResultEvent(BaseModel):
@@ -147,6 +153,11 @@ class GatewayEvent(BaseModel):
         default=None,
         description="The line the move leaves where the conversation was, or None "
         "when it leaves none there.",
+    )
+    thread_message_id: UUID7 | None = Field(
+        default=None,
+        description="The ledger row of that line, for the channel to mark with the "
+        "platform id it posts the line as; None when the move recorded none.",
     )
 
 
@@ -242,6 +253,11 @@ class MessageSentEvent(DisplayEvent):
         description="None for this conversation. Otherwise the address the gate "
         "already resolved from the target the model named, so the consumer delivers "
         "without re-deciding anything and a refused destination never reaches one.",
+    )
+    thread_message_id: UUID7 | None = Field(
+        default=None,
+        description="The ledger row the send left, for the channel to mark with the "
+        "platform id it delivers it as; None for a send recorded nowhere.",
     )
 
 

@@ -3,12 +3,12 @@
 
 Unlike the Vercel dev-UI channel it replaces, nothing is transcoded to a
 third-party UI protocol: the run's own event union (the harness `WireEvent`)
-is what the console renders, read off the nerve, where the graph publishes
-what a kick does under the thread it was asked on. The channel draws nothing
-itself: its feelers are the graph's seams and render nothing, and
-`stream_thread` pumps a thread's subscription down the console's live socket,
-where the kick's `reflex_asleep` arrives last. A directive, a batch answer or
-a thread operation is answered as soon as its kick is on its way. Keyed as a
+is what the console renders, read off the nerve. The channel draws nothing
+through feelers: its siphon holds a subscription for each live socket, on the
+thread the socket watches, whichever channel it is on, and sends what the
+nerve carries there down it, where the kick's `reflex_asleep` arrives last. A
+directive, a batch answer or a thread operation is answered as soon as its
+kick is on its way. Keyed as a
 `flat_thread` channel, every directive carries its thread id and streams
 straight through without triage — a new id starts a new thread, an existing
 id continues it.
@@ -18,15 +18,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass
+from contextlib import suppress
 from typing import TYPE_CHECKING, ClassVar
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from pydantic_ai import AgentRunResultEvent
 from rich.style import Style
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
@@ -35,11 +32,6 @@ from starlette.types import Scope
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.events import (
-    ActionBatchEvent,
-    GatewayEvent,
-    LinkProfileAuthorizationEvent,
-    RunErrorEvent,
-    StreamEvents,
     WireEvent,
     wire_event_adapter,
 )
@@ -50,13 +42,11 @@ from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
 from octomate.schemas.segments import (
     ImageSegment,
-    MessageSegment,
     TextSegment,
 )
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
-    ChannelOutput,
     ChannelTentacle,
     Chromo,
     DownloadedImage,
@@ -64,14 +54,11 @@ from octomate.tentacles.channel import (
     Ink,
     ThreadStrategy,
 )
-from octomate.tentacles.feelers.base import Feelers
-from octomate.tentacles.feelers.oauth import AuthorizationEvent, OAuthFeeler
-from octomate.tentacles.feelers.output import TimelineState
+from octomate.tentacles.siphon import Siphon
 from octomate.types.permissions import AgentPermissionMode
 
 if TYPE_CHECKING:
     from octomate.base import Octomate
-    from octomate.managers.deferred import DeferredActionManager
 
 logger = logging.getLogger(__name__)
 
@@ -183,77 +170,48 @@ class TrunklineChromo(Chromo[TrunklineDirective, WireEvent]):
         raise TrunklineSeamNotWired
 
 
-class TrunklineTimelineState(TimelineState):
-    """A run's timeline on the console, which draws nothing: the console reads
-    the run off the nerve. The stream is drained so the run goes on."""
-
-    def __init__(self, address: ChannelAddress) -> None:
-        self.address = address
-        self.message_id = None
-        self.reply_to = None
-
-    async def drive(
-        self,
-        stream: AsyncIterator[
-            StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-        ],
-    ) -> None:
-        async for _ in stream:
-            pass
+# How far behind a console's socket may fall before it is closed rather than
+# held for: the console reads the thread again when it reopens.
+CONSOLE_BACKLOG = 4096
 
 
-@dataclass
-class TrunklineFeelers(Feelers):
-    """What the graph reports outside a run is on the nerve already, where the
-    console reads it; nothing is drawn here. A persisted batch still surfaces
-    through the thread detail's `pending` list on the next load."""
+class TrunklineSiphon(Siphon):
+    """The console's siphon. It subscribes to nothing of its own: a console
+    picks the threads it watches, on any channel, and each live socket holds a
+    subscription to its thread for as long as it is open."""
 
-    async def present(
-        self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent
-    ) -> IMMessageID | None:
-        return None
+    def start(self) -> None:
+        """Nothing to subscribe to until a socket opens."""
 
-    async def present_actions(
-        self,
-        address: ChannelAddress,
-        event: ActionBatchEvent,
-        *,
-        action_manager: DeferredActionManager,
-    ) -> None:
-        return None
+    async def watch(self, websocket: WebSocket, key: ThreadKey) -> None:
+        """Hold the console's socket on a thread until the console closes it,
+        sending each event the nerve carries to the thread down it meanwhile.
+        The subscription is open before the handshake completes, so a request
+        the console sends once the socket is open misses nothing. A console
+        `CONSOLE_BACKLOG` events behind is closed with 1013 to read the thread
+        again; one that is gone ends the same way, once its close is read."""
+        nerve = self.channel.octomate.nerve
+        with nerve.subscribe(key, backlog=CONSOLE_BACKLOG) as impulses:
+            await websocket.accept()
 
+            async def send() -> None:
+                async for impulse in impulses:
+                    await websocket.send_text(
+                        wire_event_adapter.dump_json(
+                            impulse.event, warnings=False
+                        ).decode()
+                    )
+                await websocket.close(code=1013, reason="fell behind")
 
-class TrunklineSegmentsFeeler:
-    """A `send` delivered to a console thread is on the nerve already, and the
-    sender records it in the thread's ledger, which is what the console reads
-    back; there is no platform message to point at."""
-
-    async def present(
-        self, address: ChannelAddress, segments: list[MessageSegment]
-    ) -> IMMessageID | None:
-        return None
-
-
-class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
-    """A provider authorization is on the nerve already, for the console
-    watching the thread; the id answered says it was delivered."""
-
-    async def send(
-        self, address: ChannelAddress, event: AuthorizationEvent
-    ) -> IMMessageID | None:
-        if isinstance(event, LinkProfileAuthorizationEvent):
-            raise RuntimeError("Trunkline does not support profile linking")
-        return uuid7().hex
-
-
-class TrunklineTimelineFeeler:
-    """Opens a run's timeline, which draws nothing on the console."""
-
-    @asynccontextmanager
-    async def open(
-        self, address: ChannelAddress
-    ) -> AsyncGenerator[TrunklineTimelineState, None]:
-        yield TrunklineTimelineState(address)
+            sending = asyncio.create_task(send())
+            try:
+                # The console sends nothing; reading is how its close is noticed.
+                while (await websocket.receive())["type"] != "websocket.disconnect":
+                    pass
+            finally:
+                sending.cancel()
+                with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                    await sending
 
 
 class ConsoleFiles(StaticFiles):
@@ -284,6 +242,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
 
     config: TrunklineChannelConfig
+    siphon: TrunklineSiphon
 
     def __init__(
         self, id: str, octomate: Octomate, *, config: TrunklineChannelConfig
@@ -295,16 +254,7 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             chromo=TrunklineChromo(),
             config=config,
         )
-        # The console reads a run off the nerve, so the feelers the graph drives
-        # draw nothing here; the markdown and card feelers have no transport.
-        self.feelers = TrunklineFeelers(
-            markdown=self.feelers.markdown,
-            timeline=TrunklineTimelineFeeler(),
-            segments=TrunklineSegmentsFeeler(),
-            approvals=self.feelers.approvals,
-            ask_questions=self.feelers.ask_questions,
-            oauth=TrunklineOAuthFeeler(self.ink),
-        )
+        self.siphon = TrunklineSiphon(self)
 
     def routers(self) -> tuple[APIRouter, APIRouter]:
         """The console HTTP surface and its live socket, mounted by
@@ -450,31 +400,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
         await self.octomate.agents[agent_tentacle_id].set_permission_mode(
             conversation, mode
         )
-
-    async def stream_thread(self, websocket: WebSocket, key: ThreadKey) -> None:
-        """Hold the console's socket on a thread until the console closes it,
-        sending what the nerve publishes to the thread down it meanwhile. The
-        subscription is open before the handshake completes, so a request the
-        console sends once the socket is open misses nothing. A console that
-        is gone ends the same way, once its close is read."""
-        with self.octomate.nerve.subscribe(key) as events:
-            await websocket.accept()
-
-            async def send() -> None:
-                async for event in events:
-                    await websocket.send_text(
-                        wire_event_adapter.dump_json(event, warnings=False).decode()
-                    )
-
-            sending = asyncio.create_task(send())
-            try:
-                # The console sends nothing; reading is how its close is noticed.
-                while (await websocket.receive())["type"] != "websocket.disconnect":
-                    pass
-            finally:
-                sending.cancel()
-                with suppress(asyncio.CancelledError, WebSocketDisconnect):
-                    await sending
 
     async def handle_directive(self, directive: TrunklineDirective) -> None:
         event = await self.chromo.sip(directive)

@@ -342,9 +342,9 @@ def mount_gateway(
         destination: SendTarget = HERE_TARGET,
         session: OctomateSession = octomate_session,
     ) -> str:
-        # Delivered right here: a gateway `send` has no run stream to ride, so the
-        # delivery React performs for Inkling's sends happens in the call instead —
-        # the same resolve, the same DM open, the same ledger row.
+        # Published right here: a gateway `send` has no run stream to ride, so what
+        # React does for Inkling's sends happens in the call instead — the same
+        # resolve, the same DM open, the same ledger row, then the channel delivers.
         address = await session.resolve_send(destination)
         target = address if address is not None else session.conversation_address
         if target is None:
@@ -374,18 +374,16 @@ def mount_gateway(
                     "delivered to this conversation instead"
                 )
         channel = session.channels[target.channel_tentacle_id]
-        await session.publish(
-            target,
-            MessageSentEvent(segments=segments, destination=target),
-            private=private,
-        )
-        await channel.feelers.segments.present(target, segments)
-        await thread_manager.record_outbound(
+        message = await thread_manager.record_outbound(
             target,
             agent_tentacle_id=session.current_agent_id,
             segments=segments,
             sender=channel.self_profile,
         )
+        sent = MessageSentEvent(
+            segments=segments, destination=target, thread_message_id=message.id
+        )
+        await session.publish(target, sent, private=private)
         return notice
 
     @mcp.tool(

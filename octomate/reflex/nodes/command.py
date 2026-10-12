@@ -93,14 +93,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     await runtime.present_command(ctx, suspender, output)
                     return End(output)
                 state.decision = suspender.continuation_decision()
-                result, presented = await runtime.drive(ctx, suspender, output)
-                await runtime.present_result(
-                    ctx,
-                    suspender,
-                    result,
-                    streamed=channel.config.stream.enabled,
-                    presented=presented,
-                )
+                result = await runtime.drive(ctx, suspender, output)
                 return await runtime.finish(ctx, session, suspender, result)
         finally:
             if state.thread is not None and state.user_profile is not None:

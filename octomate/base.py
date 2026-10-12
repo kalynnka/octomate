@@ -55,9 +55,9 @@ from octomate.schemas.awakes import (
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
+from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
-from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import ProfileInfo, User
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
@@ -306,27 +306,23 @@ class Octomate(FastAPI):
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
-            origin: ThreadKey | None = None
+            origin: ChannelAddress | None = None
             match signal:
                 case UserMessageSignal() if signal:
-                    origin = ThreadKey.from_address(signal.address)
-                    span.set_attribute("channel_id", signal.address.channel_tentacle_id)
-                    span.set_attribute("conversation_address", str(signal.address))
+                    origin = signal.address
+                    span.set_attribute("channel_id", origin.channel_tentacle_id)
+                    span.set_attribute("conversation_address", str(origin))
                 case CommandSignal():
-                    origin = ThreadKey.from_address(signal.context.address)
+                    origin = signal.context.address
                 case DrivenGatewaySignal():
-                    origin = ThreadKey.from_address(signal.source)
+                    origin = signal.source
                 case NativeGatewaySignal():
-                    origin = (
-                        ThreadKey.from_address(signal.source)
-                        if signal.source is not None
-                        else None
-                    )
+                    origin = signal.source
                     span.set_attribute("agent_id", signal.agent_id)
                     span.set_attribute("action", signal.decision.action)
                 case DeferredActionBatchResponse():
                     batch = await self.deferred_actions.get_batch(signal.batch_id)
-                    origin = ThreadKey.from_address(batch.source_address)
+                    origin = batch.source_address
                     span.set_attribute("batch_id", str(signal.batch_id))
             if (
                 isinstance(signal, DeferredActionBatchResponse)

@@ -157,13 +157,13 @@ class OctomateSession:
         `address`: on the kick's stream when one drives this turn, so the thread
         the kick was asked on hears it too unless it is `private`, else on that
         thread alone."""
-        key = ThreadKey.from_address(address)
+        impulse = Impulse(event, address, private=private)
         if self.impulses is not None:
-            await self.impulses.send(Impulse(event, key, private=private))
+            await self.impulses.send(impulse)
             return
         if self.nerve is None:
             raise RuntimeError("a spell no kick drives publishes on the host's nerve")
-        self.nerve.deliver(key, event)
+        self.nerve.deliver(impulse)
 
     @property
     def allow_here(self) -> bool:
@@ -844,9 +844,8 @@ class OctomateSession:
         self.thread_id = thread.id
         self.conversation_address = thread.key.address(profile.channel_user_id)
 
-    def thread_operation(self, operated_from: str) -> DrivenGatewaySignal:
-        """Package a validated user action for the graph's existing-thread entry,
-        operated from the channel `operated_from`."""
+    def thread_operation(self) -> DrivenGatewaySignal:
+        """Package a validated user action for the graph's existing-thread entry."""
         if (
             self.thread_id is None
             or self.conversation_address is None
@@ -862,7 +861,6 @@ class OctomateSession:
             agent_id=self.current_agent_id,
             user_profile=self.user_profile,
             decision=self.decision,
-            operated_from=operated_from,
         )
 
     def native_handoff(self) -> NativeGatewaySignal:
