@@ -19,7 +19,7 @@ from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread
+from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
 from octomate.schemas.triage import TeleportDecision
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
@@ -29,6 +29,7 @@ from tests.agent.test_codex_transcript_fork import case as case
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project
+from tests.support.nerve import settled
 from tests.support.users import a_user
 
 
@@ -64,6 +65,13 @@ async def client(case: ForkCase) -> AsyncGenerator[httpx.AsyncClient]:
         yield client
 
 
+async def source_key(case: ForkCase) -> ThreadKey:
+    """The native thread's key, under which an operation on it shows."""
+    thread = await case.tentacle.octomate.threads.get(case.source.thread_id)
+    assert thread is not None
+    return thread.key
+
+
 async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Thread:
     """The console's teleport of the native thread into a new Trunkline thread, and
     the thread it landed in."""
@@ -75,10 +83,13 @@ async def teleport_to_trunkline(case: ForkCase, client: httpx.AsyncClient) -> Th
         for one in options["teleport"]["destinations"]
         if one["channel_tentacle_id"] == "trunkline"
     ]
-    response = await client.post(
-        f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
-    )
-    assert "run_error" not in response.text, response.text
+    with app.nerve.subscribe(await source_key(case)) as live:
+        response = await client.post(
+            f"{path}/teleport", json={"destination": address, "hint": "Continue here"}
+        )
+        assert response.status_code == 202, response.text
+        kinds = [event["event_kind"] for event in await settled(live)]
+    assert "run_error" not in kinds
     listed = await app.threads.list_threads(user_id=case.owner_id)
     [landed] = [one for one in listed if one.channel_tentacle_id == "trunkline"]
     stored = await app.threads.get(landed.id)
@@ -211,11 +222,13 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
 
     kick = AsyncMock()
     monkeypatch.setattr(app, "kick", kick)
-    sent = await client.post(
-        f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
-        json={"text": "continue the work"},
-    )
-    assert sent.status_code == 200
+    with app.nerve.subscribe(stored.key) as live:
+        sent = await client.post(
+            f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
+            json={"text": "continue the work"},
+        )
+        assert sent.status_code == 202
+        await settled(live)
     kick.assert_awaited_once()
     after = await app.threads.get(stored.id)
     assert after is not None
@@ -293,20 +306,23 @@ async def test_thread_access_does_not_grant_transcript_ownership(
     app.dependency_overrides[current_user] = lambda: other
     visible = await client.get(f"/api/trunkline/threads/{case.source.thread_id}")
     assert visible.status_code == 200
-    response = await client.post(
-        f"/api/trunkline/threads/{case.source.thread_id}/teleport",
-        json={
-            "destination": {
-                "channel_tentacle_id": "trunkline",
-                "chat_type": "thread",
-                "chat_id": str(other.id),
-                "user_id": str(other.id),
+    with app.nerve.subscribe(await source_key(case)) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{case.source.thread_id}/teleport",
+            json={
+                "destination": {
+                    "channel_tentacle_id": "trunkline",
+                    "chat_type": "thread",
+                    "chat_id": str(other.id),
+                    "user_id": str(other.id),
+                },
+                "hint": "Continue here",
             },
-            "hint": "Continue here",
-        },
-    )
+        )
+        assert response.status_code == 202
+        kinds = [event["event_kind"] for event in await settled(live)]
     # Refused before anything moves: the transcript is its owner's alone.
-    assert '"event_kind":"run_error"' in response.text
+    assert "run_error" in kinds
     case.fork.assert_not_awaited()
     listed = await app.threads.list_threads(user_id=other.id)
     assert [thread.id for thread in listed] == [case.source.thread_id]
@@ -365,15 +381,15 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         if one["channel_tentacle_id"] == destination
     ]
     if asked_by == "console":
-        response = await client.post(
-            f"{path}/teleport",
-            json={
-                "destination": address,
-                "hint": "Continue here",
-            },
-        )
-        assert "run_error" not in response.text, response.text
-        assert '"event_kind":"gateway"' in response.text
+        with app.nerve.subscribe(await source_key(case)) as live:
+            response = await client.post(
+                f"{path}/teleport",
+                json={"destination": address, "hint": "Continue here"},
+            )
+            assert response.status_code == 202, response.text
+            kinds = [event["event_kind"] for event in await settled(live)]
+        assert "run_error" not in kinds
+        assert "gateway" in kinds
     else:
         async with async_session() as session:
             user = await session.get(User, case.owner_id)
@@ -478,12 +494,15 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    response = await client.post(
-        f"{path}/teleport",
-        json={"destination": address, "hint": "Continue here", "prompt": "Ship it"},
-    )
+    with case.tentacle.octomate.nerve.subscribe(await source_key(case)) as live:
+        response = await client.post(
+            f"{path}/teleport",
+            json={"destination": address, "hint": "Continue here", "prompt": "Ship it"},
+        )
+        assert response.status_code == 202, response.text
+        kinds = [event["event_kind"] for event in await settled(live)]
 
-    assert "run_error" not in response.text, response.text
+    assert "run_error" not in kinds
     [run] = [*runner.turns, *runner.streams]
     assert run.model == "test"
     assert "Ship it" in str(run.prompt)
@@ -556,20 +575,23 @@ async def test_native_teleport_validates_history_before_opening_destination(
             files=app.files,
             owner_id=case.owner_id,
         )
-    response = await client.post(
-        f"/api/trunkline/threads/{case.source.thread_id}/teleport",
-        json={
-            "destination": {
-                "channel_tentacle_id": "far",
-                "chat_type": "dm",
-                "chat_id": "",
-                "user_id": "alice",
+    with app.nerve.subscribe(await source_key(case)) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{case.source.thread_id}/teleport",
+            json={
+                "destination": {
+                    "channel_tentacle_id": "far",
+                    "chat_type": "dm",
+                    "chat_id": "",
+                    "user_id": "alice",
+                },
+                "hint": "Continue here",
             },
-            "hint": "Continue here",
-        },
-    )
-    assert '"event_kind":"run_error"' in response.text
-    assert message in response.text
+        )
+        assert response.status_code == 202
+        events = await settled(live)
+    [failed] = [event for event in events if event["event_kind"] == "run_error"]
+    assert message in str(failed["message"])
     start.assert_not_awaited()
     case.fork.assert_not_awaited()
     assert not far.sent

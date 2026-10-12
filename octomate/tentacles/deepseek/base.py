@@ -80,7 +80,6 @@ from octomate.schemas.commands import (
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
-    DeferredActionBatch,
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
@@ -896,7 +895,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         *,
         context: DeepseekBridgeContext,
         requests: DeferredToolRequests,
-    ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+    ) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
         if context.suspender is None:
             raise RuntimeError("a dsh approval mid-turn needs a suspender to pause on")
         # Waiting before the cards go up, so a quick answer cannot miss it.
@@ -906,15 +905,14 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
         self.pendings[batch_id] = future
         try:
-            batch, event = await context.suspender.pause(requests, batch_id=batch_id)
-            if event is not None:
-                context.frames.put_nowait(event)
+            batch = await context.suspender.pause(requests, batch_id=batch_id)
+            context.frames.put_nowait(batch)
             try:
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
             except TimeoutError:
-                await self.deferred_actions.mark_batch(batch.id, "expired")
+                await self.deferred_actions.mark_batch(batch_id, "expired")
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)

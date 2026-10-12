@@ -22,7 +22,11 @@ rather than answer the empty list its query would return. Only the ledger read
 asks for the messages; the rest want the row.
 
 Directives create or continue threads on the trunkline channel itself. Directives,
-batch responses and thread operations stream native wire events over SSE.
+batch responses and thread operations are answered as soon as their kick is on
+its way, and what the run does reaches the console over `/live`: a websocket
+that carries a thread's wire events for as long as it is open, named by the
+thread's row id or, for a Trunkline thread with no row yet, by the key its
+directives carry. The kick's `reflex_asleep` arrives there last.
 
 Thread operations act on a thread of any channel the user can access.
 `GET threads/{id}/operations` answers a `ThreadOperations`, which the console reads
@@ -34,9 +38,9 @@ cannot land in a row. A channel that cannot be browsed, has no connected agent o
 is not linked to the user answers 409. A listed address is a suggestion, validated
 again when Teleport submits it. `POST threads/{id}/teleport` takes a
 `TeleportBody` and `POST threads/{id}/summon` a `SummonBody`. Both refuse a thread
-with a turn running or approvals or questions pending, and stream the turn: a
-`gateway` event when the conversation moves, a `run_started` custom event opening
-each run, and a `run_error` when the turn fails.
+with a turn running or approvals or questions pending; the turn then shows on the
+live socket as a `gateway` event when the conversation moves, a `run_started`
+event opening each run, and a `run_error` when the turn fails.
 
 Where the work happened — a thread's project and a run's directory — is read
 here and nowhere written: a thread's project is frozen when its row is written,
@@ -51,8 +55,8 @@ from dataclasses import replace
 from typing import Annotated, NotRequired, TypedDict
 
 from arcanus import Page
-from fastapi import APIRouter, Body, Depends, HTTPException, Query
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, WebSocket
+from fastapi.responses import JSONResponse
 from pydantic import UUID7, BaseModel, Field, ValidationError
 from pydantic_ai.usage import RequestUsage
 
@@ -83,7 +87,7 @@ from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -288,11 +292,11 @@ def build_trunkline_router(
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
 
-    @router.post("/threads/{thread_id}/teleport")
+    @router.post("/threads/{thread_id}/teleport", status_code=202, response_model=None)
     async def teleport_thread(
         body: TeleportBody,
         session: Annotated[OctomateSession, Depends(thread_gateway)],
-    ) -> StreamingResponse:
+    ) -> None:
         prompt = body.get("prompt")
         # Only a thread here takes a message from this console.
         if prompt is not None and body["destination"].channel_tentacle_id != channel.id:
@@ -308,13 +312,13 @@ def build_trunkline_router(
             )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
-        return channel.stream_kick(session.thread_operation(channel.id))
+        octomate.kick_soon(session.thread_operation(channel.id))
 
-    @router.post("/threads/{thread_id}/summon")
+    @router.post("/threads/{thread_id}/summon", status_code=202, response_model=None)
     async def summon_thread(
         body: SummonBody,
         session: Annotated[OctomateSession, Depends(thread_gateway)],
-    ) -> StreamingResponse:
+    ) -> None:
         try:
             await session.summon(
                 agent_id=body["agent_id"],
@@ -326,7 +330,7 @@ def build_trunkline_router(
             )
         except GatewayRefusal as exc:
             raise HTTPException(409, str(exc)) from exc
-        return channel.stream_kick(session.thread_operation(channel.id))
+        octomate.kick_soon(session.thread_operation(channel.id))
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:
@@ -523,8 +527,9 @@ def build_trunkline_router(
 
     @router.post(
         "/threads/{thread_key}/messages",
-        responses={200: {"content": {"text/event-stream": {}}}},
-        summary="Send a directive and stream the run's native events",
+        status_code=202,
+        response_model=None,
+        summary="Send a directive; its run shows on the thread's live socket",
         description="`thread_key` is the trunkline platform thread id (not the "
         "row id): a fresh key creates the thread, an existing one continues it.",
     )
@@ -532,7 +537,7 @@ def build_trunkline_router(
         thread_key: str,
         body: DirectiveBody,
         user: Annotated[User, Depends(current_user)],
-    ) -> StreamingResponse:
+    ) -> None:
         directive = TrunklineDirective(
             thread_id=thread_key,
             user=user,
@@ -544,7 +549,7 @@ def build_trunkline_router(
             effort=body.effort,
         )
         try:
-            return await channel.handle_directive(directive)
+            await channel.handle_directive(directive)
         except RouteLockedError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:
@@ -637,8 +642,10 @@ def build_trunkline_router(
 
     @router.post(
         "/batches/{batch_id}/resolve",
-        responses={200: {"content": {"text/event-stream": {}}}},
-        summary="Answer a deferred-action batch and stream the resumed run",
+        status_code=202,
+        response_model=None,
+        summary="Answer a deferred-action batch; the resumed run shows on the "
+        "thread's live socket",
     )
     async def resolve_batch(
         batch_id: UUID7,
@@ -662,7 +669,7 @@ def build_trunkline_router(
                 description="Keep approved tools allowed for the rest of the session."
             ),
         ] = False,
-    ) -> StreamingResponse:
+    ) -> None:
         try:
             batch = await deferred_actions.get_batch(batch_id)
         except ValueError as error:
@@ -674,7 +681,7 @@ def build_trunkline_router(
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
-        return channel.stream_kick(
+        octomate.kick_soon(
             DeferredActionBatchResponse(
                 batch_id=batch_id,
                 responder_id=str(user.id),
@@ -683,5 +690,54 @@ def build_trunkline_router(
                 allow_session=allow_session,
             )
         )
+
+    return router
+
+
+def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
+    """Build the console's live socket router. It is a router of its own because
+    the console router runs the same-origin write guard on every request, and a
+    handshake has no method for that guard to read."""
+    router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
+
+    @router.websocket("/live")
+    async def watch_thread(
+        websocket: WebSocket,
+        user: Annotated[User, Depends(current_user)],
+        threads: Annotated[ThreadManager, Depends(thread_manager)],
+        thread_id: Annotated[
+            UUID7 | None,
+            Query(description="A thread the user can read, by row id — any channel's."),
+        ] = None,
+        thread_key: Annotated[
+            str | None,
+            Query(
+                description="A Trunkline thread by the key its directives carry, "
+                "so a thread being composed can be watched before its first "
+                "directive; empty for the composer itself, which a command "
+                "sent before any thread exists answers on."
+            ),
+        ] = None,
+    ) -> None:
+        """The thread's events as they happen, for as long as the socket is open:
+        what a directive, a batch answer or a thread operation sets going, and
+        the kick's `reflex_asleep` last. The thread is named by `thread_id` or by
+        `thread_key`, one of the two; a socket naming neither, or both, is
+        closed with 1008."""
+        if thread_id is not None and thread_key is None:
+            thread = await threads.get(thread_id, with_messages=False, user_id=user.id)
+            if thread is None:
+                await websocket.close(code=1008, reason=f"no thread {thread_id}")
+                return
+            key = thread.key
+        elif thread_key is not None and thread_id is None:
+            # The key a directive from this user files the thread under.
+            key = ThreadKey(channel.id, "thread", str(user.id), thread_key or None)
+        else:
+            await websocket.close(
+                code=1008, reason="Name the thread by its id or by its key, not both"
+            )
+            return
+        await channel.stream_thread(websocket, key)
 
     return router

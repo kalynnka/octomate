@@ -8,26 +8,32 @@ from __future__ import annotations
 
 import logging
 import uuid
-from collections.abc import AsyncGenerator, Iterable, Sequence
+from collections.abc import AsyncGenerator, AsyncIterator, Iterable, Sequence
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from functools import cached_property
 from typing import TYPE_CHECKING, Any, TypeVar, overload
 
+from anyio.abc import ObjectSendStream
 from opentelemetry import trace
 from pydantic import UUID7
 from pydantic_ai import AgentCapability, AgentRunResult, AgentRunResultEvent
 from pydantic_ai.exceptions import AgentRunError
 from pydantic_ai.messages import UserContent
+from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
+    ActionBatchEvent,
     GatewayEvent,
     MessageSentEvent,
+    RunEndedEvent,
     RunErrorEvent,
+    RunResultEvent,
     RunStartedEvent,
+    WireEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config.agents import AgentRouteModelName
@@ -37,12 +43,13 @@ from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import GatewayManager, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Impulse
 from octomate.prompts import tagged
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import CommandError, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     AgentRouteKey,
@@ -227,6 +234,8 @@ class ReflexDeps:
     conversation_manager: ConversationManager
     action_manager: DeferredActionManager
     gateway: GatewayManager
+    # The graph's end of the nerve: what the kick does, sent as impulses.
+    impulses: ObjectSendStream[Impulse]
     agents: dict[str, AgentTentacle] = field(default_factory=dict)
 
     @cached_property
@@ -291,6 +300,7 @@ class ReflexDeps:
             conversation_address=conversation_address,
             threads=self.thread_manager,
             workspaces=self.workspaces,
+            impulses=self.impulses,
         )
         if conversation_id is not None:
             session.conversation_id = conversation_id
@@ -383,6 +393,7 @@ class ReflexDeps:
         """Present a move where the conversation was, and in the channel it was
         operated from when that is another. Answers the platform id of the line it
         left."""
+        await self.impulses.send(Impulse(event, ThreadKey.from_address(address)))
         operated_from = state.operated_from
         if operated_from is not None and operated_from != address.channel_tentacle_id:
             await self.channel(operated_from).feelers.present(address, event)
@@ -401,14 +412,53 @@ class ReflexDeps:
         if channel is None:
             return
         trace_id = format(trace.get_current_span().get_span_context().trace_id, "032x")
+        failure = RunErrorEvent(message=str(error), trace_id=trace_id)
+        await self.impulses.send(Impulse(failure, ThreadKey.from_address(source)))
         try:
-            await channel.feelers.present(
-                source, RunErrorEvent(message=str(error), trace_id=trace_id)
-            )
+            await channel.feelers.present(source, failure)
         except Exception:
             logger.warning(
                 "Channel %s could not report a failed turn", channel.id, exc_info=True
             )
+
+    async def carry(
+        self,
+        address: ChannelAddress,
+        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
+    ) -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
+        """Pass a run's stream on as it comes, and send it on the nerve under the
+        thread at `address` as wire events: the run's start before anything it
+        streams, and its end after, whatever happened."""
+        key = ThreadKey.from_address(address)
+        await self.impulses.send(Impulse(RunStartedEvent(address=address), key))
+        try:
+            async for item in stream:
+                wire = self.to_wire(item)
+                if wire is not None:
+                    await self.impulses.send(Impulse(wire, key))
+                yield item
+        finally:
+            await self.impulses.send(Impulse(RunEndedEvent(), key))
+
+    @staticmethod
+    def to_wire(item: ReactStreamEvent[ChannelOutput]) -> WireEvent | None:
+        """One run stream item as its wire event, or None for the shapes the wire
+        replaces (see the wire module docstring)."""
+        match item:
+            case AgentRunResultEvent():
+                match item.result.output:
+                    case str() | None:
+                        output: str | list[MessageSegment] | None = item.result.output
+                    case DeferredToolRequests():
+                        # The suspension already went out as an ActionBatchEvent.
+                        output = None
+                    case segments:
+                        output = list(segments)
+                return RunResultEvent(output=output, usage=item.result.usage)
+            case FinalResult():
+                return None
+            case _:
+                return item
 
     async def record_move(
         self,
@@ -559,7 +609,6 @@ class ReflexRuntime:
             decision=state.decision,
             model=selection.model,
             thread_id=thread_id,
-            emit_on_stream=channel.config.stream.enabled,
         )
         return session, suspender, capabilities
 
@@ -599,6 +648,13 @@ class ReflexRuntime:
                 suspender.target_address,
             )
             return False
+        await ctx.deps.impulses.send(
+            Impulse(
+                MessageSentEvent(segments=event.segments, destination=dm),
+                ThreadKey.from_address(dm),
+                private=True,
+            )
+        )
         await channel.feelers.segments.present(dm, event.segments)
         await ctx.deps.thread_manager.record_outbound(
             dm,
@@ -622,7 +678,6 @@ class ReflexRuntime:
         address = suspender.target_address
 
         async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-            yield RunStartedEvent(address=address)
             try:
                 async for event in source:
                     if isinstance(event, AgentRunResultEvent):
@@ -638,7 +693,7 @@ class ReflexRuntime:
 
         async with aclosing(source):
             try:
-                async with aclosing(events()) as stream:
+                async with aclosing(ctx.deps.carry(address, events())) as stream:
                     presented = await self.present_events(suspender, stream)
             except AgentRunError:
                 raise
@@ -657,16 +712,21 @@ class ReflexRuntime:
     async def present_events(
         self,
         suspender: ReflexSuspender,
-        stream: AsyncGenerator[ReactStreamEvent[ChannelOutput], None],
+        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> IMMessageID | None:
-        """Render a live timeline, or deliver explicit sends while draining a quiet
-        run. Answers the platform id the timeline rendered the reply as."""
+        """Render a live timeline, or deliver explicit sends and put up batches
+        while draining a quiet run. Answers the platform id the timeline rendered
+        the reply as."""
         address = suspender.target_address
         channel = suspender.channel
         if not channel.config.stream.enabled:
             async for event in stream:
                 if isinstance(event, MessageSentEvent):
                     await channel.feelers.segments.present(address, event.segments)
+                elif isinstance(event, ActionBatchEvent):
+                    await channel.feelers.present_actions(
+                        address, event, action_manager=suspender.action_manager
+                    )
             return None
         async with channel.feelers.timeline.open(address) as timeline:
             await timeline.drive(stream)
@@ -720,7 +780,10 @@ class ReflexRuntime:
             await ctx.deps.thread_manager.mark_presented(message, message_id)
 
     async def present_command(
-        self, suspender: ReflexSuspender, outcome: CommandOutcome
+        self,
+        ctx: GraphRunContext[ReflexState, ReflexDeps],
+        suspender: ReflexSuspender,
+        outcome: CommandOutcome,
     ) -> None:
         """Deliver direct feedback; its command receipt already owns the output."""
         segments: list[MessageSegment] = (
@@ -732,6 +795,12 @@ class ReflexRuntime:
             return
         address = suspender.target_address
         channel = suspender.channel
+        await ctx.deps.impulses.send(
+            Impulse(
+                MessageSentEvent(segments=segments),
+                ThreadKey.from_address(address),
+            )
+        )
         if not channel.config.stream.enabled:
             await channel.feelers.segments.present(address, segments)
             return

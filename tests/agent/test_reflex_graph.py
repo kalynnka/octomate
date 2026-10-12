@@ -40,6 +40,7 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.base import thread_ref
 from octomate.managers.workspaces.mirrors import run_git
+from octomate.nerve import Nerve
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -208,6 +209,7 @@ def _deps(
         if workspaces is not None
         else RecordingWorkspaceManager(),
         channels=dict(channels),
+        impulses=Nerve(),
         agents={"inkling": agent, "other": agent, agent.id: agent},
         conversation_manager=conversations,
         thread_manager=threads or FakeThreadManager(),
@@ -260,6 +262,7 @@ def _summon_deps(
     return ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
+        impulses=Nerve(),
         channels={"im": im} if far is None else {"im": im, "far": far},
         agents={entry.id: entry, second.id: second},
         conversation_manager=FakeConversationManager(),
@@ -308,6 +311,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
+        impulses=Nerve(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -400,6 +404,7 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
+        impulses=Nerve(),
         channels={"chan1": channel},
         agents={"other": other, "second": second, "third": third},
         conversation_manager=FakeConversationManager(),
@@ -433,6 +438,7 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
+        impulses=Nerve(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -1028,6 +1034,7 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
         deps=ReflexDeps(
             workspaces=RecordingWorkspaceManager(),
             gateway=GatewayManager(),
+            impulses=Nerve(),
             channels={"im": im},
             agents={"other": entry, "second": second},
             conversation_manager=conversations,
@@ -1343,6 +1350,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
         thread_manager=FakeThreadManager(users=users),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
         gateway=GatewayManager(),
+        impulses=Nerve(),
     )
     signal = NativeGatewaySignal(
         decision=SchemeDecision(

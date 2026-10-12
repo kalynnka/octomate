@@ -899,6 +899,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         thread_manager=octomate.threads,
         action_manager=octomate.deferred_actions,
         gateway=octomate.gateway,
+        impulses=octomate.nerve,
         workspaces=octomate.workspaces,
     )
     async with tentacle:

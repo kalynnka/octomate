@@ -19,10 +19,12 @@ from octomate.managers.auth import AuthManager, InvalidCredentials, UsernameUnav
 from octomate.managers.user import UserManager
 from octomate.schemas.auth import UserInvitation, UserSession
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.inkling import InklingTentacle
 from octomate.tentacles.trunkline import TrunklineTentacle
 from tests.support.agents import build_scripted_agent
+from tests.support.nerve import settled
 
 PASSWORD = "Correct horse battery staple1!"
 
@@ -579,12 +581,16 @@ async def test_private_threads_and_mutations_are_isolated(
 ) -> None:
     assert (await client.get("/api/trunkline/threads")).status_code == 401
     alice = (await enroll(client, auth)).json()
-    streamed = await client.post(
-        "/api/trunkline/threads/shared-key/messages",
-        json={"text": "Alice's private message", "model": "inkling:test"},
-    )
-    assert streamed.status_code == 200
-    assert '"event_kind":"run_error"' not in streamed.text
+    with app.nerve.subscribe(
+        ThreadKey("trunkline", "thread", alice["id"], "shared-key")
+    ) as live:
+        posted = await client.post(
+            "/api/trunkline/threads/shared-key/messages",
+            json={"text": "Alice's private message", "model": "inkling:test"},
+        )
+        assert posted.status_code == 202
+        kinds = [event["event_kind"] for event in await settled(live)]
+    assert "run_error" not in kinds
     [thread] = (await client.get("/api/trunkline/threads")).json()
     assert thread["chat_id"] == alice["id"]
     assert "parent" not in thread
@@ -613,7 +619,7 @@ async def test_private_threads_and_mutations_are_isolated(
             ]
         ),
     )
-    await enroll(client, auth, "bob")
+    bob = (await enroll(client, auth, "bob")).json()
     assert (await client.get("/api/trunkline/threads")).json() == []
     for suffix in ("", "/messages", "/conversations", "/project", "/batches"):
         response = await client.get(path + suffix)
@@ -631,15 +637,19 @@ async def test_private_threads_and_mutations_are_isolated(
         )
     ).status_code == 404
     assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
-    second = await client.post(
-        "/api/trunkline/threads/shared-key/messages",
-        json={
-            "text": "Bob's private message",
-            "model": "inkling:test",
-            "user_id": alice["id"],
-        },
-    )
-    assert second.status_code == 200
+    with app.nerve.subscribe(
+        ThreadKey("trunkline", "thread", bob["id"], "shared-key")
+    ) as live:
+        second = await client.post(
+            "/api/trunkline/threads/shared-key/messages",
+            json={
+                "text": "Bob's private message",
+                "model": "inkling:test",
+                "user_id": alice["id"],
+            },
+        )
+        assert second.status_code == 202
+        await settled(live)
     [bob_thread] = (await client.get("/api/trunkline/threads")).json()
     assert bob_thread["id"] != thread["id"]
     assert bob_thread["chat_id"] != thread["chat_id"]

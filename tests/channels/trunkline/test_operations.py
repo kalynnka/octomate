@@ -1,6 +1,5 @@
 """Authenticated thread actions share gateway policy and execute the real graph."""
 
-import json
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -31,6 +30,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.tentacles.trunkline.base import TrunklineDirective
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
+from tests.support.nerve import settled
 from tests.support.users import a_user
 
 
@@ -104,18 +104,20 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
         for routes in data["summon"]["routes"].values()
         for route in routes
     )
-    response = await client.post(
-        f"{path}/summon",
-        json={
-            "agent_id": "second",
-            "model": "test",
-            "brief": "Investigate the existing work",
-            "hint": "Changing agent",
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert '"event_kind":"gateway"' in response.text, response.text
-    assert "run_error" not in response.text, response.text
+    with case.app.nerve.subscribe(case.thread.key) as live:
+        response = await client.post(
+            f"{path}/summon",
+            json={
+                "agent_id": "second",
+                "model": "test",
+                "brief": "Investigate the existing work",
+                "hint": "Changing agent",
+            },
+        )
+        assert response.status_code == 202, response.text
+        kinds = [event["event_kind"] for event in await settled(live)]
+    assert "gateway" in kinds
+    assert "run_error" not in kinds
     assert case.receiver.streams[-1].prompt == "Investigate the existing work"
     updated = await case.app.threads.get(case.thread.id)
     assert updated is not None
@@ -250,28 +252,21 @@ async def test_teleport_creates_independent_owned_destination(
         permission_mode="default",
     )
     await case.app.conversations.set_permission_mode(source, "default")
-    response = await client.post(
-        f"/api/trunkline/threads/{case.thread.id}/teleport",
-        json={
-            "destination": destination,
-            "hint": "Work here",
-        },
-    )
-    assert response.status_code == 200
-    assert "run_error" not in response.text, response.text
-    frames = [
-        json.loads(line[6:])
-        for line in response.text.splitlines()
-        if line.startswith("data: ")
-    ]
+    with case.app.nerve.subscribe(case.thread.key) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{case.thread.id}/teleport",
+            json={"destination": destination, "hint": "Work here"},
+        )
+        assert response.status_code == 202
+        frames = await settled(live)
+    assert "run_error" not in [frame["event_kind"] for frame in frames]
     event = next(frame for frame in frames if frame["event_kind"] == "gateway")
-    assert (
-        event["destination"]["channel_tentacle_id"]
-        == destination["channel_tentacle_id"]
-    )
+    landed_at = event["destination"]
+    assert isinstance(landed_at, dict)
+    assert landed_at["channel_tentacle_id"] == destination["channel_tentacle_id"]
     if destination_kind == "group":
-        assert event["destination"]["chat_id"] == "another-room"
-        assert event["destination"]["shared"]
+        assert landed_at["chat_id"] == "another-room"
+        assert landed_at["shared"]
         assert case.far.opened_dms == []
     # You asked for the move, so nothing runs there until you write.
     assert case.agent.turns == []
@@ -341,25 +336,24 @@ async def test_a_turn_the_agent_moved_ends_where_it_landed(
             "far", UserProfile(channel_user_id="ou_alice", user_id=case.owner.id)
         )
 
-    response = await client.post(
-        f"/api/trunkline/threads/{case.thread.channel_thread_id}/messages",
-        json={"text": "take this elsewhere"},
-    )
+    with case.app.nerve.subscribe(case.thread.key) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{case.thread.channel_thread_id}/messages",
+            json={"text": "take this elsewhere"},
+        )
+        assert response.status_code == 202, response.text
+        frames = await settled(live)
 
-    assert response.status_code == 200, response.text
-    assert "run_error" not in response.text, response.text
-    frames = [
-        json.loads(line[6:])
-        for line in response.text.splitlines()
-        if line.startswith("data: ")
-    ]
+    assert "run_error" not in [frame["event_kind"] for frame in frames]
     landings = [frame for frame in frames if frame["event_kind"] == "gateway"]
     if not moves:
         assert landings == []
         return
     [landing] = landings
     assert landing["action"] == "teleport"
-    assert landing["destination"]["channel_tentacle_id"] == "far"
+    landed_at = landing["destination"]
+    assert isinstance(landed_at, dict)
+    assert landed_at["channel_tentacle_id"] == "far"
 
 
 async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
@@ -375,18 +369,19 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         if one["channel_tentacle_id"] == "trunkline"
     ]
 
-    response = await client.post(
-        f"{path}/teleport",
-        json={
-            "destination": address,
-            "hint": "Continuing this conversation here.",
-            "prompt": "Pick up the review",
-        },
-    )
+    with case.app.nerve.subscribe(case.thread.key) as live:
+        response = await client.post(
+            f"{path}/teleport",
+            json={
+                "destination": address,
+                "hint": "Continuing this conversation here.",
+                "prompt": "Pick up the review",
+            },
+        )
+        assert response.status_code == 202
+        events = await settled(live)
 
-    assert response.status_code == 200
-    assert "run_error" not in response.text, response.text
-    assert '"event_kind":"gateway"' in response.text
+    assert "run_error" not in [event["event_kind"] for event in events]
     [run] = case.agent.streams
     assert "Pick up the review" in str(run.prompt)
     threads = await case.app.threads.list_threads(user_id=case.owner.id)
@@ -396,23 +391,22 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
     assert stored is not None
     [asked] = [one for one in stored.messages if one.direction == "inbound"]
     assert asked.message_text == "Pick up the review"
-    events = [
-        json.loads(line.removeprefix("data: "))
-        for line in response.text.splitlines()
-        if line.startswith("data: ")
-    ]
-    # The move, then the run where it landed, so the console can follow it there.
+    # The move, then the run where it landed, shown on the thread that asked so
+    # the console can follow it there.
     assert [event["event_kind"] for event in events] == [
         "gateway",
         "custom",
         "run_result",
     ]
-    moved = events[0]
+    moved, started = events[0], events[1]
     assert moved["action"] == "teleport"
     assert moved["announcement"] == "Continuing this conversation here."
-    assert moved["destination"]["channel_thread_id"] == landed.channel_thread_id
-    assert events[1]["name"] == "run_started"
-    assert events[1]["address"]["channel_thread_id"] == landed.channel_thread_id
+    landed_at, started_at = moved["destination"], started["address"]
+    assert isinstance(landed_at, dict)
+    assert isinstance(started_at, dict)
+    assert landed_at["channel_thread_id"] == landed.channel_thread_id
+    assert started["name"] == "run_started"
+    assert started_at["channel_thread_id"] == landed.channel_thread_id
 
 
 async def test_a_prompt_follows_a_teleport_only_into_trunkline(
@@ -514,20 +508,23 @@ async def test_failed_open_reports_stream_error(
     case: Case, client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(case.far.ink, "open_dm", AsyncMock(return_value=None))
-    response = await client.post(
-        f"/api/trunkline/threads/{case.thread.id}/teleport",
-        json={
-            "destination": {
-                "channel_tentacle_id": "far",
-                "chat_type": "dm",
-                "chat_id": "",
-                "user_id": "alice",
+    with case.app.nerve.subscribe(case.thread.key) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{case.thread.id}/teleport",
+            json={
+                "destination": {
+                    "channel_tentacle_id": "far",
+                    "chat_type": "dm",
+                    "chat_id": "",
+                    "user_id": "alice",
+                },
+                "hint": "go",
             },
-            "hint": "go",
-        },
-    )
-    assert "run_error" in response.text
-    assert '"event_kind":"gateway"' not in response.text
+        )
+        assert response.status_code == 202
+        kinds = [event["event_kind"] for event in await settled(live)]
+    assert "run_error" in kinds
+    assert "gateway" not in kinds
     assert not case.agent.turns
 
 
@@ -645,20 +642,22 @@ async def test_external_thread_its_channel_calls_private_exports_history(
         channel: {route["agent_id"] for route in routes}
         for channel, routes in options["teleport"]["routes"].items()
     } == {"trunkline": {"first"}, "far": {"first"}}
-    response = await client.post(
-        f"{path}/teleport",
-        json={
-            "destination": {
-                "channel_tentacle_id": "trunkline",
-                "chat_type": "thread",
-                "chat_id": str(case.owner.id),
-                "user_id": str(case.owner.id),
+    with case.app.nerve.subscribe(thread.key) as live:
+        response = await client.post(
+            f"{path}/teleport",
+            json={
+                "destination": {
+                    "channel_tentacle_id": "trunkline",
+                    "chat_type": "thread",
+                    "chat_id": str(case.owner.id),
+                    "user_id": str(case.owner.id),
+                },
+                "hint": "Work in the browser",
             },
-            "hint": "Work in the browser",
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert "run_error" not in response.text, response.text
+        )
+        assert response.status_code == 202, response.text
+        kinds = [event["event_kind"] for event in await settled(live)]
+    assert "run_error" not in kinds
 
 
 async def test_trunkline_offers_a_new_thread_without_a_dm(case: Case) -> None:
@@ -846,11 +845,14 @@ async def test_new_trunkline_destination_is_owned_and_independent(
         },
         "hint": "New workspace",
     }
-    response = await client.post(
-        f"/api/trunkline/threads/{case.thread.id}/teleport", json=body
-    )
-    assert "run_error" not in response.text, response.text
-    assert '"event_kind":"gateway"' in response.text
+    with case.app.nerve.subscribe(case.thread.key) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{case.thread.id}/teleport", json=body
+        )
+        assert response.status_code == 202
+        kinds = [event["event_kind"] for event in await settled(live)]
+    assert "run_error" not in kinds
+    assert "gateway" in kinds
     listed = await case.app.threads.list_threads(user_id=case.owner.id)
     [landed] = [thread for thread in listed if thread.id != case.thread.id]
     assert landed.channel_tentacle_id == "trunkline"

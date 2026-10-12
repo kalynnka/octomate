@@ -39,22 +39,25 @@ from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.mcp.base import KnownBearers
 from octomate.mcp.gateway import served_session
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_mcp
+from octomate.nerve import Nerve
 from octomate.reflex import (
-    Awake,
     ReflexDeps,
     ReflexGraphResult,
     ReflexState,
-    reflex_graph,
+    run_reflex,
 )
 from octomate.schemas.awakes import (
     AwakeSignal,
+    CommandSignal,
     DeferredActionBatchResponse,
+    DrivenGatewaySignal,
     NativeGatewaySignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.mcp import OAuthMcp
 from octomate.schemas.oauth import DirectHttpOAuthCallbackTransport
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import ProfileInfo, User
 from octomate.telemetry import octomate_logfire
 from octomate.tentacles.agent import AgentTentacle
@@ -147,6 +150,7 @@ class Octomate(FastAPI):
     )
     gateway: GatewayManager = field(default_factory=GatewayManager)
     workspaces: WorkspaceManager = field(default_factory=WorkspaceManager)
+    nerve: Nerve = field(default_factory=Nerve)
 
     # Every connected tentacle by id, in connection order — the one registry. A
     # tentacle composes its roles (a channel that is also an MCP tentacle), so
@@ -169,7 +173,6 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
-        self.openapi_version = "3.2.0"  # Per-event SSE response schemas use itemSchema.
         self.threads = ThreadManager(users=self.users)
         self.commands = CommandManager(
             tentacles=self.tentacles,
@@ -296,40 +299,53 @@ class Octomate(FastAPI):
         self,
         signal: AwakeSignal,
     ) -> ReflexGraphResult | None:
-        """Trigger the agent graph from a user message turn or deferred response."""
+        """Trigger the agent graph from a user message turn or deferred response,
+        unless the response answers a live request, which goes to the run waiting
+        on it. What the kick does is published on the nerve as it goes, on a
+        stream opened on the thread it was asked on, if it names one."""
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
-            if isinstance(signal, UserMessageSignal) and signal:
-                address = signal.address
-                span.set_attribute("channel_id", address.channel_tentacle_id)
-                span.set_attribute("conversation_address", str(address))
-            elif isinstance(signal, NativeGatewaySignal):
-                span.set_attribute("agent_id", signal.agent_id)
-                span.set_attribute("action", signal.decision.action)
-            elif isinstance(signal, DeferredActionBatchResponse):
-                span.set_attribute("batch_id", str(signal.batch_id))
-                agent_id = await self.deliver_live_response(signal)
-                if agent_id is not None:
-                    span.set_attribute("resolved_live", agent_id)
-                    return
-            state = ReflexState()
-            deps = ReflexDeps(
-                workspaces=self.workspaces,
-                agents=self.agents,
-                channels=self.channels,
-                conversation_manager=self.conversations,
-                thread_manager=self.threads,
-                action_manager=self.deferred_actions,
-                gateway=self.gateway,
-            )
-            try:
-                return await reflex_graph.run(
-                    inputs=Awake(signal=signal), state=state, deps=deps
+            origin: ThreadKey | None = None
+            match signal:
+                case UserMessageSignal() if signal:
+                    origin = ThreadKey.from_address(signal.address)
+                    span.set_attribute("channel_id", signal.address.channel_tentacle_id)
+                    span.set_attribute("conversation_address", str(signal.address))
+                case CommandSignal():
+                    origin = ThreadKey.from_address(signal.context.address)
+                case DrivenGatewaySignal():
+                    origin = ThreadKey.from_address(signal.source)
+                case NativeGatewaySignal():
+                    origin = (
+                        ThreadKey.from_address(signal.source)
+                        if signal.source is not None
+                        else None
+                    )
+                    span.set_attribute("agent_id", signal.agent_id)
+                    span.set_attribute("action", signal.decision.action)
+                case DeferredActionBatchResponse():
+                    batch = await self.deferred_actions.get_batch(signal.batch_id)
+                    origin = ThreadKey.from_address(batch.source_address)
+                    span.set_attribute("batch_id", str(signal.batch_id))
+            if (
+                isinstance(signal, DeferredActionBatchResponse)
+                and (agent_id := await self.deliver_live_response(signal)) is not None
+            ):
+                span.set_attribute("resolved_live", agent_id)
+                return None
+            async with self.nerve.publish(origin) as impulses:
+                deps = ReflexDeps(
+                    workspaces=self.workspaces,
+                    agents=self.agents,
+                    channels=self.channels,
+                    conversation_manager=self.conversations,
+                    thread_manager=self.threads,
+                    action_manager=self.deferred_actions,
+                    gateway=self.gateway,
+                    impulses=impulses,
                 )
-            except Exception as error:
-                await deps.report(state, error)
-                raise
+                return await run_reflex(signal, state=ReflexState(), deps=deps)
 
     async def deliver_live_response(
         self, response: DeferredActionBatchResponse

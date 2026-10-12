@@ -29,7 +29,6 @@ from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from octomate.capabilities.ask import ASK_DEFERR_KIND
 from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.deferred import DeferredActionBatch
 
 
 class DeferredResolver(Protocol):
@@ -135,14 +134,14 @@ class DeferredSuspender(Protocol):
     out-of-band response and the run ends; it is resumed later by feeding the
     collected `DeferredToolResults` back through a fresh agent run.
 
-    Returning an `ActionBatchEvent` asks the react loop to present the batch *on
-    the stream* (the consumer renders it); returning `None` means the suspender
-    presented it out-of-band itself.
+    Returning an `ActionBatchEvent` asks the react loop to put the batch *on the
+    stream*, for whoever draws the run to present; returning `None` means there
+    is nothing to present, as for a deferral the graph performs itself.
 
     `pause` is the same for a run that stays live while a human answers, as a
-    runtime's in-process approval does: the batch it waits on, and its event when
-    the run's own stream is what presents it. The caller names the batch, so it is
-    already waiting on that id when the cards go up and a quick reply finds it.
+    runtime's in-process approval does: the event of the batch it waits on, for
+    the run's own stream. The caller names the batch, so it is already waiting on
+    that id when the cards go up and a quick reply finds it.
     """
 
     async def suspend(
@@ -151,7 +150,7 @@ class DeferredSuspender(Protocol):
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
-    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]: ...
+    ) -> ActionBatchEvent: ...
 
 
 @dataclass(frozen=True)

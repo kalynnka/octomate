@@ -73,10 +73,6 @@ class ChannelAddress:
         return self.chat_id if self.chat_type == "group" else ""
 
     @cached_property
-    def topic_memory_key(self) -> str:
-        return f"topic:{self.channel_tentacle_id}:{self.chat_type}:{self.chat_id}:{self.channel_thread_id or '-'}"
-
-    @cached_property
     def user_memory_key(self) -> str:
         return f"user:{self.channel_tentacle_id}:{self.user_id}"
 

@@ -19,8 +19,6 @@ One stream, with these event families:
   replies. `batch_id` correlates the reply through the deferred-action machinery.
 - **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
   accomplice's run opening and finishing around its `commission` or `whisper` call.
-- **Graph events** (`RunStartedEvent`) — Pydantic AI `CustomEvent`s the reflex
-  graph puts on the stream it drives, about the run rather than inside it.
 
 Display, action and subagent events are emitted by capabilities (a capability
 bundles a tool + instructions + `wrap_run_event_stream`) or the suspender; the
@@ -28,9 +26,11 @@ output events are emitted by `Agent.stream_events` (see
 octomate/capabilities/harness/agent.py).
 
 The reflex graph also reports outside any run (`GatewayEvent`, `RunErrorEvent`),
-handing each to a channel's `Feelers.present`. Channels present every event and
-build none; the one consumer-made form is `RunResultEvent`, the wire shape of a
-run result.
+handing each to a channel's `Feelers.present`, and brackets what a kick does on
+the nerve: `ReflexAwakeEvent` and `ReflexAsleepEvent` around the kick,
+`RunStartedEvent` and `RunEndedEvent` around each agent run in it. Channels
+present every event and build none; the one consumer-made form is
+`RunResultEvent`, the wire shape of a run result.
 
 The run-stream union itself stays generic (`FinalResult[OutputT]`), so it has
 no single serialized form — but the wire family is concrete, so `WireEvent` and
@@ -44,7 +44,7 @@ from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
-from pydantic_ai import AgentStreamEvent, CustomEvent
+from pydantic_ai import AgentStreamEvent
 from pydantic_ai.result import FinalResult
 from pydantic_ai.usage import RunUsage
 
@@ -83,12 +83,34 @@ class SubagentSettledEvent(BaseModel):
     response: str = ""
 
 
-@dataclass(kw_only=True)
-class RunStartedEvent(CustomEvent):
-    """A run's first event, from the graph: the thread it reports into — another
-    than the one asked about when a move carried the turn there."""
+class ReflexAwakeEvent(BaseModel):
+    """A kick's first word: the reflex woken, before anything it does."""
 
+    event_kind: Literal["reflex_awake"] = "reflex_awake"
+
+
+class ReflexAsleepEvent(BaseModel):
+    """A kick's last word, the counterpart of `ReflexAwakeEvent`: the reflex
+    asleep again, every run and move of the kick over, finished or failed. What
+    a console waits for before it reads the thread again."""
+
+    event_kind: Literal["reflex_asleep"] = "reflex_asleep"
+
+
+class RunStartedEvent(BaseModel):
+    """An agent run beginning, before anything it streams: the thread it reports
+    into — another than the one asked about when a move carried the turn there.
+    A kick holds one run or several, one after another."""
+
+    event_kind: Literal["run_started"] = "run_started"
     address: ChannelAddress
+
+
+class RunEndedEvent(BaseModel):
+    """An agent run over, finished or failed, after everything it streamed: the
+    counterpart of `RunStartedEvent`."""
+
+    event_kind: Literal["run_ended"] = "run_ended"
 
 
 class RunResultEvent(BaseModel):
@@ -344,7 +366,10 @@ type WireEvent = (
     | SubagentStartedEvent
     | SubagentSettledEvent
     | RunResultEvent
+    | ReflexAwakeEvent
+    | ReflexAsleepEvent
     | RunStartedEvent
+    | RunEndedEvent
     | RunErrorEvent
     | GatewayEvent
 )

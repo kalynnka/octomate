@@ -68,7 +68,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 )
                 if isinstance(validated, CommandResult | CommandError):
-                    await runtime.present_command(suspender, validated)
+                    await runtime.present_command(ctx, suspender, validated)
                     return End(validated)
                 if validated.profile is not None:
                     await runtime.prepare_user(
@@ -90,7 +90,7 @@ class Command(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                     )
                 )
                 if isinstance(output, CommandResult | CommandError):
-                    await runtime.present_command(suspender, output)
+                    await runtime.present_command(ctx, suspender, output)
                     return End(output)
                 state.decision = suspender.continuation_decision()
                 result, presented = await runtime.drive(ctx, suspender, output)

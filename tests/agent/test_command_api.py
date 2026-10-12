@@ -1,7 +1,6 @@
 """Command inspection and explicit execution through the authenticated HTTP API."""
 
 import asyncio
-import json
 import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
@@ -11,9 +10,10 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from anyio.streams.memory import MemoryObjectReceiveStream
 from fastapi import HTTPException
 from jsonschema import Draft202012Validator, ValidationError
-from pydantic import JsonValue, SecretStr, TypeAdapter
+from pydantic import JsonValue, SecretStr
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
     ModelRequest,
@@ -29,7 +29,6 @@ from pydantic_ai.messages import (
 from pydantic_ai.result import FinalResult
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
-from starlette.types import Message, Scope
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -39,10 +38,12 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
     RunResultEvent,
+    RunSettledEvent,
     RunStartedEvent,
+    WireEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
-from octomate.commands import CommandStreamEvent, command_context, discover_commands
+from octomate.commands import command_context, discover_commands
 from octomate.config.auth import AuthConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import async_session
@@ -62,7 +63,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.segments import MessageSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadCommand
+from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.trunkline import TrunklineTentacle
@@ -72,17 +73,17 @@ from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry
 
-command_event_adapter: TypeAdapter[CommandStreamEvent] = TypeAdapter(CommandStreamEvent)
 
-
-def command_events(response: httpx.Response) -> list[CommandStreamEvent]:
-    """Decode the endpoint's SSE data through the public event contract."""
+def command_outcome(response: httpx.Response) -> CommandOutcomeEvent:
+    """Decode the endpoint's answer through the public outcome contract."""
     assert response.status_code == 200
-    assert response.headers["content-type"] == "text/event-stream; charset=utf-8"
-    return [
-        command_event_adapter.validate_json(frame.removeprefix("data: "))
-        for frame in response.text.strip().split("\n\n")
-    ]
+    assert response.headers["content-type"] == "application/json"
+    return CommandOutcomeEvent.model_validate_json(response.text)
+
+
+def published(live: MemoryObjectReceiveStream[WireEvent]) -> list[WireEvent]:
+    """What the thread's live subscribers have been sent so far."""
+    return [live.receive_nowait() for _ in range(live.statistics().current_buffer_used)]
 
 
 async def discover(
@@ -235,23 +236,23 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
         )
     async with async_session() as session:
         profiles_before = await session.count(UserProfile)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json={
-                "agent_id": agent.id,
-                "address": asdict(address),
-                "command_id": "status",
-                "delivery_id": "command-1",
-                "arguments": "  --raw=value  ",
-            },
-        )
-    events = command_events(response)
-    outcome = events[-1]
-    assert isinstance(outcome, CommandOutcomeEvent)
+    with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json={
+                    "agent_id": agent.id,
+                    "address": asdict(address),
+                    "command_id": "status",
+                    "delivery_id": "command-1",
+                    "arguments": "  --raw=value  ",
+                },
+            )
+        carried = published(live)
+    outcome = command_outcome(response)
     if behavior == "direct":
         assert outcome.outcome == CommandResult(
             segments=[TextSegment(data={"text": "Done"})]
@@ -262,7 +263,7 @@ async def test_http_direct_command_before_conversation_creates_no_runtime_record
     if behavior == "stream_complete":
         assert isinstance(outcome.outcome, CommandError)
         assert "without a conversation" in outcome.outcome.message
-    assert not any(isinstance(event, RunStartedEvent) for event in events)
+    assert not any(isinstance(event, RunStartedEvent) for event in carried)
     assert agent.invocations == [
         CommandInvocation(command_id="status", arguments="  --raw=value  ")
     ]
@@ -324,8 +325,7 @@ async def test_http_composer_execution_checks_scope_membership_and_identity(
                 "delivery_id": "command-1",
             },
         )
-    outcome = command_events(response)[-1]
-    assert isinstance(outcome, CommandOutcomeEvent)
+    outcome = command_outcome(response)
     assert isinstance(outcome.outcome, CommandError)
     assert outcome.outcome.status == (
         "unknown" if refusal == "unknown" else "unavailable"
@@ -738,8 +738,7 @@ async def test_subthread_uses_surface_model_but_its_own_workspace(
                 "delivery_id": "subthread-command",
             },
         )
-    outcome = command_events(response)[-1]
-    assert isinstance(outcome, CommandOutcomeEvent)
+    outcome = command_outcome(response)
     assert isinstance(outcome.outcome, CommandResult)
     receipt = await app.threads.find_message(parent.id, "subthread-command", "inbound")
     assert isinstance(receipt, ThreadCommand)
@@ -814,26 +813,29 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     command_body: dict[str, JsonValue],
     address: ChannelAddress,
 ) -> None:
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json=command_body,
-        )
-        replay = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json=command_body,
-        )
+    with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json=command_body,
+            )
+            replay = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json=command_body,
+            )
+        carried = published(live)
     assert response.headers["cache-control"] == "no-store"
     segments: list[MessageSegment] = [TextSegment(data={"text": "Done"})]
     outcome = CommandOutcomeEvent(outcome=CommandResult(segments=segments))
-    expected: list[CommandStreamEvent] = [outcome]
     if address.channel_tentacle_id == "trunkline":
-        expected.insert(0, MessageSentEvent(segments=segments))
+        # The replay presents the saved feedback again, and settles again.
+        assert carried == [MessageSentEvent(segments=segments), RunSettledEvent()] * 2
     else:
+        assert carried == [RunSettledEvent()] * 2
         channel = app.channels[address.channel_tentacle_id]
         assert isinstance(channel, FakeChannelTentacle)
         assert [
@@ -841,8 +843,8 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
             for _, _, messages, *_ in channel.sent
             for message in messages
         ] == ["Done", "Done"]
-    assert command_events(response) == expected
-    assert command_events(replay) == command_events(response)
+    assert command_outcome(response) == outcome
+    assert command_outcome(replay) == outcome
     assert agent.invocations == [
         CommandInvocation(command_id="skill", arguments='  "raw argument"\n--flag=✓  ')
     ]
@@ -898,23 +900,23 @@ async def test_http_execution_uses_manager_refusals(
         command_body.pop("conversation_id")
     else:
         app.dependency_overrides[current_user] = lambda: User(username="other")
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json=command_body,
-        )
-    events = command_events(response)
-    outcome = events[-1]
-    assert isinstance(outcome, CommandOutcomeEvent)
+    with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json=command_body,
+            )
+        carried = published(live)
+    outcome = command_outcome(response)
     assert isinstance(outcome.outcome, CommandError)
     assert outcome.outcome.status == {
         "composer": "unavailable",
         "other_user": "unavailable",
     }.get(refusal, refusal)
-    expected: list[CommandStreamEvent] = [outcome]
+    expected: list[WireEvent] = [RunSettledEvent()]
     if address.channel_tentacle_id == "trunkline":
         expected.insert(
             0,
@@ -922,7 +924,7 @@ async def test_http_execution_uses_manager_refusals(
                 segments=[TextSegment(data={"text": outcome.outcome.message})]
             ),
         )
-    assert events == expected
+    assert carried == expected
     assert not agent.invocations
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
@@ -958,35 +960,37 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     monkeypatch.setattr(agent, "events", events)
     user_capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", user_capabilities)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json=command_body,
-        )
-        replay = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json=command_body,
-        )
+    with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json=command_body,
+            )
+            replay = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json=command_body,
+            )
+        carried = published(live)
     assert response.headers["cache-control"] == "no-store"
-    assert response.headers["x-accel-buffering"] == "no"
-    assert "content-length" not in response.headers
-    received = command_events(response)
     outcome = CommandOutcomeEvent(outcome=CommandResult())
+    assert command_outcome(response) == outcome
+    assert command_outcome(replay) == outcome
     if address.channel_tentacle_id == "trunkline":
-        started = received.pop(0)
+        started = carried.pop(0)
         assert isinstance(started, RunStartedEvent)
         assert started.address == address
-        assert len(received) == 3
-        assert isinstance(received[0], MessageSentEvent)
-        assert isinstance(received[1], RunResultEvent)
-        assert received[1].output == "Done"
-        assert received[-1] == outcome
+        assert len(carried) == 4
+        assert isinstance(carried[0], MessageSentEvent)
+        assert isinstance(carried[1], RunResultEvent)
+        assert carried[1].output == "Done"
+        # One settling closes the execution, one the replay, which presents no run.
+        assert carried[2:] == [RunSettledEvent(), RunSettledEvent()]
     else:
-        assert received == [outcome]
+        assert carried == [RunSettledEvent(), RunSettledEvent()]
         channel = app.channels[address.channel_tentacle_id]
         assert isinstance(channel, FakeChannelTentacle)
         shown = [
@@ -996,7 +1000,6 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
         ]
         assert "Running" in shown
         assert "Done" in shown
-    assert command_events(replay) == [outcome]
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions
     user_capabilities.assert_awaited_once()
@@ -1040,137 +1043,38 @@ async def test_command_presents_a_persisted_reflex_approval(
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        response = await client.post(
-            "/api/commands/execute",
-            headers={"X-Octomate-Request": "1"},
-            json=command_body,
-        )
-    received = command_events(response)
+    with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/commands/execute",
+                headers={"X-Octomate-Request": "1"},
+                json=command_body,
+            )
+        carried = published(live)
+    assert command_outcome(response) == CommandOutcomeEvent(outcome=CommandResult())
     if address.channel_tentacle_id == "trunkline":
-        started = received.pop(0)
+        started = carried.pop(0)
         assert isinstance(started, RunStartedEvent)
         assert started.address == address
-        assert isinstance(received[0], ActionBatchEvent)
-        assert len(received[0].approvals) == 1
-        batch = await app.deferred_actions.get_batch(uuid.UUID(received[0].batch_id))
+        assert isinstance(carried[0], ActionBatchEvent)
+        assert len(carried[0].approvals) == 1
+        batch = await app.deferred_actions.get_batch(uuid.UUID(carried[0].batch_id))
     else:
-        assert received == [CommandOutcomeEvent(outcome=CommandResult())]
         [batch] = await app.deferred_actions.pending_for_thread(conversation.thread_id)
         [approval] = await batch.approvals
         assert approval.platform_message_id is not None
+    assert carried[-1] == RunSettledEvent()
     assert batch.conversation_id == conversation.id
     assert batch.run_name == "command"
     assert batch.decision is not None
     assert batch.decision.agent_id == agent.id
     assert batch.decision.model == "test"
-    assert received[-1] == CommandOutcomeEvent(outcome=CommandResult())
     assert len(agent.invocations) == 1
     assert not agent.turns
     assert not agent.streams
     assert not app.gateway.sessions
-
-
-@pytest.mark.parametrize(
-    ("stop", "before_first"),
-    [
-        ("disconnect", False),
-        ("send_error", False),
-        ("cancel", False),
-        ("disconnect", True),
-        ("cancel", True),
-    ],
-)
-@pytest.mark.skip(
-    reason="External Reflex cancellation cleanup is deferred for both channels."
-)
-@pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
-async def test_http_stream_interruption_closes_runtime_and_records_failure(
-    app: Octomate,
-    agent: ExecutingAgent,
-    conversation: Conversation,
-    command_body: dict[str, JsonValue],
-    monkeypatch: pytest.MonkeyPatch,
-    stop: str,
-    before_first: bool,
-) -> None:
-    emitted = asyncio.Event()
-    closed = asyncio.Event()
-    sent: list[Message] = []
-
-    async def events() -> AsyncGenerator[ReactStreamEvent[ChannelOutput], None]:
-        owner = asyncio.current_task()
-        try:
-            if before_first:
-                emitted.set()
-                await asyncio.Event().wait()
-            yield MessageSentEvent(segments=[TextSegment(data={"text": "Running"})])
-            await asyncio.Event().wait()
-        finally:
-            assert asyncio.current_task() is owner
-            await asyncio.sleep(0.01)
-            assert conversation.id in app.gateway.sessions
-            closed.set()
-
-    async def receive() -> Message:
-        await emitted.wait()
-        if stop != "disconnect":
-            await asyncio.Event().wait()
-        return {"type": "http.disconnect"}
-
-    async def send(message: Message) -> None:
-        sent.append(message)
-        if message["type"] == "http.response.body":
-            emitted.set()
-            if stop == "send_error":
-                raise OSError("client disconnected")
-
-    agent.behavior = "stream"
-    monkeypatch.setattr(agent, "events", events)
-    body = json.dumps(command_body).encode()
-    scope: Scope = {
-        "type": "http",
-        "method": "POST",
-        "path": "/api/commands/execute",
-        "query_string": b"",
-        "headers": [
-            (b"content-type", b"application/json"),
-            (b"x-octomate-request", b"1"),
-        ],
-    }
-    incoming: asyncio.Queue[Message] = asyncio.Queue()
-    incoming.put_nowait({"type": "http.request", "body": body, "more_body": False})
-
-    async def request_receive() -> Message:
-        if not incoming.empty():
-            return incoming.get_nowait()
-        return await receive()
-
-    task = asyncio.create_task(app(scope, request_receive, send))
-    async with asyncio.timeout(5):
-        await emitted.wait()
-        if stop == "cancel":
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-        elif stop == "send_error":
-            with pytest.raises(ExceptionGroup, match="TaskGroup"):
-                await task
-        else:
-            await task
-    assert closed.is_set()
-    assert not app.gateway.sessions
-    if before_first:
-        assert not sent
-    assert not any(b"command_outcome" in item.get("body", b"") for item in sent)
-    receipt = await app.threads.find_message(
-        conversation.thread_id, "command-1", "inbound"
-    )
-    assert isinstance(receipt, ThreadCommand)
-    assert isinstance(receipt.outcome, CommandError)
-    assert receipt.outcome.status == "failed"
 
 
 @pytest.mark.parametrize("address", ["im", "trunkline"], indirect=True)
@@ -1184,7 +1088,7 @@ async def test_http_stream_failure_does_not_report_completion(
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
-        with pytest.raises(ExceptionGroup, match="TaskGroup"):
+        with pytest.raises(RuntimeError):
             await client.post(
                 "/api/commands/execute",
                 headers={"X-Octomate-Request": "1"},
@@ -1234,7 +1138,6 @@ async def test_http_execution_openapi_describes_intent_and_response_types(
             headers={"X-Octomate-Request": "1"},
             json={**command_body, "delivery_id": "command-2", "command_id": "removed"},
         )
-    assert schema["openapi"] == "3.2.0"
     operation = schema["paths"]["/api/commands/execute"]["post"]
     body_schema = operation["requestBody"]["content"]["application/json"]["schema"]
     fields = schema["components"]["schemas"][body_schema["$ref"].rsplit("/", 1)[-1]]
@@ -1245,26 +1148,15 @@ async def test_http_execution_openapi_describes_intent_and_response_types(
         "delivery_id",
     }
     assert fields["properties"]["arguments"]["default"] == ""
-    assert set(operation["responses"]["200"]["content"]) == {
-        "text/event-stream",
-    }
-    stream_schema = operation["responses"]["200"]["content"]["text/event-stream"]
-    assert "schema" not in stream_schema
-    item_schema = stream_schema["itemSchema"]
-    data_schema = item_schema["properties"]["data"]
-    assert data_schema["type"] == "string"
-    assert data_schema["contentMediaType"] == "application/json"
-    payload_schema = {
-        **data_schema["contentSchema"],
-        "components": schema["components"],
-    }
+    answers = operation["responses"]["200"]["content"]
+    assert set(answers) == {"application/json"}
+    answer_schema = answers["application/json"]["schema"]
+    assert answer_schema == {"$ref": "#/components/schemas/CommandOutcomeEvent"}
+    payload_schema = {**answer_schema, "components": schema["components"]}
     Draft202012Validator.check_schema(payload_schema)
     validator = Draft202012Validator(payload_schema)
     for response in (streamed, replayed, refused):
-        for frame in response.text.strip().split("\n\n"):
-            data = frame.removeprefix("data: ")
-            Draft202012Validator(item_schema).validate({"data": data})
-            validator.validate(json.loads(data))
+        validator.validate(response.json())
     with pytest.raises(ValidationError):
         validator.validate(
             {"event_kind": "command_outcome", "outcome": {"status": "invented"}}

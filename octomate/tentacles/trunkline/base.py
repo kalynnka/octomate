@@ -2,16 +2,16 @@
 `octomate.kick` and reads the run stream back natively.
 
 Unlike the Vercel dev-UI channel it replaces, nothing is transcoded to a
-third-party UI protocol: the SSE response carries the run's own event union
-(the harness `WireEvent`), and the console renders those events directly.
-
-`octomate.kick` pushes output through feelers, but the console needs an inline
-SSE response. So `stream_kick` runs the kick in a background task with a
-per-request `current_sink` active; the channel's timeline feeler forwards the
-run stream into it, and the response encodes that to SSE. Keyed as a
+third-party UI protocol: the run's own event union (the harness `WireEvent`)
+is what the console renders, read off the nerve, where the graph publishes
+what a kick does under the thread it was asked on. The channel draws nothing
+itself: its feelers are the graph's seams and render nothing, and
+`stream_thread` pumps a thread's subscription down the console's live socket,
+where the kick's `reflex_asleep` arrives last. A directive, a batch answer or
+a thread operation is answered as soon as its kick is on its way. Keyed as a
 `flat_thread` channel, every directive carries its thread id and streams
-straight through without triage — a new id starts a new thread, an existing id
-continues it.
+straight through without triage — a new id starts a new thread, an existing
+id continues it.
 """
 
 from __future__ import annotations
@@ -19,20 +19,14 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
-from contextvars import ContextVar
+from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar
 
-import anyio
-from anyio import BrokenResourceError, ClosedResourceError
-from anyio.streams.memory import MemoryObjectSendStream
-from fastapi import APIRouter
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pydantic_ai import AgentRunResultEvent
-from pydantic_ai.result import FinalResult
-from pydantic_ai.tools import DeferredToolRequests
 from rich.style import Style
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException
@@ -44,15 +38,13 @@ from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     GatewayEvent,
     LinkProfileAuthorizationEvent,
-    MessageSentEvent,
     RunErrorEvent,
-    RunResultEvent,
     StreamEvents,
     WireEvent,
     wire_event_adapter,
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
-from octomate.schemas.awakes import AwakeSignal, UserMessageSignal
+from octomate.schemas.awakes import UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
@@ -61,7 +53,7 @@ from octomate.schemas.segments import (
     MessageSegment,
     TextSegment,
 )
-from octomate.schemas.thread import Thread
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.channel import (
     ChannelOutput,
@@ -83,31 +75,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-type RunStreamItem = StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
-type TrunklineStreamItem = RunStreamItem | GatewayEvent | RunErrorEvent
-
 # Separator joining agent and model into the route id the console picker offers.
 ROUTE_SEP = ":"
-
-# Per-request output sink the kick's presenter streams into. The channel is a
-# singleton across concurrent requests, so each request sets its own sink here.
-current_sink: ContextVar[MemoryObjectSendStream[TrunklineStreamItem] | None]
-current_sink = ContextVar("trunkline_output_sink", default=None)
-
-
-async def send_quietly(
-    sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
-    item: TrunklineStreamItem,
-) -> None:
-    """Forward to the console while it is still listening. A departed console
-    must not kill the run — it records to the thread ledger regardless; only
-    the live mirror is gone."""
-    if sink is None:
-        return
-    try:
-        await sink.send(item)
-    except (BrokenResourceError, ClosedResourceError):
-        pass
 
 
 class TrunklineDirective(BaseModel):
@@ -215,38 +184,33 @@ class TrunklineChromo(Chromo[TrunklineDirective, WireEvent]):
 
 
 class TrunklineTimelineState(TimelineState):
-    """Forwards the raw run stream to the request's sink (the console renders
-    events itself), bypassing the default markdown-rotation lifecycle."""
+    """A run's timeline on the console, which draws nothing: the console reads
+    the run off the nerve. The stream is drained so the run goes on."""
 
-    def __init__(
-        self,
-        address: ChannelAddress,
-        sink: MemoryObjectSendStream[TrunklineStreamItem] | None,
-    ) -> None:
+    def __init__(self, address: ChannelAddress) -> None:
         self.address = address
-        self.sink = sink
         self.message_id = None
         self.reply_to = None
 
     async def drive(
         self,
-        stream: AsyncIterator[RunStreamItem],
+        stream: AsyncIterator[
+            StreamEvents[ChannelOutput] | AgentRunResultEvent[ChannelOutput]
+        ],
     ) -> None:
-        async for event in stream:
-            await send_quietly(self.sink, event)
+        async for _ in stream:
+            pass
 
 
+@dataclass
 class TrunklineFeelers(Feelers):
-    """Forwards what the graph reports outside a run to the request's sink.
-
-    With no active console request (a hook-ingested agent run, a departed
-    client), a persisted batch still surfaces through the thread detail's
-    `pending` list on the next load."""
+    """What the graph reports outside a run is on the nerve already, where the
+    console reads it; nothing is drawn here. A persisted batch still surfaces
+    through the thread detail's `pending` list on the next load."""
 
     async def present(
         self, address: ChannelAddress, event: GatewayEvent | RunErrorEvent
     ) -> IMMessageID | None:
-        await send_quietly(current_sink.get(), event)
         return None
 
     async def present_actions(
@@ -256,76 +220,40 @@ class TrunklineFeelers(Feelers):
         *,
         action_manager: DeferredActionManager,
     ) -> None:
-        await send_quietly(current_sink.get(), event)
+        return None
 
 
 class TrunklineSegmentsFeeler:
-    """A `send` delivered to a console thread: shown on the request watching it,
-    if any. The sender records it in the thread's ledger, which is what the console
-    reads back, so there is no platform message to point at."""
+    """A `send` delivered to a console thread is on the nerve already, and the
+    sender records it in the thread's ledger, which is what the console reads
+    back; there is no platform message to point at."""
 
     async def present(
         self, address: ChannelAddress, segments: list[MessageSegment]
     ) -> IMMessageID | None:
-        await send_quietly(
-            current_sink.get(),
-            MessageSentEvent(segments=segments, destination=address),
-        )
         return None
 
 
 class TrunklineOAuthFeeler(OAuthFeeler[WireEvent]):
-    """Deliver provider authorizations to the active private browser stream."""
+    """A provider authorization is on the nerve already, for the console
+    watching the thread; the id answered says it was delivered."""
 
     async def send(
         self, address: ChannelAddress, event: AuthorizationEvent
     ) -> IMMessageID | None:
         if isinstance(event, LinkProfileAuthorizationEvent):
             raise RuntimeError("Trunkline does not support profile linking")
-        sink = current_sink.get()
-        if sink is None:
-            raise RuntimeError(
-                "Trunkline authorization requires an active browser request"
-            )
-        await sink.send(event)
         return uuid7().hex
 
 
 class TrunklineTimelineFeeler:
-    """Opens a per-run timeline that streams into the active request's sink."""
+    """Opens a run's timeline, which draws nothing on the console."""
 
     @asynccontextmanager
     async def open(
         self, address: ChannelAddress
     ) -> AsyncGenerator[TrunklineTimelineState, None]:
-        yield TrunklineTimelineState(address, current_sink.get())
-
-
-def to_wire(item: TrunklineStreamItem) -> WireEvent | None:
-    """One run-stream item as its wire event, or None for the shapes the wire
-    replaces (see the wire module docstring)."""
-    match item:
-        case AgentRunResultEvent():
-            match item.result.output:
-                case str() | None:
-                    output: str | list[MessageSegment] | None = item.result.output
-                case DeferredToolRequests():
-                    # The suspension already went out as an ActionBatchEvent.
-                    output = None
-                case segments:
-                    output = list(segments)
-            return RunResultEvent(output=output, usage=item.result.usage)
-        case FinalResult():
-            return None
-        case _:
-            return item
-
-
-SSE_HEADERS = {
-    "Cache-Control": "no-store",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no",
-}
+        yield TrunklineTimelineState(address)
 
 
 class ConsoleFiles(StaticFiles):
@@ -367,9 +295,8 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             chromo=TrunklineChromo(),
             config=config,
         )
-        # Everything reaches the console as the events the graph and the run
-        # emit, and a `send` as its message; the markdown and card feelers have
-        # no transport here.
+        # The console reads a run off the nerve, so the feelers the graph drives
+        # draw nothing here; the markdown and card feelers have no transport.
         self.feelers = TrunklineFeelers(
             markdown=self.feelers.markdown,
             timeline=TrunklineTimelineFeeler(),
@@ -378,18 +305,20 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             ask_questions=self.feelers.ask_questions,
             oauth=TrunklineOAuthFeeler(self.ink),
         )
-        # Kicks outlive their request on client disconnect; hold them so the
-        # event loop keeps them alive to completion.
-        self.background_kicks: set[asyncio.Task[None]] = set()
 
-    def routers(self) -> tuple[APIRouter]:
-        """The console HTTP surface, mounted by `Octomate.connect`."""
+    def routers(self) -> tuple[APIRouter, APIRouter]:
+        """The console HTTP surface and its live socket, mounted by
+        `Octomate.connect`."""
         # Local import: routes.py imports this module, so a module-level import cycles.
         from octomate.tentacles.trunkline.routes import (
+            build_trunkline_live_router,
             build_trunkline_router,
         )
 
-        return (build_trunkline_router(self.octomate, channel_id=self.id),)
+        return (
+            build_trunkline_router(self.octomate, channel_id=self.id),
+            build_trunkline_live_router(self),
+        )
 
     @property
     def agent_ids(self) -> list[str]:
@@ -522,52 +451,32 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             conversation, mode
         )
 
-    def stream_kick(self, signal: AwakeSignal) -> StreamingResponse:
-        """Run the kick in a free task with this request's sink active and
-        encode what its feelers forward as an SSE response.
+    async def stream_thread(self, websocket: WebSocket, key: ThreadKey) -> None:
+        """Hold the console's socket on a thread until the console closes it,
+        sending what the nerve publishes to the thread down it meanwhile. The
+        subscription is open before the handshake completes, so a request the
+        console sends once the socket is open misses nothing. A console that
+        is gone ends the same way, once its close is read."""
+        with self.octomate.nerve.subscribe(key) as events:
+            await websocket.accept()
 
-        The task is deliberately not tied to the response: a client that
-        disconnects mid-run just stops watching — the run finishes and records
-        to the thread ledger regardless (`send_quietly` turns further sink
-        sends into no-ops once the receive side is gone). Nothing here opens a
-        cancel scope inside the generator, so a disconnect-time GC finalize
-        cannot corrupt one from another task.
-        """
-        send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](128)
+            async def send() -> None:
+                async for event in events:
+                    await websocket.send_text(
+                        wire_event_adapter.dump_json(event, warnings=False).decode()
+                    )
 
-        async def pump() -> None:
-            token = current_sink.set(send)
+            sending = asyncio.create_task(send())
             try:
-                await self.octomate.kick(signal)
-            except Exception as exc:
-                # The graph already reported it on this stream.
-                logger.error("Trunkline kick failed", exc_info=exc)
+                # The console sends nothing; reading is how its close is noticed.
+                while (await websocket.receive())["type"] != "websocket.disconnect":
+                    pass
             finally:
-                current_sink.reset(token)
-                await send.aclose()
+                sending.cancel()
+                with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                    await sending
 
-        task = asyncio.create_task(pump())
-        self.background_kicks.add(task)
-        task.add_done_callback(self.background_kicks.discard)
-
-        def frame(event: WireEvent) -> str:
-            payload = wire_event_adapter.dump_json(event, warnings=False)
-            return f"data: {payload.decode()}\n\n"
-
-        async def events() -> AsyncIterator[str]:
-            async with receive:
-                async for item in receive:
-                    wire_event = to_wire(item)
-                    if wire_event is not None:
-                        yield frame(wire_event)
-
-        return StreamingResponse(
-            events(), media_type="text/event-stream", headers=SSE_HEADERS
-        )
-
-    async def handle_directive(
-        self, directive: TrunklineDirective
-    ) -> StreamingResponse:
+    async def handle_directive(self, directive: TrunklineDirective) -> None:
         event = await self.chromo.sip(directive)
         if event is None:
             raise ValueError("directive carried no text")
@@ -606,6 +515,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             )
             await self.octomate.conversations.set_effort(conversation, effort)
         thread_message = await self.octomate.threads.record_inbound(event)
-        return self.stream_kick(
+        self.octomate.kick_soon(
             UserMessageSignal([event], trigger_thread_message_id=thread_message.id)
         )

@@ -31,6 +31,7 @@ from octomate_protocol.gateway import GatewayTool
 from pydantic import Field, TypeAdapter
 
 from octomate.capabilities.gateway import GatewayCapability
+from octomate.capabilities.harness.events import MessageSentEvent
 from octomate.managers.gateway import GatewayRefusal, OctomateSession
 from octomate.managers.thread import ThreadManager
 from octomate.mcp.base import capability_contract
@@ -192,6 +193,7 @@ async def native_session(
         native=True,
         threads=octomate.threads,
         workspaces=octomate.workspaces,
+        nerve=octomate.nerve,
     )
 
 
@@ -351,11 +353,13 @@ def mount_gateway(
                 'use a destination with kind="dm" and an explicit connected channel ID.'
             )
         notice = "sent"
+        private = False
         if address is not None:
             channel = session.channels[target.channel_tentacle_id]
             dm = await channel.open_dm(target.user_id)
             if dm is not None:
                 target = dm
+                private = True
             else:
                 fallback = session.conversation_address
                 if fallback is None:
@@ -370,6 +374,11 @@ def mount_gateway(
                     "delivered to this conversation instead"
                 )
         channel = session.channels[target.channel_tentacle_id]
+        await session.publish(
+            target,
+            MessageSentEvent(segments=segments, destination=target),
+            private=private,
+        )
         await channel.feelers.segments.present(target, segments)
         await thread_manager.record_outbound(
             target,

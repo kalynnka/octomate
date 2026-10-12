@@ -5,7 +5,6 @@ from collections.abc import AsyncGenerator
 from dataclasses import asdict, replace
 from unittest.mock import AsyncMock
 
-import anyio
 import pytest
 from pydantic_ai import AgentRunResult, AgentRunResultEvent
 from pydantic_ai.messages import (
@@ -20,7 +19,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
-from octomate.capabilities.harness.events import MessageSentEvent, RunStartedEvent
+from octomate.capabilities.harness.events import (
+    MessageSentEvent,
+    RunResultEvent,
+    RunSettledEvent,
+    RunStartedEvent,
+)
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.config.channels import TrunklineChannelConfig
@@ -39,7 +43,7 @@ from octomate.schemas.commands import (
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadCommand
+from octomate.schemas.thread import ThreadCommand, ThreadKey
 from octomate.schemas.triage import (
     TELEPORT_DEFER_KIND,
     AgentRouteKey,
@@ -47,11 +51,7 @@ from octomate.schemas.triage import (
 )
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import ChannelOutput
-from octomate.tentacles.trunkline.base import (
-    TrunklineStreamItem,
-    TrunklineTentacle,
-    current_sink,
-)
+from octomate.tentacles.trunkline.base import TrunklineTentacle
 from tests.agent.test_command_execution import ExecutingAgent
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
@@ -131,6 +131,7 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
             thread_manager=app.threads,
             action_manager=app.deferred_actions,
             gateway=app.gateway,
+            impulses=app.nerve,
         ),
     )
     assert state.decision is None
@@ -380,6 +381,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
         thread_manager=app.threads,
         action_manager=app.deferred_actions,
         gateway=app.gateway,
+        impulses=app.nerve,
     )
     await reflex_graph.run(inputs=Awake(signal), state=state, deps=deps)
     assert len(agent.invocations) == 1
@@ -542,21 +544,16 @@ async def test_command_graph_can_deliver_to_trunklines_existing_request_sink(
     if model_run:
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
-    send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](10)
-    async with send, receive:
-        token = current_sink.set(send)
-        try:
-            await app.kick(signal)
-        finally:
-            current_sink.reset(token)
-        await send.aclose()
-        received = [event async for event in receive]
-    assert len(received) == (2 if model_run else 1)
+    with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
+        await app.kick(signal)
+        received = [
+            live.receive_nowait() for _ in range(live.statistics().current_buffer_used)
+        ]
+    assert len(received) == (3 if model_run else 2)
     if model_run:
         assert isinstance(received[0], RunStartedEvent)
         assert received[0].address == address
-    assert isinstance(
-        received[-1], AgentRunResultEvent if model_run else MessageSentEvent
-    )
+    assert isinstance(received[-2], RunResultEvent if model_run else MessageSentEvent)
+    assert isinstance(received[-1], RunSettledEvent)
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions
