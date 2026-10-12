@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { createServer, type ViteDevServer } from 'vite'
 import type { WireDeferredQuestion, WireEvent } from '../src/lib/api/events.ts'
 import type { LedgerItem } from '../src/lib/api/types.ts'
+import { LiveSocket, installLiveSocket } from './liveSocket.ts'
 
 let server: ViteDevServer
 let batchFeelers: typeof import('../src/lib/api/fold.ts').batchFeelers
@@ -59,8 +60,11 @@ test('a multi-select question keeps its flag on the card', () => {
 test('answering a batch sends every answer in one response, so the run resumes once', async () => {
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
-  const fetch = mock.method(globalThis, 'fetch', async () =>
-    new Response(`data: ${JSON.stringify(result)}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } }))
+  installLiveSocket()
+  const fetch = mock.method(globalThis, 'fetch', async () => {
+    queueMicrotask(() => LiveSocket.last().deliver(result, { event_kind: 'run_settled' }))
+    return new Response(null, { status: 202 })
+  })
   const [draft] = batchFeelers('batch', [question('first', 0, 'First?'), question('second', 1, 'Then?')], [])
   useConsole.setState({ selThreadId: 'thread', live: [{ ...draft, uid: 'card' } as LedgerItem], running: false })
 

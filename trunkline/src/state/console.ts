@@ -16,16 +16,18 @@ import type {
   ReviewDoc,
   ThreadDetail,
 } from '@/lib/api/types'
-import { api, resolveBatch, streamDirective } from '@/lib/api'
-import { fetchThreads, streamCommand, streamGateway } from '@/lib/api/client'
+import { api, resolveBatch, sendDirective } from '@/lib/api'
+import { castGateway, executeCommand, fetchThreads, watchThread } from '@/lib/api/client'
 import type {
   ApiCommandDescriptor,
   BatchResponseBody,
   ChannelAddress,
   CommandContextBody,
+  CommandOutcomeEvent,
   CommandStreamEvent,
   GatewayEvent,
   GatewayRequest,
+  WireEvent,
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
@@ -482,10 +484,19 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       })
   }
 
-  // Streams open on this thread right now. Answering a feeler opens a second
-  // one while the run that raised it is still holding the first, so `running`
-  // lifts when the last of them closes rather than the first.
-  let openRuns = 0
+  // Runs streaming into each thread right now. Answering a feeler opens a second
+  // one while the run that raised it is still holding the first, so a thread's
+  // `running` lifts when the last of them closes rather than the first.
+  const streamingOn = new Map<string, number>()
+  const streamStart = (thId: string) => streamingOn.set(thId, (streamingOn.get(thId) ?? 0) + 1)
+  const streamEnd = (thId: string) => {
+    const left = (streamingOn.get(thId) ?? 1) - 1
+    if (left > 0) streamingOn.set(thId, left)
+    else streamingOn.delete(thId)
+  }
+  // The live overlay of a thread a run still streams into while another is open,
+  // handed back when the reader returns to it.
+  const parked = new Map<string, LedgerItem[]>()
 
   /** Your thread at `address`, if your list holds it, with both ends' details refetched. */
   const landedThread = async (from: string, address: ChannelAddress) => {
@@ -502,31 +513,116 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     return landed
   }
 
+  // The socket on the open thread, of whichever channel: it carries a run kicked
+  // from anywhere else — the thread's own channel, another tab — into the
+  // overlay. A run this console asked for streams over its own socket instead.
+  let viewing: { thId: string; close: () => void } | undefined
+
+  /** Reload the open thread's ledger once a run kicked elsewhere has settled. */
+  const reloadSettled = async (thId: string) => {
+    const detail = await queryClient.fetchQuery({
+      queryKey: ['thread-detail', thId],
+      queryFn: () => api.getThreadDetail(thId),
+      staleTime: 0,
+      retry: false,
+    })
+    if (get().selThreadId !== thId || streamingOn.has(thId)) return
+    set({ detail, live: [], running: false })
+    refreshThreads()
+  }
+
+  /** Follow the thread just opened until another is: a run starting there folds
+   *  into the overlay, and its settling reloads the ledger. A run already midway
+   *  shows nothing partial — its settling brings it in whole. */
+  const watchOpen = async (thId: string) => {
+    if (viewing?.thId === thId) return
+    viewing?.close()
+    viewing = undefined
+    let fold: TurnFold | undefined
+    const shown = () => get().selThreadId === thId && !streamingOn.has(thId)
+    const onEvent = (event: WireEvent) => {
+      if (!shown()) return
+      if (event.event_kind === 'reflex_awake') {
+        fold = new TurnFold({
+          push: (item) => (shown() ? push(item as LedgerItem) : 'stale'),
+          patch: (uid, patchObj) => {
+            if (shown()) patchLive((x) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x))
+          },
+          done: () => {},
+        })
+        set({ running: true })
+      } else if (event.event_kind === 'reflex_asleep') {
+        fold = undefined
+        void reloadSettled(thId)
+      } else {
+        fold?.feed(event)
+      }
+    }
+    try {
+      const socket = await watchThread({ id: thId }, onEvent)
+      if (get().selThreadId !== thId) {
+        socket.close()
+        return
+      }
+      const watching = { thId, close: socket.close }
+      viewing = watching
+      // Closed by the relay: the next open of the thread watches it afresh.
+      void socket.closed.then(() => {
+        if (viewing === watching) viewing = undefined
+      })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      actions.reportThreadError(thId, `live updates did not connect — ${reason}`)
+    }
+  }
+
   /**
-   * Drive one live run: fold the SSE events into the live overlay, drop the
-   * dispatch dots on the first real event, and settle `running` when the
-   * stream ends. Once the user navigates away the fold goes permanently dead
-   * (its cursors point at a wiped overlay) — the run keeps going server-side,
-   * lands in the thread's ledger, and a re-select after it ends rehydrates.
-   * A turn the agent moved elsewhere opens where it landed, as an operation does:
-   * at once when a run starts there, else once the stream ends.
+   * Drive one live run: open the thread's socket, send the request, fold what
+   * the socket carries into the live overlay, drop the dispatch dots on the
+   * first real event, and settle `running` when the run settles. While the
+   * reader is on another thread the fold keeps writing into this thread's
+   * parked overlay, so returning mid-run shows the whole run so far. A turn the
+   * agent moved elsewhere opens where it landed, as an operation does: at once
+   * when a run starts there, else once the run settles — unless the reader is
+   * elsewhere, when the run just follows it there.
    */
   const runLive = async (
     from: string,
-    request: (onEvent: (event: CommandStreamEvent) => void) => Promise<void>,
-    // What a stream that sent nothing back says; null says nothing.
-    quietClose: string | null = 'stream closed without a result',
+    // The socket to watch: a Trunkline thread by the key its directives carry,
+    // which a thread being composed has before it has a row, any other by its row.
+    watch: { id: string } | { key: string },
+    request: () => Promise<CommandOutcomeEvent | void>,
+    options: {
+      // What a turn that sent nothing back says; null says nothing.
+      quietClose?: string | null
+      // Sees every event first, and keeps the ones it answers true for.
+      intercept?: (event: WireEvent) => boolean | void
+    } = {},
   ) => {
-    openRuns++
+    const { quietClose = 'the run settled without a result', intercept } = options
     // The thread the run streams into, until a run starts in another.
     let selId = from
-    let dead = false
-    const alive = () => {
-      if (!dead && get().selThreadId !== selId) dead = true
-      return !dead
+    streamStart(selId)
+    const here = () => get().selThreadId === selId
+    // The run's overlay: the open panel's while its thread is shown, else parked.
+    const edit = (fn: (live: LedgerItem[]) => LedgerItem[]) => {
+      if (here()) set((s) => ({ live: fn(s.live) }))
+      else parked.set(selId, fn(parked.get(selId) ?? []))
+    }
+    const add = (item: LedgerItem) => {
+      if (here()) return push(item)
+      const withUid = { ...item, uid: item.uid ?? nextUid() } as LedgerItem
+      edit((live) => [...live, withUid])
+      return withUid.uid
+    }
+    const moveTo = (thId: string) => {
+      parked.delete(selId)
+      streamEnd(selId)
+      selId = thId
+      streamStart(thId)
     }
     const dotsUid = push({ kind: 'dots', label: 'relay · dispatching' } as LedgerItem)
-    const clearDots = () => set((s) => ({ live: s.live.filter((it) => it.uid !== dotsUid) }))
+    const clearDots = () => edit((live) => live.filter((it) => it.uid !== dotsUid))
     let received = 0
     let terminal = false
     let landing: ChannelAddress | undefined
@@ -534,12 +630,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const turnFold = () => new TurnFold({
       push: (item) => {
         clearDots()
-        if (!alive()) return 'stale'
-        return push(item as LedgerItem)
+        return add(item as LedgerItem)
       },
       patch: (uid, patchObj) => {
-        if (!alive()) return
-        patchLive((x) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x))
+        const patched = (x: LedgerItem) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x)
+        if (here()) patchLive(patched)
+        else edit((live) => live.map(patched))
       },
       // The graph releases its active turn after the result, before stream EOF.
       done: () => {},
@@ -559,7 +655,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       fold = turnFold()
       terminal = false
       const detail = await api.getThreadDetail(selId)
-      if (alive()) {
+      if (here()) {
         const opening = detail.ledger.findLast((item) => item.kind === 'session-open')
         const anchor = opening ? push({ ...opening, uid: nextUid() }) : undefined
         set((s) => ({ detail: {
@@ -573,55 +669,73 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     }
     const follow = async (address: ChannelAddress) => {
       const landed = await landedThread(selId, address)
-      if (landed && alive()) {
-        if (get().ntOn && address.channel_tentacle_id === 'trunkline' && address.channel_thread_id === selId) {
-          const detail = await api.getThreadDetail(landed.id)
-          if (alive()) {
-            selId = landed.id
-            // The live overlay already owns this panel's prompt and feedback.
-            set({ selThreadId: selId, detail: { ...detail, ledger: [] }, ntOn: false, ntStarted: false, ntMenu: null, ntRouteId: null })
-          }
-        } else {
-          await actions.selectThread(landed.channel_tentacle_id, landed.id)
-          selId = landed.id
-          set({ running: true })
-          fold = turnFold()
+      if (landed && !here()) {
+        // The reader is elsewhere: the run streams on where it landed, parked.
+        moveTo(landed.id)
+        fold = turnFold()
+      } else if (landed && get().ntOn && address.channel_tentacle_id === 'trunkline' && address.channel_thread_id === selId) {
+        const detail = await api.getThreadDetail(landed.id)
+        if (here()) {
+          moveTo(landed.id)
+          // The live overlay already owns this panel's prompt and feedback.
+          set({ selThreadId: selId, detail: { ...detail, ledger: [] }, ntOn: false, ntStarted: false, ntMenu: null, ntRouteId: null })
+          void watchOpen(selId)
         }
+      } else if (landed) {
+        await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        moveTo(landed.id)
+        set({ running: true })
+        fold = turnFold()
       }
       following = undefined
       held.splice(0).forEach(feed)
     }
+    // The reflex falling asleep, which the socket carries last.
+    let settle!: () => void
+    const settled = new Promise<void>((resolve) => { settle = resolve })
+    const onEvent = (event: WireEvent) => {
+      if (event.event_kind === 'reflex_asleep') {
+        settle()
+        return
+      }
+      if (event.event_kind === 'reflex_awake' || event.event_kind === 'run_ended') return
+      if (intercept?.(event)) return
+      if (event.event_kind === 'gateway') {
+        landing = event.destination
+        summoning = event.action === 'summon'
+        return
+      }
+      if (following) {
+        held.push(event)
+        return
+      }
+      if (event.event_kind === 'run_started') {
+        const { channel_tentacle_id, channel_thread_id } = event.address
+        if (summoning) {
+          summoning = false
+          following = openSummon()
+        } else if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
+          following = follow(event.address)
+        }
+        return
+      }
+      feed(event)
+    }
+    let socket: Awaited<ReturnType<typeof watchThread>> | undefined
     try {
-      await request((event) => {
-        if (event.event_kind === 'gateway') {
-          landing = event.destination
-          summoning = event.action === 'summon'
-          return
-        }
-        if (following) {
-          held.push(event)
-          return
-        }
-        if (event.event_kind === 'custom' && event.name === 'run_started') {
-          const { channel_tentacle_id, channel_thread_id } = event.address
-          if (summoning) {
-            summoning = false
-            following = openSummon()
-          } else if (channel_tentacle_id !== 'trunkline' || channel_thread_id !== get().detail?.sendKey) {
-            following = follow(event.address)
-          }
-          return
-        }
-        feed(event)
-      })
+      socket = await watchThread(watch, onEvent)
+      const outcome = await request()
+      if (outcome) feed(outcome)
+      // The relay closing the socket first means the run outlived what carried it here.
+      const carried = await Promise.race([settled.then(() => true), socket.closed.then(() => false)])
       await following
-      const closing = received === 0
-        ? quietClose
-        : 'stream closed without a result — the run continues on the relay'
-      if (closing !== null) fold.abort(closing, received === 0 ? 'info' : 'warning')
-      if (landing && alive()) {
+      const closing = !carried
+        ? 'the live socket closed — the run continues on the relay'
+        : received === 0 ? quietClose : 'the run settled without a result'
+      if (closing !== null) fold.abort(closing, carried && received === 0 ? 'info' : 'warning')
+      if (landing && here()) {
         const landed = await landedThread(selId, landing)
-        if (landed && landed.id !== selId && alive()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
+        if (landed && landed.id !== selId && here()) await actions.selectThread(landed.channel_tentacle_id, landed.id)
       }
       return true
     } catch (err) {
@@ -630,16 +744,13 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       else fold.abort(message, 'error')
       return false
     } finally {
-      openRuns--
+      socket?.close()
       clearDots()
-      if (get().selThreadId === selId) {
-        if (dead) {
-          // The user left and came back mid-run; the run has ended now, so
-          // reload the ledger from the relay instead of showing a torn turn.
-          void actions.selectThread(get().selChannel, selId)
-        } else if (openRuns === 0) {
-          set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
-        }
+      streamEnd(selId)
+      // The thread's last run settles it; one parked meanwhile is in the ledger now.
+      if (!streamingOn.has(selId)) {
+        if (here()) set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
+        else parked.delete(selId)
       }
       void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
       refreshThreads()
@@ -652,14 +763,17 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // directive, in sendNewThread.
     set({ running: true, composer: '' })
     push({ kind: 'user', t: nowClock(), who: operator(), text } as LedgerItem)
-    void runLive(selId, (onEvent) => streamDirective(sendKey, { text }, onEvent))
+    void runLive(selId, { key: sendKey }, () => sendDirective(sendKey, { text }))
   }
 
-  /** Resolve a deferred batch and stream the resumed run into the ledger. An
-   *  answer to a run still going streams nothing back; its card says it was sent. */
+  /** Resolve a deferred batch and fold the resumed run into the ledger. An
+   *  answer to a run still going carries nothing back; its card says it was sent. */
   const resolveLive = (batchId: string, body: BatchResponseBody) => {
+    const s = get()
     set({ running: true })
-    void runLive(get().selThreadId, (onEvent) => resolveBatch(batchId, body, onEvent), null)
+    // A thread being composed is watched by the key its directives carry.
+    const watch = s.ntOn ? { key: s.selThreadId } : { id: s.selThreadId }
+    void runLive(s.selThreadId, watch, () => resolveBatch(batchId, body), { quietClose: null })
   }
 
   const actions: ConsoleActions = {
@@ -671,15 +785,22 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       panel?.style.removeProperty('view-transition-name')
       const animate = panel && get().selThreadId !== thId && !get().mgmtSec
         && typeof document.startViewTransition === 'function' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      // A run still streaming into the thread left its overlay parked; it comes
+      // back over the ledger it was built on, which a refetch would duplicate.
+      const resuming = parked.has(thId) && queryClient.getQueryData(['thread-detail', thId]) !== undefined
       const update = () => {
         if (selection !== threadSelection) return
         clearTurnTimers()
+        const leaving = get().selThreadId
+        if (leaving !== thId && streamingOn.has(leaving)) parked.set(leaving, get().live)
+        const live = parked.get(thId) ?? []
+        parked.delete(thId)
         set((s) => ({
           selChannel: chId,
           selThreadId: thId,
           detail: queryClient.getQueryData<ThreadDetail>(['thread-detail', thId]) ?? null,
-          live: [],
-          running: false,
+          live,
+          running: streamingOn.has(thId),
           ledgerN: LEDGER_PAGE,
           notices: [],
           gatewayMode: null,
@@ -705,6 +826,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         }))
         scrollChatBottom()
         if (!animate) replayView()
+        void watchOpen(thId)
       }
       const refresh = async () => {
         const detail = await queryClient.fetchQuery({
@@ -722,14 +844,14 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       }
       if (!animate) {
         update()
-        await refresh()
+        if (!resuming) await refresh()
         return
       }
       panel.style.viewTransitionName = direction === 'up' ? 'thread-lift' : 'thread-drop'
       const transition = document.startViewTransition(update)
       threadTransition = transition
       try {
-        await Promise.all([transition.finished, transition.updateCallbackDone.then(refresh)])
+        await Promise.all([transition.finished, transition.updateCallbackDone.then(() => (resuming ? undefined : refresh()))])
       } finally {
         if (threadTransition === transition) {
           threadTransition = undefined
@@ -913,12 +1035,29 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       if (get().gatewayPending || get().running || get().selThreadId !== threadId) return
       set({ gatewayPending: { threadId, action: request.action }, gatewayMode: null, running: true })
       try {
-        const result: { arrived?: GatewayEvent } = {}
-        const completed = await runLive(threadId, async (onEvent) => {
-          result.arrived = await streamGateway(threadId, request, onEvent)
+        // The operation's own move confirms it; the last move says where it ended.
+        const completion: { confirmed?: boolean; landing?: GatewayEvent; error?: string; started?: boolean } = {}
+        const completed = await runLive(threadId, { id: threadId }, () => castGateway(threadId, request), {
+          intercept: (event) => {
+            if (event.event_kind === 'gateway') {
+              completion.confirmed ||= event.action === request.action
+              completion.landing = event
+              return true
+            }
+            if (event.event_kind === 'run_started') completion.started = true
+            // Once a run starts where the move landed, a failure is that run's, shown there.
+            else if (event.event_kind === 'run_error' && !completion.started) {
+              completion.error = event.message
+              return true
+            }
+          },
         })
-        if (!completed || !result.arrived) return
-        const landed = await landedThread(threadId, result.arrived.destination)
+        if (completion.error) throw new Error(completion.error)
+        if (!completed) return
+        if (!completion.confirmed || !completion.landing) {
+          throw new Error('The run settled without confirming a destination. Check the thread before retrying.')
+        }
+        const landed = await landedThread(threadId, completion.landing.destination)
         if (!landed) {
           throw new Error(`${request.action} completed, but its destination is not visible in your thread list.`)
         }
@@ -1352,6 +1491,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     /* ---------------------------------------------------- new thread ----- */
     startNewThread() {
       clearTurnTimers()
+      // A thread being composed has no row to watch yet; its directive's run does.
+      viewing?.close()
+      viewing = undefined
       set({
         ntOn: true,
         ntStarted: false,
@@ -1521,7 +1663,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         delivery_id: Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, '0')).join(''),
         arguments: args,
       }
-      void runLive(s.selThreadId, (onEvent) => streamCommand(body, onEvent), 'command closed without an outcome')
+      // A command on the composer, before its thread has a row, answers on the
+      // key of the thread it would start: none, which the relay reads as such.
+      const watch = context.address.channel_tentacle_id === 'trunkline'
+        ? { key: context.address.channel_thread_id ?? '' }
+        : { id: s.selThreadId }
+      void runLive(s.selThreadId, watch, () => executeCommand(body), { quietClose: 'command closed without an outcome' })
         .finally(() => { void queryClient.invalidateQueries({ queryKey: ['command-catalog', context.agent_id] }) })
     },
     sendNewThread(text: string) {
@@ -1557,12 +1704,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // starts answering for it.
       const posture = s.ntPermissionMode ?? undefined
       const effort = !started && s.ntEffort !== 'auto' ? s.ntEffort : undefined
-      void runLive(threadId, (onEvent) =>
-        streamDirective(
-          threadId,
-          { text: body, model: routeId, project, permission_mode: posture, effort },
-          onEvent,
-        ),
+      void runLive(threadId, { key: threadId }, () =>
+        sendDirective(threadId, { text: body, model: routeId, project, permission_mode: posture, effort }),
       )
 
     },

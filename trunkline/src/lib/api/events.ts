@@ -334,12 +334,18 @@ export interface RunUsage {
   cache_write_tokens: number
 }
 
-/** A run's first event, a Pydantic AI custom event from the graph: the thread it
- *  reports into — another than the one asked about when a move carried the turn there. */
+/** An agent run beginning, before anything it streams: the thread it reports
+ *  into — another than the one asked about when a move carried the turn there.
+ *  A kick holds one run or several, one after another. */
 export interface RunStartedEvent {
-  event_kind: 'custom'
-  name: 'run_started'
+  event_kind: 'run_started'
   address: ChannelAddress
+}
+
+/** An agent run over, finished or failed, after everything it streamed: the
+ *  counterpart of `RunStartedEvent`. */
+export interface RunEndedEvent {
+  event_kind: 'run_ended'
 }
 
 export interface RunResultEvent {
@@ -352,6 +358,18 @@ export interface RunErrorEvent {
   event_kind: 'run_error'
   message: string
   trace_id: string
+}
+
+/** A kick's first word: the reflex woken, before anything it does. */
+export interface ReflexAwakeEvent {
+  event_kind: 'reflex_awake'
+}
+
+/** A kick's last word, the counterpart of `ReflexAwakeEvent`: the reflex
+ *  asleep again, every run and move of the kick over, finished or failed. The
+ *  thread's socket carries it last. */
+export interface ReflexAsleepEvent {
+  event_kind: 'reflex_asleep'
 }
 
 /** What a channel adds to an address to show it. `inside` marks a place to
@@ -405,9 +423,12 @@ export type WireEvent =
   | SubagentStartedEvent
   | SubagentSettledEvent
   | RunStartedEvent
+  | RunEndedEvent
   | RunResultEvent
   | RunErrorEvent
   | GatewayEvent
+  | ReflexAwakeEvent
+  | ReflexAsleepEvent
 
 /** A command's saved outcome. During a live run its feedback streams before
  *  command_outcome, so that terminal event must not display it again. */

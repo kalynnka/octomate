@@ -5,6 +5,7 @@ import { createServer, type ViteDevServer } from 'vite'
 import type { ApiThread, ApiThreadMessage, WireEvent } from '../src/lib/api/events.ts'
 import type { OlderPage } from '../src/lib/api/live.ts'
 import type { ThreadDetail } from '../src/lib/api/types.ts'
+import { LiveSocket, installLiveSocket } from './liveSocket.ts'
 
 let server: ViteDevServer
 let api: typeof import('../src/lib/api/index.ts').api
@@ -12,7 +13,7 @@ let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
 let callbackResult: void | Promise<void>
-const originalGlobals = ['document', 'window', 'requestAnimationFrame'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
+const originalGlobals = ['document', 'window', 'requestAnimationFrame', 'WebSocket', 'location'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const detail: ThreadDetail = {
   key: 'thread-a', msgCount: 0, sessions: [], ledger: [], ctxK: 0,
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null },
@@ -40,6 +41,7 @@ beforeEach(() => {
   } })
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { matchMedia: () => ({ matches: false }) } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
+  installLiveSocket()
   useConsole.setState({ selThreadId: 'other', detail: null, mgmtSec: '' })
 })
 afterEach(() => {
@@ -106,8 +108,10 @@ test('a new thread adopts its saved identity without a transition or replacing i
         channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: sendKey, shared: false,
       } },
       { event_kind: 'run_result', output: 'Hello back', usage: { requests: 1, tool_calls: 0, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } },
+      { event_kind: 'run_settled' },
     ]
-    return new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+    queueMicrotask(() => LiveSocket.last().deliver(...events))
+    return new Response(null, { status: 202 })
   })
   mock.method(api, 'getThreadDetail', async () => ({
     ...detail, key: 'saved-thread', live: true, sendKey,
@@ -135,6 +139,8 @@ test('a new thread adopts its saved identity without a transition or replacing i
   const sent = fetch.mock.calls.filter((call) => call.arguments[1]?.method === 'POST')
   assert.equal(sent.length, 2)
   assert.equal(String(sent[0].arguments[0]), String(sent[1].arguments[0]))
+  // Both turns were watched on the key the thread was composed under, before and after it had a row.
+  assert.deepEqual(LiveSocket.opened.map((socket) => socket.url), Array(2).fill(`ws://console.test/api/trunkline/live?thread_key=${sendKey}`))
   assert.equal(transition.mock.callCount(), 0)
   assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.text), ['hello', 'continue'])
   assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 2)
