@@ -900,7 +900,7 @@ class TimelineState:
 
 class TimelineFeeler(Protocol):
     """Opens a per-run `TimelineState` for a channel. The per-channel `Feelers.timeline`
-    is a single stateless instance: the `React` node does
+    is a single stateless instance: the channel's siphon does
     `async with feelers.timeline.open(address) as state:` — entering acquires the
     platform resource and yields the per-run hook (a card, a stream session, …), or
     the feeler itself when there is nothing to set up; `state.drive(events)` then
