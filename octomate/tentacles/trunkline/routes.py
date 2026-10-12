@@ -222,7 +222,11 @@ async def thread_gateway(
     if not native and (channel is None or agent_id not in app.agents):
         raise HTTPException(409, "The source channel or agent is not connected.")
     profile = UserProfile(user_id=user.id, channel_user_id=str(user.id), name=user.name)
-    if channel is not None and not isinstance(channel, TrunklineTentacle):
+    if isinstance(channel, TrunklineTentacle):
+        # The row a directive's sender resolves to, so what the operation's turn
+        # writes under this profile — an authorization, a handoff — names a stored one.
+        profile = await users.ensure_profile(channel.id, profile)
+    elif channel is not None:
         linked = await users.linked_profiles(profile)
         source_profile = next(
             (one for one in linked if one.channel_tentacle_id == channel.id), None
