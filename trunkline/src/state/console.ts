@@ -798,6 +798,15 @@ export const useConsole = create<ConsoleState>()((set, get) => {
    *  answer to a run still going carries nothing back; its card says it was sent. */
   const resolveLive = (batchId: string, body: BatchResponseBody) => {
     const s = get()
+    // A run still streaming into the thread carries on once answered, over the
+    // socket already folding it; only a run the answer resumes streams anew.
+    if (s.running) {
+      void resolveBatch(batchId, body).catch((error: unknown) => {
+        const reason = error instanceof Error ? error.message : String(error)
+        actions.reportThreadError(s.selThreadId, `the answer did not go through — ${reason}`)
+      })
+      return
+    }
     set({ running: true })
     // A thread being composed is watched by the key its directives carry.
     const watch = s.ntOn ? { key: s.selThreadId } : { id: s.selThreadId }
