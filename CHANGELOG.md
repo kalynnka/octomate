@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-v0.0.3...octomate-v0.0.4) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* **gateway:** carry conversations across channels ([#115](https://github.com/kalynnka/octomate/issues/115))
+
+### Features
+
+* collect dsh session names for driven and native sessions ([#99](https://github.com/kalynnka/octomate/issues/99)) ([f9be03a](https://github.com/kalynnka/octomate/commit/f9be03a62144787117040ef416e0c8074ba7ef0c))
+* **commands:** discover and execute native agent commands ([#118](https://github.com/kalynnka/octomate/issues/118)) ([e76a3af](https://github.com/kalynnka/octomate/commit/e76a3af806af5fdffb88cdb3f8df2c7080282c0a))
+* **gateway:** carry conversations across channels ([#115](https://github.com/kalynnka/octomate/issues/115)) ([1d48b5e](https://github.com/kalynnka/octomate/commit/1d48b5ed6108959cf7bf1bea8849e539571ac9d1))
+* **inkling:** generate session names alongside agent runs ([#100](https://github.com/kalynnka/octomate/issues/100)) ([5aed19d](https://github.com/kalynnka/octomate/commit/5aed19dacfc6ca3183fc4a57678e996e65fb461a))
+* **lark:** add user OAuth and hosted MCP tools ([#126](https://github.com/kalynnka/octomate/issues/126)) ([19e2fd0](https://github.com/kalynnka/octomate/commit/19e2fd06296cbde6847fd02ed91441dc036ea4d3))
+* **trunkline:** improve channel chat presentation ([#127](https://github.com/kalynnka/octomate/issues/127)) ([3367194](https://github.com/kalynnka/octomate/commit/3367194de38d4720477d62d94174bdcd72f1bbff))
+
+
+### Bug Fixes
+
+* deduplicate native resumes and authenticate DeepSeek ingestion ([#101](https://github.com/kalynnka/octomate/issues/101)) ([816622e](https://github.com/kalynnka/octomate/commit/816622e3fd7ce01e7ce3580203bbfc886fbd62ff))
+* harden secret files and update multipart dependency ([#110](https://github.com/kalynnka/octomate/issues/110)) ([f0bdf54](https://github.com/kalynnka/octomate/commit/f0bdf54194f228d1be1955c51675ec2ff026c378))
+* keep timelines live during asynchronous actions ([#112](https://github.com/kalynnka/octomate/issues/112)) ([b9befa7](https://github.com/kalynnka/octomate/commit/b9befa7abf432e31675b11acba37dd0f09f1e16c))
+* **napcat:** recognize heartbeat meta events ([#121](https://github.com/kalynnka/octomate/issues/121)) ([c3f1617](https://github.com/kalynnka/octomate/commit/c3f1617b4dc998c0ed82f2ea4fecd42a51301bfd))
+* persist workspace references and close failed transcript streams ([#128](https://github.com/kalynnka/octomate/issues/128)) ([e0056a0](https://github.com/kalynnka/octomate/commit/e0056a0b6018f0f8e950da6b296ea0fb6da29431))
+* scope release bumps by package ([#129](https://github.com/kalynnka/octomate/issues/129)) ([d7ce13c](https://github.com/kalynnka/octomate/commit/d7ce13cd49288115664e14bd68b83ced4cd6bc26))
+* **slack:** answer DMs and channel mentions in threads ([#123](https://github.com/kalynnka/octomate/issues/123)) ([2287a86](https://github.com/kalynnka/octomate/commit/2287a860765d817e763700566acc5c1c48547ba5))
+* upgrade bundled Codex to restore GPT-6 models ([#102](https://github.com/kalynnka/octomate/issues/102)) ([07d0fee](https://github.com/kalynnka/octomate/commit/07d0fee2e4cdc9755a06cab26a8530464e38d804))
+* **workspaces:** reuse relocatable environments when syncing dependencies ([#125](https://github.com/kalynnka/octomate/issues/125)) ([3ce9dc6](https://github.com/kalynnka/octomate/commit/3ce9dc6bc1bf141d5104e8fd378c863e6267e977))
+
+
+### Performance Improvements
+
+* **trunkline:** page a thread's messages from the newest and keep the open page in the address ([#122](https://github.com/kalynnka/octomate/issues/122)) ([eacad4b](https://github.com/kalynnka/octomate/commit/eacad4b0e6d8712229e95df1dfefd6d2ecbf4989))
+
 ## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-v0.0.2...octomate-v0.0.3) (2026-09-23)
 
 
