@@ -1122,7 +1122,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             if part
         )
-        env = {"CLAUDE_CODE_ENTRYPOINT": "cli"}
+        env = {
+            "CLAUDE_CODE_ENTRYPOINT": "cli",
+            # The CLI ends with the turn, killing any background task it started;
+            # the stopped task's notice then opens the next turn ahead of its prompt.
+            # TODO: reconsider enabling background tasks once Octomate can track
+            # them past the turn that started them.
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        }
         if self.config.instrument:
             trace_environment = octomate_trace_environment()
             if trace_environment is not None:
