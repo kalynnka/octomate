@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -96,10 +97,30 @@ def fresh_cli_settings() -> Iterator[None]:
     cli_settings.cache_clear()
 
 
+@pytest.fixture(scope="session")
+async def database_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Build the empty schema once per worker and close WAL before copying it."""
+
+    def create_schema(connection: Connection) -> None:
+        Base.metadata.create_all(connection)
+        # Run the same history-search migration used by deployments.
+        with Operations.context(MigrationContext.configure(connection)):
+            for revision in HISTORY_MIGRATIONS:
+                revision.module.upgrade()
+
+    path = tmp_path_factory.mktemp("database-template") / "octomate-test.db"
+    engine = database.create_engine(f"sqlite+aiosqlite:///{path}")
+    async with engine.begin() as conn:
+        await conn.run_sync(create_schema)
+    await engine.dispose()
+    return path
+
+
 @pytest.fixture
 async def in_memory_engine(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    database_template: Path,
 ) -> AsyncIterator[AsyncEngine]:
     """A throwaway SQLite DB with all tables created, wired into `async_session`.
 
@@ -111,18 +132,12 @@ async def in_memory_engine(
     write rolled out from under a reader. A file gets each session its own
     connection and the WAL pragmas `create_engine` sets, so the concurrency a test
     sees is the concurrency production sees.
+
+    Each test copies the closed, empty template into its own directory, so rows
+    and schema changes stay isolated without rebuilding every table each time.
     """
-
-    def create_schema(connection: Connection) -> None:
-        Base.metadata.create_all(connection)
-        # Run the same history-search migration used by deployments.
-        with Operations.context(MigrationContext.configure(connection)):
-            for revision in HISTORY_MIGRATIONS:
-                revision.module.upgrade()
-
+    shutil.copyfile(database_template, tmp_path / "octomate-test.db")
     engine = database.create_engine(f"sqlite+aiosqlite:///{tmp_path}/octomate-test.db")
-    async with engine.begin() as conn:
-        await conn.run_sync(create_schema)
 
     maker = async_sessionmaker(
         engine,
