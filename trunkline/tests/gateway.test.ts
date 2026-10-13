@@ -209,7 +209,8 @@ test('a failed or unconfirmed operation reports its reason and arrives nowhere',
   await useConsole.getState().actions.gateway('source', request)
   assert.equal(useConsole.getState().notices.filter((one) => one.text.includes('without confirming a destination')).length, 2)
   assert.equal(select.mock.callCount(), 0)
-  assert.ok(LiveSocket.opened.every((socket) => socket.closed))
+  // Each operation's socket closed with its run; only the open thread is watched.
+  assert.deepEqual(LiveSocket.opened.filter((socket) => !socket.closed).map((socket) => socket.url), ['ws://console.test/api/trunkline/live?thread_id=source'])
 })
 
 test('a move the agent makes after the operation is where it ends', async () => {

@@ -154,9 +154,10 @@ test('a new thread adopts its saved identity without a transition or replacing i
   assert.equal(sent.length, 2)
   assert.equal(String(sent[0].arguments[0]), String(sent[1].arguments[0]))
   // Both turns were watched on the key the thread was composed under, before and after it had a row;
-  // once it had one, the open thread was watched by it as well.
+  // once it had one, the open thread was watched by it between turns and after them.
   const byKey = `ws://console.test/api/trunkline/live?thread_key=${sendKey}`
-  assert.deepEqual(LiveSocket.opened.map((socket) => socket.url), [byKey, 'ws://console.test/api/trunkline/live?thread_id=saved-thread', byKey])
+  const byId = 'ws://console.test/api/trunkline/live?thread_id=saved-thread'
+  assert.deepEqual(LiveSocket.opened.map((socket) => socket.url), [byKey, byId, byKey, byId])
   assert.equal(transition.mock.callCount(), 0)
   assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.text), ['hello', 'continue'])
   assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 2)
@@ -277,4 +278,24 @@ test('a card answered anywhere else stops waiting here', async () => {
   const [answered] = useConsole.getState().detail?.ledger ?? []
   assert.equal(answered.kind === 'ask' && answered.state, 'answered')
   assert.deepEqual(answered.kind === 'ask' && answered.questions.map((q) => q.answer), ['Yes'])
+})
+
+test('a run streaming on the open thread comes over its own socket alone, and the watch returns after', async () => {
+  const live: ThreadDetail = { ...detail, key: 'solo', live: true, sendKey: 'solo-key' }
+  mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'solo'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'solo')
+  const watching = await socketOn('thread_id=solo')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=solo-key')
+  assert.ok(watching.closed)
+  run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  assert.ok(run.closed)
+  assert.notEqual(await socketOn('thread_id=solo'), watching)
 })

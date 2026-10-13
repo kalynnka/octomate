@@ -490,7 +490,14 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // one while the run that raised it is still holding the first, so a thread's
   // `running` lifts when the last of them closes rather than the first.
   const streamingOn = new Map<string, number>()
-  const streamStart = (thId: string) => streamingOn.set(thId, (streamingOn.get(thId) ?? 0) + 1)
+  const streamStart = (thId: string) => {
+    streamingOn.set(thId, (streamingOn.get(thId) ?? 0) + 1)
+    // The run's own socket carries the thread meanwhile; a watch would carry it twice.
+    if (viewing?.thId === thId) {
+      viewing.close()
+      viewing = undefined
+    }
+  }
   const streamEnd = (thId: string) => {
     const left = (streamingOn.get(thId) ?? 1) - 1
     if (left > 0) streamingOn.set(thId, left)
@@ -538,7 +545,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   // The socket on the open thread, of whichever channel: it carries a run kicked
   // from anywhere else — the thread's own channel, another tab — into the
-  // overlay. A run this console asked for streams over its own socket instead.
+  // overlay. A run this console asked for streams over its own socket instead,
+  // and the watch steps aside until that run ends.
   let viewing: { thId: string; close: () => void } | undefined
 
   /** Reload the open thread's ledger once a run kicked elsewhere has settled. */
@@ -561,6 +569,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     if (viewing?.thId === thId) return
     viewing?.close()
     viewing = undefined
+    // A run this console started already carries the thread; its end watches it again.
+    if (streamingOn.has(thId)) return
     let fold: TurnFold | undefined
     const shown = () => get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
@@ -778,8 +788,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       streamEnd(selId)
       // The thread's last run settles it; one parked meanwhile is in the ledger now.
       if (!streamingOn.has(selId)) {
-        if (here()) set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
-        else parked.delete(selId)
+        if (here()) {
+          set((s) => ({ running: false, live: s.live.map((item) => item.kind === 'stream' && item.streaming ? { ...item, streaming: false } : item) }))
+          // The run's socket is gone: a thread with a row is watched again.
+          if (!get().ntOn) void watchOpen(selId)
+        } else parked.delete(selId)
       }
       void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
       refreshThreads()
