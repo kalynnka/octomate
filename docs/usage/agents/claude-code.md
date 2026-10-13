@@ -41,7 +41,8 @@ The session id is settled before the CLI starts, and the same session is resumed
 on every later turn of the conversation. Claude files a session under the directory
 it ran in and resumes it only from there, so when a thread binds to a project
 Octomate moves the transcript to the workspace's slot before resuming. One live
-client per conversation: a new message while a turn is running interrupts it.
+client per conversation, and one turn at a time: a message sent while a turn is
+running does not interrupt it.
 
 Choose from the model's native effort levels, including `max` where offered.
 The selected name is passed to Claude unchanged.
