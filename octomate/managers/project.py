@@ -29,7 +29,7 @@ class ProjectManager(Manager):
     """
 
     def __init__(self, config: ProjectsConfig | None = None) -> None:
-        self.config = config if config is not None else ProjectsConfig()
+        self.config = config if config is not None else {}
         self.projects: dict[str, Project] = {}
         # (resolved root, project name), deepest first, so the first hit is the
         # longest prefix and a monorepo plus a sub-package can both be projects.

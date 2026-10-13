@@ -23,7 +23,7 @@ async def open_crossing(
     hint_text: str,
     agent_tentacle_id: str,
 ) -> ChannelAddress | None:
-    """Ask the destination channel to create an isolated thread, then announce it.
+    """Ask the destination channel to create an isolated thread.
 
     The existing opener is recorded with its requesting user so the destination
     remains visible in their console. No fallback may reuse an existing chat.
@@ -51,16 +51,6 @@ async def open_crossing(
         )
         return None
     if destination == source_address:
-        await ctx.deps.record_move(
-            source_address,
-            hint_text,
-            agent_tentacle_id=agent_tentacle_id,
-            platform_message_id=opened.channel_thread_id,
-        )
-        # The thread hangs from its opener there, which is the move's line.
-        await ctx.deps.impulses.send(
-            Impulse(GatewayEvent(action="teleport", destination=opened), source_address)
-        )
         return opened
     if profile is not None:
         if profile.channel_tentacle_id != channel.id:
@@ -87,6 +77,34 @@ async def open_crossing(
                 actor_kind="system",
                 segments=[MarkdownSegment(data={"text": hint_text})],
             )
+    return opened
+
+
+async def announce_crossing(
+    ctx: GraphRunContext[ReflexState, ReflexDeps],
+    destination: ChannelAddress,
+    opened: ChannelAddress,
+    source_address: ChannelAddress,
+    hint_text: str,
+    agent_tentacle_id: str,
+) -> None:
+    """Leave the move's line in the chat it left, and say where it landed.
+
+    Called once the history is carried: a fork shows the source's ledger as it
+    stands, and the line is the source's own, not part of what moved.
+    """
+    if destination == source_address:
+        await ctx.deps.record_move(
+            source_address,
+            hint_text,
+            agent_tentacle_id=agent_tentacle_id,
+            platform_message_id=opened.channel_thread_id,
+        )
+        # The thread hangs from its opener there, which is the move's line.
+        await ctx.deps.impulses.send(
+            Impulse(GatewayEvent(action="teleport", destination=opened), source_address)
+        )
+        return
     # A native session's pseudo-channel posts no line, and has no one to post it as.
     line = (
         await ctx.deps.record_move(
@@ -106,4 +124,3 @@ async def open_crossing(
             source_address,
         )
     )
-    return opened

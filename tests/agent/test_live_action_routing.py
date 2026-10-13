@@ -26,6 +26,7 @@ from octomate.tentacles.deepseek.base import DeepseekBridgeContext
 from octomate.types.deferred import DeferredResponseMode
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_thread
+from tests.support.nerve import awake_on, kick_and_wait
 
 type LiveAgent = ClaudeCodeTentacle | CodexTentacle | DeepseekTentacle
 
@@ -271,5 +272,51 @@ async def test_missing_waiter_does_not_determine_response_routing(
             await app.kick(response)
         run.assert_not_awaited()
     else:
-        await app.kick(response)
+        await kick_and_wait(app, response)
         run.assert_awaited_once()
+
+
+async def test_an_answer_that_finds_its_thread_busy_waits_out_the_turn(
+    in_memory_engine: AsyncEngine, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Lark and Discord settle a card before its answer is kicked, so an answer
+    that finds its thread busy is not refused: it resumes its run once the turn
+    running there ends."""
+    app = Octomate()
+    conversation = await app.conversations.ensure(
+        await a_thread(), agent_tentacle_id="codex"
+    )
+    batch = await app.deferred_actions.create_batch(
+        conversation=conversation,
+        agent_tentacle_id="codex",
+        response_mode="resume",
+        run_name="react",
+        source_address=ADDRESS,
+        target_address=ADDRESS,
+        target_mode="main",
+        decision=None,
+        requests=DeferredToolRequests(),
+    )
+    run = AsyncMock()
+    monkeypatch.setattr(reflex_graph, "run", run)
+    # The last wait before the kick looks at the thread.
+    delivered = asyncio.Event()
+    deliver = app.deliver_live_response
+
+    async def delivering(response: DeferredActionBatchResponse) -> str | None:
+        try:
+            return await deliver(response)
+        finally:
+            delivered.set()
+
+    monkeypatch.setattr(app, "deliver_live_response", delivering)
+
+    async with awake_on(app, ADDRESS):
+        answering = asyncio.create_task(
+            kick_and_wait(app, DeferredActionBatchResponse(batch_id=batch.id))
+        )
+        await delivered.wait()
+        assert not answering.done()
+        run.assert_not_awaited()
+    await answering
+    run.assert_awaited_once()

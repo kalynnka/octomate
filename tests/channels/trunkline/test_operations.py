@@ -308,14 +308,14 @@ async def test_teleport_creates_independent_owned_destination(
     # The landing is still recorded, on the model the conversation ran.
     stored = await case.app.threads.get(landed.id)
     assert stored is not None
+    # The history up to the move, and the destination's own opener: the line the
+    # move left in the thread it left is that thread's, and stays there.
     assert [
         (message.actor_kind, message.message_text) for message in stored.messages
     ] == [
         ("agent", "Original history"),
         ("human", "radio check"),
         ("system", "Work here"),
-        # The move's line in the thread it left, shown with that thread's ledger.
-        ("agent", "Work here"),
     ]
     assert stored.latest_handoff is not None
     assert stored.latest_handoff.to_agent_tentacle_id == "first"

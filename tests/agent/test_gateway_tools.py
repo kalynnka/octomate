@@ -122,10 +122,14 @@ async def a_native_call(
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
     )
+
+    async def kick(signal: NativeGatewaySignal) -> None:
+        kicks.append(signal)
+
     server = octomate_mcp(
         fixed_session(session),
         threads,
-        kick=kicks.append,
+        kick=kick,
         manager=McpManager(users=threads.users, cipher=None),
     )
     return server, session, channel, threads, kicks

@@ -30,7 +30,7 @@ from tests.agent.test_codex_transcript_fork import case as case
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project
-from tests.support.nerve import settled
+from tests.support.nerve import kick_and_wait, settled
 from tests.support.users import a_user
 
 
@@ -228,7 +228,7 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
         json={"text": "continue the work"},
     )
     assert sent.status_code == 202
-    await asyncio.gather(*app.background)
+    await asyncio.gather(*app.awakes.values())
     kick.assert_awaited_once()
     after = await app.threads.get(stored.id)
     assert after is not None
@@ -398,7 +398,8 @@ async def test_native_teleport_imports_completed_history_before_resuming(
         source = await app.threads.get(case.source.thread_id)
         assert owner is not None
         assert source is not None
-        await app.kick(
+        await kick_and_wait(
+            app,
             NativeGatewaySignal(
                 decision=TeleportDecision(
                     agent_id=case.tentacle.id,
@@ -408,7 +409,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
                 agent_id=CODEX_NATIVE_ID,
                 user_profile=owner,
                 source=source.key.address(owner.channel_user_id),
-            )
+            ),
         )
     listed = await app.threads.list_threads(user_id=case.owner_id)
     [landed] = [
@@ -458,7 +459,8 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
     assert owner is not None
     assert source is not None
 
-    await app.kick(
+    await kick_and_wait(
+        app,
         NativeGatewaySignal(
             decision=TeleportDecision(
                 agent_id=case.tentacle.id,
@@ -469,7 +471,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
             agent_id=CODEX_NATIVE_ID,
             user_profile=owner,
             source=source.key.address(owner.channel_user_id),
-        )
+        ),
     )
 
     [run] = runner.turns

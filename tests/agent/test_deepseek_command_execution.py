@@ -41,7 +41,7 @@ from tests.agent.test_deepseek_tentacle import (
 )
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import RecordingWorkspaceManager
-from tests.support.nerve import kicked
+from tests.support.nerve import kick_and_wait, kicked
 from tests.support.users import a_user
 
 type Scenario = tuple[Octomate, DeepseekTentacle, FakeChannelTentacle, CommandSignal]
@@ -200,7 +200,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
             else {"commandId": "cmd-1", "result": result}
         )
     )
-    outcome = await asyncio.wait_for(app.kick(signal), 3)
+    outcome = await asyncio.wait_for(kick_and_wait(app, signal), 3)
     assert isinstance(outcome, CommandResult | CommandError)
     assert (
         outcome.status
@@ -242,7 +242,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
     )
     assert isinstance(receipt, ThreadCommand)
     assert receipt.outcome == outcome
-    assert await app.kick(signal) == outcome
+    assert await kick_and_wait(app, signal) == outcome
     assert len(calls_of("commands/execute")) == 2
 
 
@@ -315,7 +315,7 @@ async def test_plan_run_uses_the_existing_command_entry_once(
     )
     assert isinstance(receipt, ThreadCommand)
     assert receipt.outcome == CommandResult()
-    assert await app.kick(signal) == CommandResult()
+    assert await kick_and_wait(app, signal) == CommandResult()
     assert len(calls_of("commands/execute")) == 2
 
 
@@ -332,7 +332,7 @@ async def test_stream_failure_preserves_partial_run_and_fails_receipt(
         ),
     ]
     with pytest.raises(AgentRunError, match="socket failed"):
-        await asyncio.wait_for(app.kick(signal), 3)
+        await asyncio.wait_for(kick_and_wait(app, signal), 3)
     conversation = signal.context.conversation
     assert conversation is not None
     stored = await app.conversations.get(conversation.id)
@@ -365,7 +365,7 @@ async def test_command_turn_uses_live_approval_bridge(scenario: Scenario) -> Non
         ),
     ]
     FakeDeepseekApi.after_respond = turn_events("Approved reply")[1:]
-    result = await asyncio.wait_for(app.kick(signal), 3)
+    result = await asyncio.wait_for(kick_and_wait(app, signal), 3)
     assert isinstance(result, ReflexResult)
     assert len(FakeDeepseekApi.responds) == 1
     assert FakeDeepseekApi.responds[0][1] == OkResult(value="allowed-once")
@@ -392,7 +392,9 @@ async def test_permission_change_is_persisted_from_native_event(
             "data": {"preset": "danger-full-access"},
         }
     ]
-    assert isinstance(await asyncio.wait_for(app.kick(signal), 3), CommandResult)
+    assert isinstance(
+        await asyncio.wait_for(kick_and_wait(app, signal), 3), CommandResult
+    )
     conversation = signal.context.conversation
     assert conversation is not None
     stored = await app.conversations.get(conversation.id)
@@ -418,7 +420,7 @@ async def test_fork_is_refused_before_any_runtime_operation(
         else []
     )
     signal = replace(signal, invocation=CommandInvocation(command_id="fork"))
-    outcome = await app.kick(signal)
+    outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unavailable"
     assert "workspace" in outcome.message
@@ -439,7 +441,7 @@ async def test_goal_commands_never_reach_dsh(
     signal = replace(
         signal, invocation=CommandInvocation(command_id="goal", arguments=arguments)
     )
-    outcome = await app.kick(signal)
+    outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unknown"
     assert not calls_of("commands/execute")
@@ -459,7 +461,7 @@ async def test_client_owned_export_is_refused_before_dispatch(
         ]
     )
     signal = replace(signal, invocation=CommandInvocation(command_id="export"))
-    outcome = await app.kick(signal)
+    outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unavailable"
     assert not calls_of("commands/execute")
@@ -489,7 +491,7 @@ async def test_command_run_applies_selected_model_and_permissions(
         ),
     )
     FakeDeepseekApi.turn_script = turn_events("Plan")
-    await asyncio.wait_for(app.kick(signal), 3)
+    await asyncio.wait_for(kick_and_wait(app, signal), 3)
     assert calls_of("session/selectModel") == [
         {
             "sessionId": "sess-1",

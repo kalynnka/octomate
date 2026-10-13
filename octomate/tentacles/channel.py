@@ -35,7 +35,7 @@ from octomate.config.channels import (
     SlackChannelConfig,
     TrunklineChannelConfig,
 )
-from octomate.schemas.awakes import UserMessageSignal
+from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import ImageSegment, MessageSegment
@@ -404,15 +404,24 @@ class ChannelTentacle(
                         address,
                     )
                     return
-            await self.octomate.kick(
-                UserMessageSignal(
-                    [event],
-                    trigger_thread_message_id=thread_message.id,
+            try:
+                await self.octomate.kick(
+                    UserMessageSignal(
+                        [event],
+                        trigger_thread_message_id=thread_message.id,
+                    )
                 )
-            )
+            except StillAwake:
+                # The message is in the ledger, and the next turn there answers it.
+                logger.info(
+                    "Channel %s: message %s waits for the turn running in %s",
+                    self.id,
+                    event.message_id,
+                    address,
+                )
         except Exception:
-            # The active `ingest` span carries the full error. A turn that failed was
-            # reported to the chat by the graph; a failure before it ran is only logged.
+            # The active `ingest` span carries the full error: one from before the turn
+            # ran, which only this log reports.
             trace_id = format(
                 trace.get_current_span().get_span_context().trace_id, "032x"
             )

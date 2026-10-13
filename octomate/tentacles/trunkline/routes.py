@@ -81,7 +81,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
 from octomate.schemas.agent import AgentInfo
-from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.awakes import DeferredActionBatchResponse, StillAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -314,9 +314,9 @@ def build_trunkline_router(
                 hint=body["hint"],
                 prompt=prompt,
             )
-        except GatewayRefusal as exc:
+            await octomate.kick(session.thread_operation())
+        except (GatewayRefusal, StillAwake) as exc:
             raise HTTPException(409, str(exc)) from exc
-        octomate.kick_soon(session.thread_operation())
 
     @router.post("/threads/{thread_id}/summon", status_code=202, response_model=None)
     async def summon_thread(
@@ -332,9 +332,9 @@ def build_trunkline_router(
                 brief=body["brief"],
                 effort=body.get("effort"),
             )
-        except GatewayRefusal as exc:
+            await octomate.kick(session.thread_operation())
+        except (GatewayRefusal, StillAwake) as exc:
             raise HTTPException(409, str(exc)) from exc
-        octomate.kick_soon(session.thread_operation())
 
     @router.get("/health", include_in_schema=False)
     async def health() -> JSONResponse:
@@ -554,7 +554,7 @@ def build_trunkline_router(
         )
         try:
             await channel.handle_directive(directive)
-        except RouteLockedError as error:
+        except (RouteLockedError, StillAwake) as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
@@ -685,7 +685,14 @@ def build_trunkline_router(
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
-        octomate.kick_soon(
+        if (
+            batch.response_mode == "resume"
+            and ThreadKey.from_address(batch.source_address) in octomate.awakes
+        ):
+            # The kick would wait out the turn running there, holding this
+            # request open for as long.
+            raise HTTPException(status_code=409, detail=str(StillAwake()))
+        await octomate.kick(
             DeferredActionBatchResponse(
                 batch_id=batch_id,
                 responder_id=str(user.id),

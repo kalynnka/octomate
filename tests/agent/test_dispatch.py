@@ -25,11 +25,11 @@ from octomate.config.channels import ChatRecapConfig
 from octomate.database import async_session
 from octomate.prompts import untagged
 from octomate.reflex.state import RECAP_HEADER
-from octomate.schemas.awakes import UserMessageSignal
+from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadMessage
+from octomate.schemas.thread import ThreadKey, ThreadMessage
 from octomate.schemas.triage import (
     Claim,
     SummonDecision,
@@ -46,7 +46,7 @@ from tests.support.channels import (
     RecordingInk,
 )
 from tests.support.managers import a_loaded_thread, the_sub_thread
-from tests.support.nerve import kicked
+from tests.support.nerve import awake_on, held, kicked
 from tests.support.scenarios import mid_run_notice
 
 
@@ -311,6 +311,67 @@ async def test_chained_summon_updates_thread_owner() -> None:
     assert handoff_thread.active_agent_tentacle_id == "second"
     assert [turn.prompt for turn in first.turns] == ["First agent brief."]
     assert [turn.prompt for turn in second.turns] == ["Second agent brief."]
+
+
+async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
+    """One reflex per thread at a time, so whatever the thread hears between a
+    reflex waking and falling asleep is that reflex's. A second kick is refused
+    before it publishes anything, and the caller hears the refusal."""
+    octomate = Octomate()
+    entry = FakeAgent(reception_output="answered")
+    channel = FakeChannelTentacle(config=_entry_config(stream=False))
+    _register_agents(octomate, entry)
+    octomate.connect(channel)
+    thread = ThreadKey.from_address(_key(thread_id="t1"))
+    signal = UserMessageSignal([_event(text="hello", thread_id="t1")])
+
+    reflex = await octomate.kick(signal)
+    with octomate.nerve.subscribe(thread) as live:
+        with pytest.raises(StillAwake):
+            await octomate.kick(signal)
+        assert held(live) == []
+    assert reflex is not None
+    await reflex
+    assert len(entry.turns) == 1
+
+    # Asleep again, the thread takes the next kick, and holds nothing after it.
+    await kicked(octomate, signal)
+    assert len(entry.turns) == 2
+    assert octomate.awakes == {}
+
+
+async def test_a_message_on_an_awake_thread_waits_in_the_ledger(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The message is recorded before the kick, and the next turn on the thread
+    answers what stacked up behind the running one: the refusal is nobody's error."""
+    octomate = Octomate()
+    entry = FakeAgent(reception_output="unused")
+    channel = FakeChannelTentacle(config=_entry_config(stream=False))
+    _register_agents(octomate, entry)
+    octomate.connect(channel)
+    thread = _key(thread_id="t1")
+
+    with caplog.at_level("INFO"):
+        async with awake_on(octomate, thread):
+            await channel.ingest(
+                {
+                    "message_id": "m2",
+                    "user_id": "alice",
+                    "chat_id": "alice",
+                    "chat_type": "thread",
+                    "thread_id": "t1",
+                    "segments": [TextSegment(data={"text": "and another thing"})],
+                }
+            )
+
+    assert entry.turns == []
+    loaded = await a_loaded_thread(octomate.threads, thread)
+    assert [message.message_text for message in loaded.messages] == [
+        "and another thing"
+    ]
+    assert "waits for the turn running" in caplog.text
+    assert "error in ingest" not in caplog.text
 
 
 async def test_teleport_forks_history_into_a_sub_thread_and_resumes() -> None:
