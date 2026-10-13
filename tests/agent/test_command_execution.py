@@ -199,7 +199,7 @@ async def test_direct_execution_preserves_input_and_invalidates_catalogs(
     assert not manager.catalogs
     assert not app.gateway.sessions
     assert not agent.turns
-    assert not agent.streams
+    assert not agent.turns
     assert context.cwd is not None
     assert not context.cwd.exists()
 

@@ -55,6 +55,7 @@ from tests.channels.slack.test_oauth import slack_transport
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
 from tests.support.mcp import discover, install_tentacle
+from tests.support.nerve import drained
 from tests.support.users import a_api_key, a_user, auth_config
 
 ENCRYPTION_KEY = SecretStr(urlsafe_b64encode(bytes(range(32))).decode())
@@ -85,13 +86,15 @@ async def db(in_memory_engine: AsyncEngine) -> None:
 
 class ServedSlackTentacle(SlackTentacle):
     """The Slack tentacle as the served app starts it, minus the socket: the app's
-    lifespan enters every channel, and a test workspace has no Slack to reach."""
+    lifespan enters every channel, and a test workspace has no Slack to reach. Its
+    siphon starts as any channel's does, so it draws what the nerve carries."""
 
     async def __aenter__(self) -> Self:
+        self.siphon.start()
         return self
 
     async def __aexit__(self, *exc: object) -> None:
-        return None
+        await self.siphon.stop()
 
 
 async def a_deployment() -> Octomate:
@@ -145,6 +148,7 @@ async def a_slack_turn(
         channels={channel.id: channel, "im": FakeChannelTentacle(octomate=octomate)},
         conversation_id=uuid7(),
         conversation_address=address,
+        nerve=octomate.nerve,
         users=octomate.users,
         user_profile=await octomate.users.profile(channel.id, "U1"),
     )
@@ -188,13 +192,14 @@ def browser(app: FastAPI) -> httpx.AsyncClient:
     )
 
 
-async def connected(app: FastAPI, ink: FakeSlackInk, client: Client) -> None:
+async def connected(app: Octomate, ink: FakeSlackInk, client: Client) -> None:
     """Link `steve`'s account as they would: ask for the link, open it, and come
     back from Slack with a code."""
     result = await client.call_tool(CONNECT_TOOL, SLACK)
     assert result.data == (
         "The authorization link is on its way to this user's direct messages."
     )
+    await drained(*app.channels.values())
     async with browser(app) as http:
         opened = await http.get(button_url(ink))
         assert opened.status_code == 307
@@ -311,7 +316,7 @@ async def test_slacks_tools_act_as_the_person_from_any_channel() -> None:
 
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
-            await connected(app, ink, client)
+            await connected(octomate, ink, client)
 
         async with (
             upstream_app.router.lifespan_context(upstream_app),
@@ -376,6 +381,7 @@ async def test_the_link_goes_to_their_direct_messages_and_nowhere_else() -> None
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
             result = await client.call_tool(CONNECT_TOOL, SLACK)
+        await drained(channel)
 
     # Asked from a shared thread, so the card went to `U1`'s own DM, and the
     # model was given nothing it could repeat into the thread.
@@ -398,7 +404,7 @@ async def test_a_connected_caller_is_listed_slacks_tools_and_acts_as_themselves(
     async with served(octomate) as (octomate, app):
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
-            await connected(app, ink, client)
+            await connected(octomate, ink, client)
             status = await client.call_tool(CONFIRM_TOOL, SLACK)
         assert status.data == (
             "personal/slack is connected and available through namespace discovery."
@@ -436,7 +442,7 @@ async def test_a_token_slack_has_revoked_retires_the_connection() -> None:
     async with served(octomate) as (octomate, app):
         session = await a_slack_turn(octomate, channel, a_slack_thread())
         async with over(octomate, app, naming(session)) as client:
-            await connected(app, ink, client)
+            await connected(octomate, ink, client)
 
         refusing = httpx2.MockTransport(lambda request: httpx2.Response(401))
         async with in_memory(channel, session, refusing) as client:

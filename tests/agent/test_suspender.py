@@ -103,7 +103,7 @@ async def test_human_review_suspender_persists_batch_and_records_id() -> None:
     assert conversations.ensured == [(thread_id, "inkling")]
 
 
-async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() -> None:
+async def test_suspender_returns_batch_event_without_rendering() -> None:
     address = _key()
     question = DeferredQuestion(
         tool_name="ask_questions",
@@ -131,13 +131,12 @@ async def test_suspender_emit_on_stream_returns_batch_event_without_rendering() 
         target_mode="sub",
         decision=None,
         thread_id=uuid7(),
-        emit_on_stream=True,
     )
 
     event = await suspender.suspend(_requests())
 
     # Persisted (batch id recorded) and handed back as one event — rendered nothing
-    # through the channel (that is the consumer's job).
+    # through the channel (that is its siphon's job, off the run's stream).
     assert suspender.suspended_batch_id == batch.id
     assert channel.sent == []
 
@@ -238,10 +237,7 @@ async def test_a_teleport_beside_another_deferral_is_refused() -> None:
         )
 
 
-@pytest.mark.parametrize("streamed", [True, False])
-async def test_a_live_run_pauses_on_its_batch_without_suspending(
-    streamed: bool,
-) -> None:
+async def test_a_live_run_pauses_on_its_batch_without_suspending() -> None:
     address = _key()
     question = DeferredQuestion(
         tool_name="ask_questions",
@@ -263,22 +259,15 @@ async def test_a_live_run_pauses_on_its_batch_without_suspending(
         target_mode="main",
         decision=None,
         thread_id=uuid7(),
-        emit_on_stream=streamed,
     )
 
     batch_id = uuid7()
-    paused, event = await suspender.pause(_requests(), batch_id=batch_id)
+    event = await suspender.pause(_requests(), batch_id=batch_id)
 
-    assert paused is batch
     # The batch is the one the caller already waits on, and its reply is live.
-    assert (paused.id, paused.response_mode) == (batch_id, "live")
+    assert (batch.id, batch.response_mode) == (batch_id, "live")
     # The run stays live, so nothing records it as ended suspended.
     assert suspender.suspended_batch_id is None
-    if streamed:
-        # The run's own stream presents it; the channel is not touched.
-        assert event == ActionBatchEvent.from_batch(cast(DeferredActionBatch, batch))
-        assert channel.sent == []
-    else:
-        # Nothing draws the run, so the channel shows the cards now.
-        assert event is None
-        assert "What should I clarify?" in channel.sent[0][2][0]["text"]
+    # The run's own stream presents it; the channel is not touched.
+    assert event == ActionBatchEvent.from_batch(cast(DeferredActionBatch, batch))
+    assert channel.sent == []

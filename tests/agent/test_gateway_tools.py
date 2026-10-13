@@ -47,6 +47,7 @@ from octomate.tentacles.trunkline import TrunklineTentacle
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import FakeThreadManager, fixed_session
+from tests.support.nerve import drawing, held
 from tests.support.users import a_user
 
 CLAUDE_ROUTE = AgentRoute(
@@ -76,6 +77,7 @@ def a_turn(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id="inkling",
         channels={"im": channel},
+        nerve=channel.octomate.nerve,
         conversation_address=ChannelAddress(
             channel_tentacle_id="im",
             chat_type="thread" if in_thread else "group",
@@ -115,6 +117,7 @@ async def a_native_call(
         channel_routes={"im": [CLAUDE_ROUTE]},
         current_agent_id=CLAUDE_NATIVE_ID,
         channels={"im": channel},
+        nerve=channel.octomate.nerve,
         users=users,
         user_profile=await users.native_profile(CLAUDE_NATIVE_ID, "luhui"),
         native=True,
@@ -315,7 +318,7 @@ async def test_teleport_records_and_tells_the_runtime_to_wrap_up() -> None:
 async def test_send_here_delivers_immediately_to_the_conversation() -> None:
     server, _session, channel, threads = a_turn()
 
-    async with Client(server) as client:
+    async with drawing(channel), Client(server) as client:
         result = await client.call_tool(
             "gateway_send",
             {"segments": [{"type": "markdown", "data": {"text": "halfway there"}}]},
@@ -348,6 +351,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         channel_routes={"trunkline": []},
         current_agent_id="claude",
         channels={"trunkline": console},
+        nerve=octomate.nerve,
         conversation_address=address,
     )
     server = octomate_mcp(
@@ -361,7 +365,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
                 "gateway_send",
                 {"segments": [{"type": "markdown", "data": {"text": "halfway"}}]},
             )
-        shown = live.receive_nowait()
+        [shown] = [impulse.event for impulse in held(live)]
 
     assert result.data == "sent"
     assert isinstance(shown, MessageSentEvent)

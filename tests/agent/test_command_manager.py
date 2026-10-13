@@ -128,7 +128,7 @@ async def test_cache_preserves_extensions_and_returns_independent_copies(
     assert descriptor.path == Path("skill")
     assert len(agent.calls) == 1
     assert agent.turns == []
-    assert agent.streams == []
+    assert agent.turns == []
     assert context.cwd is not None
     assert not context.cwd.exists()
     assert context.conversation is not None

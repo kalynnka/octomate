@@ -66,6 +66,7 @@ from tests.support.channels import (
     RecordingQuestionFeeler,
     RecordingTimeline,
     bound,
+    carried,
     drive,
 )
 from tests.support.managers import FakeActionManager
@@ -164,7 +165,7 @@ async def test_timeline_pairs_parallel_subagents_with_their_results() -> None:
     ]
 
     async with timeline.open(_key()) as state:
-        await state.drive(play(events))
+        await state.drive(carried(play(events)))
 
     assert len(timeline.subagent_states) == 3
     states = {state.activity.invocation_id: state for state in timeline.subagent_states}
@@ -192,7 +193,7 @@ async def test_each_whisper_opens_a_fresh_timeline() -> None:
         ),
     ]
     async with timeline.open(_key()) as state:
-        await state.drive(play(events))
+        await state.drive(carried(play(events)))
 
     first, second = timeline.subagent_states
     assert first.activity.kind == second.activity.kind == "whisper"
@@ -217,7 +218,7 @@ async def test_subagent_renderer_failures_do_not_interrupt_the_parent_stream() -
         channel = FakeChannelTentacle()
         bound(timeline, channel, _key())
         async with timeline.open(_key()) as state:
-            await state.drive(play(events))
+            await state.drive(carried(play(events)))
 
 
 async def test_default_timeline_omits_subagent_activity() -> None:
@@ -357,7 +358,9 @@ async def present_one_approval(timeline: NoopTimeline) -> list[tuple[str, object
     bound(timeline, channel, _key("target"))
     async with timeline.open(_key("target")) as state:
         await state.drive(
-            play([ActionBatchEvent(batch_id=str(uuid7()), approvals=[_approval()])])
+            carried(
+                play([ActionBatchEvent(batch_id=str(uuid7()), approvals=[_approval()])])
+            )
         )
     return [(str(address), actions) for address, actions in approvals.presented]
 
@@ -417,7 +420,7 @@ async def test_default_timeline_rotates_answer_messages() -> None:
 
     async with channel.feelers.timeline.open(address) as state:
         await state.drive(
-            play(mid_run_notice(notice="first notice", answer="final answer"))
+            carried(play(mid_run_notice(notice="first notice", answer="final answer")))
         )
 
     assert [sent[2][0]["text"] for sent in channel.sent] == [

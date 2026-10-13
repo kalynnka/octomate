@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-import anyio
 import httpx
 import pytest
 from pydantic import AnyHttpUrl, JsonValue
@@ -20,12 +19,10 @@ from octomate.capabilities.harness.events import (
     LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
-    wire_event_adapter,
 )
-from octomate.config.channels import NapcatChannelConfig, TrunklineChannelConfig
+from octomate.config.channels import NapcatChannelConfig
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.conversation import ChannelAddress, ChatType
-from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.channel import Ink
 from octomate.tentacles.feelers.oauth import AuthorizationEvent, PlainTextOAuthFeeler
@@ -44,7 +41,6 @@ from octomate.tentacles.slack.feelers.oauth import (
 )
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
-from octomate.tentacles.trunkline.base import TrunklineTentacle
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkCardsInk
 from tests.support.channels import FakeOAuthInk, RecordingInk, RecordingMarkdownFeeler
@@ -127,40 +123,6 @@ async def test_napcat_authorizations_keep_literal_urls_in_private_messages(
         assert event.authorization_uri in text
     if isinstance(event, OAuthDeviceAuthorizationEvent):
         assert event.user_code in text
-
-
-@pytest.mark.parametrize("event", [AUTHORIZATION, LINK_AUTHORIZATION])
-async def test_trunkline_feeler_streams_authorization_without_markdown(
-    event: OAuthAuthorizationEvent,
-) -> None:
-    channel = TrunklineTentacle(
-        "web", Octomate(), config=TrunklineChannelConfig(agents=["agent"])
-    )
-    key = ThreadKey.from_address(_address("web"))
-    with channel.octomate.nerve.subscribe(key) as live:
-        message_id = await channel.feelers.oauth.present(_address("web"), event)
-        item = live.receive_nowait()
-    assert message_id is not None
-    assert item is event
-    assert json.loads(wire_event_adapter.dump_json(item)) == event.model_dump(
-        mode="json"
-    )
-
-
-async def test_trunkline_refuses_profile_linking_and_group_codes() -> None:
-    channel = TrunklineTentacle(
-        "web", Octomate(), config=TrunklineChannelConfig(agents=["agent"])
-    )
-    key = ThreadKey.from_address(_address("web"))
-    with channel.octomate.nerve.subscribe(key) as live:
-        with pytest.raises(RuntimeError, match="does not support profile linking"):
-            await channel.feelers.oauth.present(_address("web"), HOST_AUTHORIZATION)
-        with pytest.raises(RuntimeError, match="not going to a group"):
-            await channel.feelers.oauth.present(
-                _address("web", "group", shared=True), LINK_AUTHORIZATION
-            )
-        with pytest.raises(anyio.WouldBlock):
-            live.receive_nowait()
 
 
 def _obj(value: JsonValue) -> JsonObject:

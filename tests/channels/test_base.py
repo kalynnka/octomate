@@ -1,4 +1,4 @@
-"""ChannelTentacle base pipeline: ingest, consume/drive_timeline, sub-threads."""
+"""ChannelTentacle base pipeline: ingest, drawing a run on the timeline, sub-threads."""
 
 from __future__ import annotations
 
@@ -57,6 +57,8 @@ from tests.support.channels import (
     RecordingDeferredActions,
     RecordingTimeline,
     bound,
+    carried,
+    drive,
 )
 from tests.support.managers import a_loaded_thread
 from tests.support.scenarios import (
@@ -457,7 +459,7 @@ async def test_consume_renders_answer_and_drains_stream(
         drained = True
 
     with caplog.at_level("WARNING"):
-        message_id = await channel.consume(_key(), events())
+        message_id = await drive(channel, _key(), events())
 
     assert message_id is not None
     assert len(channel.sent) == 1
@@ -477,7 +479,7 @@ async def test_consume_renders_raw_text_answer(
         yield PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="answer"))
         yield AgentRunResultEvent(AgentRunResult("raw answer"))
 
-    await channel.consume(_key(), events())
+    await drive(channel, _key(), events())
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "raw answer"
@@ -492,7 +494,7 @@ async def test_consume_falls_back_to_final_output_when_no_text_streamed(
         # No streamed answer text — only the terminal result carries the reply.
         yield AgentRunResultEvent(AgentRunResult("just the final"))
 
-    await channel.consume(_key(), events())
+    await drive(channel, _key(), events())
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "just the final"
@@ -509,7 +511,7 @@ async def test_consume_falls_back_to_stringified_final_output(
     ]:
         yield AgentRunResultEvent(AgentRunResult("said once, at the end"))
 
-    await channel.consume(_key(), events())
+    await drive(channel, _key(), events())
 
     assert len(channel.sent) == 1
     assert channel.sent[0][2][0]["text"] == "said once, at the end"
@@ -518,7 +520,7 @@ async def test_consume_falls_back_to_stringified_final_output(
 async def test_consume_falls_back_to_final_segments_when_no_segments_streamed(
     channel: FakeChannelTentacle,
 ) -> None:
-    await channel.consume(_key(), play(plain_segments(image_file=None)))
+    await drive(channel, _key(), play(plain_segments(image_file=None)))
 
     assert len(channel.sent) == 1
     text = channel.sent[0][2][0]["text"]
@@ -529,7 +531,7 @@ async def test_consume_falls_back_to_final_segments_when_no_segments_streamed(
 async def test_consume_renders_streamed_segments(
     channel: FakeChannelTentacle,
 ) -> None:
-    await channel.consume(_key(), play(segments_reply(image_file=None)))
+    await drive(channel, _key(), play(segments_reply(image_file=None)))
 
     assert len(channel.sent) == 1
     text = channel.sent[0][2][0]["text"]
@@ -553,7 +555,7 @@ async def test_consume_appends_todo_checklist_to_final_message(
         yield TodoCompletedEvent(todo=todo)
         yield PartStartEvent(index=0, part=TextPart(content="done"))
 
-    await channel.consume(_key(), events())
+    await drive(channel, _key(), events())
 
     # The answer-only timeline has no live transport: the latest todo snapshot
     # rides under the final message as a checklist.
@@ -589,7 +591,7 @@ async def test_consume_renders_and_marks_action_batch(
             batch_id="b1", questions=[question], approvals=[approval]
         )
 
-    await channel.consume(_key(), events())
+    await drive(channel, _key(), events())
 
     # The batch renders through the channel's (plaintext) question/approval feelers
     # as a unit, and each presented action is marked with its message id.
@@ -619,7 +621,8 @@ async def test_consume_renders_streamed_deferred_requests_once(
         id="chan1", octomate=FakeOctomate(deferred_actions=actions)
     )
 
-    await channel.consume(
+    await drive(
+        channel,
         _key(),
         play(action_batch(batch_id="b1", questions=[question], approvals=[approval])),
     )
@@ -635,7 +638,7 @@ async def test_consume_skips_plan_tool_events(
 ) -> None:
     state = RecordingTimeline()
 
-    await bound(state, channel, _key()).drive(play(plan_tool_noise()))
+    await bound(state, channel, _key()).drive(carried(play(plan_tool_noise())))
 
     # The plan tool call AND its paired result are both dropped.
     assert "tool_start" not in state.names()
@@ -648,7 +651,7 @@ async def test_drive_timeline_renders_message_sent_and_skips_the_tool(
 ) -> None:
     state = RecordingTimeline()
 
-    await bound(state, channel, _key()).drive(play(message_sent()))
+    await bound(state, channel, _key()).drive(carried(play(message_sent())))
 
     # The `send` tool call/result render nothing (skipped); the
     # MessageSentEvent renders its segments as reply content.
@@ -664,7 +667,7 @@ async def test_drive_timeline_dispatches_each_event_kind(
 ) -> None:
     state = RecordingTimeline()
 
-    await bound(state, channel, _key()).drive(play(showcase()))
+    await bound(state, channel, _key()).drive(carried(play(showcase())))
 
     assert state.names() == [
         "thinking_start",
@@ -690,7 +693,7 @@ async def test_drive_timeline_rotates_on_mid_run_notice(
 ) -> None:
     state = RecordingTimeline()
 
-    await bound(state, channel, _key()).drive(play(mid_run_notice()))
+    await bound(state, channel, _key()).drive(carried(play(mid_run_notice())))
 
     # Rotation fires exactly once: after the notice deltas, before the new
     # round's thinking — never for the in-flight tool's result.
@@ -703,7 +706,7 @@ async def test_drive_timeline_rotates_on_mid_run_notice(
 async def test_default_timeline_sends_mid_run_notice_as_own_message(
     channel: FakeChannelTentacle,
 ) -> None:
-    await channel.consume(_key(), play(mid_run_notice()))
+    await drive(channel, _key(), play(mid_run_notice()))
 
     # No streaming transport: the notice flushes as its own message when the
     # run continues, and the final answer arrives separately.
@@ -732,7 +735,7 @@ async def test_drive_timeline_keeps_draining_after_render_failure(
         drained = True
 
     with caplog.at_level("WARNING"):
-        await bound(state, channel, _key()).drive(events())
+        await bound(state, channel, _key()).drive(carried(events()))
 
     assert drained
     assert "timeline render failed" in caplog.text
@@ -807,6 +810,6 @@ async def test_consume_says_nothing_for_a_run_that_parked(
         )
         yield AgentRunResultEvent(AgentRunResult(requests))
 
-    await channel.consume(_key(), events())
+    await drive(channel, _key(), events())
 
     assert channel.sent == []

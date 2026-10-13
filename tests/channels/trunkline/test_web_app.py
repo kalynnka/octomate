@@ -51,6 +51,7 @@ from octomate.tentacles.trunkline.base import (
     RouteLockedError,
     TrunklineDirective,
 )
+from octomate.types.json import JsonObject
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
@@ -111,7 +112,7 @@ async def _post(
     thread_id: str = "thread-1",
     model: str | None = None,
     project: str | None = None,
-) -> list[dict[str, object]]:
+) -> list[JsonObject]:
     key = ThreadKey.from_address(_console_address(thread_id))
     with channel.octomate.nerve.subscribe(key) as live:
         await channel.handle_directive(
@@ -144,7 +145,7 @@ async def _send(
     return response
 
 
-def _streamed_text(events: list[dict[str, object]]) -> str:
+def _streamed_text(events: list[JsonObject]) -> str:
     """Concatenate the reply text from the native part events."""
     deltas: list[str] = []
     for event in events:
@@ -234,13 +235,14 @@ class ConsoleSocket:
         )
 
     async def kinds_until_settled(self) -> list[str]:
-        """The kinds of the events the socket carries, up to the run's settling."""
+        """The kinds of the events the socket carries, up to the reflex falling
+        asleep."""
         kinds: list[str] = []
         while True:
             message = await self.outbound.get()
             assert message["type"] == "websocket.send"
             kind = json.loads(message["text"])["event_kind"]
-            if kind == "run_settled":
+            if kind == "reflex_asleep":
                 return kinds
             kinds.append(kind)
 
@@ -254,7 +256,7 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
 ) -> None:
     """The console's whole live path: the socket opens on the key a thread will
     have, the directive is answered at once, and the run's events arrive on the
-    socket with the run's settling last. The thread is then watched by its row
+    socket until the reflex falls asleep. The thread is then watched by its row
     id, as any channel's thread is."""
     octomate = Octomate()
     agent, _ = build_scripted_agent(["all done!", "and again"])
@@ -284,8 +286,8 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
         await socket.leave()
 
     assert "part_start" in first
-    assert first[-1] == "run_result"
-    assert second[-1] == "run_result"
+    assert first[-2:] == ["run_result", "run_ended"]
+    assert second[-2:] == ["run_result", "run_ended"]
 
 
 async def test_a_live_socket_names_one_thread(in_memory_engine: AsyncEngine) -> None:
@@ -316,13 +318,15 @@ async def test_directive_streams_native_events(
     kinds = [event["event_kind"] for event in payload]
 
     assert "part_start" in kinds
-    assert kinds[-1] == "run_result"
+    assert kinds[-2:] == ["run_result", "run_ended"]
     assert "run_error" not in kinds
     assert "all done!" in _streamed_text(payload)
-    run_result = payload[-1]
+    run_result = payload[-2]
     usage = run_result["usage"]
     assert isinstance(usage, dict)
-    assert usage["requests"] >= 1
+    requests = usage["requests"]
+    assert isinstance(requests, int)
+    assert requests >= 1
 
 
 async def test_directive_streams_every_text_delta(
@@ -475,7 +479,10 @@ async def test_routes_offer_and_run_all_registered_agents(
         channel, "hello", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
     )
 
-    assert payload[-1]["event_kind"] == "run_result"
+    assert [event["event_kind"] for event in payload[-2:]] == [
+        "run_result",
+        "run_ended",
+    ]
     assert "from inkling" in _streamed_text(payload)
     thread = await octomate.threads.ensure(_console_address())
     assert thread.active_agent_tentacle_id == "inkling"
@@ -521,8 +528,8 @@ async def test_model_choices_keep_only_the_configured_entry_default(
     reply = await _post(channel, "one", model=selected_route)
     await _post(channel, "two", model=selected_route)
 
-    assert reply[-1]["output"] == "handled"
-    assert [turn.model for turn in agent.streams] == [None, None]
+    assert reply[-2]["output"] == "handled"
+    assert [turn.model for turn in agent.turns] == [None, None]
     thread = await octomate.threads.ensure(_console_address())
     assert thread.active_model is None
     assert len(thread.handoffs) == 1

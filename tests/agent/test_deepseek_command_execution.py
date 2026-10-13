@@ -41,6 +41,7 @@ from tests.agent.test_deepseek_tentacle import (
 )
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import RecordingWorkspaceManager
+from tests.support.nerve import kicked
 from tests.support.users import a_user
 
 type Scenario = tuple[Octomate, DeepseekTentacle, FakeChannelTentacle, CommandSignal]
@@ -283,7 +284,7 @@ async def test_plan_run_uses_the_existing_command_entry_once(
         },
     )
     FakeDeepseekApi.turn_script = native
-    result = await asyncio.wait_for(app.kick(signal), 3)
+    result = await asyncio.wait_for(kicked(app, signal), 3)
     assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "The actual plan"

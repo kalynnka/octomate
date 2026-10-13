@@ -631,7 +631,8 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
 
     assert getattr(FakeClaudeClient.last_options, "env", None) == {
-        "CLAUDE_CODE_ENTRYPOINT": "cli"
+        "CLAUDE_CODE_ENTRYPOINT": "cli",
+        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
     }
 
 

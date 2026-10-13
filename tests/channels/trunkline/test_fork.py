@@ -1,6 +1,7 @@
 """Teleporting native Codex history through the authenticated console API: the
 import into a thread a driven agent carries on in."""
 
+import asyncio
 from collections.abc import AsyncGenerator
 from io import BytesIO
 from pathlib import Path
@@ -222,13 +223,12 @@ async def test_a_native_session_lands_in_an_owned_thread_its_agent_carries_on(
 
     kick = AsyncMock()
     monkeypatch.setattr(app, "kick", kick)
-    with app.nerve.subscribe(stored.key) as live:
-        sent = await client.post(
-            f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
-            json={"text": "continue the work"},
-        )
-        assert sent.status_code == 202
-        await settled(live)
+    sent = await client.post(
+        f"/api/trunkline/threads/{stored.channel_thread_id}/messages",
+        json={"text": "continue the work"},
+    )
+    assert sent.status_code == 202
+    await asyncio.gather(*app.background)
     kick.assert_awaited_once()
     after = await app.threads.get(stored.id)
     assert after is not None
@@ -369,7 +369,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
             "far", UserProfile(channel_user_id="alice", user_id=case.owner_id)
         )
     case.tentacle.models = {"gpt-6-luna": "test"}
-    runner = FakeAgent(id=case.tentacle.id, allow_reception_run=True)
+    runner = FakeAgent(id=case.tentacle.id)
     monkeypatch.setattr(case.tentacle, "run", runner.run)
     monkeypatch.setattr(case.tentacle, "run_stream_events", runner.run_stream_events)
     path = f"/api/trunkline/threads/{case.source.thread_id}"
@@ -428,7 +428,7 @@ async def test_native_teleport_imports_completed_history_before_resuming(
     assert not landed.handoffs
     # Nothing runs there until someone writes: neither the console nor the session
     # asked to carry on.
-    assert [*runner.turns, *runner.streams] == []
+    assert runner.turns == []
     assert (
         await app.conversations.get(case.source.id)
     ).external_id == case.source.external_id
@@ -439,7 +439,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
 ) -> None:
     app = case.tentacle.octomate
     case.tentacle.models = {"gpt-6-luna": "test"}
-    runner = FakeAgent(id=case.tentacle.id, allow_reception_run=True)
+    runner = FakeAgent(id=case.tentacle.id)
     monkeypatch.setattr(case.tentacle, "run", runner.run)
     monkeypatch.setattr(case.tentacle, "run_stream_events", runner.run_stream_events)
     options = (
@@ -472,7 +472,7 @@ async def test_a_native_session_that_asks_to_carry_on_runs_where_it_lands(
         )
     )
 
-    [run] = [*runner.turns, *runner.streams]
+    [run] = runner.turns
     assert run.model == "test"
     assert "Continuing the conversation here." in str(run.prompt)
 
@@ -483,7 +483,7 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
     """The prompt is the user's next message there, so the turn reads it with the
     import notice still waiting, as a message typed there would."""
     case.tentacle.models = {"gpt-6-luna": "test"}
-    runner = FakeAgent(id=case.tentacle.id, allow_reception_run=True)
+    runner = FakeAgent(id=case.tentacle.id)
     monkeypatch.setattr(case.tentacle, "run", runner.run)
     monkeypatch.setattr(case.tentacle, "run_stream_events", runner.run_stream_events)
     path = f"/api/trunkline/threads/{case.source.thread_id}"
@@ -503,7 +503,7 @@ async def test_a_native_session_with_a_prompt_answers_it_where_it_lands(
         kinds = [event["event_kind"] for event in await settled(live)]
 
     assert "run_error" not in kinds
-    [run] = [*runner.turns, *runner.streams]
+    [run] = runner.turns
     assert run.model == "test"
     assert "Ship it" in str(run.prompt)
     assert f"Forked from conversation {case.source.id}." in str(run.prompt)

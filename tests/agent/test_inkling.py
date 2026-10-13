@@ -47,7 +47,6 @@ from octomate.capabilities.todos import TodoCapability
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
-    DeferredActionBatch,
     DeferredActionCollection,
     DeferredApproval,
 )
@@ -98,7 +97,7 @@ class StubSuspender:
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
-    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+    ) -> ActionBatchEvent:
         raise AssertionError("an Inkling run suspends; it never pauses live")
 
 

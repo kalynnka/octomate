@@ -57,12 +57,12 @@ const options: ThreadOperations = { source: here, teleport: refused, summon: inP
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 /** The relay answers a request at once; the thread's socket carries the turn, settling last. */
 const live = (...events: WireEvent[]) => {
-  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'run_settled' }))
+  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'reflex_asleep' }))
   return new Response(null, { status: 202 })
 }
 /** A command answers with its outcome once the socket has carried its feedback. */
 const answered = (outcome: CommandOutcomeEvent, ...events: WireEvent[]) => {
-  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'run_settled' }))
+  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'reflex_asleep' }))
   return Response.json(outcome)
 }
 
@@ -223,7 +223,7 @@ test('a move the agent makes after the operation is where it ends', async () => 
 })
 
 const landedAt: ChannelAddress = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: 'landed-key', shared: false }
-const started: WireEvent = { event_kind: 'custom', name: 'run_started', address: landedAt }
+const started: WireEvent = { event_kind: 'run_started', address: landedAt }
 const refusedRun: WireEvent = { event_kind: 'run_error', message: 'The model refused.', trace_id: 'abc' }
 const moved: GatewayEvent = { ...gateway, destination: landedAt }
 
@@ -291,7 +291,7 @@ test('a result keeps the thread busy until the run settles, then refreshes opera
   await tick()
   assert.equal(useConsole.getState().running, true)
   assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, false)
-  socket.deliver({ event_kind: 'run_settled' })
+  socket.deliver({ event_kind: 'reflex_asleep' })
   for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
   assert.equal(useConsole.getState().running, false)
   assert.ok(socket.closed)
@@ -306,7 +306,7 @@ for (const initiator of ['operator', 'agent']) {
     const opening = { kind: 'session-open' as const, uid: 'saved-divider', sessionId: 'new-session', text: 'codex · new-model', tone: 'summon' as const }
     mock.method(api, 'getThreadDetail', async () => ({ ...detail, sessions: [...detail.sessions, { ...session, id: opening.sessionId, conversationId: 'new-conversation', agent: 'codex', route: opening.text }], ledger: [opening] }))
     const transport = mock.method(globalThis, 'fetch', async (url: RequestInfo | URL) => String(url).endsWith('/summon') || String(url).endsWith('/messages')
-      ? live(...(initiator === 'agent' ? [{ ...result, output: 'Handing over.' }] : []), { ...gateway, action: 'summon', destination: here }, { event_kind: 'custom', name: 'run_started', address: here }, result)
+      ? live(...(initiator === 'agent' ? [{ ...result, output: 'Handing over.' }] : []), { ...gateway, action: 'summon', destination: here }, { event_kind: 'run_started', address: here }, result)
       : Response.json([{ ...destination, id: 'source', channel_tentacle_id: here.channel_tentacle_id, chat_id: here.chat_id, channel_thread_id: here.channel_thread_id }]))
     const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
     let beforeReply: string[] = []

@@ -463,12 +463,14 @@ class FakeThreadManager(ThreadManager):
         return message
 
     async def mark_presented(
-        self,
-        message: ThreadMessage,
-        platform_message_id: str | None,
-    ) -> ThreadMessage:
+        self, message_id: UUID7, platform_message_id: str | None
+    ) -> None:
+        if platform_message_id is None:
+            return
+        message = next((one for one in self.outbounds if one.id == message_id), None)
+        if message is None:
+            raise ValueError(f"thread message {message_id} does not exist")
         message.platform_message_id = platform_message_id
-        return message
 
     async def bind_assistant_replies(
         self,
@@ -494,11 +496,19 @@ class CreateBatchCall:
     batch_id: UUID7
 
 
+# Where a batch built outside `create_batch` was asked, and is answered.
+BATCH_ADDRESS = ChannelAddress(
+    channel_tentacle_id="im", chat_type="dm", chat_id="alice", user_id="alice"
+)
+
+
 @dataclass
 class FakePresentedBatch:
     """What `create_batch` hands back: the persisted actions to present."""
 
     id: UUID7 = field(default_factory=uuid7)
+    source_address: ChannelAddress = BATCH_ADDRESS
+    target_address: ChannelAddress = BATCH_ADDRESS
     questions: list[DeferredQuestion] = field(default_factory=list)
     approvals: list[DeferredApproval] = field(default_factory=list)
     response_mode: DeferredResponseMode = "resume"
@@ -554,6 +564,8 @@ class FakeActionManager:
         batch = self.presented_batch or FakePresentedBatch()
         batch.response_mode = response_mode
         batch.agent_tentacle_id = agent_tentacle_id
+        batch.source_address = source_address
+        batch.target_address = target_address
         if batch_id is not None:
             batch.id = batch_id
         self.create_calls.append(
@@ -622,7 +634,7 @@ class RecordingWorkspaceManager(WorkspaceManager):
 @dataclass
 class RecordingSuspender:
     """A `DeferredSuspender` that keeps what it was handed and presents nothing. A
-    live run that pauses on it gets `batch`, with its event for the run's stream."""
+    live run that pauses on it gets the event of `batch` for the run's stream."""
 
     batch: FakePresentedBatch = field(default_factory=FakePresentedBatch)
     # The agent whose run pauses here, as the graph's suspender records it.
@@ -638,11 +650,10 @@ class RecordingSuspender:
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
-    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+    ) -> ActionBatchEvent:
         self.paused.append(requests)
         self.batch.id = batch_id
         self.batch.response_mode = "live"
         self.batch.agent_tentacle_id = self.agent_tentacle_id
         self.put_up.set()
-        batch = cast(DeferredActionBatch, self.batch)
-        return batch, ActionBatchEvent.from_batch(batch)
+        return ActionBatchEvent.from_batch(cast(DeferredActionBatch, self.batch))

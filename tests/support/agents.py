@@ -73,9 +73,9 @@ from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput
 from octomate.tentacles.inkling.prompts import SYSTEM_PROMPT
 from octomate.types.json import JsonObject
-from tests.support.scenarios import plain_answer, play
 
 FakeRunOutput = ChannelOutput
+FAKE_CONTEXT = cast(RunContext[None], None)
 ScriptedOutput = str | DeferredToolRequests
 
 
@@ -186,6 +186,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     """Stands in for an AgentTentacle. Because the react graph is short-circuited
     here, the fake itself honors the AgentTentacle contract: when its output is a
     DeferredToolRequests it invokes the supplied suspender, exactly as react would.
+    A streamed run and a plain one play the same script, and both are recorded in
+    `turns`.
     """
 
     id: str = "inkling"
@@ -210,8 +212,8 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
     # When set, the reception run casts `dismiss` through the mounted gateway, the
     # way a model does mid-run, and carries on to `reception_output`.
     reception_dismiss: bool = False
+    # What a streamed run yields in place of its bare result.
     reception_script: list[ReactStreamEvent[ChannelOutput]] | None = None
-    allow_reception_run: bool = False
     models: dict[AgentRouteModelName, Model | str] = field(
         default_factory=lambda: {
             "test": "fake-model",
@@ -242,7 +244,6 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         }
     )
     turns: list[RecordedRun] = field(default_factory=list)
-    streams: list[RecordedRun] = field(default_factory=list)
     # Every `relocate` the graph asked for: the conversation's id and where to.
     relocated: list[tuple[UUID7, Path]] = field(default_factory=list)
 
@@ -293,85 +294,17 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 capabilities=list(capabilities or []),
             )
         )
-        if not self.allow_reception_run:
-            raise AssertionError("reception should use run_stream_events")
-        recorded_teleport = self.reception_recorded_teleport
-        if recorded_teleport is not None and deferred_tool_results is None:
-            # Consumed on first use, or the resumed run would teleport forever.
-            self.reception_recorded_teleport = None
-            gateway = next(
-                (
-                    capability
-                    for capability in capabilities or []
-                    if isinstance(capability, GatewayCapability)
-                ),
-                None,
-            )
-            if gateway is None:
-                raise AssertionError("a recorded teleport requires a mounted gateway")
-            decision = await gateway.session.teleport(
-                hint=recorded_teleport, resume=self.reception_teleport_resume
-            )
-            deferral = decision.deferral("call_teleport")
-            if deferred_suspender is not None:
-                await deferred_suspender.suspend(deferral)
-            return AgentRunResult(deferral)
-        if self.reception_teleport is not None and deferred_tool_results is None:
-            output: FakeRunOutput = _teleport_requests(
-                self.reception_teleport,
+        results = [
+            event.result
+            async for event in self.reception(
                 conversation_address,
-                self.reception_teleport_destination,
-                self.reception_teleport_project,
-                resume=self.reception_teleport_resume,
+                deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
+                capabilities=capabilities,
             )
-        else:
-            output = self.reception_output
-        if self.reception_dismiss:
-            await _gate_tool(capabilities, GatewayTool.DISMISS)(
-                cast(RunContext[None], None)
-            )
-        scheme_decision = self.reception_scheme
-        if scheme_decision is not None:
-            # Cast once, like a model would: the receiving run in the DM must not
-            # re-cast it, where the gate would (rightly) refuse.
-            self.reception_scheme = None
-            await _gate_tool(capabilities, GatewayTool.SCHEME)(
-                cast(RunContext[None], None),
-                hint=scheme_decision.hint,
-                brief=scheme_decision.brief,
-                destination=scheme_target(scheme_decision, capabilities),
-            )
-            # And a closing line, like a model does: `scheme` is an ordinary tool
-            # call, so the run carries on and writes a reply after it. Set
-            # `reception_output=""` for one that moves without a word.
-            return AgentRunResult(self.reception_output)
-        summon_decision = self.reception_summon
-        if summon_decision is not None:
-            summon = next(
-                (
-                    capability
-                    for capability in capabilities or []
-                    if isinstance(capability, GatewayCapability)
-                ),
-                None,
-            )
-            if summon is None:
-                raise AssertionError("summon decision requires SummonCapability")
-            if summon.toolset is None:
-                raise AssertionError("summon capability requires a toolset")
-            summon_tool = summon.toolset.tools[GatewayTool.SUMMON].function
-            await summon_tool(
-                cast(RunContext[None], None),
-                agent_id=summon_decision.agent_id,
-                model=summon_decision.model,
-                reason=summon_decision.reason,
-                hint=summon_decision.hint,
-                brief=summon_decision.brief,
-            )
-            output = ""
-        if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
-            await deferred_suspender.suspend(output)
-        return AgentRunResult(output)
+            if isinstance(event, AgentRunResultEvent)
+        ]
+        return results[-1]
 
     def run_stream_events(
         self,
@@ -390,7 +323,7 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
         deferred_suspender: DeferredSuspender | None = None,
         capabilities: Sequence[AgentCapability[None]] | None = None,
     ) -> ReactEventStream[ChannelOutput]:
-        self.streams.append(
+        self.turns.append(
             RecordedRun(
                 prompt=user_prompt,
                 history=list(message_history or []),
@@ -406,56 +339,77 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 capabilities=list(capabilities or []),
             )
         )
+        return ReactEventStream(
+            self.reception(
+                conversation_address,
+                deferred_tool_results=deferred_tool_results,
+                deferred_suspender=deferred_suspender,
+                capabilities=capabilities,
+            )
+        )
+
+    async def reception(
+        self,
+        conversation_address: ChannelAddress,
+        *,
+        deferred_tool_results: DeferredToolResults | None,
+        deferred_suspender: DeferredSuspender | None,
+        capabilities: Sequence[AgentCapability[None]] | None,
+    ) -> AsyncGenerator[ReactStreamEvent[ChannelOutput]]:
+        """The scripted turn as it streams, ending on its result."""
+        hint = self.reception_recorded_teleport
+        if hint is not None and deferred_tool_results is None:
+            # Consumed on first use, or the resumed run would teleport forever.
+            self.reception_recorded_teleport = None
+            gateway = next(
+                (
+                    capability
+                    for capability in capabilities or []
+                    if isinstance(capability, GatewayCapability)
+                ),
+                None,
+            )
+            if gateway is None:
+                raise AssertionError("a recorded teleport requires a mounted gateway")
+            decision = await gateway.session.teleport(
+                hint=hint, resume=self.reception_teleport_resume
+            )
+            deferral = decision.deferral("call_teleport")
+            if deferred_suspender is not None:
+                await deferred_suspender.suspend(deferral)
+            yield AgentRunResultEvent(AgentRunResult(deferral))
+            return
+        if self.reception_dismiss:
+            await _gate_tool(capabilities, GatewayTool.DISMISS)(FAKE_CONTEXT)
         scheme_decision = self.reception_scheme
         if scheme_decision is not None:
-            # Cast once, like a model would — see the non-streaming path.
+            # Cast once, like a model would: the receiving run in the DM must not
+            # re-cast it, where the gate would (rightly) refuse.
             self.reception_scheme = None
-
-            async def scheme_events() -> AsyncGenerator[
-                ReactStreamEvent[ChannelOutput], None
-            ]:
-                await _gate_tool(capabilities, GatewayTool.SCHEME)(
-                    cast(RunContext[None], None),
-                    hint=scheme_decision.hint,
-                    brief=scheme_decision.brief,
-                    destination=scheme_target(scheme_decision, capabilities),
-                )
-                yield AgentRunResultEvent(AgentRunResult(""))
-
-            return ReactEventStream(scheme_events())
-
+            await _gate_tool(capabilities, GatewayTool.SCHEME)(
+                FAKE_CONTEXT,
+                hint=scheme_decision.hint,
+                brief=scheme_decision.brief,
+                destination=scheme_target(scheme_decision, capabilities),
+            )
+            # And a closing line, like a model does: `scheme` is an ordinary tool
+            # call, so the run carries on and writes a reply after it. Set
+            # `reception_output=""` for one that moves without a word.
+            yield AgentRunResultEvent(AgentRunResult(self.reception_output))
+            return
         summon_decision = self.reception_summon
         if summon_decision is not None:
-
-            async def summon_events() -> AsyncGenerator[
-                ReactStreamEvent[ChannelOutput], None
-            ]:
-                summon = next(
-                    (
-                        capability
-                        for capability in capabilities or []
-                        if isinstance(capability, GatewayCapability)
-                    ),
-                    None,
-                )
-                if summon is None:
-                    raise AssertionError("summon decision requires SummonCapability")
-                if summon.toolset is None:
-                    raise AssertionError("summon capability requires a toolset")
-                summon_tool = summon.toolset.tools[GatewayTool.SUMMON].function
-                await summon_tool(
-                    cast(RunContext[None], None),
-                    agent_id=summon_decision.agent_id,
-                    model=summon_decision.model,
-                    reason=summon_decision.reason,
-                    hint=summon_decision.hint,
-                    brief=summon_decision.brief,
-                )
-                yield AgentRunResultEvent(AgentRunResult(""))
-
-            return ReactEventStream(summon_events())
-
-        output: ChannelOutput | DeferredToolRequests
+            await _gate_tool(capabilities, GatewayTool.SUMMON)(
+                FAKE_CONTEXT,
+                agent_id=summon_decision.agent_id,
+                model=summon_decision.model,
+                reason=summon_decision.reason,
+                hint=summon_decision.hint,
+                brief=summon_decision.brief,
+            )
+            yield AgentRunResultEvent(AgentRunResult(""))
+            return
+        output = self.reception_output
         if self.reception_teleport is not None and deferred_tool_results is None:
             output = _teleport_requests(
                 self.reception_teleport,
@@ -464,25 +418,14 @@ class FakeAgent(AgentTentacle[FakeRunOutput, None]):
                 self.reception_teleport_project,
                 resume=self.reception_teleport_resume,
             )
-        else:
-            output = self.reception_output
-        if isinstance(output, DeferredToolRequests):
-
-            async def deferred_events() -> AsyncGenerator[
-                ReactStreamEvent[ChannelOutput], None
-            ]:
-                if deferred_suspender is not None:
-                    event = await deferred_suspender.suspend(output)
-                    if event is not None:
-                        yield event
-                yield AgentRunResultEvent(AgentRunResult(output))
-
-            return ReactEventStream(deferred_events())
-
-        if not isinstance(output, str):
-            raise AssertionError("streamed reception output must be text or summon")
-        script = self.reception_script or plain_answer(output)
-        return ReactEventStream(play(script))
+        if isinstance(output, DeferredToolRequests) and deferred_suspender is not None:
+            event = await deferred_suspender.suspend(output)
+            if event is not None:
+                yield event
+        for event in self.reception_script or [
+            AgentRunResultEvent(AgentRunResult(output))
+        ]:
+            yield event
 
 
 @dataclass

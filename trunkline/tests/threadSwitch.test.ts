@@ -2,13 +2,14 @@ import assert from 'node:assert/strict'
 import { after, afterEach, before, beforeEach, mock, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiThread, ApiThreadMessage, WireEvent } from '../src/lib/api/events.ts'
+import type { ApiThread, ApiThreadMessage, WireDeferredQuestion, WireEvent } from '../src/lib/api/events.ts'
 import type { OlderPage } from '../src/lib/api/live.ts'
-import type { ThreadDetail } from '../src/lib/api/types.ts'
+import type { LedgerItem, ThreadDetail } from '../src/lib/api/types.ts'
 import { LiveSocket, installLiveSocket } from './liveSocket.ts'
 
 let server: ViteDevServer
 let api: typeof import('../src/lib/api/index.ts').api
+let batchFeelers: typeof import('../src/lib/api/fold.ts').batchFeelers
 let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
@@ -18,6 +19,18 @@ const detail: ThreadDetail = {
   key: 'thread-a', msgCount: 0, sessions: [], ledger: [], ctxK: 0,
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null },
 }
+const result: WireEvent = { event_kind: 'run_result', output: 'Hello back', usage: { requests: 1, tool_calls: 0, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } }
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+
+/** The live socket opened on `query`, once the console has opened it. */
+async function socketOn(query: string): Promise<LiveSocket> {
+  for (let at = 0; at < 200; at++) {
+    const socket = LiveSocket.opened.find((one) => one.url.endsWith(`?${query}`) && !one.closed)
+    if (socket) return socket
+    await tick()
+  }
+  throw new Error(`no live socket opened on ${query}`)
+}
 
 before(async () => {
   server = await createServer({
@@ -25,6 +38,7 @@ before(async () => {
     server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom',
   })
   ;({ api } = await server.ssrLoadModule('/src/lib/api/index.ts'))
+  ;({ batchFeelers } = await server.ssrLoadModule('/src/lib/api/fold.ts'))
   ;({ liveThreadDetail } = await server.ssrLoadModule('/src/lib/api/live.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
@@ -104,11 +118,11 @@ test('a new thread adopts its saved identity without a transition or replacing i
     if (init?.method !== 'POST') return Response.json([{ ...saved, channel_thread_id: sendKey }])
     sendKey ||= useConsole.getState().selThreadId
     const events: WireEvent[] = [
-      { event_kind: 'custom', name: 'run_started', address: {
+      { event_kind: 'run_started', address: {
         channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: sendKey, shared: false,
       } },
       { event_kind: 'run_result', output: 'Hello back', usage: { requests: 1, tool_calls: 0, input_tokens: 1, output_tokens: 1, cache_read_tokens: 0, cache_write_tokens: 0 } },
-      { event_kind: 'run_settled' },
+      { event_kind: 'reflex_asleep' },
     ]
     queueMicrotask(() => LiveSocket.last().deliver(...events))
     return new Response(null, { status: 202 })
@@ -139,8 +153,10 @@ test('a new thread adopts its saved identity without a transition or replacing i
   const sent = fetch.mock.calls.filter((call) => call.arguments[1]?.method === 'POST')
   assert.equal(sent.length, 2)
   assert.equal(String(sent[0].arguments[0]), String(sent[1].arguments[0]))
-  // Both turns were watched on the key the thread was composed under, before and after it had a row.
-  assert.deepEqual(LiveSocket.opened.map((socket) => socket.url), Array(2).fill(`ws://console.test/api/trunkline/live?thread_key=${sendKey}`))
+  // Both turns were watched on the key the thread was composed under, before and after it had a row;
+  // once it had one, the open thread was watched by it as well.
+  const byKey = `ws://console.test/api/trunkline/live?thread_key=${sendKey}`
+  assert.deepEqual(LiveSocket.opened.map((socket) => socket.url), [byKey, 'ws://console.test/api/trunkline/live?thread_id=saved-thread', byKey])
   assert.equal(transition.mock.callCount(), 0)
   assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'user').map((item) => item.text), ['hello', 'continue'])
   assert.equal(useConsole.getState().live.filter((item) => item.kind === 'stream').length, 2)
@@ -199,4 +215,66 @@ test('a page landing after the reader moved on is dropped', async () => {
   await settle()
   assert.equal(useConsole.getState().detail?.key, 'thread-b')
   assert.equal(queryClient.getQueryData<ThreadDetail>(['thread-detail', 'thread-a'])?.ledger.length, 1)
+})
+
+test('a run left streaming writes on while the reader is away, and is there on returning', async () => {
+  const live = (id: string): ThreadDetail => ({ ...detail, key: id, live: true, sendKey: `${id}-key` })
+  mock.method(api, 'getThreadDetail', async (id: string) => live(id))
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  for (const id of ['thread-a', 'thread-b']) queryClient.setQueryData(['thread-detail', id], live(id))
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'thread-a')
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=thread-a-key')
+
+  await actions.selectThread('trunkline', 'thread-b')
+  run.deliver({ event_kind: 'reflex_awake' }, result)
+  assert.equal(useConsole.getState().live.length, 0)
+  await actions.selectThread('trunkline', 'thread-a')
+
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'Hello back'))
+  assert.equal(useConsole.getState().running, true)
+  run.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  assert.equal(useConsole.getState().running, false)
+})
+
+test('the open thread shows a run kicked elsewhere, and reads its ledger again once it settles', async () => {
+  const settled: ThreadDetail = { ...detail, key: 'watched', ledger: [{ kind: 'user', uid: 'from-slack', text: 'asked on slack', t: '', who: 'someone' } as LedgerItem] }
+  const opening: ThreadDetail = { ...detail, key: 'watched' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', 'watched'], opening)
+  await useConsole.getState().actions.selectThread('slack', 'watched')
+  const watching = await socketOn('thread_id=watched')
+
+  watching.deliver({ event_kind: 'reflex_awake' }, result)
+  assert.equal(useConsole.getState().running, true)
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'Hello back'))
+  getDetail.mock.mockImplementation(async () => settled)
+  watching.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  assert.equal(useConsole.getState().running, false)
+  assert.deepEqual(useConsole.getState().live, [])
+  assert.deepEqual(useConsole.getState().detail?.ledger, settled.ledger)
+})
+
+test('a card answered anywhere else stops waiting here', async () => {
+  const question: WireDeferredQuestion = {
+    id: 'first', kind: 'question', status: 'pending', tool_name: 'AskUserQuestion', tool_call_id: 'q', position: 0,
+    args: { question: 'Ship it?', choices: ['Yes', 'No'] },
+  }
+  const [card] = batchFeelers('batch', [question], [])
+  const asking: ThreadDetail = { ...detail, key: 'asking', ledger: [{ ...card, uid: 'card' } as LedgerItem] }
+  mock.method(api, 'getThreadDetail', async () => asking)
+  queryClient.setQueryData(['thread-detail', 'asking'], asking)
+  await useConsole.getState().actions.selectThread('slack', 'asking')
+  const watching = await socketOn('thread_id=asking')
+
+  watching.deliver({ event_kind: 'action_batch_answered', batch_id: 'batch', approvals: {}, answers: { first: 'Yes' } })
+
+  const [answered] = useConsole.getState().detail?.ledger ?? []
+  assert.equal(answered.kind === 'ask' && answered.state, 'answered')
+  assert.deepEqual(answered.kind === 'ask' && answered.questions.map((q) => q.answer), ['Yes'])
 })

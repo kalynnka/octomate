@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from anyio.streams.memory import MemoryObjectReceiveStream
+from anyio.abc import ObjectReceiveStream
 from fastapi import HTTPException
 from jsonschema import Draft202012Validator, ValidationError
 from pydantic import JsonValue, SecretStr
@@ -37,8 +37,10 @@ from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
     MessageSentEvent,
+    ReflexAsleepEvent,
+    ReflexAwakeEvent,
+    RunEndedEvent,
     RunResultEvent,
-    RunSettledEvent,
     RunStartedEvent,
     WireEvent,
 )
@@ -50,6 +52,7 @@ from octomate.database import async_session
 from octomate.dependencies import workspace_manager
 from octomate.managers.auth import AuthManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Impulse
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -72,6 +75,7 @@ from tests.agent.test_command_execution import ExecutingAgent
 from tests.agent.test_command_manager import DiscoveringAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_project, a_registry
+from tests.support.nerve import drawing, held
 
 
 def command_outcome(response: httpx.Response) -> CommandOutcomeEvent:
@@ -81,9 +85,9 @@ def command_outcome(response: httpx.Response) -> CommandOutcomeEvent:
     return CommandOutcomeEvent.model_validate_json(response.text)
 
 
-def published(live: MemoryObjectReceiveStream[WireEvent]) -> list[WireEvent]:
+def published(live: ObjectReceiveStream[Impulse]) -> list[WireEvent]:
     """What the thread's live subscribers have been sent so far."""
-    return [live.receive_nowait() for _ in range(live.statistics().current_buffer_used)]
+    return [impulse.event for impulse in held(live)]
 
 
 async def discover(
@@ -204,7 +208,6 @@ async def test_composer_discovery_and_completion_create_no_rows_or_workspace(
     assert len(full.descriptors) == 2
     assert len(agent.calls) == 1
     assert not agent.turns
-    assert not agent.streams
     assert not app.workspaces.workspaces_dir.exists()
     async with async_session() as session:
         assert await session.list(Thread, limit=None) == []
@@ -814,9 +817,12 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     address: ChannelAddress,
 ) -> None:
     with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with (
+            drawing(*app.channels.values()),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client,
+        ):
             response = await client.post(
                 "/api/commands/execute",
                 headers={"X-Octomate-Request": "1"},
@@ -831,11 +837,17 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     assert response.headers["cache-control"] == "no-store"
     segments: list[MessageSegment] = [TextSegment(data={"text": "Done"})]
     outcome = CommandOutcomeEvent(outcome=CommandResult(segments=segments))
-    if address.channel_tentacle_id == "trunkline":
-        # The replay presents the saved feedback again, and settles again.
-        assert carried == [MessageSentEvent(segments=segments), RunSettledEvent()] * 2
-    else:
-        assert carried == [RunSettledEvent()] * 2
+    # The replay presents the saved feedback again.
+    assert (
+        carried
+        == [
+            ReflexAwakeEvent(),
+            MessageSentEvent(segments=segments),
+            ReflexAsleepEvent(),
+        ]
+        * 2
+    )
+    if address.channel_tentacle_id == "im":
         channel = app.channels[address.channel_tentacle_id]
         assert isinstance(channel, FakeChannelTentacle)
         assert [
@@ -850,7 +862,6 @@ async def test_http_execution_preserves_arguments_and_replays_saved_outcome(
     ]
     assert not app.gateway.sessions
     assert not agent.turns
-    assert not agent.streams
 
 
 @pytest.mark.parametrize(
@@ -916,15 +927,13 @@ async def test_http_execution_uses_manager_refusals(
         "composer": "unavailable",
         "other_user": "unavailable",
     }.get(refusal, refusal)
-    expected: list[WireEvent] = [RunSettledEvent()]
-    if address.channel_tentacle_id == "trunkline":
-        expected.insert(
-            0,
-            MessageSentEvent(
-                segments=[TextSegment(data={"text": outcome.outcome.message})]
-            ),
-        )
-    assert carried == expected
+    assert carried == [
+        ReflexAwakeEvent(),
+        MessageSentEvent(
+            segments=[TextSegment(data={"text": outcome.outcome.message})]
+        ),
+        ReflexAsleepEvent(),
+    ]
     assert not agent.invocations
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
@@ -961,9 +970,12 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     user_capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", user_capabilities)
     with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with (
+            drawing(*app.channels.values()),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client,
+        ):
             response = await client.post(
                 "/api/commands/execute",
                 headers={"X-Octomate-Request": "1"},
@@ -979,18 +991,16 @@ async def test_http_stream_uses_native_wire_events_and_replays_only_completion(
     outcome = CommandOutcomeEvent(outcome=CommandResult())
     assert command_outcome(response) == outcome
     assert command_outcome(replay) == outcome
-    if address.channel_tentacle_id == "trunkline":
-        started = carried.pop(0)
-        assert isinstance(started, RunStartedEvent)
-        assert started.address == address
-        assert len(carried) == 4
-        assert isinstance(carried[0], MessageSentEvent)
-        assert isinstance(carried[1], RunResultEvent)
-        assert carried[1].output == "Done"
-        # One settling closes the execution, one the replay, which presents no run.
-        assert carried[2:] == [RunSettledEvent(), RunSettledEvent()]
-    else:
-        assert carried == [RunSettledEvent(), RunSettledEvent()]
+    # The replay presents no run: the reflex wakes and falls asleep.
+    awake, started, sent, answered, ended, *rest = carried
+    assert awake == ReflexAwakeEvent()
+    assert started == RunStartedEvent(address=address)
+    assert isinstance(sent, MessageSentEvent)
+    assert isinstance(answered, RunResultEvent)
+    assert answered.output == "Done"
+    assert isinstance(ended, RunEndedEvent)
+    assert rest == [ReflexAsleepEvent(), ReflexAwakeEvent(), ReflexAsleepEvent()]
+    if address.channel_tentacle_id == "im":
         channel = app.channels[address.channel_tentacle_id]
         assert isinstance(channel, FakeChannelTentacle)
         shown = [
@@ -1044,9 +1054,12 @@ async def test_command_presents_a_persisted_reflex_approval(
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
     with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test"
-        ) as client:
+        async with (
+            drawing(*app.channels.values()),
+            httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=app), base_url="http://test"
+            ) as client,
+        ):
             response = await client.post(
                 "/api/commands/execute",
                 headers={"X-Octomate-Request": "1"},
@@ -1054,18 +1067,15 @@ async def test_command_presents_a_persisted_reflex_approval(
             )
         carried = published(live)
     assert command_outcome(response) == CommandOutcomeEvent(outcome=CommandResult())
-    if address.channel_tentacle_id == "trunkline":
-        started = carried.pop(0)
-        assert isinstance(started, RunStartedEvent)
-        assert started.address == address
-        assert isinstance(carried[0], ActionBatchEvent)
-        assert len(carried[0].approvals) == 1
-        batch = await app.deferred_actions.get_batch(uuid.UUID(carried[0].batch_id))
-    else:
-        [batch] = await app.deferred_actions.pending_for_thread(conversation.thread_id)
+    _, started, asked, *_ = carried
+    assert started == RunStartedEvent(address=address)
+    assert isinstance(asked, ActionBatchEvent)
+    assert len(asked.approvals) == 1
+    assert carried[-1] == ReflexAsleepEvent()
+    batch = await app.deferred_actions.get_batch(uuid.UUID(asked.batch_id))
+    if address.channel_tentacle_id == "im":
         [approval] = await batch.approvals
         assert approval.platform_message_id is not None
-    assert carried[-1] == RunSettledEvent()
     assert batch.conversation_id == conversation.id
     assert batch.run_name == "command"
     assert batch.decision is not None
@@ -1073,7 +1083,6 @@ async def test_command_presents_a_persisted_reflex_approval(
     assert batch.decision.model == "test"
     assert len(agent.invocations) == 1
     assert not agent.turns
-    assert not agent.streams
     assert not app.gateway.sessions
 
 

@@ -21,8 +21,10 @@ from octomate import Octomate
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.events import (
     MessageSentEvent,
+    ReflexAsleepEvent,
+    ReflexAwakeEvent,
+    RunEndedEvent,
     RunResultEvent,
-    RunSettledEvent,
     RunStartedEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
@@ -56,6 +58,7 @@ from tests.agent.test_command_execution import ExecutingAgent
 from tests.support.agents import FakeAgent
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import RecordingWorkspaceManager
+from tests.support.nerve import drawing, held, kicked
 from tests.support.users import a_user
 
 
@@ -120,25 +123,28 @@ async def test_direct_command_delivers_feedback_without_model_history_and_replay
     capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", capabilities)
     state = ReflexState()
-    await reflex_graph.run(
-        inputs=Awake(signal),
-        state=state,
-        deps=ReflexDeps(
-            workspaces=app.workspaces,
-            agents=app.agents,
-            channels=app.channels,
-            conversation_manager=app.conversations,
-            thread_manager=app.threads,
-            action_manager=app.deferred_actions,
-            gateway=app.gateway,
-            impulses=app.nerve,
-        ),
-    )
+    async with (
+        drawing(channel),
+        app.nerve.publish(signal.context.address) as impulses,
+    ):
+        await reflex_graph.run(
+            inputs=Awake(signal),
+            state=state,
+            deps=ReflexDeps(
+                workspaces=app.workspaces,
+                agents=app.agents,
+                channels=app.channels,
+                conversation_manager=app.conversations,
+                thread_manager=app.threads,
+                action_manager=app.deferred_actions,
+                gateway=app.gateway,
+                impulses=impulses,
+            ),
+        )
     assert state.decision is None
-    await app.kick(signal)
+    await kicked(app, signal)
     assert agent.invocations == [signal.invocation]
     assert not agent.turns
-    assert not agent.streams
     assert not app.gateway.sessions
     assert any(
         message.get("text") == "Done"
@@ -207,11 +213,10 @@ async def test_command_agent_stream_is_recorded_bound_and_delivered_without_anot
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
-    await app.kick(signal)
-    await app.kick(signal)
+    await kicked(app, signal)
+    await kicked(app, signal)
     assert agent.invocations == [signal.invocation]
     assert not agent.turns
-    assert not agent.streams
     assert not app.gateway.sessions
     thread = await app.threads.get(conversation.thread_id)
     assert thread is not None
@@ -272,7 +277,7 @@ async def test_command_defers_through_reflex_then_resumes_as_an_ordinary_agent_r
 
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
-    await app.kick(signal)
+    await kicked(app, signal)
     assert isinstance(agent.suspender, ReflexSuspender)
     batch_id = agent.suspender.suspended_batch_id
     assert batch_id is not None
@@ -285,15 +290,15 @@ async def test_command_defers_through_reflex_then_resumes_as_an_ordinary_agent_r
     assert batch.conversation_id == signal.context.conversation.id
     approval = next(iter(batch.approvals))
     agent.reception_output = "Approved"
-    agent.allow_reception_run = True
-    await app.kick(
+    await kicked(
+        app,
         DeferredActionBatchResponse(
             batch_id=batch_id,
             responder_id=signal.context.address.user_id,
             approvals={approval.id: True},
-        )
+        ),
     )
-    runs = [*agent.turns, *agent.streams]
+    runs = agent.turns
     assert len(runs) == 1
     assert runs[0].run_name == "resume"
     assert runs[0].model == "selected-model"
@@ -328,10 +333,9 @@ async def test_command_teleport_before_first_event_continues_the_agent_run(
 
     agent.behavior = "stream_complete"
     agent.reception_output = "Continued"
-    agent.allow_reception_run = True
     monkeypatch.setattr(agent, "events", events)
-    await app.kick(signal)
-    runs = [*agent.turns, *agent.streams]
+    await kicked(app, signal)
+    runs = agent.turns
     assert len(runs) == 1
     assert runs[0].run_name == "teleport"
     assert signal.context.conversation is not None
@@ -351,9 +355,7 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
 ) -> None:
     app, agent, channel, signal = scenario
     channel.config.stream = ChannelStreamConfig(enabled=stream)
-    other = app.connect(
-        FakeAgent(id="other", reception_output="Handed over", allow_reception_run=True)
-    )
+    other = app.connect(FakeAgent(id="other", reception_output="Handed over"))
     channel.config.agents.append(other.id)
     conversation = signal.context.conversation
     assert conversation is not None
@@ -373,21 +375,21 @@ async def test_command_gateway_handoff_continues_in_the_same_reflex_graph(
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
     state = ReflexState()
-    deps = ReflexDeps(
-        workspaces=app.workspaces,
-        agents=app.agents,
-        channels=app.channels,
-        conversation_manager=app.conversations,
-        thread_manager=app.threads,
-        action_manager=app.deferred_actions,
-        gateway=app.gateway,
-        impulses=app.nerve,
-    )
-    await reflex_graph.run(inputs=Awake(signal), state=state, deps=deps)
+    async with app.nerve.publish(signal.context.address) as impulses:
+        deps = ReflexDeps(
+            workspaces=app.workspaces,
+            agents=app.agents,
+            channels=app.channels,
+            conversation_manager=app.conversations,
+            thread_manager=app.threads,
+            action_manager=app.deferred_actions,
+            gateway=app.gateway,
+            impulses=impulses,
+        )
+        await reflex_graph.run(inputs=Awake(signal), state=state, deps=deps)
     assert len(agent.invocations) == 1
     assert not agent.turns
-    assert not agent.streams
-    runs = [*other.turns, *other.streams]
+    runs = other.turns
     assert len(runs) == 1
     assert runs[0].prompt == "Continue this review"
     command_gateway = next(
@@ -423,7 +425,7 @@ async def test_refused_command_does_not_mount_user_tools_or_save_a_workspace(
         channel.config.agents = []
     capabilities = AsyncMock(return_value=[])
     monkeypatch.setattr(agent, "user_capabilities", capabilities)
-    outcome = await app.kick(signal)
+    outcome = await kicked(app, signal)
     assert isinstance(outcome, CommandError)
     assert outcome.status == reason
     assert not agent.invocations
@@ -446,12 +448,12 @@ async def test_user_preparation_failure_releases_guard_without_accepting_command
     with monkeypatch.context() as patch:
         patch.setattr(agent, "user_capabilities", AsyncMock(side_effect=error))
         with pytest.raises(error):
-            await app.kick(signal)
+            await kicked(app, signal)
     assert not agent.invocations
     assert not app.gateway.sessions
     async with async_session() as session:
         assert await session.count(ThreadCommand) == 0
-    await app.kick(signal)
+    await kicked(app, signal)
     assert agent.invocations == [signal.invocation]
 
 
@@ -481,7 +483,7 @@ async def test_command_failure_closes_native_stream_before_releasing_guard(
     agent.behavior = "stream_complete"
     monkeypatch.setattr(agent, "events", events)
     with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
-        await app.kick(signal)
+        await kicked(app, signal)
     assert closed.is_set()
     assert not app.gateway.sessions
     receipt = await app.threads.find_message(
@@ -493,7 +495,7 @@ async def test_command_failure_closes_native_stream_before_releasing_guard(
 
 
 @pytest.mark.parametrize("model_run", [False, True])
-async def test_command_graph_can_deliver_to_trunklines_existing_request_sink(
+async def test_a_commands_events_reach_its_trunkline_thread(
     scenario: tuple[Octomate, ExecutingAgent, FakeChannelTentacle, CommandSignal],
     model_run: bool,
     monkeypatch: pytest.MonkeyPatch,
@@ -545,15 +547,16 @@ async def test_command_graph_can_deliver_to_trunklines_existing_request_sink(
         agent.behavior = "stream_complete"
         monkeypatch.setattr(agent, "events", events)
     with app.nerve.subscribe(ThreadKey.from_address(address)) as live:
-        await app.kick(signal)
-        received = [
-            live.receive_nowait() for _ in range(live.statistics().current_buffer_used)
-        ]
-    assert len(received) == (3 if model_run else 2)
-    if model_run:
-        assert isinstance(received[0], RunStartedEvent)
-        assert received[0].address == address
-    assert isinstance(received[-2], RunResultEvent if model_run else MessageSentEvent)
-    assert isinstance(received[-1], RunSettledEvent)
+        await kicked(app, signal)
+        received = [impulse.event for impulse in held(live)]
+    assert [type(event) for event in received] == [
+        ReflexAwakeEvent,
+        *(
+            [RunStartedEvent, RunResultEvent, RunEndedEvent]
+            if model_run
+            else [MessageSentEvent]
+        ),
+        ReflexAsleepEvent,
+    ]
     assert len(agent.invocations) == 1
     assert not app.gateway.sessions

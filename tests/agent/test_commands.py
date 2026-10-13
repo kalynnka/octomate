@@ -408,6 +408,6 @@ async def test_default_hooks_are_unsupported_without_starting_a_turn(
     assert isinstance(outcome, CommandError)
     assert outcome.status == "unsupported"
     assert agent.turns == []
-    assert agent.streams == []
+    assert agent.turns == []
     assert context.cwd is not None
     assert not context.cwd.exists()

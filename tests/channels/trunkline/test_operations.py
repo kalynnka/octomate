@@ -50,8 +50,8 @@ async def case(in_memory_engine: AsyncEngine, tmp_path: Path) -> Case:
     app = Octomate(workspaces=WorkspaceManager(workspaces_dir=tmp_path / "workspaces"))
     owner = await a_user(profiles={"far": "alice"})
     app.dependency_overrides[current_user] = lambda: owner
-    agent = app.connect(FakeAgent(id="first", allow_reception_run=True))
-    receiver = app.connect(FakeAgent(id="second", allow_reception_run=True))
+    agent = app.connect(FakeAgent(id="first"))
+    receiver = app.connect(FakeAgent(id="second"))
     channel = app.connect(
         TrunklineTentacle(
             "trunkline", app, config=TrunklineChannelConfig(agents=[agent.id])
@@ -118,7 +118,7 @@ async def test_options_and_summon_here(case: Case, client: httpx.AsyncClient) ->
         kinds = [event["event_kind"] for event in await settled(live)]
     assert "gateway" in kinds
     assert "run_error" not in kinds
-    assert case.receiver.streams[-1].prompt == "Investigate the existing work"
+    assert case.receiver.turns[-1].prompt == "Investigate the existing work"
     updated = await case.app.threads.get(case.thread.id)
     assert updated is not None
     assert updated.active_agent_tentacle_id == "second"
@@ -270,7 +270,6 @@ async def test_teleport_creates_independent_owned_destination(
         assert case.far.opened_dms == []
     # You asked for the move, so nothing runs there until you write.
     assert case.agent.turns == []
-    assert case.agent.streams == []
     threads = await case.app.threads.list_threads(user_id=case.owner.id)
     landed = next(thread for thread in threads if thread.id != case.thread.id)
     assert landed.id != case.thread.id
@@ -287,6 +286,8 @@ async def test_teleport_creates_independent_owned_destination(
     ] == [
         "Original history",
         "radio check",
+        # The move's own line, left in the thread it left.
+        "Work here",
     ]
     destination_messages = await client.get(
         f"/api/trunkline/threads/{landed.id}/messages"
@@ -313,6 +314,8 @@ async def test_teleport_creates_independent_owned_destination(
         ("agent", "Original history"),
         ("human", "radio check"),
         ("system", "Work here"),
+        # The move's line in the thread it left, shown with that thread's ledger.
+        ("agent", "Work here"),
     ]
     assert stored.latest_handoff is not None
     assert stored.latest_handoff.to_agent_tentacle_id == "first"
@@ -382,7 +385,7 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
         events = await settled(live)
 
     assert "run_error" not in [event["event_kind"] for event in events]
-    [run] = case.agent.streams
+    [run] = case.agent.turns
     assert "Pick up the review" in str(run.prompt)
     threads = await case.app.threads.list_threads(user_id=case.owner.id)
     [landed] = [thread for thread in threads if thread.id != case.thread.id]
@@ -394,18 +397,19 @@ async def test_a_teleport_with_a_prompt_sends_it_where_it_lands(
     # The move, then the run where it landed, shown on the thread that asked so
     # the console can follow it there.
     assert [event["event_kind"] for event in events] == [
+        "reflex_awake",
         "gateway",
-        "custom",
+        "run_started",
         "run_result",
+        "run_ended",
     ]
-    moved, started = events[0], events[1]
+    moved, started = events[1], events[2]
     assert moved["action"] == "teleport"
     assert moved["announcement"] == "Continuing this conversation here."
     landed_at, started_at = moved["destination"], started["address"]
     assert isinstance(landed_at, dict)
     assert isinstance(started_at, dict)
     assert landed_at["channel_thread_id"] == landed.channel_thread_id
-    assert started["name"] == "run_started"
     assert started_at["channel_thread_id"] == landed.channel_thread_id
 
 
@@ -479,7 +483,7 @@ async def test_validation_precedes_side_effects(
     )
     assert invalid.status_code == 409
     assert not case.far.opened_dms
-    assert not case.receiver.streams
+    assert not case.receiver.turns
 
 
 async def test_busy_thread_is_refused(case: Case, client: httpx.AsyncClient) -> None:

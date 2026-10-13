@@ -1,64 +1,85 @@
-"""What is published to a thread reaches its subscribers, and waits for none."""
+"""What is published reaches the subscribers of its channel, its thread and the
+thread the kick was asked on, each once, and waits for none."""
 
 from __future__ import annotations
 
-import pytest
-from anyio import WouldBlock
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 
-from octomate import Octomate
-from octomate.config.channels import TrunklineChannelConfig
-from octomate.nerve import SUBSCRIBER_BUFFER, Nerve
+from octomate.capabilities.harness.events import MessageSentEvent
+from octomate.nerve import ChannelTopic, Impulse, Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
-from octomate.tentacles.trunkline.base import TrunklineTentacle
+from tests.support.nerve import held
 
-KEY = ThreadKey("web", "thread", "lu", "t1")
-OTHER = ThreadKey("web", "thread", "lu", "t2")
+HERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
+THERE = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t2")
+FAR = ChannelAddress("slack", "dm", "D1", "U1")
 EVENT = PartDeltaEvent(index=0, delta=TextPartDelta(content_delta="hi"))
 
 
-def test_a_threads_events_reach_its_subscriber() -> None:
+def test_an_impulse_reaches_its_channel_and_its_thread() -> None:
     nerve = Nerve()
-    with nerve.subscribe(KEY) as events:
-        nerve.publish(KEY, EVENT)
-        nerve.publish(OTHER, EVENT)
+    with (
+        nerve.subscribe(ChannelTopic("web")) as channel,
+        nerve.subscribe(ThreadKey.from_address(HERE)) as here,
+        nerve.subscribe(ThreadKey.from_address(THERE)) as there,
+    ):
+        nerve.deliver(Impulse(EVENT, HERE))
 
-        assert events.receive_nowait() == EVENT
-        with pytest.raises(WouldBlock):
-            events.receive_nowait()
+        assert held(channel) == [Impulse(EVENT, HERE)]
+        assert held(here) == [Impulse(EVENT, HERE)]
+        assert held(there) == []
     assert nerve.subscribers == {}
 
 
-def test_every_subscriber_of_the_thread_gets_its_events() -> None:
+def test_an_impulse_on_the_asking_thread_is_heard_there_once() -> None:
     nerve = Nerve()
-    with nerve.subscribe(KEY) as first, nerve.subscribe(KEY) as second:
-        nerve.publish(KEY, EVENT)
+    asked = ThreadKey.from_address(HERE)
+    with nerve.subscribe(asked) as here:
+        nerve.deliver(Impulse(EVENT, HERE, origin=asked))
 
-        assert first.receive_nowait() == EVENT
-        assert second.receive_nowait() == EVENT
+        assert held(here) == [Impulse(EVENT, HERE, origin=asked)]
 
 
-def test_a_subscriber_that_fell_behind_misses_what_did_not_fit() -> None:
+async def test_the_asking_thread_hears_a_kick_wherever_it_goes() -> None:
     nerve = Nerve()
-    with nerve.subscribe(KEY) as events:
-        for _ in range(SUBSCRIBER_BUFFER + 1):
-            nerve.publish(KEY, EVENT)
+    asked = ThreadKey.from_address(HERE)
+    with (
+        nerve.subscribe(asked) as asking,
+        nerve.subscribe(ChannelTopic("slack")) as far,
+    ):
+        async with nerve.publish(HERE) as impulses:
+            await impulses.send(Impulse(EVENT, FAR))
+            await impulses.send(Impulse(EVENT))
 
-        assert events.statistics().current_buffer_used == SUBSCRIBER_BUFFER
+        moved = Impulse(EVENT, FAR, origin=asked)
+        assert held(asking) == [moved, Impulse(EVENT, origin=asked)]
+        # A channel hears only what happens at its addresses.
+        assert held(far) == [moved]
 
 
-def test_publishing_to_a_thread_nobody_subscribes_to_is_nothing() -> None:
-    Nerve().publish(KEY, EVENT)
+async def test_a_private_impulse_is_heard_only_where_it_lands() -> None:
+    nerve = Nerve()
+    sent = Impulse(MessageSentEvent(segments=[]), FAR, private=True)
+    with (
+        nerve.subscribe(ThreadKey.from_address(HERE)) as asking,
+        nerve.subscribe(ThreadKey.from_address(FAR)) as dm,
+    ):
+        async with nerve.publish(HERE) as impulses:
+            await impulses.send(sent)
+
+        assert [impulse.event for impulse in held(dm)] == [sent.event]
+        assert held(asking) == []
 
 
-async def test_a_trunkline_thread_publishes_its_run_stream() -> None:
-    octomate = Octomate()
-    channel = TrunklineTentacle(
-        "web", octomate, config=TrunklineChannelConfig(agents=["first"])
-    )
-    address = ChannelAddress("web", "thread", "lu", "lu", channel_thread_id="t1")
-    with octomate.nerve.subscribe(KEY) as events:
-        await channel.forward(address, EVENT)
+async def test_a_reader_past_its_backlog_reads_what_was_held_and_ends() -> None:
+    nerve = Nerve()
+    with nerve.subscribe(ThreadKey.from_address(HERE), backlog=2) as behind:
+        for _ in range(3):
+            nerve.deliver(Impulse(EVENT, HERE))
 
-        assert events.receive_nowait() == EVENT
+        assert [impulse async for impulse in behind] == [Impulse(EVENT, HERE)] * 2
+
+
+def test_delivering_where_nobody_subscribes_is_nothing() -> None:
+    Nerve().deliver(Impulse(EVENT, HERE))

@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import nullcontext
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import TracebackType
@@ -27,7 +27,6 @@ from octomate.capabilities.harness.events import (
     GatewayEvent,
     MessageSentEvent,
     RunErrorEvent,
-    RunStartedEvent,
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
@@ -40,7 +39,6 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.base import thread_ref
 from octomate.managers.workspaces.mirrors import run_git
-from octomate.nerve import Nerve
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -82,10 +80,9 @@ from octomate.schemas.triage import (
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.agent import AgentTentacle
 from octomate.tentacles.channel import ChannelOutput, ChannelSurfaces
-from octomate.tentacles.feelers.output import TimelineState
 from octomate.types.threads import CLAUDE_NATIVE_ID
 from tests.support.agents import FakeAgent, RecordedRun
-from tests.support.channels import FakeChannelTentacle, RecordingInk
+from tests.support.channels import FakeChannelTentacle, FakeOctomate, RecordingInk
 from tests.support.managers import (
     FakeActionManager,
     FakeConversation,
@@ -98,6 +95,8 @@ from tests.support.managers import (
     a_project,
     a_registry,
 )
+from tests.support.nerve import drawing, unwired
+from tests.support.scenarios import text_part_events
 from tests.support.users import a_user
 
 FAKE_CONTEXT = cast(RunContext[None], None)
@@ -109,12 +108,24 @@ async def _run(
     state: ReflexState,
     deps: ReflexDeps,
 ) -> ReflexGraphResult:
-    """Run the reflex nodes from `entry`. Production always enters at `Awake`; a
-    test wires the same nodes with a different door to exercise a stretch of them
-    on its own."""
-    return await build_reflex_graph(type(entry)).run(
-        inputs=entry, state=state, deps=deps
-    )
+    """Run the reflex nodes from `entry` on a kick's stream, each channel drawing
+    what it publishes. Production always enters at `Awake`; a test wires the same
+    nodes with a different door to exercise a stretch of them on its own."""
+    # One host, as in production: a channel marks the rows and presents the
+    # batches the graph recorded through the managers it recorded them on.
+    host = FakeOctomate()
+    host.threads = deps.thread_manager
+    host.deferred_actions = deps.action_manager
+    for channel in deps.channels.values():
+        channel.octomate = host
+    origin = state.source_target.address if state.source_target else None
+    async with (
+        drawing(*deps.channels.values()),
+        host.nerve.publish(origin) as impulses,
+    ):
+        return await build_reflex_graph(type(entry)).run(
+            inputs=entry, state=state, deps=replace(deps, impulses=impulses)
+        )
 
 
 def _channel(*, stream: bool = True) -> FakeChannelTentacle:
@@ -125,28 +136,6 @@ def _channel(*, stream: bool = True) -> FakeChannelTentacle:
             agents=["other"],
         )
     )
-
-
-class DroppingTimelineState(TimelineState):
-    async def drive(self, stream: AsyncIterator[object]) -> None:
-        return  # abandon the reception stream without draining it
-
-
-class DroppingTimelineFeeler:
-    @asynccontextmanager
-    async def open(
-        self, address: ChannelAddress
-    ) -> AsyncGenerator[DroppingTimelineState]:
-        yield DroppingTimelineState()
-
-
-class DroppingChannel(FakeChannelTentacle):
-    """A channel whose timeline abandons the reception stream without producing a
-    result (exercises the fail-fast guard)."""
-
-    def __init__(self, *, config: ChannelConfig) -> None:
-        super().__init__(config=config)
-        self.feelers.timeline = DroppingTimelineFeeler()
 
 
 def _key(thread_id: str = "") -> ChannelAddress:
@@ -209,7 +198,7 @@ def _deps(
         if workspaces is not None
         else RecordingWorkspaceManager(),
         channels=dict(channels),
-        impulses=Nerve(),
+        impulses=unwired(),
         agents={"inkling": agent, "other": agent, agent.id: agent},
         conversation_manager=conversations,
         thread_manager=threads or FakeThreadManager(),
@@ -262,7 +251,7 @@ def _summon_deps(
     return ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
-        impulses=Nerve(),
+        impulses=unwired(),
         channels={"im": im} if far is None else {"im": im, "far": far},
         agents={entry.id: entry, second.id: second},
         conversation_manager=FakeConversationManager(),
@@ -311,7 +300,7 @@ def test_available_routes_skip_disconnected_reception_agents() -> None:
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
-        impulses=Nerve(),
+        impulses=unwired(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -404,7 +393,7 @@ def test_available_routes_are_the_exposed_agents_own_routes() -> None:
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
-        impulses=Nerve(),
+        impulses=unwired(),
         channels={"chan1": channel},
         agents={"other": other, "second": second, "third": third},
         conversation_manager=FakeConversationManager(),
@@ -438,7 +427,7 @@ def test_resolve_agent_honors_a_served_model_off_the_channel_list() -> None:
     deps = ReflexDeps(
         workspaces=RecordingWorkspaceManager(),
         gateway=GatewayManager(),
-        impulses=Nerve(),
+        impulses=unwired(),
         channels={"chan1": channel},
         agents={"other": other},
         conversation_manager=FakeConversationManager(),
@@ -497,8 +486,7 @@ async def test_route_runs_entry_agent_directly() -> None:
     assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "hello"
-    assert [stream.run_name for stream in agent.streams] == ["react"]
-    assert agent.turns == []
+    assert [turn.run_name for turn in agent.turns] == ["react"]
     assert im.consumed[0][0] == address
     assert im.sent[-1][2][0]["text"] == "hello"
 
@@ -548,7 +536,7 @@ async def test_route_entry_run_claims_no_ownership() -> None:
 
 async def test_reception_mounts_gate_capability() -> None:
     address = _key()
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -578,7 +566,7 @@ async def test_reception_mounts_gate_capability() -> None:
 
 async def test_non_stream_reception_presents_only_the_final_output() -> None:
     address = _key()
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -596,14 +584,13 @@ async def test_non_stream_reception_presents_only_the_final_output() -> None:
     )
 
     assert len(agent.turns) == 1
-    assert agent.streams == []
     assert im.consumed == []
     assert im.sent[-1][2][0]["text"] == "done"
 
 
 async def test_react_mounts_a_commissioning_gate_in_a_thread() -> None:
     address = _key("t1")
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -635,7 +622,7 @@ async def test_a_finished_turn_saves_the_threads_workspace() -> None:
     # A turn is over when its answer is delivered, and that is when its
     # work has to be somewhere the workspace going away cannot take it.
     address = _key("t1")
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -671,7 +658,7 @@ async def test_a_turn_that_failed_still_saves_its_workspace(
     # can never reclaim, since it keeps anything the mirror has not seen — so a
     # failed turn on a thread nobody resumes would hold its disk for good.
     address = _key("t1")
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -683,10 +670,13 @@ async def test_a_turn_that_failed_still_saves_its_workspace(
     target = _source_target(address)
     thread = _thread(address)
 
-    async def gave_out(*_args: object, **_kwargs: object) -> AgentRunResult[str]:
+    async def gave_out(
+        *_args: object, **_kwargs: object
+    ) -> AsyncGenerator[ReactStreamEvent[ChannelOutput]]:
         raise RuntimeError("the provider gave out")
+        yield
 
-    monkeypatch.setattr(agent, "run", gave_out)
+    monkeypatch.setattr(agent, "reception", gave_out)
 
     with pytest.raises(RuntimeError, match="the provider gave out"):
         await _run(
@@ -708,7 +698,7 @@ async def test_a_turn_that_failed_still_saves_its_workspace(
 async def test_a_turn_with_no_thread_saves_nothing() -> None:
     # A workspace belongs to a thread, so a turn without one has none to save.
     address = _key()
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     host = RecordingWorkspaceManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -738,7 +728,7 @@ async def test_react_keys_the_octomate_session_by_the_turns_conversation() -> No
     external runtime's tool call finds this turn's session by the conversation id
     it already knows — and nothing stays registered once the turn ends."""
     address = _key()
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     registry = GatewayManager()
@@ -784,9 +774,7 @@ async def test_a_second_turn_racing_a_live_conversation_fails_before_it_starts(
     the second at the door: the first arrival keeps its session, the second run
     raises before anything is presented, and the slot frees when the first ends."""
     address = _key()
-    agent = SlowAgent(
-        id="other", allow_reception_run=True, reception_output="done", gateway=gateway
-    )
+    agent = SlowAgent(id="other", reception_output="done", gateway=gateway)
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     registry = GatewayManager()
@@ -822,9 +810,7 @@ async def test_an_agent_with_gateway_off_mounts_none_on_any_channel() -> None:
     """Availability is the agent's own: with its flag off, no turn of it on any
     channel mounts a gateway capability."""
     address = _key()
-    agent = FakeAgent(
-        id="other", allow_reception_run=True, reception_output="done", gateway=False
-    )
+    agent = FakeAgent(id="other", reception_output="done", gateway=False)
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
@@ -849,7 +835,7 @@ async def test_an_agent_with_gateway_off_mounts_none_on_any_channel() -> None:
 
 async def test_react_passes_the_decision_effort_to_the_run() -> None:
     address = _key()
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -877,7 +863,7 @@ async def test_react_resolves_conversation_and_explicit_effort(
 ) -> None:
     address = _key()
     thread = _thread(address)
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     stored = await conversations.ensure(thread.id, agent_tentacle_id="other")
     stored.effort = "low"
@@ -909,7 +895,6 @@ async def test_react_rejects_saved_effort_unsupported_by_current_model() -> None
     thread = _thread(address)
     agent = FakeAgent(
         id="other",
-        allow_reception_run=True,
         claims={"test": Claim(ability="Current model", efforts=("low",))},
     )
     conversations = FakeConversationManager()
@@ -941,7 +926,7 @@ async def test_reception_allow_here_false_on_group_main() -> None:
         user_id="alice",
         channel_thread_id=None,
     )
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     im = FakeChannelTentacle(
         config=ChannelConfig(
@@ -970,11 +955,8 @@ async def test_summon_here_takes_over_current_conversation() -> None:
     entry = FakeAgent(
         id="other",
         reception_summon=_summon(agent_id="second"),
-        allow_reception_run=True,
     )
-    second = FakeAgent(
-        id="second", reception_output="took over", allow_reception_run=True
-    )
+    second = FakeAgent(id="second", reception_output="took over")
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
@@ -1007,11 +989,8 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
     entry = FakeAgent(
         id="other",
         reception_summon=_summon(agent_id="second"),
-        allow_reception_run=True,
     )
-    second = FakeAgent(
-        id="second", reception_output="took over", allow_reception_run=True
-    )
+    second = FakeAgent(id="second", reception_output="took over")
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     conversations = FakeConversationManager()
     earlier = ModelRequest(
@@ -1034,7 +1013,7 @@ async def test_a_handoff_row_names_the_turn_it_came_from() -> None:
         deps=ReflexDeps(
             workspaces=RecordingWorkspaceManager(),
             gateway=GatewayManager(),
-            impulses=Nerve(),
+            impulses=unwired(),
             channels={"im": im},
             agents={"other": entry, "second": second},
             conversation_manager=conversations,
@@ -1083,7 +1062,7 @@ async def _gate_for(
     address: ChannelAddress,
     channel: FakeChannelTentacle | None = None,
 ) -> GatewayCapability:
-    agent = FakeAgent(id="other", allow_reception_run=True, reception_output="done")
+    agent = FakeAgent(id="other", reception_output="done")
     im = channel or FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
     await _run(
@@ -1137,9 +1116,8 @@ async def test_scheme_hands_the_brief_to_the_dms_own_owner() -> None:
                 user_id="alice",
             ),
         ),
-        allow_reception_run=True,
     )
-    second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
+    second = FakeAgent(id="second", reception_output="on it")
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     deps = _summon_deps(im, entry, second)
     threads = FakeThreadManager()
@@ -1204,9 +1182,8 @@ async def test_scheme_hands_to_the_channel_default_when_the_dm_is_unowned() -> N
                 user_id="alice",
             ),
         ),
-        allow_reception_run=True,
     )
-    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    second = FakeAgent(id="second", reception_output="done")
     im = FakeChannelTentacle(config=_two_reception_config(stream=False))
     target = _source_target(address)
 
@@ -1249,9 +1226,8 @@ async def test_scheme_across_channels_hands_to_an_agent_that_runs_there(
                 user_id="ou_alice",
             ),
         ),
-        allow_reception_run=True,
     )
-    second = FakeAgent(id="second", reception_output="on it", allow_reception_run=True)
+    second = FakeAgent(id="second", reception_output="on it")
     im = _channel(stream=False)  # runs `other` only
     far = FakeChannelTentacle(
         id="far",
@@ -1295,9 +1271,8 @@ async def test_scheme_leaves_the_turn_in_place_when_no_dm_opens() -> None:
                 user_id="alice",
             ),
         ),
-        allow_reception_run=True,
     )
-    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    second = FakeAgent(id="second", reception_output="done")
     im = FakeChannelTentacle(
         ink=RecordingInk(dm_opens=False),
         config=_two_reception_config(stream=False),
@@ -1333,7 +1308,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
     native pseudo-channel nobody serves, which the move never needs to look up."""
     await a_user("luhui", profiles={CLAUDE_NATIVE_ID: "native", "far": "ou_alice"})
     users = UserManager()
-    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    second = FakeAgent(id="second", reception_output="done")
     far = FakeChannelTentacle(
         id="far",
         config=ChannelConfig(
@@ -1350,7 +1325,7 @@ async def test_a_native_scheme_signal_lands_in_their_dms_and_hands_off(
         thread_manager=FakeThreadManager(users=users),
         action_manager=cast(DeferredActionManager, FakeActionManager()),
         gateway=GatewayManager(),
-        impulses=Nerve(),
+        impulses=unwired(),
     )
     signal = NativeGatewaySignal(
         decision=SchemeDecision(
@@ -1403,7 +1378,6 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
         reception_teleport="carrying on over there",
         reception_teleport_destination="far",
         reception_output="continued",
-        allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="unused")
     im = _channel(stream=False)
@@ -1468,7 +1442,6 @@ async def test_a_crossing_leaves_a_row_in_the_chat_it_left() -> None:
         reception_teleport="carrying on over there",
         reception_teleport_destination="far",
         reception_output="continued",
-        allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="unused")
     im = _channel(stream=False)
@@ -1518,7 +1491,6 @@ async def test_a_crossing_that_opens_no_sub_thread_refuses_the_move() -> None:
         reception_teleport="carrying on over there",
         reception_teleport_destination="far",
         reception_output="stayed here",
-        allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="unused")
     im = _channel(stream=False)
@@ -1552,7 +1524,6 @@ async def test_a_teleport_crossing_that_never_opens_refuses_the_move() -> None:
         reception_teleport="carrying on over there",
         reception_teleport_destination="far",
         reception_output="stayed here",
-        allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="unused")
     im = _channel(stream=False)
@@ -1594,7 +1565,6 @@ async def test_a_recorded_teleport_ends_the_turn_as_the_same_deferral(
         reception_recorded_teleport="carrying on in a thread",
         reception_teleport_resume=resume,
         reception_output="continued",
-        allow_reception_run=True,
     )
     second = FakeAgent(id="second", reception_output="unused")
     im = _channel(stream=False)
@@ -1683,15 +1653,9 @@ async def test_reception_returns_deferred_result_on_human_question() -> None:
 
 async def test_reception_fails_fast_when_stream_produces_no_result() -> None:
     address = _key()
-    agent = FakeAgent(id="other", reception_output="done")
+    agent = FakeAgent(id="other", reception_script=text_part_events("half an answer"))
     conversations = FakeConversationManager()
-    im = DroppingChannel(
-        config=ChannelConfig(
-            type="fake",
-            stream=ChannelStreamConfig(enabled=True),
-            agents=["other"],
-        )
-    )
+    im = _channel()
     target = _source_target(address)
 
     with pytest.raises(RuntimeError, match="completed without a result"):
@@ -1710,23 +1674,19 @@ async def test_reception_closes_agent_stream_before_releasing_gateway(
     agent = FakeAgent(id="other", reception_output="done")
     conversations = FakeConversationManager()
     registry = GatewayManager()
-    im = DroppingChannel(
-        config=ChannelConfig(
-            type="fake", stream=ChannelStreamConfig(enabled=True), agents=["other"]
-        )
-    )
+    im = _channel()
     closed_with_gateway: list[bool] = []
     stream_exit = ReactEventStream.__aexit__
 
-    async def fail_render(
-        timeline: DroppingTimelineState,
+    async def fail_carry(
+        deps: ReflexDeps,
+        address: ChannelAddress,
         stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
     ) -> None:
-        assert isinstance(await anext(stream), RunStartedEvent)
         await anext(stream)
         if cancel:
             raise asyncio.CancelledError
-        raise RuntimeError("render failed")
+        raise RuntimeError("the nerve gave out")
 
     async def close_stream(
         stream: ReactEventStream[ChannelOutput],
@@ -1737,10 +1697,10 @@ async def test_reception_closes_agent_stream_before_releasing_gateway(
         closed_with_gateway.append(bool(registry.sessions))
         await stream_exit(stream, exc_type, exc, traceback)
 
-    monkeypatch.setattr(DroppingTimelineState, "drive", fail_render)
+    monkeypatch.setattr(ReflexDeps, "carry", fail_carry)
     monkeypatch.setattr(ReactEventStream, "__aexit__", close_stream)
     target = _source_target(address)
-    with pytest.raises(asyncio.CancelledError) if cancel else nullcontext():
+    with pytest.raises(asyncio.CancelledError if cancel else RuntimeError):
         await _run(
             React(),
             state=ReflexState(
@@ -1778,9 +1738,9 @@ async def test_route_runs_in_place_inside_flat_thread(prompt: str) -> None:
 
     assert isinstance(result, ReflexResult)
     assert result.target.mode == "sub"
-    assert agent.streams[0].address == address
-    assert agent.streams[0].run_name == "react"
-    assert agent.streams[0].prompt == prompt
+    assert agent.turns[0].address == address
+    assert agent.turns[0].run_name == "react"
+    assert agent.turns[0].prompt == prompt
     assert im.sub_threads == []
     assert im.consumed[0][0] == address
 
@@ -1898,7 +1858,7 @@ async def test_a_chat_room_kick_runs_in_a_sub_thread() -> None:
     """A dm has no end, so the turn does not run against it: Awake opens a thread
     inside it and the run — and so the conversation, and so the model context —
     belongs to that."""
-    agent = FakeAgent(id="other", allow_reception_run=True)
+    agent = FakeAgent(id="other")
     threads = FakeThreadManager()
     conversations = FakeConversationManager()
 
@@ -1924,7 +1884,7 @@ async def test_two_kicks_in_a_chat_room_do_not_share_a_conversation() -> None:
     """The discontinuity, end to end: each kick answers in its own thread, so one
     agent holds two conversations in one chat room and neither carries the other's
     history."""
-    agent = FakeAgent(id="other", allow_reception_run=True)
+    agent = FakeAgent(id="other")
     threads = FakeThreadManager()
     conversations = FakeConversationManager()
     deps = _deps(
@@ -1950,10 +1910,8 @@ async def test_two_kicks_in_a_chat_room_do_not_share_a_conversation() -> None:
 async def test_a_chat_rooms_owner_survives_the_next_kick() -> None:
     """A sub-thread is new every kick, so the owner a handoff pinned cannot live
     there. It lives on the chat room, and Route reads it through the surface."""
-    entry = FakeAgent(id="other", allow_reception_run=True)
-    owner = FakeAgent(
-        id="second", reception_output="still mine", allow_reception_run=True
-    )
+    entry = FakeAgent(id="other")
+    owner = FakeAgent(id="second", reception_output="still mine")
     threads = FakeThreadManager()
     chat_room = await threads.ensure(_key())
     await threads.record_handoff(chat_room, to_agent_tentacle_id="second")
@@ -1997,9 +1955,7 @@ async def test_a_resumed_deferral_returns_to_the_sub_thread_it_ran_in() -> None:
         run_name="react",
         conversation_id=suspended.id,
     )
-    agent = FakeAgent(
-        id="other", reception_output="resumed answer", allow_reception_run=True
-    )
+    agent = FakeAgent(id="other", reception_output="resumed answer")
 
     await _run(
         ResumeDeferred(awake=DeferredActionBatchResponse(batch_id=batch.id)),
@@ -2077,12 +2033,12 @@ async def test_resume_routes_reception_batch_to_run_reception() -> None:
     assert isinstance(result, ReflexResult)
     assert result.result is not None
     assert result.result.output == "resumed answer"
-    assert agent.streams[0].prompt is None
-    assert agent.streams[0].address == address
+    assert agent.turns[0].prompt is None
+    assert agent.turns[0].address == address
     # The resumed run must carry the batch conversation's thread; without it the
     # agent run fails fast ("requires a thread_id to own its conversation").
-    assert agent.streams[0].thread_id is not None
-    assert [stream.deferred_results for stream in agent.streams] == [deferred_results]
+    assert agent.turns[0].thread_id is not None
+    assert [turn.deferred_results for turn in agent.turns] == [deferred_results]
     assert action_manager.marked == [
         (batch.id, "resuming", False),
         (batch.id, "completed", True),
@@ -2179,7 +2135,7 @@ async def test_resume_returns_result_for_already_completed_batch() -> None:
 
     assert isinstance(result, ReflexResult)
     assert result.decision == decision
-    assert agent.streams == []
+    assert agent.turns == []
     assert action_manager.marked == []
 
 
@@ -2215,7 +2171,7 @@ async def test_resume_keeps_incomplete_reception_batch_deferred() -> None:
     assert isinstance(result, DeferredResult)
     assert result.run_name == "react"
     assert result.requests is batch.requests
-    assert agent.streams == []
+    assert agent.turns == []
     assert action_manager.marked == []
 
 
@@ -2227,7 +2183,6 @@ async def _run_send(
     address = _group_key()
     agent = FakeAgent(
         id="other",
-        allow_reception_run=True,
         reception_script=[
             MessageSentEvent(
                 segments=[MarkdownSegment(data={"text": "the summary"})],
@@ -2355,7 +2310,6 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
         id="other",
         reception_dismiss=True,
         reception_output="all done",
-        allow_reception_run=True,
     )
     deps = _deps(
         conversations=FakeConversationManager(),
@@ -2411,7 +2365,6 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         reception_teleport_destination="here",
         reception_teleport_project="inky",
         reception_output="carried on",
-        allow_reception_run=True,
     )
     deps = _deps(
         conversations=FakeConversationManager(),
@@ -2489,7 +2442,6 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
         reception_teleport="carrying on over there",
         reception_teleport_destination="far",
         reception_output="carried on",
-        allow_reception_run=True,
     )
     deps = _deps(
         conversations=FakeConversationManager(),
@@ -2564,58 +2516,32 @@ async def test_fork_follows_its_conversation_without_handoff(prompt: str) -> Non
     assert isinstance(result, ReflexResult)
     assert result.decision is not None
     assert result.decision.agent_id == "forked"
-    assert len(forked.streams) == 1
-    assert forked.streams[0].prompt == prompt
-    assert entry.streams == []
+    assert len(forked.turns) == 1
+    assert forked.turns[0].prompt == prompt
+    assert entry.turns == []
     assert threads.handoffs == []
     assert thread.handoffs == []
 
 
-async def test_a_move_reaches_the_channel_it_was_operated_from() -> None:
-    im = _channel()
-    console = FakeChannelTentacle("console")
-    deps = _deps(
-        conversations=FakeConversationManager(),
-        channels={"im": im, "console": console},
-        agent=FakeAgent(id="other"),
-    )
-    address = _key()
-    moved = GatewayEvent(action="summon", destination=address)
-
-    await deps.announce(ReflexState(operated_from="console"), address, moved)
-    await deps.announce(ReflexState(), address, moved)
-
-    # Where it happened hears it each time; the console only when operated from it.
-    assert im.presented == [(address, moved), (address, moved)]
-    assert console.presented == [(address, moved)]
-
-
 async def test_a_failed_turn_is_reported_where_it_came_from() -> None:
     im = _channel()
-    console = FakeChannelTentacle("console")
     deps = _deps(
         conversations=FakeConversationManager(),
-        channels={"im": im, "console": console},
+        channels={"im": im},
         agent=FakeAgent(id="other"),
     )
     address = _key()
-    source = _source_target(address)
 
-    await deps.report(ReflexState(source_target=source), RuntimeError("here"))
-    await deps.report(
-        ReflexState(source_target=source, operated_from="console"),
-        RuntimeError("from the console"),
-    )
-    # Failed before it knew its source: nobody to tell.
-    await deps.report(ReflexState(), RuntimeError("nowhere"))
+    async with drawing(im), im.octomate.nerve.publish(address) as impulses:
+        kicked = replace(deps, impulses=impulses)
+        await kicked.report(
+            ReflexState(source_target=_source_target(address)), RuntimeError("here")
+        )
+        # Failed before it knew its source: no channel to tell.
+        await kicked.report(ReflexState(), RuntimeError("nowhere"))
 
     assert [
         (where, event.message)
         for where, event in im.presented
         if isinstance(event, RunErrorEvent)
     ] == [(address, "here")]
-    assert [
-        (where, event.message)
-        for where, event in console.presented
-        if isinstance(event, RunErrorEvent)
-    ] == [(address, "from the console")]
