@@ -128,3 +128,19 @@ async def test_concurrent_sessions_get_their_own_connections(
             tasks.start_soon(touch)
 
     assert len(set(connections)) == 4
+
+
+@pytest.mark.parametrize("iteration", [0, 1])
+async def test_database_fixture_isolates_rows_and_schema(
+    in_memory_engine: AsyncEngine, iteration: int
+) -> None:
+    async with async_session() as session:
+        assert await session.list(ToolOutputSpill) == []
+        session.add(ToolOutputSpill(handle="isolation", payload=bytes([iteration])))
+        await session.commit()
+    async with in_memory_engine.begin() as connection:
+        indexed = await connection.exec_driver_sql(
+            "SELECT count(*) FROM thread_messages_fts"
+        )
+        assert indexed.scalar_one() == 0
+        await connection.exec_driver_sql("DROP TABLE thread_messages_fts")

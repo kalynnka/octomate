@@ -9,11 +9,12 @@ from functools import partial
 from io import StringIO
 from ipaddress import IPv4Address
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import httpx
 import pytest
 import yaml
+from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from fastmcp import FastMCP
@@ -41,7 +42,32 @@ def preparation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("OCTOMATE_DB_URL", url)
     monkeypatch.setattr(database_settings, "db_url", url)
     monkeypatch.setitem(OctomateConfig.model_config, "env_file", ".env")
+
+    def check_configuration(
+        arguments: list[str], *, cwd: Path, env: dict[str, str], check: bool
+    ) -> None:
+        assert arguments == [sys.executable, "-m", "octomate_cli.deployment", "check"]
+        assert check
+        assert env == {**os.environ, "OCTOMATE_HOME": str(cwd / "config")}
+        # Exercise the staged config in-process; one test retains the real subprocess.
+        with monkeypatch.context() as patch:
+            patch.chdir(cwd)
+            patch.setenv("OCTOMATE_HOME", env["OCTOMATE_HOME"])
+            patch.setattr(sys, "argv", arguments[2:])
+            deployment.main()
+
+    monkeypatch.setattr(deployment, "subprocess", Mock(run=check_configuration))
     return tmp_path
+
+
+def test_prepared_configuration_passes_subprocess_check(preparation: Path) -> None:
+    deployment.prepare(8123, ["trunkline"], ["claude", "codex", "deepseek"])
+    subprocess.run(
+        [sys.executable, "-m", "octomate_cli.deployment", "check"],
+        cwd=preparation,
+        check=True,
+    )
+    assert not (preparation / "octomate.db").exists()
 
 
 @pytest.mark.parametrize(
@@ -345,6 +371,8 @@ def database(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("OCTOMATE_DB_URL", url)
     monkeypatch.setattr(database_settings, "db_url", url)
     assert deployment.database_path() == path.resolve()
+    # In-process Alembic commands must not disable pytest's application loggers.
+    monkeypatch.setattr("logging.config.fileConfig", Mock())
     return path
 
 
@@ -481,10 +509,7 @@ def test_actual_migrations_initialize_empty_database(database: Path) -> None:
         ).fetchone()
     assert definition is not None
     assert "porter unicode61" in definition[0]
-    subprocess.run(
-        [sys.executable, "-m", "alembic", "-c", str(deployment.ALEMBIC_INI), "check"],
-        check=True,
-    )
+    command.check(Config(str(deployment.ALEMBIC_INI)))
     before = database.read_bytes()
     deployment.migrate(deployment.backup_database(database))
     assert database.read_bytes() == before
@@ -520,18 +545,7 @@ def test_actual_upgrade_rehearses_on_a_copy(database: Path, previous: str) -> No
     script = ScriptDirectory.from_config(Config(str(deployment.ALEMBIC_INI)))
     head = script.get_current_head()
     assert head is not None
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-c",
-            str(deployment.ALEMBIC_INI),
-            "upgrade",
-            previous,
-        ],
-        check=True,
-    )
+    command.upgrade(Config(str(deployment.ALEMBIC_INI)), previous)
     snapshot = deployment.backup_database(database)
     assert snapshot.backup is not None
     deployment.migrate(snapshot)
@@ -550,18 +564,7 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
     assert revision is not None
     previous = revision.down_revision
     assert isinstance(previous, str)
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-c",
-            str(deployment.ALEMBIC_INI),
-            "upgrade",
-            previous,
-        ],
-        check=True,
-    )
+    command.upgrade(Config(str(deployment.ALEMBIC_INI)), previous)
     message_id = "00000000000070008000000000000001"
     thread_id = "00000000000070008000000000000002"
     sender_id = "00000000000070008000000000000003"
@@ -650,18 +653,7 @@ def test_actual_upgrade_backfills_search_and_downgrade_keeps_source(
         ).fetchone() == (0,)
         connection.rollback()
 
-    subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-c",
-            str(deployment.ALEMBIC_INI),
-            "downgrade",
-            previous,
-        ],
-        check=True,
-    )
+    command.downgrade(Config(str(deployment.ALEMBIC_INI)), previous)
 
     assert deployment.revisions(database) == (previous,)
     with sqlite3.connect(database) as connection:
