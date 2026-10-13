@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pydantic_graph import Graph, GraphBuilder, TypeExpression
 
+from octomate.capabilities.harness.events import ReflexAsleepEvent, ReflexAwakeEvent
+from octomate.nerve import Impulse
 from octomate.reflex.nodes import (
     Awake,
     Command,
@@ -29,6 +31,7 @@ from octomate.reflex.state import (
     ReflexState,
     ResponseTarget,
 )
+from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.triage import ResponseTargetMode, SummonDecision
 
 __all__ = [
@@ -51,6 +54,7 @@ __all__ = [
     "Teleport",
     "build_reflex_graph",
     "reflex_graph",
+    "run_reflex",
 ]
 
 
@@ -91,3 +95,21 @@ def build_reflex_graph(
 
 
 reflex_graph = build_reflex_graph()
+
+
+async def run_reflex(
+    signal: AwakeSignal, *, state: ReflexState, deps: ReflexDeps
+) -> ReflexGraphResult:
+    """Wake the reflex with `signal`, and say so on the nerve before anything
+    else. A failure is reported where the kick came from, and the reflex falls
+    asleep last whatever happened."""
+    await deps.impulses.send(Impulse(ReflexAwakeEvent()))
+    try:
+        return await reflex_graph.run(
+            inputs=Awake(signal=signal), state=state, deps=deps
+        )
+    except Exception as error:
+        await deps.report(state, error)
+        raise
+    finally:
+        await deps.impulses.send(Impulse(ReflexAsleepEvent()))

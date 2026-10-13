@@ -492,4 +492,6 @@ class SlackInk(Ink[SlackOutboundMessage]):
                 },
             )
         except Exception:
-            logger.debug("SlackInk: set_assistant_status failed", exc_info=True)
+            # A clear that fails leaves the thread showing the app as still running.
+            log = logger.warning if not status else logger.debug
+            log("SlackInk: set_assistant_status(%r) failed", status, exc_info=True)

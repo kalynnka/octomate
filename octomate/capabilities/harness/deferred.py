@@ -27,9 +27,11 @@ from pydantic_ai import ToolDenied
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 
 from octomate.capabilities.ask import ASK_DEFERR_KIND
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.deferred import DeferredActionBatch
 
 
 class DeferredResolver(Protocol):
@@ -135,14 +137,14 @@ class DeferredSuspender(Protocol):
     out-of-band response and the run ends; it is resumed later by feeding the
     collected `DeferredToolResults` back through a fresh agent run.
 
-    Returning an `ActionBatchEvent` asks the react loop to present the batch *on
-    the stream* (the consumer renders it); returning `None` means the suspender
-    presented it out-of-band itself.
+    Returning an `ActionBatchEvent` asks the react loop to put the batch *on the
+    stream*, for whoever draws the run to present; returning `None` means there
+    is nothing to present, as for a deferral the graph performs itself.
 
     `pause` is the same for a run that stays live while a human answers, as a
-    runtime's in-process approval does: the batch it waits on, and its event when
-    the run's own stream is what presents it. The caller names the batch, so it is
-    already waiting on that id when the cards go up and a quick reply finds it.
+    runtime's in-process approval does: the event of the batch it waits on, for
+    the run's own stream. The caller names the batch, so it is already waiting on
+    that id when the cards go up and a quick reply finds it.
     """
 
     async def suspend(
@@ -151,7 +153,7 @@ class DeferredSuspender(Protocol):
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
-    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]: ...
+    ) -> ActionBatchEvent: ...
 
 
 @dataclass(frozen=True)
@@ -168,22 +170,28 @@ class Ended:
     error: Exception | None = None
 
 
+# What a live run's callbacks put on its stream: the batch an approval pauses the
+# run on, and its answer once the run takes it.
+type Interjection = ActionBatchEvent | ActionBatchAnsweredEvent
+
+
 class Interjections[T]:
     """What a live run's callbacks put on its stream while it waits on the runtime:
-    the batch an approval pauses the run on, for whoever draws the run to present.
+    the batch an approval pauses the run on, and the answer it resumes on, for
+    whoever draws the run.
 
     The runtime's own stream is read in a task of its own, so a batch gets through
     while the runtime is still waiting for its answer."""
 
     def __init__(self) -> None:
-        self.queue: asyncio.Queue[Read[T] | ActionBatchEvent | Ended] = asyncio.Queue()
+        self.queue: asyncio.Queue[Read[T] | Interjection | Ended] = asyncio.Queue()
 
-    def interject(self, event: ActionBatchEvent) -> None:
+    def interject(self, event: Interjection) -> None:
         self.queue.put_nowait(event)
 
     async def around(
         self, source: AsyncIterable[T]
-    ) -> AsyncGenerator[T | ActionBatchEvent]:
+    ) -> AsyncGenerator[T | Interjection]:
         """`source`'s items in order, with each interjection as it is made."""
         reading = asyncio.create_task(self.read(source))
         try:

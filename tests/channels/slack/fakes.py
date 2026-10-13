@@ -24,6 +24,7 @@ from octomate.tentacles.feelers.output import (
     DefaultMarkdownFeeler,
     DefaultSegmentsFeeler,
 )
+from octomate.tentacles.siphon import Siphon
 from octomate.tentacles.slack import SlackChromo, SlackTentacle
 from octomate.tentacles.slack.feelers.approvals import SlackApprovalFeeler
 from octomate.tentacles.slack.feelers.oauth import SlackOAuthFeeler
@@ -36,6 +37,7 @@ from octomate.tentacles.slack.schema import (
     SlackPostMessageKwargs,
 )
 from octomate.types.json import JsonObject
+from tests.support.channels import FakeOctomate
 
 
 @dataclass
@@ -257,6 +259,8 @@ def slack_channel(
     # `__init__` is bypassed here, so mirror the one field it lifts off the concrete
     # config — the base class types `config` as `ChannelConfig`, which has no token.
     channel.app_token = config.app_token
+    channel.octomate = FakeOctomate()
+    channel.siphon = Siphon(channel)
     compose_slack_feelers(channel, deferred_actions)
     return channel
 

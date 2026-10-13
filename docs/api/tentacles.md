@@ -9,6 +9,7 @@ The base classes every tentacle extends, and the pieces a channel is built from.
 - [Base](tentacles/base.md)
 - [Native session hooks](tentacles/hooks.md)
 - [Feelers](tentacles/feelers.md)
+- [Nerve and siphon](tentacles/nerve.md)
 - [Trunkline](tentacles/trunkline.md)
 
 ## NapCat

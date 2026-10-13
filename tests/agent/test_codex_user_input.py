@@ -109,7 +109,6 @@ async def test_mcp_consent_rides_the_turn_and_returns_the_selected_answer(
             target_mode="sub",
             decision=None,
             thread_id=thread.id,
-            emit_on_stream=True,
         ),
         interjections=interjections,
     )

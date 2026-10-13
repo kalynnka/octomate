@@ -46,6 +46,7 @@ from tests.support.channels import (
     RecordingInk,
 )
 from tests.support.managers import a_loaded_thread, the_sub_thread
+from tests.support.nerve import kicked
 from tests.support.scenarios import mid_run_notice
 
 
@@ -153,15 +154,14 @@ async def test_entry_agent_answers_in_one_run_without_claiming_ownership() -> No
     # The collapsed dispatch: the channel default agent runs once (react) and
     # answers — no separate triage screen, and a plain answer pins no owner.
     octomate = Octomate()
-    entry = FakeAgent(reception_output="handled", allow_reception_run=True)
+    entry = FakeAgent(reception_output="handled")
     channel = FakeChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="answer me")]))
+    await kicked(octomate, UserMessageSignal([_event(text="answer me")]))
 
     assert [turn.run_name for turn in entry.turns] == ["react"]
-    assert entry.streams == []
     assert channel.sent[0][2][0]["text"] == "handled"
 
     thread = await octomate.threads.ensure(_key())
@@ -180,16 +180,13 @@ async def test_summon_here_transmits_current_dm_ownership() -> None:
             hint="Taking over",
             brief="Continue with the user directly.",
         ),
-        allow_reception_run=True,
     )
-    claude = FakeAgent(
-        id="claude", reception_output="took over", allow_reception_run=True
-    )
+    claude = FakeAgent(id="claude", reception_output="took over")
     channel = FakeChannelTentacle(config=_summon_config(stream=False))
     _register_agents(octomate, entry, claude)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="hand this to claude")]))
+    await kicked(octomate, UserMessageSignal([_event(text="hand this to claude")]))
 
     # No new surface — claude took over the current DM in place and now owns it.
     assert channel.sub_threads == []
@@ -216,17 +213,16 @@ async def test_owned_thread_follow_up_skips_the_entry_agent() -> None:
     _register_agents(octomate, entry, claude)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="please debug")]))
+    await kicked(octomate, UserMessageSignal([_event(text="please debug")]))
     # A follow-up in the chat it took over routes straight to the owner, no entry run.
-    await octomate.kick(UserMessageSignal([_event(text="more detail")]))
+    await kicked(octomate, UserMessageSignal([_event(text="more detail")]))
 
     handoff_address = _key()
     handoff_thread = await octomate.threads.ensure(handoff_address)
     assert handoff_thread.active_agent_tentacle_id == "claude"
-    assert len(entry.streams) == 1  # the entry agent ran only on the first turn
-    assert entry.turns == []
-    assert [stream.run_name for stream in claude.streams] == ["summon", "react"]
-    assert claude.streams[1].address == handoff_address
+    assert len(entry.turns) == 1  # the entry agent ran only on the first turn
+    assert [turn.run_name for turn in claude.turns] == ["summon", "react"]
+    assert claude.turns[1].address == handoff_address
 
 
 async def test_owner_survives_cold_manager_reload() -> None:
@@ -253,17 +249,16 @@ async def test_owner_survives_cold_manager_reload() -> None:
         return octomate, entry, claude
 
     first, _first_entry, first_claude = _build()
-    await first.kick(UserMessageSignal([_event(text="please debug")]))
-    assert [stream.run_name for stream in first_claude.streams] == ["summon"]
+    await kicked(first, UserMessageSignal([_event(text="please debug")]))
+    assert [turn.run_name for turn in first_claude.turns] == ["summon"]
 
     # Fresh managers over the same DB: ownership reloads from the persisted
     # handoff, so the follow-up routes to Claude without a new entry run.
     second, second_entry, second_claude = _build()
-    await second.kick(UserMessageSignal([_event(text="more detail")]))
+    await kicked(second, UserMessageSignal([_event(text="more detail")]))
 
     assert second_entry.turns == []
-    assert second_entry.streams == []
-    assert [stream.run_name for stream in second_claude.streams] == ["react"]
+    assert [turn.run_name for turn in second_claude.turns] == ["react"]
     reloaded = await second.threads.ensure(_key())
     assert reloaded.active_agent_tentacle_id == "claude"
 
@@ -279,7 +274,6 @@ async def test_chained_summon_updates_thread_owner() -> None:
             hint="First pass",
             brief="First agent brief.",
         ),
-        allow_reception_run=True,
     )
     first = FakeAgent(
         id="first",
@@ -291,9 +285,8 @@ async def test_chained_summon_updates_thread_owner() -> None:
             hint="Second pass",
             brief="Second agent brief.",
         ),
-        allow_reception_run=True,
     )
-    second = FakeAgent(id="second", reception_output="done", allow_reception_run=True)
+    second = FakeAgent(id="second", reception_output="done")
     channel = FakeChannelTentacle(
         config=ChannelConfig(
             type="fake",
@@ -308,7 +301,7 @@ async def test_chained_summon_updates_thread_owner() -> None:
     _register_agents(octomate, entry, first, second)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="please debug")]))
+    await kicked(octomate, UserMessageSignal([_event(text="please debug")]))
 
     handoff_thread = await octomate.threads.ensure(_key())
     assert [handoff.to_agent_tentacle_id for handoff in handoff_thread.handoffs] == [
@@ -325,13 +318,12 @@ async def test_teleport_forks_history_into_a_sub_thread_and_resumes() -> None:
     entry = FakeAgent(
         reception_teleport="Let's move to a thread",
         reception_output="continued in the thread",
-        allow_reception_run=True,
     )
     channel = FakeChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="do the multi-step thing")]))
+    await kicked(octomate, UserMessageSignal([_event(text="do the multi-step thing")]))
 
     # A sub-thread was opened, and the agent resumed there and delivered its answer.
     assert channel.sub_threads[0][1] == "Let's move to a thread"
@@ -349,14 +341,13 @@ async def test_teleport_on_main_only_channel_refuses_the_move() -> None:
     entry = FakeAgent(
         reception_teleport="try to move",
         reception_output="stayed here",
-        allow_reception_run=True,
     )
     channel = MainOnlyChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
     with pytest.raises(ValueError, match="nothing was teleported"):
-        await octomate.kick(UserMessageSignal([_event(text="do it")]))
+        await kicked(octomate, UserMessageSignal([_event(text="do it")]))
 
     # The graph tells the chat the turn failed; the channel only shows it.
     [(where, failed)] = channel.presented
@@ -388,11 +379,11 @@ async def test_summon_here_keeps_reception_in_main_for_main_only_channel() -> No
     _register_agents(octomate, entry, claude)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="please investigate")]))
+    await kicked(octomate, UserMessageSignal([_event(text="please investigate")]))
 
     assert channel.sub_threads == []
-    assert claude.streams[0].address == _key()
-    assert claude.streams[0].prompt == "Please investigate this in main."
+    assert claude.turns[0].address == _key()
+    assert claude.turns[0].prompt == "Please investigate this in main."
 
 
 async def test_entry_runs_in_place_inside_a_flat_thread() -> None:
@@ -403,12 +394,13 @@ async def test_entry_runs_in_place_inside_a_flat_thread() -> None:
     octomate.connect(channel)
 
     address = _key(thread_id="existing-thread")
-    await octomate.kick(
-        UserMessageSignal([_event(text="continue", thread_id="existing-thread")])
+    await kicked(
+        octomate,
+        UserMessageSignal([_event(text="continue", thread_id="existing-thread")]),
     )
 
-    assert [stream.run_name for stream in entry.streams] == ["react"]
-    assert entry.streams[0].address == address
+    assert [turn.run_name for turn in entry.turns] == ["react"]
+    assert entry.turns[0].address == address
     assert channel.sub_threads == []
     assert channel.consumed[0][0] == address
     assert channel.sent[-1][2][0]["text"] == "handled"
@@ -444,9 +436,9 @@ async def test_reception_model_is_resolved_from_agent() -> None:
     _register_agents(octomate, entry, claude)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="please work")]))
+    await kicked(octomate, UserMessageSignal([_event(text="please work")]))
 
-    assert claude.streams[0].model == "pro-m"
+    assert claude.turns[0].model == "pro-m"
 
 
 async def test_streamed_reception_records_output_without_timeline_source() -> None:
@@ -458,7 +450,7 @@ async def test_streamed_reception_records_output_without_timeline_source() -> No
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event()]))
+    await kicked(octomate, UserMessageSignal([_event()]))
 
     target_address = channel.consumed[0][0]
     thread = await a_loaded_thread(octomate.threads, target_address)
@@ -475,7 +467,7 @@ async def test_streamed_reception_persists_when_presentation_fails() -> None:
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event()]))
+    await kicked(octomate, UserMessageSignal([_event()]))
 
     thread = await octomate.threads.ensure(_key())
     chat_messages = await _agent_rows(thread.id, "survives render failure")
@@ -485,7 +477,7 @@ async def test_streamed_reception_persists_when_presentation_fails() -> None:
 
 async def test_kick_builds_prompt_from_pending_thread_messages() -> None:
     octomate = Octomate()
-    entry = FakeAgent(reception_output="handled", allow_reception_run=True)
+    entry = FakeAgent(reception_output="handled")
     channel = FakeChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
@@ -497,8 +489,9 @@ async def test_kick_builds_prompt_from_pending_thread_messages() -> None:
     ]
     stored = [await octomate.threads.record_inbound(event) for event in events]
 
-    await octomate.kick(
-        UserMessageSignal([events[-1]], trigger_thread_message_id=stored[-1].id)
+    await kicked(
+        octomate,
+        UserMessageSignal([events[-1]], trigger_thread_message_id=stored[-1].id),
     )
 
     assert entry.turns[0].prompt == (
@@ -517,7 +510,7 @@ async def _kicked_twice(
     """Two kicks on one surface, with the first one's messages settled behind the
     prompt cursor — which is the state a second kick actually arrives in."""
     octomate = Octomate()
-    entry = FakeAgent(reception_output="handled", allow_reception_run=True)
+    entry = FakeAgent(reception_output="handled")
     config = _entry_config(stream=False)
     if recap is not None:
         config = config.model_copy(update={"recap": recap})
@@ -529,16 +522,16 @@ async def _kicked_twice(
         message_id="m1", text="the auth bug is in login", thread_id=thread_id
     )
     first = await octomate.threads.record_inbound(settled)
-    await octomate.kick(
-        UserMessageSignal([settled], trigger_thread_message_id=first.id)
+    await kicked(
+        octomate, UserMessageSignal([settled], trigger_thread_message_id=first.id)
     )
     thread = await octomate.threads.ensure(_key(thread_id=thread_id))
     await octomate.threads.advance_prompt_cursor(thread, first.id)
 
     asking = _event(message_id="m2", text="what did we decide", thread_id=thread_id)
     second = await octomate.threads.record_inbound(asking)
-    await octomate.kick(
-        UserMessageSignal([asking], trigger_thread_message_id=second.id)
+    await kicked(
+        octomate, UserMessageSignal([asking], trigger_thread_message_id=second.id)
     )
     return entry
 
@@ -596,13 +589,12 @@ async def test_a_teleport_into_a_sub_thread_leaves_a_row_in_the_room() -> None:
     entry = FakeAgent(
         reception_teleport="Working on it",
         reception_output="continued in the thread",
-        allow_reception_run=True,
     )
     channel = FakeChannelTentacle(config=_entry_config(stream=False))
     _register_agents(octomate, entry)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="please debug")]))
+    await kicked(octomate, UserMessageSignal([_event(text="please debug")]))
 
     room = await a_loaded_thread(octomate.threads, _key())
     [opener] = [
@@ -647,7 +639,7 @@ async def test_reception_records_and_binds_outbound_thread_message() -> None:
     octomate.connect(agent)
     octomate.connect(channel)
 
-    await octomate.kick(UserMessageSignal([_event(text="please answer")]))
+    await kicked(octomate, UserMessageSignal([_event(text="please answer")]))
 
     thread = await octomate.threads.ensure(_key())
     # The chat everyone saw is the chat room's; the run that produced it happened
@@ -682,8 +674,8 @@ async def test_reception_persists_before_channel_presentation() -> None:
     octomate.connect(agent)
     octomate.connect(channel)
 
-    with pytest.raises(RuntimeError, match="channel presentation failed"):
-        await octomate.kick(UserMessageSignal([_event(text="please answer")]))
+    # The channel's failure is its own: the kick that recorded the reply is done.
+    await kicked(octomate, UserMessageSignal([_event(text="please answer")]))
 
     thread = await octomate.threads.ensure(_key())
     conversation = await octomate.conversations.ensure(

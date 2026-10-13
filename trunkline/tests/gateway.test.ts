@@ -6,10 +6,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AssistantRuntimeProvider } from '@assistant-ui/react'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ApiAgentInfo, ApiAgentRoute, ApiCommandDescriptor, ApiThread, ChannelAddress, CommandStreamEvent, GatewayEvent, GatewayRequest, OperationAvailability, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
+import type { ApiAgentInfo, ApiAgentRoute, ApiCommandDescriptor, ApiThread, ChannelAddress, CommandOutcomeEvent, GatewayEvent, GatewayRequest, OperationAvailability, ThreadOperations, WireEvent } from '../src/lib/api/events.ts'
+import { LiveSocket, installLiveSocket } from './liveSocket.ts'
 
 let server: ViteDevServer
-let streamGateway: typeof import('../src/lib/api/client.ts').streamGateway
+let castGateway: typeof import('../src/lib/api/client.ts').castGateway
 let fetchThreadOperations: typeof import('../src/lib/api/client.ts').fetchThreadOperations
 let fetchAddresses: typeof import('../src/lib/api/client.ts').fetchAddresses
 let forms: typeof import('../src/features/chat/gateway.ts')
@@ -24,7 +25,7 @@ let DestinationPicker: typeof import('../src/features/chat/GatewayDestination.ts
 let CommandPanel: typeof import('../src/features/chat/CommandPanel.tsx').CommandPanel
 let Composer: typeof import('../src/features/chat/Composer.tsx').Composer
 let useTrunklineRuntime: typeof import('../src/features/chat/runtime.tsx').useTrunklineRuntime
-const globals = ['document', 'requestAnimationFrame'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
+const globals = ['document', 'requestAnimationFrame', 'WebSocket', 'location'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const destination: ApiThread = {
   id: 'destination-id', kind: 'thread', chat_type: 'thread', chat_id: 'account',
   channel_tentacle_id: 'lark', channel_thread_id: 'platform-id', title: 'Arrived',
@@ -53,11 +54,21 @@ const refused: OperationAvailability = { destinations: [], here: null, routes: {
 // No suggested address at all: the in-place handover alone keeps Summon open.
 const inPlace: OperationAvailability = { destinations: [], here, routes: { trunkline: routes }, reason: null }
 const options: ThreadOperations = { source: here, teleport: refused, summon: inPlace, barred: {} }
-const sse = (...events: CommandStreamEvent[]) => new Response(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } })
+const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
+/** The relay answers a request at once; the thread's socket carries the turn, settling last. */
+const live = (...events: WireEvent[]) => {
+  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'reflex_asleep' }))
+  return new Response(null, { status: 202 })
+}
+/** A command answers with its outcome once the socket has carried its feedback. */
+const answered = (outcome: CommandOutcomeEvent, ...events: WireEvent[]) => {
+  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'reflex_asleep' }))
+  return Response.json(outcome)
+}
 
 before(async () => {
   server = await createServer({ root: fileURLToPath(new URL('../', import.meta.url)), server: { middlewareMode: true, watch: null, ws: false }, appType: 'custom' })
-  ;({ streamGateway, fetchThreadOperations, fetchAddresses } = await server.ssrLoadModule('/src/lib/api/client.ts'))
+  ;({ castGateway, fetchThreadOperations, fetchAddresses } = await server.ssrLoadModule('/src/lib/api/client.ts'))
   forms = await server.ssrLoadModule('/src/features/chat/gateway.ts') as typeof forms
   commands = await server.ssrLoadModule('/src/features/chat/commands.ts') as typeof commands
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
@@ -74,6 +85,7 @@ before(async () => {
 beforeEach(() => {
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
+  installLiveSocket()
   useConsole.setState({ selThreadId: 'source', detail: null, ntOn: false, running: false, gatewayPending: null, gatewayMode: null, live: [], notices: [] })
 })
 afterEach(() => {
@@ -90,14 +102,12 @@ afterEach(() => {
 after(async () => { await server?.close() })
 
 for (const action of ['teleport', 'summon'] as const) {
-  test(`${action} posts the typed payload once and waits for its confirmed destination`, async () => {
+  test(`${action} posts the typed payload once`, async () => {
     const payload: GatewayRequest = action === 'teleport' ? request : { action, body: {
       agent_id: 'claude', model: 'sonnet', brief: 'Review the patch', hint: 'Handing over', effort: 'high',
     } }
-    const fetch = mock.method(globalThis, 'fetch', async () => sse({ ...gateway, action }, result))
-    const events: WireEvent[] = []
-    assert.deepEqual(await streamGateway('source/id', payload, (event) => events.push(event)), { ...gateway, action })
-    assert.deepEqual(events, [result])
+    const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 202 }))
+    await castGateway('source/id', payload)
     assert.equal(fetch.mock.callCount(), 1)
     const [url, init] = fetch.mock.calls[0].arguments
     assert.equal(url, `/api/trunkline/threads/source%2Fid/${action}`)
@@ -179,42 +189,49 @@ test('the effort scale only ever lands on a level the route takes', () => {
 
 test('HTTP refusals preserve their reason and are not retried', async () => {
   const fetch = mock.method(globalThis, 'fetch', async () => Response.json({ detail: 'The agent is busy.' }, { status: 409 }))
-  await assert.rejects(streamGateway('source', request, () => {}), /The agent is busy/)
+  await assert.rejects(castGateway('source', request), /The agent is busy/)
   assert.equal(fetch.mock.callCount(), 1)
 })
 
-test('a failed or incomplete stream cannot report a successful gateway action', async () => {
-  const fetch = mock.method(globalThis, 'fetch', async () => sse(gateway, { event_kind: 'run_error', message: 'Landing failed', trace_id: 'abc' }))
-  await assert.rejects(streamGateway('source', request, () => {}), /Landing failed/)
-  fetch.mock.mockImplementation(async () => sse(result))
-  await assert.rejects(streamGateway('source', request, () => {}), /without confirming a destination/)
+const sourceDetail = { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
+
+test('a failed or unconfirmed operation reports its reason and arrives nowhere', async () => {
+  useConsole.setState({ detail: sourceDetail })
+  const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+  const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? live(gateway, { event_kind: 'run_error', message: 'Landing failed', trace_id: 'abc' }) : Response.json([destination]))
+  await useConsole.getState().actions.gateway('source', request)
+  assert.ok(useConsole.getState().notices.some((one) => one.text.includes('Landing failed')))
+  fetch.mock.mockImplementation(async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? live(result) : Response.json([destination]))
+  await useConsole.getState().actions.gateway('source', request)
   // Another spell's move does not confirm this one.
-  fetch.mock.mockImplementation(async () => sse({ ...gateway, action: 'scheme' }, result))
-  await assert.rejects(streamGateway('source', request, () => {}), /without confirming a destination/)
+  fetch.mock.mockImplementation(async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? live({ ...gateway, action: 'scheme' }, result) : Response.json([destination]))
+  await useConsole.getState().actions.gateway('source', request)
+  assert.equal(useConsole.getState().notices.filter((one) => one.text.includes('without confirming a destination')).length, 2)
+  assert.equal(select.mock.callCount(), 0)
+  // Each operation's socket closed with its run; only the open thread is watched.
+  assert.deepEqual(LiveSocket.opened.filter((socket) => !socket.closed).map((socket) => socket.url), ['ws://console.test/api/trunkline/live?thread_id=source'])
 })
 
 test('a move the agent makes after the operation is where it ends', async () => {
   const onward: GatewayEvent = { ...gateway, action: 'scheme', announcement: null, destination: { ...gateway.destination, chat_type: 'dm', channel_thread_id: null } }
-  mock.method(globalThis, 'fetch', async () => sse(gateway, result, onward))
-  assert.deepEqual(await streamGateway('source', request, () => {}), onward)
+  const onwardThread: ApiThread = { ...destination, id: 'onward-id', chat_type: 'dm', channel_thread_id: null }
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? live(gateway, result, onward) : Response.json([destination, onwardThread]))
+  const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
+  useConsole.setState({ detail: sourceDetail })
+  await useConsole.getState().actions.gateway('source', request)
+  assert.deepEqual(select.mock.calls[0].arguments, ['lark', 'onward-id'])
 })
 
 const landedAt: ChannelAddress = { channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: 'landed-key', shared: false }
-const started: WireEvent = { event_kind: 'custom', name: 'run_started', address: landedAt }
+const started: WireEvent = { event_kind: 'run_started', address: landedAt }
 const refusedRun: WireEvent = { event_kind: 'run_error', message: 'The model refused.', trace_id: 'abc' }
 const moved: GatewayEvent = { ...gateway, destination: landedAt }
-
-test('a run started where the move landed carries its own failure', async () => {
-  mock.method(globalThis, 'fetch', async () => sse(moved, started, refusedRun))
-  const events: WireEvent[] = []
-  assert.deepEqual(await streamGateway('source', request, (event) => events.push(event)), moved)
-  assert.deepEqual(events, [started, refusedRun])
-})
 
 /** Teleport from `source` over `events`, with selection doing what the real one does to the state. */
 async function followMove(...events: WireEvent[]) {
   const landed: ApiThread = { ...destination, id: 'landed-id', channel_tentacle_id: 'trunkline', chat_id: 'owner', channel_thread_id: 'landed-key' }
-  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(...events) : Response.json([landed]))
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? live(...events) : Response.json([landed]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async (_channel: string, id: string) => {
     useConsole.setState({ selThreadId: id, live: [], running: false })
   })
@@ -240,7 +257,7 @@ test('a run that fails after the move shows its failure where it landed', async 
 
 test('successful arrival selects the thread matching the complete channel address', async () => {
   const wrong = { ...destination, id: 'wrong', chat_id: 'other-account' }
-  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(gateway, result) : Response.json([wrong, destination]))
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? live(gateway, result) : Response.json([wrong, destination]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
   useConsole.getState().actions.setGatewayMode({ threadId: 'source', action: 'teleport' })
   await useConsole.getState().actions.gateway('source', request)
@@ -253,7 +270,7 @@ test('arrival does not navigate away from a different thread selected during the
   mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => {
     if (String(url).endsWith('/teleport')) {
       useConsole.setState({ selThreadId: 'another' })
-      return sse(gateway, result)
+      return live(gateway, result)
     }
     return Response.json([destination])
   })
@@ -262,24 +279,23 @@ test('arrival does not navigate away from a different thread selected during the
   assert.equal(select.mock.callCount(), 0)
 })
 
-test('a result keeps the thread busy until the stream closes, then refreshes operation availability', async () => {
-  const stream = new TransformStream<Uint8Array>()
-  const writer = stream.writable.getWriter()
+test('a result keeps the thread busy until the run settles, then refreshes operation availability', async () => {
   mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
-    init?.method === 'POST' ? new Response(stream.readable) : Response.json([]))
-  useConsole.setState({ detail: { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } } })
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  useConsole.setState({ detail: sourceDetail })
   queryClient.setQueryData(['thread-operations', 'source'], options)
   useConsole.getState().actions.sendDirective('radio check')
-  try {
-    await writer.write(new TextEncoder().encode(`data: ${JSON.stringify(result)}\n\n`))
-    await writer.write(new TextEncoder().encode(`data: ${JSON.stringify({ event_kind: 'result_text_delta', delta: 'Closing feedback' })}\n\n`))
-    assert.equal(useConsole.getState().running, true)
-    assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, false)
-  } finally {
-    await writer.close()
-    for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
-  }
+  await tick()
+  const socket = LiveSocket.last()
+  assert.equal(socket.url, 'ws://console.test/api/trunkline/live?thread_key=source-key')
+  socket.deliver(result, { event_kind: 'result_text_delta', delta: 'Closing feedback' })
+  await tick()
+  assert.equal(useConsole.getState().running, true)
+  assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, false)
+  socket.deliver({ event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
   assert.equal(useConsole.getState().running, false)
+  assert.ok(socket.closed)
   assert.ok(useConsole.getState().live.filter((item) => item.kind === 'stream').every((item) => !item.streaming))
   assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, true)
 })
@@ -291,7 +307,7 @@ for (const initiator of ['operator', 'agent']) {
     const opening = { kind: 'session-open' as const, uid: 'saved-divider', sessionId: 'new-session', text: 'codex · new-model', tone: 'summon' as const }
     mock.method(api, 'getThreadDetail', async () => ({ ...detail, sessions: [...detail.sessions, { ...session, id: opening.sessionId, conversationId: 'new-conversation', agent: 'codex', route: opening.text }], ledger: [opening] }))
     const transport = mock.method(globalThis, 'fetch', async (url: RequestInfo | URL) => String(url).endsWith('/summon') || String(url).endsWith('/messages')
-      ? sse(...(initiator === 'agent' ? [{ ...result, output: 'Handing over.' }] : []), { ...gateway, action: 'summon', destination: here }, { event_kind: 'custom', name: 'run_started', address: here }, result)
+      ? live(...(initiator === 'agent' ? [{ ...result, output: 'Handing over.' }] : []), { ...gateway, action: 'summon', destination: here }, { event_kind: 'run_started', address: here }, result)
       : Response.json([{ ...destination, id: 'source', channel_tentacle_id: here.channel_tentacle_id, chat_id: here.chat_id, channel_thread_id: here.channel_thread_id }]))
     const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
     let beforeReply: string[] = []
@@ -319,7 +335,7 @@ for (const initiator of ['operator', 'agent']) {
     assert.equal(select.mock.callCount(), 0)
     assert.equal(useConsole.getState().gatewayMode, null)
     if (initiator === 'operator') {
-      transport.mock.mockImplementation(async () => sse(result))
+      transport.mock.mockImplementation(async () => live(result))
       useConsole.getState().actions.sendDirective('who are you?')
       for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))
       assert.ok(String(transport.mock.calls.at(-1)?.arguments[0]).endsWith('/messages'))
@@ -331,7 +347,7 @@ for (const initiator of ['operator', 'agent']) {
 
 test('a turn the agent moved opens where it landed, and one that stayed opens nothing', async () => {
   for (const events of [[result, gateway], [result]]) {
-    mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/messages') ? sse(...events) : Response.json([destination]))
+    mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/messages') ? live(...events) : Response.json([destination]))
     const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
     useConsole.setState({ detail: { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } } })
     useConsole.getState().actions.sendDirective('take this elsewhere')
@@ -344,7 +360,7 @@ test('a turn the agent moved opens where it landed, and one that stayed opens no
 })
 
 test('missing destination visibility is reported in the message panel', async () => {
-  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(gateway, result) : Response.json([]))
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? live(gateway, result) : Response.json([]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
   await useConsole.getState().actions.gateway('source', request)
   assert.equal(select.mock.callCount(), 0)
@@ -352,7 +368,7 @@ test('missing destination visibility is reported in the message panel', async ()
 })
 
 test('an error after a run result still appears in the message panel', async () => {
-  mock.method(globalThis, 'fetch', async () => sse(result, { event_kind: 'run_error', message: 'The destination could not create a thread.', trace_id: 'abc' }))
+  mock.method(globalThis, 'fetch', async () => live(result, { event_kind: 'run_error', message: 'The destination could not create a thread.', trace_id: 'abc' }))
   await useConsole.getState().actions.gateway('source', request)
   assert.ok(useConsole.getState().notices.some((one) => one.kind === 'notice' && one.text.includes('could not create a thread')))
 })
@@ -729,16 +745,17 @@ test('a synced native session can still use an eligible gateway operation', asyn
     msgCount: 0, sessions: [session], ledger: [], ctxK: 0,
     usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null },
   } })
-  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? sse(gateway, result) : Response.json([destination]))
+  mock.method(globalThis, 'fetch', async (url: Parameters<typeof fetch>[0]) => String(url).endsWith('/teleport') ? live(gateway, result) : Response.json([destination]))
   const select = mock.method(useConsole.getState().actions, 'selectThread', async () => {})
   await useConsole.getState().actions.gateway('source', request)
   assert.deepEqual(select.mock.calls[0].arguments, ['lark', 'destination-id'])
+  assert.equal(LiveSocket.last().url, 'ws://console.test/api/trunkline/live?thread_id=source')
 })
 
-test('an agent\'s own command streams its feedback into the ledger and ends on its outcome', async () => {
-  const reply: CommandStreamEvent = { event_kind: 'message_sent', segments: [{ type: 'text', data: { text: 'session $1.84' } }] }
-  const done: CommandStreamEvent = { event_kind: 'command_outcome', outcome: { status: 'completed', segments: [] } }
-  const fetch = mock.method(globalThis, 'fetch', async () => sse(reply, done))
+test('an agent\'s own command carries its feedback into the ledger and ends on its outcome', async () => {
+  const reply: WireEvent = { event_kind: 'message_sent', segments: [{ type: 'text', data: { text: 'session $1.84' } }] }
+  const done: CommandOutcomeEvent = { event_kind: 'command_outcome', outcome: { status: 'completed', segments: [] } }
+  const fetch = mock.method(globalThis, 'fetch', async () => answered(done, reply))
   useConsole.setState({ detail: { key: 'source', live: true, sendKey: 'source-key', msgCount: 0, sessions: [session], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } } })
   const context = { agent_id: 'claude', address: here, conversation_id: 'conversation-id' }
   useConsole.getState().actions.runCommand(context, cost, 'in detail')
@@ -787,9 +804,9 @@ test('effort in the new composer is local and an omitted level restores the defa
 })
 
 test('a direct command in the new composer keeps the thread unopened', async () => {
-  const reply: CommandStreamEvent = { event_kind: 'message_sent', segments: [{ type: 'text', data: { text: 'Ready' } }] }
-  const done: CommandStreamEvent = { event_kind: 'command_outcome', outcome: { status: 'completed', segments: [] } }
-  const fetch = mock.method(globalThis, 'fetch', async () => sse(reply, done))
+  const reply: WireEvent = { event_kind: 'message_sent', segments: [{ type: 'text', data: { text: 'Ready' } }] }
+  const done: CommandOutcomeEvent = { event_kind: 'command_outcome', outcome: { status: 'completed', segments: [] } }
+  const fetch = mock.method(globalThis, 'fetch', async () => answered(done, reply))
   useConsole.setState({ ntOn: true, ntStarted: false, selThreadId: 'THR-NEW', composer: '/status' })
   const context = { agent_id: 'claude', address: fresh, model: null, permission_mode: null }
   const key = ['command-catalog', context.agent_id, context]
@@ -801,6 +818,8 @@ test('a direct command in the new composer keeps the thread unopened', async () 
   assert.equal(url, '/api/commands/execute')
   const body = JSON.parse(String(init?.body))
   assert.deepEqual({ ...body, delivery_id: undefined }, { ...context, command_id: status.id, arguments: '  --raw=value  ', delivery_id: undefined })
+  // A composer with no thread yet watches the key of the thread it would start: none.
+  assert.equal(LiveSocket.last().url, 'ws://console.test/api/trunkline/live?thread_key=')
   const state = useConsole.getState()
   assert.equal(state.ntStarted, false)
   assert.equal(state.ntOn, true)
@@ -938,7 +957,7 @@ test('effort choices match the native default and unambiguous runtime model name
 
 for (const effort of ['high', 'auto']) {
   test(`the first message carries effort ${effort} without pinning the harness model`, async () => {
-    const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? sse(result) : Response.json([]))
+    const fetch = mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) => init?.method === 'POST' ? live(result) : Response.json([]))
     useConsole.setState({ ntOn: true, ntStarted: false, ntEffort: effort, ntRouteId: 'codex:', ntProject: null, ntPermissionMode: null })
     useConsole.getState().actions.sendNewThread('hello')
     for (let at = 0; at < 200 && useConsole.getState().running; at++) await new Promise((resolve) => setTimeout(resolve, 0))

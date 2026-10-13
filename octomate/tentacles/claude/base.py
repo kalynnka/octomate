@@ -79,7 +79,10 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.gateway import GatewayCapability
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
@@ -99,7 +102,6 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
-    DeferredActionBatch,
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
@@ -600,9 +602,9 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         *,
         suspender: DeferredSuspender | None,
         interjections: Interjections[Message],
-    ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+    ) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
         """Pause the run on a human through the graph's suspender, putting the
-        batch on this run's stream when that is what presents it. The reply waiter
+        batch on this run's stream. The reply waiter
         is registered before the cards go up, so a quick answer arriving through
         `Octomate.kick` cannot miss it. The Claude session stays open in-process
         while this awaits, so the answer is not durable across an Octomate restart.
@@ -620,19 +622,19 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         )
         self.pendings[batch_id] = future
         try:
-            batch, event = await suspender.pause(requests, batch_id=batch_id)
-            if event is not None:
-                interjections.interject(event)
+            batch = await suspender.pause(requests, batch_id=batch_id)
+            interjections.interject(batch)
             try:
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
             except TimeoutError:
-                await self.deferred_actions.mark_batch(batch.id, "expired")
+                await self.deferred_actions.mark_batch(batch_id, "expired")
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)
         await self.deferred_actions.resolve_batch(response)
+        interjections.interject(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
     async def probe_commands(self, context: CommandContext) -> CommandCatalog:
@@ -1124,7 +1126,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             )
             if part
         )
-        env = {"CLAUDE_CODE_ENTRYPOINT": "cli"}
+        env = {
+            "CLAUDE_CODE_ENTRYPOINT": "cli",
+            # The CLI ends with the turn, killing any background task it started;
+            # the stopped task's notice then opens the next turn ahead of its prompt.
+            # TODO: reconsider enabling background tasks once Octomate can track
+            # them past the turn that started them.
+            "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
+        }
         if self.config.instrument:
             trace_environment = octomate_trace_environment()
             if trace_environment is not None:
@@ -1229,7 +1238,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 )
                 command_result: ResultMessage | None = None
                 async for message in messages:
-                    if isinstance(message, ActionBatchEvent):
+                    if isinstance(message, ActionBatchEvent | ActionBatchAnsweredEvent):
                         yield message
                         continue
                     if command is not None and isinstance(message, ResultMessage):

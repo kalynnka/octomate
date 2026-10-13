@@ -5,6 +5,7 @@ from typing import Annotated, NotRequired
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import UUID7, AwareDatetime, Field, SecretStr
+from starlette.requests import HTTPConnection
 from typing_extensions import TypedDict
 
 from octomate.base import Octomate
@@ -30,10 +31,10 @@ from octomate.types.auth import ApiKeyScope, NewPassword
 
 
 async def current_session(
-    request: Request,
+    connection: HTTPConnection,
     manager: Annotated[AuthManager, Depends(auth_manager)],
 ) -> UserSession:
-    token = request.cookies.get("octomate_access")
+    token = connection.cookies.get("octomate_access")
     if token is not None:
         session = await manager.authenticate_session(SecretStr(token))
         if session is not None:

@@ -3,9 +3,10 @@
 `FakeChannelTentacle` is a real `ChannelTentacle` subclass: it runs the actual
 ingest pipeline over a `RecordingInk`, so channel and graph tests exercise the
 production code path and assert on what was actually sent (`channel.ink.sent`)
-plus the consume/sub-thread call records. `drive` mirrors the production
-inline-consume path (open the timeline feeler, `state.drive` the stream); `bound`
-binds a bare `TimelineState` to a channel's feelers for the direct-drive tests.
+plus the timeline/sub-thread call records. `drive` draws a run the way a
+streaming channel's siphon does (the stream carried onto the nerve, driven onto
+the timeline); `bound` binds a bare `TimelineState` to a channel's feelers for
+the direct-drive tests.
 """
 
 from __future__ import annotations
@@ -31,10 +32,12 @@ from octomate.capabilities.harness.events import (
     SubagentActivityStatus,
     SubagentStartedEvent,
     TodoEvent,
+    WireEvent,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
+from octomate.reflex.state import ReflexDeps
 from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
@@ -71,11 +74,22 @@ async def drive(
     address: ChannelAddress,
     stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
 ) -> IMMessageID | None:
-    """The production inline-consume path: open the timeline feeler and drive the
-    run stream onto the per-run state."""
+    """A run as a streaming channel draws it: carried onto the nerve, and driven
+    onto the timeline the siphon opens for the run."""
     async with channel.feelers.timeline.open(address) as state:
-        await state.drive(stream)
+        await state.drive(carried(stream))
     return state.message_id
+
+
+async def carried(
+    stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
+) -> AsyncGenerator[WireEvent]:
+    """A run's stream as the graph carries it onto the nerve: each item as its
+    wire event."""
+    async for item in stream:
+        event = ReflexDeps.to_wire(item)
+        if event is not None:
+            yield event
 
 
 def bound(
@@ -297,8 +311,7 @@ class RecordingFeelers(Feelers):
 class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
     """Real channel pipeline over recording fakes. `start_sub_thread` succeeds
     and records, so the graph tests can route receptions into "hint-thread".
-    `consume` mirrors the production inline path (open the timeline, drive the
-    stream); the recording timeline feeler logs each run into `consumed`."""
+    The recording timeline feeler logs each run it draws into `consumed`."""
 
     thread_strategy: ClassVar[ThreadStrategy] = "flat_thread"
     surfaces: ClassVar[ChannelSurfaces] = ChannelSurfaces(
@@ -351,13 +364,6 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
             oauth=self.feelers.oauth,
         )
         self.presented = self.feelers.presented
-
-    async def consume(
-        self,
-        address: ChannelAddress,
-        stream: AsyncIterator[ReactStreamEvent[ChannelOutput]],
-    ) -> IMMessageID | None:
-        return await drive(self, address, stream)
 
     async def start_sub_thread(
         self,

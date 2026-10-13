@@ -125,7 +125,9 @@ def mount_oauth(
                 user_code=authorization.user_code.get_secret_value(),
             )
             sent = "The authorization link and code are on their way"
-        await channel.feelers.oauth.present(address, event)
+        # Settled here, so the link is heard only where the channel will show it.
+        private = await channel.feelers.oauth.deliver_to(address)
+        await session.publish(private, event, private=True)
         return f"{sent} to this user's direct messages."
 
     @mcp.tool(

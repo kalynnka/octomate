@@ -80,6 +80,7 @@ class ThreadKey:
 
     @classmethod
     def from_address(cls, address: ChannelAddress) -> ThreadKey:
+        """The address with the person and the visibility stripped off."""
         return cls(
             channel_tentacle_id=address.channel_tentacle_id,
             chat_type=address.chat_type,

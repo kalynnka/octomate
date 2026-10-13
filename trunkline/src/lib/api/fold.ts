@@ -1,5 +1,5 @@
 /**
- * Folds the trunkline SSE stream (lib/api/events.ts) into ledger items — one
+ * Folds a thread's live socket (lib/api/events.ts) into ledger items — one
  * fold per run. The store hands it push/patch against the live overlay; the
  * fold keeps the per-run cursors (open text part, open thinking part, tool
  * cards by call id, the plan card, subagent cards) and maps every wire event

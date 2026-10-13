@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import AsyncIterator, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
 from ipaddress import ip_address
 from pathlib import Path
@@ -85,7 +85,7 @@ from octomate.tentacles.codex import base as codex_base
 from octomate.tentacles.codex import ink as codex_ink
 from octomate.tentacles.codex.client import RequestHandler, SharedCodex
 from octomate.types.json import JsonObject
-from tests.support.channels import FakeChannelTentacle, RecordingTimeline
+from tests.support.channels import FakeChannelTentacle, RecordingTimeline, carried
 from tests.support.managers import (
     FakeConversation,
     FakeConversationManager,
@@ -93,6 +93,7 @@ from tests.support.managers import (
     RecordingSuspender,
     a_thread,
 )
+from tests.support.nerve import unwired
 from tests.support.scenarios import play
 from tests.support.users import a_user, auth_config
 
@@ -733,7 +734,7 @@ async def test_run_stream_events_starts_thread_proxies_events_and_persists(
     assert events[-1].result.output == "done"
     timeline = RecordingTimeline()
     async with timeline.open(KEY):
-        await timeline.drive(play(events))
+        await timeline.drive(carried(play(events)))
     assert [text for method, text in timeline.calls if method == "answer_delta"] == [
         "done"
     ]
@@ -899,6 +900,7 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
         thread_manager=octomate.threads,
         action_manager=octomate.deferred_actions,
         gateway=octomate.gateway,
+        impulses=unwired(),
         workspaces=octomate.workspaces,
     )
     async with tentacle:
@@ -917,7 +919,10 @@ async def test_teleport_forks_codex_and_resumes_the_new_id(
             origin=origin,
             agent_id="codex",
         )
-        await node.run(GraphRunContext(state=state, deps=deps))
+        async with octomate.nerve.publish(KEY) as impulses:
+            await node.run(
+                GraphRunContext(state=state, deps=replace(deps, impulses=impulses))
+            )
         assert state.thread is not None
         destination = await octomate.conversations.ensure(
             state.thread.id, agent_tentacle_id="codex"

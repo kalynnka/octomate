@@ -15,7 +15,7 @@ tunnel. Docker includes an internal reverse proxy in the Trunkline container.
 ```mermaid
 flowchart LR
     Native[Native agent and its tail] -->|HTTPS and WebSocket| Origin[HTTPS origin]
-    Browser[Trunkline] -->|HTTPS and SSE| Origin
+    Browser[Trunkline] -->|HTTPS and WebSocket| Origin
     Origin -->|loopback HTTP| Server[Octomate]
     Server -->|outbound sockets| Platforms[Slack, Lark, Discord]
     Server -->|provider requests| Models[Harnesses and model providers]
@@ -66,13 +66,13 @@ The proxy has to preserve:
 |---|---|
 | `/` | Trunkline's static files and its client-side routes |
 | `/api/...` | Cookies, and the `X-Octomate-Request` header on writes |
-| `/api/trunkline/...` | Long-lived SSE responses without buffering |
+| `/api/trunkline/live` | WebSocket upgrade, long-lived: the console's live view of a thread |
 | `/hooks/<runtime>` | Authenticated POSTs |
 | `/hooks/<runtime>/stream` | WebSocket upgrade, long-lived |
 | `/octomate/mcp` | Streamable HTTP with the `Authorization` and `X-Octomate-*` headers |
 | `/oauth/...` | The exact callback paths and their query strings |
 
-Raise idle timeouts for the stream and SSE paths. A short request timeout looks like
+Raise idle timeouts for the WebSocket paths. A short timeout looks like
 a working connection whose answers stop arriving. Keep the console and the API on
 one origin, and once HTTPS works set `auth.cookie_secure: true`.
 

@@ -19,7 +19,8 @@ export default defineConfig({
     host: '127.0.0.1',
     allowedHosts: ['.ts.net'],
     proxy: {
-      '/api': apiUrl,
+      // `ws` carries the console's live socket, `/api/trunkline/live`, through too.
+      '/api': { target: apiUrl, ws: true },
       '/oauth': apiUrl,
     },
   },

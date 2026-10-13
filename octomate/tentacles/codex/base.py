@@ -85,7 +85,10 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
-from octomate.capabilities.harness.events import ActionBatchEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
@@ -106,7 +109,6 @@ from octomate.schemas.conversation import (
 )
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
-    DeferredActionBatch,
     QuestionRequest,
 )
 from octomate.schemas.files import Jsonl
@@ -1269,7 +1271,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         *,
         context: CodexBridgeContext,
         requests: DeferredToolRequests,
-    ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+    ) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
         if context.suspender is None:
             raise RuntimeError(
                 "a Codex approval mid-turn needs a suspender to pause on"
@@ -1281,19 +1283,19 @@ class CodexTentacle(AgentTentacle[str, None]):
         )
         self.pendings[batch_id] = future
         try:
-            batch, event = await context.suspender.pause(requests, batch_id=batch_id)
-            if event is not None:
-                context.interjections.interject(event)
+            batch = await context.suspender.pause(requests, batch_id=batch_id)
+            context.interjections.interject(batch)
             try:
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
             except TimeoutError:
-                await self.deferred_actions.mark_batch(batch.id, "expired")
+                await self.deferred_actions.mark_batch(batch_id, "expired")
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)
         await self.deferred_actions.resolve_batch(response)
+        context.interjections.interject(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
     async def handle_sdk_request(
@@ -1807,8 +1809,10 @@ class CodexTentacle(AgentTentacle[str, None]):
             )
             interrupted = False
             async for notification in notifications:
-                if isinstance(notification, ActionBatchEvent):
-                    # A batch the turn paused on, for whoever draws the run.
+                if isinstance(
+                    notification, ActionBatchEvent | ActionBatchAnsweredEvent
+                ):
+                    # A batch the turn paused on, or its answer, for whoever draws the run.
                     yield notification
                     continue
                 for event in accumulator.consume(notification):

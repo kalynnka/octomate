@@ -64,7 +64,11 @@ from rich.style import Style
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender
-from octomate.capabilities.harness.events import ActionBatchEvent, MessageSentEvent
+from octomate.capabilities.harness.events import (
+    ActionBatchAnsweredEvent,
+    ActionBatchEvent,
+    MessageSentEvent,
+)
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig
 from octomate.prompts import tagged
@@ -80,7 +84,6 @@ from octomate.schemas.commands import (
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.deferred import (
     MAX_QUESTION_CHOICES,
-    DeferredActionBatch,
     QuestionRequest,
 )
 from octomate.schemas.messages import ModelRequest
@@ -590,7 +593,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         run_id = str(uuid7())
         while not settled or (accumulator.turn_started and not accumulator.turn_ended):
             frame = await queue.get()
-            if isinstance(frame, ActionBatchEvent):
+            if isinstance(frame, ActionBatchEvent | ActionBatchAnsweredEvent):
                 yield frame
                 continue
             if isinstance(frame, StreamErrorFrame):
@@ -896,7 +899,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         *,
         context: DeepseekBridgeContext,
         requests: DeferredToolRequests,
-    ) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+    ) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
         if context.suspender is None:
             raise RuntimeError("a dsh approval mid-turn needs a suspender to pause on")
         # Waiting before the cards go up, so a quick answer cannot miss it.
@@ -906,19 +909,19 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         )
         self.pendings[batch_id] = future
         try:
-            batch, event = await context.suspender.pause(requests, batch_id=batch_id)
-            if event is not None:
-                context.frames.put_nowait(event)
+            batch = await context.suspender.pause(requests, batch_id=batch_id)
+            context.frames.put_nowait(batch)
             try:
                 response = await asyncio.wait_for(
                     asyncio.shield(future), self.config.approval_timeout
                 )
             except TimeoutError:
-                await self.deferred_actions.mark_batch(batch.id, "expired")
+                await self.deferred_actions.mark_batch(batch_id, "expired")
                 return batch, None
         finally:
             self.pendings.pop(batch_id, None)
         await self.deferred_actions.resolve_batch(response)
+        context.frames.put_nowait(ActionBatchAnsweredEvent.of(response))
         return batch, response
 
     @staticmethod
@@ -1117,8 +1120,10 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                         prompted = True
                         while not accumulator.turn_ended:
                             frame = await queue.get()
-                            if isinstance(frame, ActionBatchEvent):
-                                # A batch the turn paused on, for whoever draws the run.
+                            if isinstance(
+                                frame, ActionBatchEvent | ActionBatchAnsweredEvent
+                            ):
+                                # A batch the turn paused on, or its answer, for whoever draws the run.
                                 yield frame
                                 continue
                             if isinstance(frame, StreamErrorFrame):

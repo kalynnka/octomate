@@ -142,5 +142,5 @@ export const api = {
   },
 }
 
-export { resolveBatch, streamDirective } from './client'
+export { resolveBatch, sendDirective } from './client'
 export type { HealthState }

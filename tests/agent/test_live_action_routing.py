@@ -2,6 +2,7 @@
 
 import asyncio
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from pydantic import UUID7
@@ -10,13 +11,13 @@ from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
-from octomate.base import reflex_graph
 from octomate.capabilities.harness.deferred import Interjections
+from octomate.capabilities.harness.events import ActionBatchEvent
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig, DeepseekConfig
+from octomate.reflex.graph import reflex_graph
 from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.deferred import DeferredActionBatch, DeferredApproval
 from octomate.tentacles.claude import ClaudeCodeTentacle
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.base import CodexBridgeContext
@@ -81,8 +82,7 @@ async def live_agent(
 
 
 def a_suspender(agent: LiveAgent, conversation: Conversation) -> ReflexSuspender:
-    """The graph's suspender for a run nothing streams, so its cards go up through
-    the channel's feelers."""
+    """The graph's suspender for a live run."""
     app = agent.octomate
     return ReflexSuspender(
         channel=app.channels["im"],
@@ -100,7 +100,7 @@ def a_suspender(agent: LiveAgent, conversation: Conversation) -> ReflexSuspender
 
 async def ask(
     agent: LiveAgent, conversation: Conversation
-) -> tuple[DeferredActionBatch, DeferredActionBatchResponse | None]:
+) -> tuple[ActionBatchEvent, DeferredActionBatchResponse | None]:
     requests = DeferredToolRequests(
         approvals=[ToolCallPart("shell", {"cmd": "pwd"}, "call-1")]
     )
@@ -131,92 +131,96 @@ async def ask(
     )
 
 
-async def test_reply_during_presentation_reaches_the_live_request(
-    live_agent: tuple[LiveAgent, Conversation], monkeypatch: pytest.MonkeyPatch
+@pytest.fixture
+def put_up(monkeypatch: pytest.MonkeyPatch) -> asyncio.Queue[ActionBatchEvent]:
+    """Each batch a live run pauses on, once it is kept and its waiter is
+    listening: the moment a channel drawing the run could put its cards up."""
+    batches: asyncio.Queue[ActionBatchEvent] = asyncio.Queue()
+    pause = ReflexSuspender.pause
+
+    async def paused(
+        suspender: ReflexSuspender, requests: DeferredToolRequests, *, batch_id: UUID7
+    ) -> ActionBatchEvent:
+        batch = await pause(suspender, requests, batch_id=batch_id)
+        batches.put_nowait(batch)
+        return batch
+
+    monkeypatch.setattr(ReflexSuspender, "pause", paused)
+    return batches
+
+
+async def test_a_reply_reaches_the_live_request(
+    live_agent: tuple[LiveAgent, Conversation],
+    put_up: asyncio.Queue[ActionBatchEvent],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent, conversation = live_agent
     app = agent.octomate
     run = AsyncMock(side_effect=AssertionError("A live reply must not start a run"))
     monkeypatch.setattr(reflex_graph, "run", run)
 
-    async def present(
-        address: ChannelAddress, actions: list[DeferredApproval]
-    ) -> dict[UUID7, str]:
-        [action] = actions
-        assert action.batch_id is not None
-        assert action.batch_id in agent.pendings
+    async with asyncio.timeout(3), asyncio.TaskGroup() as tasks:
+        asking = tasks.create_task(ask(agent, conversation))
+        batch = await put_up.get()
+        [approval] = batch.approvals
         await app.kick(
             DeferredActionBatchResponse(
-                batch_id=action.batch_id, approvals={action.id: True}
+                batch_id=UUID(batch.batch_id), approvals={approval.id: True}
             )
         )
-        return {action.id: "approval-card"}
-
-    monkeypatch.setattr(app.channels["im"].feelers.approvals, "present", present)
-    async with asyncio.timeout(3):
-        batch, response = await ask(agent, conversation)
+    _, response = asking.result()
 
     assert response is not None
-    assert batch.response_mode == "live"
-    stored = await app.deferred_actions.get_batch(batch.id)
+    stored = await app.deferred_actions.get_batch(UUID(batch.batch_id))
+    assert stored.response_mode == "live"
     assert stored.status == "resolved"
-    assert next(iter(stored.approvals)).platform_message_id == "approval-card"
     assert not agent.pendings
     run.assert_not_awaited()
 
 
 async def test_pending_batches_accept_replies_in_reverse_order(
-    live_agent: tuple[LiveAgent, Conversation], monkeypatch: pytest.MonkeyPatch
+    live_agent: tuple[LiveAgent, Conversation],
+    put_up: asyncio.Queue[ActionBatchEvent],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     agent, conversation = live_agent
     app = agent.octomate
-    presented: list[DeferredApproval] = []
-    ready = asyncio.Event()
     run = AsyncMock(side_effect=AssertionError("A live reply must not start a run"))
     monkeypatch.setattr(reflex_graph, "run", run)
 
-    async def present(
-        address: ChannelAddress, actions: list[DeferredApproval]
-    ) -> dict[UUID7, str]:
-        presented.extend(actions)
-        if len(presented) == 2:
-            ready.set()
-        return {action.id: f"card-{action.id}" for action in actions}
-
-    monkeypatch.setattr(app.channels["im"].feelers.approvals, "present", present)
     async with asyncio.timeout(3), asyncio.TaskGroup() as tasks:
         calls = [tasks.create_task(ask(agent, conversation)) for _ in range(2)]
-        await ready.wait()
-        for action, approved in zip(reversed(presented), [True, False], strict=True):
-            assert action.batch_id is not None
+        batches = [await put_up.get(), await put_up.get()]
+        for batch, approved in zip(reversed(batches), [True, False], strict=True):
+            [approval] = batch.approvals
             await app.kick(
                 DeferredActionBatchResponse(
-                    batch_id=action.batch_id, approvals={action.id: approved}
+                    batch_id=UUID(batch.batch_id), approvals={approval.id: approved}
                 )
             )
 
     replies = {
-        batch.id: response for batch, response in [call.result() for call in calls]
+        batch.batch_id: response
+        for batch, response in [call.result() for call in calls]
     }
-    for action, approved in zip(presented, [False, True], strict=True):
-        assert action.batch_id is not None
-        response = replies[action.batch_id]
+    for batch, approved in zip(batches, [False, True], strict=True):
+        response = replies[batch.batch_id]
         assert response is not None
-        assert response.approvals == {action.id: approved}
+        assert response.approvals == {batch.approvals[0].id: approved}
     assert not agent.pendings
     run.assert_not_awaited()
 
 
-async def test_presentation_failure_removes_the_waiter(
+async def test_a_pause_that_fails_removes_the_waiter(
     live_agent: tuple[LiveAgent, Conversation], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     agent, conversation = live_agent
     monkeypatch.setattr(
-        agent.octomate.channels["im"].feelers.approvals,
-        "present",
-        AsyncMock(side_effect=RuntimeError("card delivery failed")),
+        ReflexSuspender,
+        "pause",
+        AsyncMock(side_effect=RuntimeError("the batch could not be kept")),
     )
-    with pytest.raises(RuntimeError, match="card delivery failed"):
+    with pytest.raises(RuntimeError, match="the batch could not be kept"):
         await ask(agent, conversation)
     assert not agent.pendings
 

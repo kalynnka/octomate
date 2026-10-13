@@ -10,7 +10,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import cast
 
-import anyio
 import httpx
 import pytest
 from pydantic import AnyHttpUrl, JsonValue
@@ -20,9 +19,8 @@ from octomate.capabilities.harness.events import (
     LinkProfileAuthorizationEvent,
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
-    wire_event_adapter,
 )
-from octomate.config.channels import NapcatChannelConfig, TrunklineChannelConfig
+from octomate.config.channels import NapcatChannelConfig
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.user import UserProfile
@@ -43,12 +41,6 @@ from octomate.tentacles.slack.feelers.oauth import (
 )
 from octomate.tentacles.slack.ink import SlackInk
 from octomate.tentacles.slack.schema import SlackOutboundMessage
-from octomate.tentacles.trunkline.base import (
-    TrunklineStreamItem,
-    TrunklineTentacle,
-    current_sink,
-    to_wire,
-)
 from octomate.types.json import JsonObject
 from tests.channels.lark.fakes import FakeLarkCardsInk
 from tests.support.channels import FakeOAuthInk, RecordingInk, RecordingMarkdownFeeler
@@ -131,56 +123,6 @@ async def test_napcat_authorizations_keep_literal_urls_in_private_messages(
         assert event.authorization_uri in text
     if isinstance(event, OAuthDeviceAuthorizationEvent):
         assert event.user_code in text
-
-
-@pytest.mark.parametrize("event", [AUTHORIZATION, LINK_AUTHORIZATION])
-async def test_trunkline_feeler_streams_authorization_without_markdown(
-    event: OAuthAuthorizationEvent,
-) -> None:
-    channel = TrunklineTentacle(
-        "web", Octomate(), config=TrunklineChannelConfig(agents=["agent"])
-    )
-    send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](1)
-    async with send, receive:
-        token = current_sink.set(send)
-        try:
-            message_id = await channel.feelers.oauth.present(_address("web"), event)
-        finally:
-            current_sink.reset(token)
-        assert message_id is not None
-        item = await receive.receive()
-        assert item is event
-        wire = to_wire(item)
-        assert wire is not None
-        assert json.loads(wire_event_adapter.dump_json(wire)) == event.model_dump(
-            mode="json"
-        )
-
-
-async def test_trunkline_authorization_requires_an_active_private_stream() -> None:
-    channel = TrunklineTentacle(
-        "web", Octomate(), config=TrunklineChannelConfig(agents=["agent"])
-    )
-    with pytest.raises(RuntimeError, match="active browser request"):
-        await channel.feelers.oauth.present(_address("web"), LINK_AUTHORIZATION)
-
-    send, receive = anyio.create_memory_object_stream[TrunklineStreamItem](1)
-    async with send, receive:
-        token = current_sink.set(send)
-        try:
-            with pytest.raises(RuntimeError, match="does not support profile linking"):
-                await channel.feelers.oauth.present(_address("web"), HOST_AUTHORIZATION)
-            with pytest.raises(RuntimeError, match="not going to a group"):
-                await channel.feelers.oauth.present(
-                    _address("web", "group", shared=True), LINK_AUTHORIZATION
-                )
-            with pytest.raises(anyio.WouldBlock):
-                receive.receive_nowait()
-            await receive.aclose()
-            with pytest.raises(anyio.BrokenResourceError):
-                await channel.feelers.oauth.present(_address("web"), LINK_AUTHORIZATION)
-        finally:
-            current_sink.reset(token)
 
 
 def _obj(value: JsonValue) -> JsonObject:

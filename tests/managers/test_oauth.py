@@ -37,6 +37,7 @@ from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
 from octomate.mcp.transport import mcp_http_client
+from octomate.nerve import Nerve
 from octomate.oauth.base import McpBearerAuth
 from octomate.oauth.flows import (
     AuthorizationCodeFlow,
@@ -66,6 +67,7 @@ from octomate.types.oauth import HttpsUrl
 from tests.support.channels import FakeChannelTentacle, RecordingOAuthFeeler
 from tests.support.managers import fixed_session
 from tests.support.mcp import install_tentacle
+from tests.support.nerve import drawing
 from tests.support.users import a_user
 
 GITHUB_CONNECTOR_ID = "github"
@@ -901,6 +903,7 @@ def provider(manager: OAuthManager, connector_id: str) -> Provider:
     host.oauth = manager
     host.mcp = McpManager(users=manager.users, cipher=manager.cipher, oauth=manager)
     host.deferred_actions = DeferredActionManager()
+    host.nerve = Nerve()
     return Provider(connector_id, host)
 
 
@@ -922,6 +925,7 @@ def a_session(
         channel_routes={},
         current_agent_id="inkling",
         channels={"im": channel} if channel is not None else {},
+        nerve=channel.octomate.nerve if channel is not None else None,
         conversation_address=address,
         user_profile=profile,
     )
@@ -970,7 +974,7 @@ async def linking(
     channel.feelers.oauth = feeler
     session = a_session(profile, channel)
     server = tentacles_mcp(fixed_session(session), manager=tentacle.octomate.mcp)
-    async with Client(server) as client:
+    async with drawing(channel), Client(server) as client:
         yield client, feeler, installed
 
 

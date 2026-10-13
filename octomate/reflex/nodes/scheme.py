@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pydantic_graph import BaseNode, End, GraphRunContext
 
 from octomate.capabilities.harness.events import GatewayEvent
+from octomate.nerve import Impulse
 from octomate.reflex.nodes.react import React
 from octomate.reflex.state import (
     ReflexDeps,
@@ -88,8 +89,10 @@ class Scheme(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
             thread_strategy=channel.thread_strategy,
             mode="main",
         )
-        await ctx.deps.announce(
-            state, origin.address, GatewayEvent(action="scheme", destination=dm_address)
+        await ctx.deps.impulses.send(
+            Impulse(
+                GatewayEvent(action="scheme", destination=dm_address), origin.address
+            )
         )
         state.decision = SummonDecision(
             action="summon",

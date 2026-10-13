@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import uuid
 from collections.abc import AsyncIterator
@@ -8,8 +9,7 @@ from pathlib import Path
 
 import httpx
 import pytest
-from fastapi.responses import StreamingResponse
-from fastapi.routing import APIRoute
+from fastapi.routing import APIRoute, APIWebSocketRoute
 from pydantic_ai.messages import ModelMessage, ToolCallPart, UserPromptPart
 from pydantic_ai.models.function import AgentInfo, FunctionModel
 from pydantic_ai.profiles import ModelProfile
@@ -17,6 +17,7 @@ from pydantic_ai.settings import ThinkingLevel
 from pydantic_ai.tools import DeferredToolRequests
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.ext.asyncio import AsyncEngine
+from starlette.types import Message, Scope
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
@@ -50,10 +51,12 @@ from octomate.tentacles.trunkline.base import (
     RouteLockedError,
     TrunklineDirective,
 )
+from octomate.types.json import JsonObject
 from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
+from tests.support.nerve import settled
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -102,13 +105,6 @@ async def _register(
     return channel
 
 
-async def _drain(response: StreamingResponse) -> str:
-    parts: list[bytes] = []
-    async for part in response.body_iterator:
-        parts.append(part.encode() if isinstance(part, str) else bytes(part))
-    return b"".join(parts).decode()
-
-
 async def _post(
     channel: TrunklineTentacle,
     prompt: str,
@@ -116,31 +112,43 @@ async def _post(
     thread_id: str = "thread-1",
     model: str | None = None,
     project: str | None = None,
-) -> str:
-    response = await channel.handle_directive(
-        TrunklineDirective(
-            user=console_user(),
-            thread_id=thread_id,
-            text=prompt,
-            model=model,
-            project=project,
+) -> list[JsonObject]:
+    key = ThreadKey.from_address(_console_address(thread_id))
+    with channel.octomate.nerve.subscribe(key) as live:
+        await channel.handle_directive(
+            TrunklineDirective(
+                user=console_user(),
+                thread_id=thread_id,
+                text=prompt,
+                model=model,
+                project=project,
+            )
         )
-    )
-    return await _drain(response)
+        return await settled(live)
 
 
-def _events(payload: str) -> list[dict[str, object]]:
-    events: list[dict[str, object]] = []
-    for line in payload.splitlines():
-        if line.startswith("data: "):
-            events.append(json.loads(line.removeprefix("data: ")))
-    return events
+async def _send(
+    client: httpx.AsyncClient,
+    octomate: Octomate,
+    thread_key: str,
+    body: dict[str, str | None],
+) -> httpx.Response:
+    """Post a directive over HTTP and wait for its turn to settle, as the console
+    does on the thread's socket."""
+    key = ThreadKey.from_address(_console_address(thread_key))
+    with octomate.nerve.subscribe(key) as live:
+        response = await client.post(
+            f"/api/trunkline/threads/{thread_key}/messages", json=body
+        )
+        if response.status_code == 202:
+            await settled(live)
+    return response
 
 
-def _streamed_text(payload: str) -> str:
+def _streamed_text(events: list[JsonObject]) -> str:
     """Concatenate the reply text from the native part events."""
     deltas: list[str] = []
-    for event in _events(payload):
+    for event in events:
         match event:
             case {"event_kind": "part_start", "part": {"part_kind": "text"}}:
                 part = event["part"]
@@ -192,6 +200,111 @@ def test_trunkline_router_requires_registered_channel() -> None:
     assert "/api/trunkline/threads/{thread_id}/batches" in paths
     assert "/api/trunkline/threads/{thread_key}/messages" in paths
     assert "/api/trunkline/batches/{batch_id}/resolve" in paths
+    sockets = {
+        route.path for route in app.routes if isinstance(route, APIWebSocketRoute)
+    }
+    assert "/api/trunkline/live" in sockets
+
+
+class ConsoleSocket:
+    """The console's live socket, driven through the app's ASGI interface in the
+    test's own loop: what the console sends is queued in, and what the relay
+    sends is read back. Starlette's test client runs the app on a thread of its
+    own, which the in-memory database cannot be shared with."""
+
+    def __init__(self, octomate: Octomate, query: str) -> None:
+        self.inbound: asyncio.Queue[Message] = asyncio.Queue()
+        self.outbound: asyncio.Queue[Message] = asyncio.Queue()
+        self.inbound.put_nowait({"type": "websocket.connect"})
+        scope: Scope = {
+            "type": "websocket",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "scheme": "ws",
+            "path": "/api/trunkline/live",
+            "raw_path": b"/api/trunkline/live",
+            "root_path": "",
+            "query_string": query.encode(),
+            "headers": [],
+            "client": ("127.0.0.1", 1),
+            "server": ("testserver", 80),
+            "subprotocols": [],
+        }
+        self.task = asyncio.create_task(
+            octomate(scope, self.inbound.get, self.outbound.put)
+        )
+
+    async def kinds_until_settled(self) -> list[str]:
+        """The kinds of the events the socket carries, up to the reflex falling
+        asleep."""
+        kinds: list[str] = []
+        while True:
+            message = await self.outbound.get()
+            assert message["type"] == "websocket.send"
+            kind = json.loads(message["text"])["event_kind"]
+            if kind == "reflex_asleep":
+                return kinds
+            kinds.append(kind)
+
+    async def leave(self) -> None:
+        self.inbound.put_nowait({"type": "websocket.disconnect", "code": 1000})
+        await self.task
+
+
+async def test_a_console_watches_a_thread_over_its_live_socket(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """The console's whole live path: the socket opens on the key a thread will
+    have, the directive is answered at once, and the run's events arrive on the
+    socket until the reflex falls asleep. The thread is then watched by its row
+    id, as any channel's thread is."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["all done!", "and again"])
+    await _register(octomate, agent)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate),
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        socket = ConsoleSocket(octomate, "thread_key=thread-1")
+        assert (await socket.outbound.get())["type"] == "websocket.accept"
+        posted = await client.post(
+            "/api/trunkline/threads/thread-1/messages", json={"text": "hi there"}
+        )
+        assert posted.status_code == 202
+        first = await socket.kinds_until_settled()
+        await socket.leave()
+
+        [listed] = (await client.get("/api/trunkline/threads")).json()
+        socket = ConsoleSocket(octomate, f"thread_id={listed['id']}")
+        assert (await socket.outbound.get())["type"] == "websocket.accept"
+        await client.post(
+            "/api/trunkline/threads/thread-1/messages", json={"text": "more"}
+        )
+        second = await socket.kinds_until_settled()
+        await socket.leave()
+
+    assert "part_start" in first
+    assert first[-2:] == ["run_result", "run_ended"]
+    assert second[-2:] == ["run_result", "run_ended"]
+
+
+async def test_a_live_socket_names_one_thread(in_memory_engine: AsyncEngine) -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+
+    for query in (
+        "",
+        f"thread_id={uuid7()}",
+        f"thread_id={CONSOLE_USER_ID}&thread_key=thread-1",
+    ):
+        socket = ConsoleSocket(octomate, query)
+        refused = await socket.outbound.get()
+        await socket.task
+        assert refused["type"] == "websocket.close"
+        assert refused["code"] == 1008
 
 
 async def test_directive_streams_native_events(
@@ -202,16 +315,18 @@ async def test_directive_streams_native_events(
     channel = await _register(octomate, agent)
 
     payload = await _post(channel, "hi there")
-    kinds = [event["event_kind"] for event in _events(payload)]
+    kinds = [event["event_kind"] for event in payload]
 
     assert "part_start" in kinds
-    assert kinds[-1] == "run_result"
+    assert kinds[-2:] == ["run_result", "run_ended"]
     assert "run_error" not in kinds
     assert "all done!" in _streamed_text(payload)
-    run_result = _events(payload)[-1]
+    run_result = payload[-2]
     usage = run_result["usage"]
     assert isinstance(usage, dict)
-    assert usage["requests"] >= 1
+    requests = usage["requests"]
+    assert isinstance(requests, int)
+    assert requests >= 1
 
 
 async def test_directive_streams_every_text_delta(
@@ -364,7 +479,10 @@ async def test_routes_offer_and_run_all_registered_agents(
         channel, "hello", model=f"inkling{ROUTE_SEP}{RECEPTION_MODEL}"
     )
 
-    assert _events(payload)[-1]["event_kind"] == "run_result"
+    assert [event["event_kind"] for event in payload[-2:]] == [
+        "run_result",
+        "run_ended",
+    ]
     assert "from inkling" in _streamed_text(payload)
     thread = await octomate.threads.ensure(_console_address())
     assert thread.active_agent_tentacle_id == "inkling"
@@ -410,8 +528,8 @@ async def test_model_choices_keep_only_the_configured_entry_default(
     reply = await _post(channel, "one", model=selected_route)
     await _post(channel, "two", model=selected_route)
 
-    assert _events(reply)[-1]["output"] == "handled"
-    assert [turn.model for turn in agent.streams] == [None, None]
+    assert reply[-2]["output"] == "handled"
+    assert [turn.model for turn in agent.turns] == [None, None]
     thread = await octomate.threads.ensure(_console_address())
     assert thread.active_model is None
     assert len(thread.handoffs) == 1
@@ -492,9 +610,11 @@ async def test_a_new_thread_posted_by_the_console_carries_its_project(
         headers={"X-Octomate-Request": "1"},
     ) as client:
         offered = (await client.get("/api/trunkline/projects")).json()
-        await client.post(
-            "/api/trunkline/threads/trunkline-abc123/messages",
-            json={"text": "what is this repo?", "project": offered[0]["name"]},
+        await _send(
+            client,
+            octomate,
+            "trunkline-abc123",
+            {"text": "what is this repo?", "project": offered[0]["name"]},
         )
         [listed] = (await client.get("/api/trunkline/threads")).json()
         filed = (
@@ -597,13 +717,11 @@ async def test_a_posture_rides_the_first_directive_then_switches_on_the_row(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        await client.post(
-            "/api/trunkline/threads/trunkline-abc123/messages",
-            json={
-                "text": "get on with it",
-                "model": route,
-                "permission_mode": "dontAsk",
-            },
+        await _send(
+            client,
+            octomate,
+            "trunkline-abc123",
+            {"text": "get on with it", "model": route, "permission_mode": "dontAsk"},
         )
         [listed] = (await client.get("/api/trunkline/threads")).json()
         [opened] = (
@@ -640,9 +758,8 @@ async def test_a_posture_from_another_providers_vocabulary_is_refused(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        await client.post(
-            "/api/trunkline/threads/trunkline-abc123/messages",
-            json={"text": "hello", "model": route},
+        await _send(
+            client, octomate, "trunkline-abc123", {"text": "hello", "model": route}
         )
         [listed] = (await client.get("/api/trunkline/threads")).json()
         [opened] = (
@@ -694,15 +811,13 @@ async def test_first_directive_applies_effort_to_its_first_run(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        response = await client.post(
-            "/api/trunkline/threads/first-effort/messages",
-            json={
-                "text": "hello",
-                "model": f"inkling:{RECEPTION_MODEL}",
-                "effort": effort,
-            },
+        response = await _send(
+            client,
+            octomate,
+            "first-effort",
+            {"text": "hello", "model": f"inkling:{RECEPTION_MODEL}", "effort": effort},
         )
-        assert response.status_code == (422 if effort == "invalid" else 200)
+        assert response.status_code == (422 if effort == "invalid" else 202)
         if effort == "invalid":
             assert seen == []
             return
@@ -731,9 +846,8 @@ async def test_an_effort_set_mid_thread_stays_on_the_row_until_cleared(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        await client.post(
-            "/api/trunkline/threads/trunkline-abc123/messages",
-            json={"text": "hello", "model": route},
+        await _send(
+            client, octomate, "trunkline-abc123", {"text": "hello", "model": route}
         )
         [listed] = (await client.get("/api/trunkline/threads")).json()
         conversations = f"/api/trunkline/threads/{listed['id']}/conversations"
@@ -767,9 +881,8 @@ async def test_an_effort_the_route_does_not_claim_is_refused(
         base_url="http://testserver",
         headers={"X-Octomate-Request": "1"},
     ) as client:
-        await client.post(
-            "/api/trunkline/threads/trunkline-abc123/messages",
-            json={"text": "hello", "model": route},
+        await _send(
+            client, octomate, "trunkline-abc123", {"text": "hello", "model": route}
         )
         [listed] = (await client.get("/api/trunkline/threads")).json()
         [opened] = (
@@ -1443,12 +1556,13 @@ async def test_batch_resolve_resolves_and_streams(
         )
         assert missing.status_code == 404
 
-        response = await client.post(
-            f"/api/trunkline/batches/{batch.id}/resolve",
-            json={"approvals": {str(approval_id): True}},
-        )
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("text/event-stream")
+        with octomate.nerve.subscribe(thread.key) as live:
+            response = await client.post(
+                f"/api/trunkline/batches/{batch.id}/resolve",
+                json={"approvals": {str(approval_id): True}},
+            )
+            assert response.status_code == 202
+            await settled(live)
 
         # A resolved batch must not resume twice.
         again = await client.post(
@@ -1481,9 +1595,11 @@ async def test_custom_agent_permissions_are_listed_and_validated_on_selection(
     ) as client:
         offered = (await client.get("/api/trunkline/permissions")).json()
         [listed] = (await client.get("/api/trunkline/agents")).json()
-        await client.post(
-            "/api/trunkline/threads/trunkline-custom-permissions/messages",
-            json={"text": "hello", "model": f"auditor{ROUTE_SEP}{RECEPTION_MODEL}"},
+        await _send(
+            client,
+            octomate,
+            "trunkline-custom-permissions",
+            {"text": "hello", "model": f"auditor{ROUTE_SEP}{RECEPTION_MODEL}"},
         )
         [thread] = (await client.get("/api/trunkline/threads")).json()
         [conversation] = (

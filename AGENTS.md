@@ -79,8 +79,9 @@ Always generate UUIDs with `uuid7` from `uuid_utils.compat`, including in tests.
 ## Architecture
 
 1. Web APIs are FastAPI routers owned by the single project-level Octomate instance; do not force web routes into the channel tentacle lifecycle.
-2. Channel tentacles are for long-lived IM platform connections and translation only. They call Octomate directly for dispatch; do not reintroduce nerve or dispatcher-style object streams between channels and agents.
-3. Use the concrete tentacle base class hierarchy for Octomate-managed agents and channels. Do not introduce extra Protocol wrappers for Octomate, tentacle, or channel lifecycle contracts.
+2. Channel tentacles are for long-lived IM platform connections and translation only. They call Octomate directly for dispatch: an inbound message becomes a kick, never an object queued for another task to pick up.
+3. The nerve is the one event stream in the tree, and it runs one way. The reflex graph and the tailers publish what a run does onto it; a reader subscribes to a channel or a thread and reads what is published from then on. Nothing is kept for a reader that is not there, so one that opens late reads the ledger first. Publishing knows nothing of readers, nothing is answered over it, and no channel or agent is driven through it. A new reader subscribes to the nerve rather than being handed a sink by the producer.
+4. Use the concrete tentacle base class hierarchy for Octomate-managed agents and channels. Do not introduce extra Protocol wrappers for Octomate, tentacle, or channel lifecycle contracts with out permit.
 
 ## Documentation
 

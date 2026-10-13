@@ -91,7 +91,7 @@ async def _gate(
 ]:
     agents = agents or {
         "inkling": cast(AgentTentacle, FakeAgent(id="inkling")),
-        "claude": cast(AgentTentacle, FakeAgent(id="claude", allow_reception_run=True)),
+        "claude": cast(AgentTentacle, FakeAgent(id="claude")),
     }
     conversations = conversations or FakeConversationManager()
     gate = GatewayCapability(
@@ -265,7 +265,7 @@ async def test_an_overrunning_accomplice_fails_the_tool_not_the_turn() -> None:
         "inkling": cast(AgentTentacle, FakeAgent(id="inkling")),
         "claude": cast(
             AgentTentacle,
-            SlowAgent(id="claude", allow_reception_run=True, delay=0.5),
+            SlowAgent(id="claude", delay=0.5),
         ),
     }
     gate, _, _, ctx = await _gate(agents=agents, commission_timeout=0.05)
@@ -281,7 +281,7 @@ async def test_three_commissions_in_one_reply_run_concurrently() -> None:
         "inkling": cast(AgentTentacle, FakeAgent(id="inkling")),
         "claude": cast(
             AgentTentacle,
-            SlowAgent(id="claude", allow_reception_run=True, delay=0.1),
+            SlowAgent(id="claude", delay=0.1),
         ),
     }
     gate, _, conversations, _ = await _gate(agents=agents)

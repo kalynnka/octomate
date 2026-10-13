@@ -44,6 +44,7 @@ from tests.channels.slack.fakes import (
     slack_channel,
     slack_key,
 )
+from tests.support.channels import carried
 from tests.support.managers import FakeActionManager
 from tests.support.scenarios import play
 
@@ -80,7 +81,7 @@ async def test_slack_batch_during_a_plan_preserves_the_answer() -> None:
     ]
 
     async with asyncio.timeout(3), channel.feelers.timeline.open(address) as state:
-        await state.drive(play(events))
+        await state.drive(carried(play(events)))
 
     assert "".join(ink.appends) == "Complete answer"
     assert len(ink.stream_objects) == 2
@@ -142,7 +143,7 @@ async def test_pending_actions_do_not_split_continuing_text(
         yield PartEndEvent(index=0, part=TextPart(content="Before buffered after"))
 
     async with asyncio.timeout(3), channel.feelers.timeline.open(address) as state:
-        await state.drive(events())
+        await state.drive(carried(events()))
 
     assert flushed == ["Before buffered"]
     if isinstance(ink, FakeSlackInk):

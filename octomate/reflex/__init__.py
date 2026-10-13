@@ -12,6 +12,7 @@ from octomate.reflex.graph import (
     ResponseTargetMode,
     SummonDecision,
     reflex_graph,
+    run_reflex,
 )
 from octomate.reflex.suspender import ReflexSuspender
 
@@ -27,4 +28,5 @@ __all__ = [
     "ResponseTargetMode",
     "SummonDecision",
     "reflex_graph",
+    "run_reflex",
 ]

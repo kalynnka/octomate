@@ -6,6 +6,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { createServer, type ViteDevServer } from 'vite'
 import type { WireDeferredQuestion, WireEvent } from '../src/lib/api/events.ts'
 import type { LedgerItem } from '../src/lib/api/types.ts'
+import { LiveSocket, installLiveSocket } from './liveSocket.ts'
 
 let server: ViteDevServer
 let batchFeelers: typeof import('../src/lib/api/fold.ts').batchFeelers
@@ -59,8 +60,11 @@ test('a multi-select question keeps its flag on the card', () => {
 test('answering a batch sends every answer in one response, so the run resumes once', async () => {
   Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
   Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
-  const fetch = mock.method(globalThis, 'fetch', async () =>
-    new Response(`data: ${JSON.stringify(result)}\n\n`, { headers: { 'Content-Type': 'text/event-stream' } }))
+  installLiveSocket()
+  const fetch = mock.method(globalThis, 'fetch', async () => {
+    queueMicrotask(() => LiveSocket.last().deliver(result, { event_kind: 'reflex_asleep' }))
+    return new Response(null, { status: 202 })
+  })
   const [draft] = batchFeelers('batch', [question('first', 0, 'First?'), question('second', 1, 'Then?')], [])
   useConsole.setState({ selThreadId: 'thread', live: [{ ...draft, uid: 'card' } as LedgerItem], running: false })
 
@@ -72,6 +76,25 @@ test('answering a batch sends every answer in one response, so the run resumes o
   assert.equal(url, '/api/trunkline/batches/batch/resolve')
   // A multi-select question's picks travel as a list, never as joined text.
   assert.deepEqual(JSON.parse(String(init?.body)), { answers: { first: 'Yes', second: ['lint', 'tests'] } })
+  const [answered] = useConsole.getState().live
+  assert.equal(answered.kind === 'ask' && answered.state, 'answered')
+})
+
+test('answering a run still streaming sends the answer alone, over the socket already folding it', async () => {
+  Object.defineProperty(globalThis, 'document', { configurable: true, value: { getElementById: () => null } })
+  Object.defineProperty(globalThis, 'requestAnimationFrame', { configurable: true, value: () => 0 })
+  installLiveSocket()
+  const fetch = mock.method(globalThis, 'fetch', async () => new Response(null, { status: 202 }))
+  const [draft] = batchFeelers('batch', [question('first', 0, 'First?')], [])
+  useConsole.setState({ selThreadId: 'thread', live: [{ ...draft, uid: 'card' } as LedgerItem], running: true })
+
+  useConsole.getState().actions.answerAsk('card', ['Yes'], 'answered 1 question')
+  for (let at = 0; at < 50 && fetch.mock.callCount() === 0; at++) await new Promise((resolve) => setTimeout(resolve, 0))
+
+  assert.equal(fetch.mock.callCount(), 1)
+  assert.equal(fetch.mock.calls[0].arguments[0], '/api/trunkline/batches/batch/resolve')
+  assert.deepEqual(LiveSocket.opened, [])
+  assert.equal(useConsole.getState().running, true)
   const [answered] = useConsole.getState().live
   assert.equal(answered.kind === 'ask' && answered.state, 'answered')
 })

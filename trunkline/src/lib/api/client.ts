@@ -31,9 +31,8 @@ import type {
   ChannelAddress,
   CommandContextBody,
   CommandExecuteBody,
-  CommandStreamEvent,
+  CommandOutcomeEvent,
   DirectiveBody,
-  GatewayEvent,
   GatewayRequest,
   ThreadOperations,
   McpInstallBody,
@@ -211,54 +210,43 @@ export const fetchThreadBatches = (id: string) =>
   threadRead<ApiDeferredBatch[]>(id, '/batches')
 
 /**
- * Read one SSE response frame-by-frame, invoking onEvent per `data:` payload.
- * Resolves when the stream closes; rejects on transport failure or non-2xx.
+ * Open the thread's live socket, which carries its wire events for as long as
+ * it is open, the run's settling last. Resolves once the relay has accepted
+ * it, so a request sent after that misses nothing. `closed` settles when the
+ * relay closes the socket, which a run outliving the console never does.
  */
-async function streamSse<Event = WireEvent>(
-  path: string,
-  body: unknown,
-  onEvent: (event: Event) => void,
-): Promise<void> {
-  const res = await apiFetch(path, { method: 'POST', json: body })
-  if (!res.ok) return refuse(res)
-  if (res.body == null) throw new Error('The relay returned no event stream.')
-  const reader = res.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  for (;;) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    let cut
-    while ((cut = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, cut)
-      buffer = buffer.slice(cut + 2)
-      for (const line of frame.split('\n')) {
-        if (!line.startsWith('data: ')) continue
-        onEvent(JSON.parse(line.slice(6)) as Event)
-      }
+export function watchThread(
+  thread: { id: string } | { key: string },
+  onEvent: (event: WireEvent) => void,
+): Promise<{ close: () => void; closed: Promise<void> }> {
+  const query = 'id' in thread
+    ? `thread_id=${encodeURIComponent(thread.id)}`
+    : `thread_key=${encodeURIComponent(thread.key)}`
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws'
+  const socket = new WebSocket(`${scheme}://${location.host}/api/trunkline/live?${query}`)
+  return new Promise((resolve, reject) => {
+    const fail = () => reject(new Error('The live socket could not be opened.'))
+    socket.onmessage = (message) => onEvent(JSON.parse(String(message.data)) as WireEvent)
+    socket.onerror = fail
+    socket.onclose = fail
+    socket.onopen = () => {
+      socket.onerror = null
+      const closed = new Promise<void>((done) => { socket.onclose = () => done() })
+      resolve({ close: () => socket.close(), closed })
     }
-  }
+  })
 }
 
-export function streamDirective(
-  threadId: string,
-  body: DirectiveBody,
-  onEvent: (event: WireEvent) => void,
-): Promise<void> {
-  return streamSse(
-    `/api/trunkline/threads/${encodeURIComponent(threadId)}/messages`,
-    body,
-    onEvent,
-  )
+/** Send a directive; the relay answers at once, and the run shows on the socket. */
+export async function sendDirective(threadKey: string, body: DirectiveBody): Promise<void> {
+  const res = await apiFetch(`/api/trunkline/threads/${encodeURIComponent(threadKey)}/messages`, { method: 'POST', json: body })
+  if (!res.ok) return refuse(res)
 }
 
-export function resolveBatch(
-  batchId: string,
-  body: BatchResponseBody,
-  onEvent: (event: WireEvent) => void,
-): Promise<void> {
-  return streamSse(`/api/trunkline/batches/${batchId}/resolve`, body, onEvent)
+/** Answer a feeler; the resumed run shows on the socket. */
+export async function resolveBatch(batchId: string, body: BatchResponseBody): Promise<void> {
+  const res = await apiFetch(`/api/trunkline/batches/${batchId}/resolve`, { method: 'POST', json: body })
+  if (!res.ok) return refuse(res)
 }
 
 /** The commands an agent offers in one conversation. Discovery starts no turn. */
@@ -268,12 +256,12 @@ export async function fetchCommandCatalog(context: CommandContextBody): Promise<
   return res.json() as Promise<ApiCommandCatalog>
 }
 
-/** Run one command and stream what it says on the channel, then its outcome. */
-export function streamCommand(
-  body: CommandExecuteBody,
-  onEvent: (event: CommandStreamEvent) => void,
-): Promise<void> {
-  return streamSse('/api/commands/execute', body, onEvent)
+/** Run one command; what it says on the channel shows on the socket, and the
+ *  answer is its outcome, once cleanup and persistence are done. */
+export async function executeCommand(body: CommandExecuteBody): Promise<CommandOutcomeEvent> {
+  const res = await apiFetch('/api/commands/execute', { method: 'POST', json: body })
+  if (!res.ok) return refuse(res)
+  return res.json() as Promise<CommandOutcomeEvent>
 }
 
 export async function patchEffort(conversationId: string, effort: EffortStep | null): Promise<ApiConversation> {
@@ -301,32 +289,12 @@ export async function fetchAddresses(threadId: string, channelId: string, inside
   return res.json() as Promise<ChannelAddress[]>
 }
 
-export async function streamGateway(
-  threadId: string,
-  request: GatewayRequest,
-  onEvent: (event: WireEvent) => void,
-): Promise<GatewayEvent> {
-  // The operation's own move confirms it; the last move says where it ended.
-  const completion: { confirmed?: boolean; landing?: GatewayEvent; error?: string; started?: boolean } = {}
-  await streamSse(
+/** Cast a teleport or summon from a thread; the move and what follows it show
+ *  on the socket. */
+export async function castGateway(threadId: string, request: GatewayRequest): Promise<void> {
+  const res = await apiFetch(
     `/api/trunkline/threads/${encodeURIComponent(threadId)}/${request.action}`,
-    request.body,
-    (event) => {
-      if (event.event_kind === 'gateway') {
-        completion.confirmed ||= event.action === request.action
-        completion.landing = event
-      }
-      // Once a run starts where the move landed, a failure is that run's, shown there.
-      else if (event.event_kind === 'run_error' && !completion.started) completion.error = event.message
-      else {
-        if (event.event_kind === 'custom' && event.name === 'run_started') completion.started = true
-        onEvent(event)
-      }
-    },
+    { method: 'POST', json: request.body },
   )
-  if (completion.error) throw new Error(completion.error)
-  if (!completion.confirmed || !completion.landing) {
-    throw new Error('The stream closed without confirming a destination. Check the thread before retrying.')
-  }
-  return completion.landing
+  if (!res.ok) return refuse(res)
 }

@@ -610,22 +610,20 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         return message
 
     async def mark_presented(
-        self,
-        message: ThreadMessage,
-        platform_message_id: str | None,
-    ) -> ThreadMessage:
+        self, message_id: UUID7, platform_message_id: str | None
+    ) -> None:
+        """Name the platform message a ledger row was rendered as, once the
+        channel that rendered it knows; a rendering with no id leaves it be."""
         if platform_message_id is None:
-            return message
-        message.platform_message_id = platform_message_id
+            return
         async with async_session() as session:
             stored = await session.one_or_none(
-                ThreadMessage, expressions=[ThreadMessage["id"] == message.id]
+                ThreadMessage, expressions=[ThreadMessage["id"] == message_id]
             )
             if stored is None:
-                raise ValueError(f"thread message {message.id} does not exist")
+                raise ValueError(f"thread message {message_id} does not exist")
             stored.platform_message_id = platform_message_id
             await session.commit()
-        return message
 
     async def redate_message(
         self, message: ThreadMessage, happened_at: datetime

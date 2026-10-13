@@ -17,11 +17,14 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Literal, overload
 
+from anyio.abc import ObjectSendStream
 from octomate_protocol.gateway import GatewayTool
 from pydantic import UUID7
 
+from octomate.capabilities.harness.events import WireEvent
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
+from octomate.nerve import Impulse, Nerve
 from octomate.schemas.awakes import DrivenGatewaySignal, NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.operations import (
@@ -116,6 +119,12 @@ class OctomateSession:
     # registry and forks. Both None on a gateway built only to route.
     threads: ThreadManager | None = None
     workspaces: WorkspaceManager | None = None
+    # The kick's end of the nerve when a kick drives this turn, for a served spell
+    # to publish on the turn's own stream; None for a call no kick drives.
+    impulses: ObjectSendStream[Impulse] | None = None
+    # The host's nerve, which a spell no kick drives publishes on. None on a
+    # gateway built only to route, and on one a kick drives through `impulses`.
+    nerve: Nerve | None = None
     decision: GatewayDecision | None = field(default=None, init=False)
     # Whether `dismiss` was cast: the thread's workspace goes when the turn ends,
     # the graph's doing once the run is out of it.
@@ -140,6 +149,21 @@ class OctomateSession:
         self.other_routes = [
             route for route in here if route.agent_id != self.current_agent_id
         ]
+
+    async def publish(
+        self, address: ChannelAddress, event: WireEvent, *, private: bool = False
+    ) -> None:
+        """Put what a served spell did on the nerve, heard on the thread at
+        `address`: on the kick's stream when one drives this turn, so the thread
+        the kick was asked on hears it too unless it is `private`, else on that
+        thread alone."""
+        impulse = Impulse(event, address, private=private)
+        if self.impulses is not None:
+            await self.impulses.send(impulse)
+            return
+        if self.nerve is None:
+            raise RuntimeError("a spell no kick drives publishes on the host's nerve")
+        self.nerve.deliver(impulse)
 
     @property
     def allow_here(self) -> bool:
@@ -820,9 +844,8 @@ class OctomateSession:
         self.thread_id = thread.id
         self.conversation_address = thread.key.address(profile.channel_user_id)
 
-    def thread_operation(self, operated_from: str) -> DrivenGatewaySignal:
-        """Package a validated user action for the graph's existing-thread entry,
-        operated from the channel `operated_from`."""
+    def thread_operation(self) -> DrivenGatewaySignal:
+        """Package a validated user action for the graph's existing-thread entry."""
         if (
             self.thread_id is None
             or self.conversation_address is None
@@ -838,7 +861,6 @@ class OctomateSession:
             agent_id=self.current_agent_id,
             user_profile=self.user_profile,
             decision=self.decision,
-            operated_from=operated_from,
         )
 
     def native_handoff(self) -> NativeGatewaySignal:

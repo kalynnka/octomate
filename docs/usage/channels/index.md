@@ -91,5 +91,11 @@ Subagents get a timeline of their own on Slack, Lark and Discord. Every channel
 posts a one-line error with a trace id when a turn fails, and ignores a message the
 platform delivers twice.
 
+A channel draws each thread's runs in order, apart from the run itself. A slow
+platform call holds up only its own thread, and a message the platform refuses
+costs that message, not the turn: the reply is in the ledger regardless. Cards
+answered on another surface stay as they are on IM channels for now; Trunkline
+marks them answered.
+
 The [threads page](../threads.md) explains what each platform's chats and threads
 become inside Octomate, and where a reply lands.

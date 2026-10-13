@@ -75,7 +75,8 @@ class ReflexSuspender:
     """The reflex graph's `DeferredSuspender`: every deferral a run ends on comes
     through here once, and each kind goes where it is resolved — a `teleport` to
     the graph, which performs it and resumes the agent; anything else to a human,
-    persisted as a batch and presented on the channel. React builds it with the
+    persisted as a batch whose event rides the run's stream, for the channel to
+    present wherever it draws the run from. React builds it with the
     run's context; Inkling reaches it through `ResolveDeferred`, a runtime a tool
     result cannot suspend through the `deferred_suspender` its run was handed.
     A runtime that asks a human mid-run pauses here instead, and stays live.
@@ -92,7 +93,6 @@ class ReflexSuspender:
     decision: SummonDecision | None
     model: str | None = None  # Selected model when a command has no routing decision.
     thread_id: UUID7 | None = None
-    emit_on_stream: bool = False
     suspended_batch_id: UUID7 | None = field(default=None, init=False)
     # The deferred `teleport`, for the graph to perform instead of a batch.
     teleport: TeleportRequest | None = field(default=None, init=False)
@@ -125,28 +125,26 @@ class ReflexSuspender:
             agent_id=self.agent_tentacle_id,
             target_address=str(self.target_address),
             source_address=str(self.source_address),
-            emit_on_stream=self.emit_on_stream,
         ) as span:
             batch = await self.persist(requests, response_mode="resume")
             self.suspended_batch_id = batch.id
             span.set_attribute("batch_id", str(batch.id))
-            return await self.present(batch)
+            return ActionBatchEvent.from_batch(batch)
 
     async def pause(
         self, requests: DeferredToolRequests, *, batch_id: UUID7
-    ) -> tuple[DeferredActionBatch, ActionBatchEvent | None]:
+    ) -> ActionBatchEvent:
         with reflex_logfire.span(
             "pause_for_review",
             run_name=self.run_name,
             agent_id=self.agent_tentacle_id,
             target_address=str(self.target_address),
-            emit_on_stream=self.emit_on_stream,
         ) as span:
             batch = await self.persist(
                 requests, response_mode="live", batch_id=batch_id
             )
             span.set_attribute("batch_id", str(batch.id))
-            return batch, await self.present(batch)
+            return ActionBatchEvent.from_batch(batch)
 
     async def persist(
         self,
@@ -173,14 +171,3 @@ class ReflexSuspender:
             decision=self.decision,
             requests=requests,
         )
-
-    async def present(self, batch: DeferredActionBatch) -> ActionBatchEvent | None:
-        """The batch's event for the run's stream to present, or None once the
-        channel presented it here because the run is not streamed."""
-        event = ActionBatchEvent.from_batch(batch)
-        if self.emit_on_stream:
-            return event
-        await self.channel.feelers.present_actions(
-            self.target_address, event, action_manager=self.action_manager
-        )
-        return None
