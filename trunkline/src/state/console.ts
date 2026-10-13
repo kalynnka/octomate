@@ -632,9 +632,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       quietClose?: string | null
       // Sees every event first, and keeps the ones it answers true for.
       intercept?: (event: WireEvent) => boolean | void
+      // The request may reach a run already awake, as an answer does the run
+      // waiting on it, rather than wake one of its own.
+      joinsAwake?: boolean
     } = {},
   ) => {
-    const { quietClose = 'the run settled without a result', intercept } = options
+    const { quietClose = 'the run settled without a result', intercept, joinsAwake = false } = options
     // The thread the run streams into, until a run starts in another.
     let selId = from
     streamStart(selId)
@@ -728,12 +731,20 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // The reflex falling asleep, which the socket carries last.
     let settle!: () => void
     const settled = new Promise<void>((resolve) => { settle = resolve })
+    // A thread holds one reflex at a time, so the run's is the first the socket
+    // sees wake: anything before it ends a reflex that woke before the socket.
+    let woke = joinsAwake
     const onEvent = (event: WireEvent) => {
+      if (event.event_kind === 'reflex_awake') {
+        woke = true
+        return
+      }
+      if (!woke) return
       if (event.event_kind === 'reflex_asleep') {
         settle()
         return
       }
-      if (event.event_kind === 'reflex_awake' || event.event_kind === 'run_ended') return
+      if (event.event_kind === 'run_ended') return
       if (event.event_kind === 'action_batch_answered') {
         markAnswered(selId, event)
         return
@@ -824,7 +835,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     set({ running: true })
     // A thread being composed is watched by the key its directives carry.
     const watch = s.ntOn ? { key: s.selThreadId } : { id: s.selThreadId }
-    void runLive(s.selThreadId, watch, () => resolveBatch(batchId, body), { quietClose: null })
+    void runLive(s.selThreadId, watch, () => resolveBatch(batchId, body), { quietClose: null, joinsAwake: true })
   }
 
   const actions: ConsoleActions = {

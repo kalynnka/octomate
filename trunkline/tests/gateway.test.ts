@@ -57,12 +57,12 @@ const options: ThreadOperations = { source: here, teleport: refused, summon: inP
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0))
 /** The relay answers a request at once; the thread's socket carries the turn, settling last. */
 const live = (...events: WireEvent[]) => {
-  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'reflex_asleep' }))
+  queueMicrotask(() => LiveSocket.last().deliver({ event_kind: 'reflex_awake' }, ...events, { event_kind: 'reflex_asleep' }))
   return new Response(null, { status: 202 })
 }
 /** A command answers with its outcome once the socket has carried its feedback. */
 const answered = (outcome: CommandOutcomeEvent, ...events: WireEvent[]) => {
-  queueMicrotask(() => LiveSocket.last().deliver(...events, { event_kind: 'reflex_asleep' }))
+  queueMicrotask(() => LiveSocket.last().deliver({ event_kind: 'reflex_awake' }, ...events, { event_kind: 'reflex_asleep' }))
   return Response.json(outcome)
 }
 
@@ -288,7 +288,7 @@ test('a result keeps the thread busy until the run settles, then refreshes opera
   await tick()
   const socket = LiveSocket.last()
   assert.equal(socket.url, 'ws://console.test/api/trunkline/live?thread_key=source-key')
-  socket.deliver(result, { event_kind: 'result_text_delta', delta: 'Closing feedback' })
+  socket.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'result_text_delta', delta: 'Closing feedback' })
   await tick()
   assert.equal(useConsole.getState().running, true)
   assert.equal(queryClient.getQueryState(['thread-operations', 'source'])?.isInvalidated, false)

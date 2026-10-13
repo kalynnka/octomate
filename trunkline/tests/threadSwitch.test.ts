@@ -118,6 +118,7 @@ test('a new thread adopts its saved identity without a transition or replacing i
     if (init?.method !== 'POST') return Response.json([{ ...saved, channel_thread_id: sendKey }])
     sendKey ||= useConsole.getState().selThreadId
     const events: WireEvent[] = [
+      { event_kind: 'reflex_awake' },
       { event_kind: 'run_started', address: {
         channel_tentacle_id: 'trunkline', chat_type: 'thread', chat_id: 'owner', user_id: 'owner', channel_thread_id: sendKey, shared: false,
       } },
@@ -298,4 +299,26 @@ test('a run streaming on the open thread comes over its own socket alone, and th
 
   assert.ok(run.closed)
   assert.notEqual(await socketOn('thread_id=solo'), watching)
+})
+
+test('a run follows the first reflex its socket sees wake, not the end of one already awake', async () => {
+  const live: ThreadDetail = { ...detail, key: 'late', live: true, sendKey: 'late-key' }
+  mock.method(api, 'getThreadDetail', async () => live)
+  mock.method(globalThis, 'fetch', async (_url: RequestInfo | URL, init?: RequestInit) =>
+    init?.method === 'POST' ? new Response(null, { status: 202 }) : Response.json([]))
+  queryClient.setQueryData(['thread-detail', 'late'], live)
+  const actions = useConsole.getState().actions
+  await actions.selectThread('trunkline', 'late')
+
+  actions.sendDirective('carry on')
+  const run = await socketOn('thread_key=late-key')
+  // The end of a reflex that woke before the socket opened, then the run's own.
+  run.deliver({ ...result, output: 'Not this one' }, { event_kind: 'reflex_asleep' })
+  await tick()
+  assert.equal(useConsole.getState().running, true)
+  run.deliver({ event_kind: 'reflex_awake' }, result, { event_kind: 'reflex_asleep' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+
+  const replies = useConsole.getState().live.filter((item) => item.kind === 'stream')
+  assert.deepEqual(replies.map((item) => item.kind === 'stream' && item.text), ['Hello back'])
 })
