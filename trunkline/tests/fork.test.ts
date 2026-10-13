@@ -48,7 +48,7 @@ test('an imported session displays its conversation agent without a handoff', ()
 
 test('an import notice keeps the address label and value in one system paragraph', () => {
   const notice: ApiThreadMessage = {
-    kind: 'message', id: 'notice', thread_id: thread.id, platform_message_id: null,
+    kind: 'message', id: 'notice', thread_id: thread.id, platform_message_id: null, reply_id: '',
     happened_at: '2026-09-29T00:00:00Z', direction: 'inbound', actor_kind: 'system',
     agent_tentacle_id: null, sender: null, segments: [], created_at: '2026-09-29T00:00:00Z',
     message_text: 'Forked from conversation native-session.\n\nCurrent channel address:\ntrunkline/thread/owner/landed/owner.',

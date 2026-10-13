@@ -11,7 +11,13 @@ running one.
 
 ## Enable
 
-Install `dsh` and configure its models and credentials as the server account.
+This integration is tested with DSH `0.2.1-alpha.2`. Install it as the server
+account, from any directory, then configure its models and credentials:
+
+```sh
+npm install --global @deepseek-ai/dsh@0.2.1-alpha.2
+```
+
 Add the block below to `tentacles.yaml`, set `executable` if `dsh` is not on the
 service's `PATH`, and bind `deepseek` in a channel's `agents` list.
 [Check and restart Octomate](../../tentacles/index.md#enable-a-tentacle), then
@@ -51,11 +57,14 @@ names unchanged, including plugin-specific levels.
 You can change a driven conversation's [permission mode](permissions.md) while
 it is running. Ordinary prompts and commands use the selected model and permissions.
 
-A session is created with the thread's [workspace](../workspaces.md) as its
-working directory, and that is fixed for the session's life. Model and effort are
-selected before each prompt, since dsh has no per-turn override, and the posture is
-set through the `/permission` command. Run-level instructions are prepended to the
-prompt text; dsh has no separate instructions channel.
+A session starts in the thread's [workspace](../workspaces.md). DSH's
+`working_directory` tool can change its current directory during the session.
+Model and effort are selected before each prompt, since dsh has no per-turn override,
+and the posture is set through the `/permission` command. Run-level instructions
+are prepended to the prompt text; dsh has no separate instructions channel.
+
+Tool output and failures appear in driven turns and collected native history,
+including results from older session logs.
 
 After each driven turn, Octomate reads dsh's current session title and stores it as
 the session name and thread title. Child conversations keep their own names without
@@ -107,8 +116,8 @@ notifications, connection startup or shutdown, and changes to the conversation's
 native session. Repeated registry notifications invalidate the cache; the next
 inspection reloads it. Explicit refresh also reloads the registry.
 
-The contract is checked against `@deepseek-ai/dsh-commands` 0.1.7-rc.1 at
-[revision 46a7f68](https://github.com/deepseek-ai/deepseek-harness/blob/46a7f68b0922371ce7144b668b90e377d8e799f4/packages/interaction/commands/src/types.ts).
+The contract is checked against `@deepseek-ai/dsh-commands` 0.2.1-alpha.2 at
+[revision d743267](https://github.com/deepseek-ai/deepseek-harness/blob/d743267388641bc76f17c45ce8b4c231aed1d32c/packages/interaction/commands/src/types.ts).
 The internal permission command uses Ink's typed execution result. A missing
 command, rejected preset or malformed result stops the run before prompting.
 

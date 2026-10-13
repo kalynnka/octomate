@@ -147,11 +147,15 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         address_or_key: ChannelAddress | ThreadKey,
         *,
         project: Project | None = None,
+        title: str | None = None,
     ) -> Thread:
         """The thread this key names, created if it is new.
 
         A key names a surface, so it resolves the thread nobody opened. A chat
         room's sub-threads share its address and are reached by id, through it.
+
+        A channel-supplied `title` refreshes the surface's stored name, including
+        existing groups and DMs previously named from an opening line.
 
         `project` attributes a thread being created and is ignored for one that
         already exists: a thread's project is frozen once the row is written, so
@@ -189,6 +193,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                     project_id=project.id if project is not None else None,
                 )
                 session.add(thread)
+            if title is not None:
+                thread.title = title
             await session.flush()
             await thread.handoffs
             await thread.project
@@ -292,7 +298,11 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         the work rather than for how it was asked for, so it overwrites — and goes
         on overwriting, because the runtime revises it as the session goes on. A
         name with nothing in it is not one, and leaves the thread as it was.
+        A group's main chat keeps its platform name, and a DM keeps the bot's
+        name; only their work sub-threads take generated titles.
         """
+        if thread.kind in {"group", "dm"} and thread.parent_thread_id is None:
+            return thread
         named = thread_title(title)
         if named is None or thread.title == named:
             return thread
@@ -457,6 +467,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 row.updated_at = datetime.now(UTC)
                 if (
                     row.title is None
+                    and (
+                        row.kind not in {"group", "dm"}
+                        or row.parent_thread_id is not None
+                    )
                     and message.direction == "inbound"
                     and message.actor_kind == "human"
                 ):

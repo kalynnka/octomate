@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.3...octomate-cli-v0.0.4) (2026-10-12)
+
+
+### Features
+
+* **gateway:** carry conversations across channels ([#115](https://github.com/kalynnka/octomate/issues/115)) ([1d48b5e](https://github.com/kalynnka/octomate/commit/1d48b5ed6108959cf7bf1bea8849e539571ac9d1))
+
+
+### Bug Fixes
+
+* **cli:** wait for macOS process reaping during restart ([c5b19dd](https://github.com/kalynnka/octomate/commit/c5b19dda3d8212c449ce78e76e16b9cc9d4b96e2))
+* **cli:** wait for macOS process reaping during restart ([5589838](https://github.com/kalynnka/octomate/commit/55898381df80046c31205dc96e04dab0459bb91f))
+* deduplicate native resumes and authenticate DeepSeek ingestion ([#101](https://github.com/kalynnka/octomate/issues/101)) ([816622e](https://github.com/kalynnka/octomate/commit/816622e3fd7ce01e7ce3580203bbfc886fbd62ff))
+* harden secret files and update multipart dependency ([#110](https://github.com/kalynnka/octomate/issues/110)) ([f0bdf54](https://github.com/kalynnka/octomate/commit/f0bdf54194f228d1be1955c51675ec2ff026c378))
+
+
+### Performance Improvements
+
+* **trunkline:** page a thread's messages from the newest and keep the open page in the address ([#122](https://github.com/kalynnka/octomate/issues/122)) ([d1770d3](https://github.com/kalynnka/octomate/commit/d1770d3fe5313e4d836c99fe659cb26c6dcf95ee))
+
 ## [0.0.3](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.2...octomate-cli-v0.0.3) (2026-09-23)
 
 

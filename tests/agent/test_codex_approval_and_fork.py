@@ -390,7 +390,7 @@ async def test_fork_copies_history_settings_and_preserves_source(
     context = replace(context, model=model, permission_mode="user_review")
     source_thread = await agent.threads.get(original.thread_id)
     assert source_thread is not None
-    await agent.threads.rename(source_thread, "Original conversation")
+    await agent.conversations.set_name(original, "Original conversation")
     await agent.threads.record_handoff(
         source_thread, to_agent_tentacle_id=agent.id, to_model=context.model
     )
@@ -407,6 +407,7 @@ async def test_fork_copies_history_settings_and_preserves_source(
     assert target is not None
     copied = await agent.conversations.ensure(target.id, agent_tentacle_id=agent.id)
     source = await agent.conversations.get(original.id)
+    assert copied.name == source.name == "Original conversation"
     assert source.external_id == "thread-new"
     assert copied.external_id == "thread-fork"
     assert copied.effort == source.effort == "high"

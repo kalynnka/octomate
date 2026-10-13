@@ -63,9 +63,11 @@ A warm mirror survives copying only if its environment is relocatable.
 `node_modules` copies cleanly. A Python `.venv` does not: an ordinary uv venv writes
 the mirror's absolute interpreter path into every console script, so a copied
 `.venv/bin/<tool>` keeps running the mirror's interpreter. Nothing errors; the
-workspace simply is not the environment in use. So the install for a uv tree is
-`uv venv --relocatable` then `uv sync`, and a copied venv reports the fork's own
-prefix. The node managers need one command, and it is `npm install` rather than the
+workspace simply is not the environment in use. Octomate creates a relocatable
+environment for a uv tree once, then reuses it when dependencies change. A copied
+venv reports the fork's own prefix. An existing non-relocatable environment is
+preserved and reported for manual replacement before dependencies can be refreshed.
+The node managers need one command, and it is `npm install` rather than the
 `npm ci` their documentation recommends, because `ci` deletes the `node_modules`
 the warm mirror exists to keep.
 

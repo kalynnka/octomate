@@ -60,6 +60,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions. A thread opens on its latest messages and
   the agent's work between them; earlier ones load as you scroll up.
+  Agent replies show the channel bot's name when available, followed by the
+  agent's name in parentheses. Quoted replies use the same sender label.
+  Native transcript replies show only the runtime's name, such as Codex or Claude.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.

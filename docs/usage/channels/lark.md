@@ -48,6 +48,9 @@ one-to-one chat with the bot or mention it in a group and verify a reply.
 | A message inside a thread | That thread, keyed on its root message | Replied into the thread |
 | A one-to-one chat | A direct message, keyed on your open id | In the chat |
 
+The group chat room follows the Lark group's name, refreshed on incoming root
+messages. Agent work threads keep their own names.
+
 A sub-thread is opened by sending the hint and replying under it. Lark identifies
 a thread reply by its root message id, which is what the continuation is keyed on.
 
@@ -74,12 +77,57 @@ batch: a dropdown for choices, which takes several picks when the question allow
 them, a text field, and one Submit. Nothing reaches Octomate until Submit is
 pressed, and Submit keeps working across a restart.
 
+## MCP tools acting as the person
+
+The same channel can offer Feishu's hosted MCP tools. It reuses the app id and
+secret above; each user authorizes their own access. Once connected, agents can
+use that person's connection from any channel.
+
+Enable it on the existing channel:
+
+```yaml
+tentacles:
+  lark:
+    type: lark
+    mcp: true
+    mcp_tools: [get-user]
+    oauth:
+      callback_base_uri: https://octomate.example.com
+```
+
+```dotenv
+OCTOMATE__OAUTH__ENCRYPTION_KEY=...
+```
+
+In the app's **Security Settings**, register the redirect URL described by
+[`callback_base_uri`](../../api/config/channels.md#octomate.config.channels.LarkOAuthClientConfig).
+Under **Permissions → User Identity Permissions**, enable the scopes requested
+by `oauth.scopes`, then publish the app changes. The defaults allow looking up
+user information and refreshing the authorization.
+
+Choose names for `mcp_tools` from
+[Feishu's supported remote MCP tools](https://open.feishu.cn/document/mcp_open_tools/supported-tools),
+and add their required user scopes to `oauth.scopes` using
+[Feishu's tool permissions](https://open.feishu.cn/document/mcp_open_tools/developers-call-remote-mcp-server).
+The published catalog can lag behind the live service. After changing the list,
+restart Octomate and check the tools offered by the connected MCP. Widening
+scopes requires users to reconnect.
+
+Each user connects from Trunkline or by asking an agent to install and connect
+Lark. See [MCP setup](../../tentacles/mcp.md). This integration uses Feishu's
+hosted endpoints.
+
+Use OAuth scopes and Feishu's app and resource permissions to limit access.
+The tool selection does not narrow the token's permissions for clients that
+hold it themselves. See the [Lark OAuth adapter](../../api/mcp/oauth.md#octomate.tentacles.lark.oauth.LarkMcpBearerAuth)
+for the custom header contract and its limits.
+
 ## Profile linking
 
 From the chat: ask the agent to link your profile, and the one-time link arrives in
-your one-to-one chat. Lark has no OAuth block for linking from Trunkline. The
-authorisation card carries a link button only, because a confirm button would need
-a card callback URL this deployment does not have.
+your one-to-one chat. With `oauth` configured, you can also link your Lark identity
+from Trunkline's Profile page. Feishu verifies the user behind the app's token.
+The authorisation card carries a link button only.
 
 ## Limits
 

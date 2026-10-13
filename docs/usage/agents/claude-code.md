@@ -45,6 +45,7 @@ client per conversation: a new message while a turn is running interrupts it.
 
 Choose from the model's native effort levels, including `max` where offered.
 The selected name is passed to Claude unchanged.
+Driven turns request summarized thinking for channels that display it.
 
 ## Runtime commands
 

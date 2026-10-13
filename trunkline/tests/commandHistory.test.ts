@@ -14,7 +14,7 @@ const thread: ApiThread = {
   updated_at: '2026-10-09T00:00:00Z', handoffs: [],
 }
 const receipt = {
-  kind: 'command', id: 'receipt', thread_id: thread.id, platform_message_id: 'command',
+  kind: 'command', id: 'receipt', thread_id: thread.id, platform_message_id: 'command', reply_id: '',
   happened_at: thread.created_at, created_at: thread.created_at,
   direction: 'inbound', actor_kind: 'human', agent_tentacle_id: 'codex', sender: null,
   segments: [{ type: 'text', data: { text: '/status' } }], message_text: '/status',

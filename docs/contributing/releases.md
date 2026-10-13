@@ -15,7 +15,8 @@ CLI and protocol packages, tests, docs, Trunkline, CI and editor configuration, 
 agent instructions; see `exclude-paths` in `release-please-config.json`.
 Squash commit titles follow Conventional Commits, and
 before 1.0 a breaking change bumps the minor version while features and fixes bump
-the patch.
+the patch. Each package starts from its own last released version; releasing one
+does not advance the other two.
 
 The release workflow runs `uv lock` on the release branch and commits the lockfile
 when it changes, which triggers the normal checks. After the merge, Release Please
@@ -46,6 +47,21 @@ For a breaking change, add `!` immediately before `:`, with or without a scope:
 `feat(protocol)!: require the new handshake format`. Put the explanation and
 migration steps in the PR description and the relevant documentation; the squash
 commit body stays blank, so the title must carry the breaking-change marker.
+
+Use the scope to say which package breaks: `core`, `cli` or `protocol`. Existing
+server feature scopes such as `gateway` and `inkling`, and titles without a scope,
+refer to core. When several packages break, name them with commas, for example
+`feat(core,cli)!: replace the service commands`.
+
+A shared change still appears in every package whose files it touches, but only
+the named packages receive a breaking-change notice and a minor bump. For example,
+`feat(gateway)!: change conversation destinations` touching all three packages
+bumps core from `0.0.3` to `0.1.0`, and CLI and protocol from `0.0.3` to `0.0.4`.
+The same scope rule applies to a deliberate `Release-As` commit footer; an
+override for one package does not set another package's version.
+
+When a dependency really breaks, update its consumers' compatible ranges in the
+same change. Version selection does not rewrite those compatibility decisions.
 
 The [PR title check](https://github.com/kalynnka/octomate/blob/main/.github/workflows/pr-title.yml)
 enforces this format. Correct the title and wait for that check to pass before

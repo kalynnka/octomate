@@ -47,6 +47,9 @@ the bot in a server text channel and verify that it replies in a new thread.
 | A message in a private thread | That thread, private to its members | In the thread |
 | A DM | A direct message | In the DM |
 
+The group chat room follows the Discord text channel's name, refreshed on incoming
+messages. Agent work threads keep their own names.
+
 Discord is the one platform where replying to a bot message counts as addressing
 it, so `mention_only` accepts a mention **or** a reply. Once an agent owns a thread,
 messages there need neither. A chat room's sub-threads are public, opened from a

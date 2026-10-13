@@ -85,7 +85,7 @@ your-channel-profiles).
 | Question cards | One message | One card | Buttons and a modal | Text only | Yes |
 | Sub-threads | Yes | Yes | Public threads from a text channel | No | No; top-level threads only |
 | Direct messages | Yes | Yes | Yes | Yes | No |
-| Profile linking | From chat, or Slack OAuth | From chat | From chat, or Discord OAuth | From chat | Not needed |
+| Profile linking | From chat, or Slack OAuth | From chat, or Lark OAuth | From chat, or Discord OAuth | From chat | Not needed |
 
 Subagents get a timeline of their own on Slack, Lark and Discord. Every channel
 posts a one-line error with a trace id when a turn fails, and ignores a message the

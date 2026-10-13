@@ -558,6 +558,39 @@ async def test_an_attached_stream_keeps_its_native_ownership(
     finished.assert_awaited_once()
 
 
+@pytest.mark.parametrize("failure", ["attach_remote", "feed_remote", "close_turn"])
+def test_stream_failure_closes_socket_and_releases_session(
+    failure: str, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    client, tentacle = stream_client()
+    monkeypatch.setattr(
+        tentacle.session_tailer,
+        failure,
+        AsyncMock(side_effect=RuntimeError("storage failed")),
+    )
+    with (
+        client,
+        client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket,
+    ):
+        websocket.send_text(hello_json())
+        if failure != "attach_remote":
+            websocket.receive_text()
+            message = (
+                StreamLine(start=0, end=1, line="{}")
+                if failure == "feed_remote"
+                else StreamEof()
+            )
+            websocket.send_text(message.model_dump_json())
+        with pytest.raises(WebSocketDisconnect) as disconnect:
+            websocket.receive_text()
+        assert disconnect.value.code == 1011
+        assert disconnect.value.reason == "transcript sync failed"
+
+    assert tentacle.session_tailer.sessions == {}
+    assert tentacle.native_sessions == {}
+    assert "storage failed" in caplog.text
+
+
 def test_an_offset_gap_closes_for_resync() -> None:
     """A gap means frames were lost; the close makes the client reconnect and re-ask
     where to resume, instead of the server assembling a mis-framed turn."""

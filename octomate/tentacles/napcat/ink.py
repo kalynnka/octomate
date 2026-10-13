@@ -12,6 +12,7 @@ from octomate.tentacles.channel import DownloadedImage, Ink
 from octomate.tentacles.feelers.output import IMMessageID
 from octomate.tentacles.napcat.schema import (
     ActionResponse,
+    GroupInfo,
     ImageInfo,
     NapcatOutboundMessage,
     NapcatUserProfile,
@@ -78,6 +79,12 @@ class NapcatInk(Ink[NapcatOutboundMessage]):
 
     async def upload_media(self, data: bytes) -> str | None:
         return None
+
+    async def get_group_name(self, chat_id: str) -> str:
+        group = await self.call_api(
+            "/get_group_info", {"group_id": chat_id}, ActionResponse[GroupInfo]
+        )
+        return group.group_name
 
     async def get_image_url(self, file: str) -> str | None:
         data = await self.call_api(

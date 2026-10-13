@@ -23,6 +23,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import ClassVar
@@ -96,7 +97,7 @@ class UV(PackageManager):
     lockfile: ClassVar[str] = "uv.lock"
 
     async def install(self, tree: Path) -> bool:
-        """Build the environment relocatable, then fill it.
+        """Create a relocatable environment once, then sync its dependencies.
 
         The venv is otherwise the one thing a fork cannot inherit: uv writes an
         absolute interpreter path into every console script, so a copied
@@ -107,11 +108,26 @@ class UV(PackageManager):
 
         Made relocatable, the scripts resolve the interpreter beside themselves
         and the copy is correct. uv records the choice in `pyvenv.cfg` and later
-        syncs keep it, so this is the one moment it can be asked for.
+        syncs keep it. Reuse that environment when the lockfile changes. An
+        existing environment without the marker is left untouched and reported:
+        rewriting its configuration would not repair installed console scripts.
         """
-        return await self.run(tree, "uv", "venv", "--relocatable") and await self.run(
-            tree, "uv", "sync"
-        )
+        venv = tree / ".venv"
+        if venv.exists():
+            config = venv / "pyvenv.cfg"
+            if not config.is_file() or not re.search(
+                r"(?m)^relocatable\s*=\s*true\s*$", config.read_text()
+            ):
+                logger.warning(
+                    "Dependencies in %s were not refreshed: .venv is not relocatable. "
+                    "Move it aside and recreate it with `uv venv --relocatable` "
+                    "before retrying.",
+                    tree,
+                )
+                return False
+        elif not await self.run(tree, "uv", "venv", "--relocatable"):
+            return False
+        return await self.run(tree, "uv", "sync")
 
 
 class Pnpm(PackageManager):

@@ -156,6 +156,9 @@ class DiscordChromo(Chromo[discord.Message, DiscordOutboundMessage]):
                 timestamp=raw.created_at.timestamp(),
                 user_id=str(raw.author.id),
                 chat_id=chat_id,
+                chat_name=channel.name
+                if isinstance(channel, discord.TextChannel)
+                else None,
                 chat_type=chat_type,
                 shared=shared,
                 segments=segments,

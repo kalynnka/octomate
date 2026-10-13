@@ -523,7 +523,7 @@ async def test_driven_names_are_persisted_and_revised_without_reading_turns(
     sdk_thread_id = "prior-thread" if resumed else "thread-new"
     reset_fake_codex(text_script("done", thread_id=sdk_thread_id))
     octomate = Octomate()
-    thread_id = await a_thread()
+    thread_id = (await octomate.threads.enter(KEY)).id
     conversation = await octomate.conversations.ensure(
         thread_id, agent_tentacle_id="codex"
     )
@@ -581,7 +581,7 @@ async def test_driven_child_name_does_not_rename_parent_thread(
     reset_fake_codex(text_script("done", thread_id="thread-new"))
     FakeCodex.thread_name = "Child work"
     octomate = Octomate()
-    thread_id = await a_thread()
+    thread_id = (await octomate.threads.enter(KEY)).id
     thread = await octomate.threads.get(thread_id, with_messages=False)
     assert thread is not None
     await octomate.threads.rename(thread, "Parent work")

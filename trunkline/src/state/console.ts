@@ -397,6 +397,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   const push = (item: Omit<LedgerItem, 'uid'> & { uid?: string }) => {
     const withUid = { ...item, uid: item.uid ?? nextUid() } as LedgerItem
+    if (withUid.kind === 'user') withUid.userId = useAuth.getState().user?.id
     set((s) => ({ live: [...s.live, withUid] }))
     scrollChatBottom(true)
     return withUid.uid

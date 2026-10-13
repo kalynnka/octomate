@@ -434,8 +434,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        async with self.driving(hello.session_id, native=True):
-            await self.stream_attached(websocket, hello, sender)
+        try:
+            async with self.driving(hello.session_id, native=True):
+                await self.stream_attached(websocket, hello, sender)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("session %s: transcript sync failed", hello.session_id)
+            await websocket.close(code=1011, reason="transcript sync failed")
 
     async def stream_attached(
         self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
@@ -564,12 +570,6 @@ class CodexTentacle(AgentTentacle[str, None]):
             pass
         except (ValidationError, FileTransferError, FileNotFoundError):
             await websocket.close(code=1008, reason="invalid stream message")
-        except Exception:
-            logger.exception(
-                "session %s: remote tail errored; its open turns are left for the "
-                "next connect to re-stream",
-                hello.session_id,
-            )
         finally:
             if relay is not None:
                 relay.cancel()

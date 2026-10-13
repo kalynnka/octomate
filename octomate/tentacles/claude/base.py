@@ -362,8 +362,14 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
-        async with self.driving(hello.session_id, native=True):
-            await self.stream_attached(websocket, hello, sender)
+        try:
+            async with self.driving(hello.session_id, native=True):
+                await self.stream_attached(websocket, hello, sender)
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("session %s: transcript sync failed", hello.session_id)
+            await websocket.close(code=1011, reason="transcript sync failed")
 
     async def stream_attached(
         self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
@@ -472,12 +478,6 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             pass
         except ValidationError:
             await websocket.close(code=1008, reason="unparseable stream message")
-        except Exception:
-            logger.exception(
-                "session %s: remote tail errored; its remaining turns are left for "
-                "the next connect to recover",
-                hello.session_id,
-            )
         finally:
             relay.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1168,7 +1168,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 ],
             },
             mcp_servers=mcp_servers,
-            extra_args={"safe-mode": None},
+            extra_args={"safe-mode": None, "thinking-display": "summarized"},
             strict_mcp_config=True,
             output_format=output_format,
             # Stream partial assistant messages so the accumulator can emit token

@@ -144,6 +144,11 @@ export interface AskQuestion {
   actionId?: string
 }
 
+export interface MessageReply {
+  who?: string
+  text: string
+}
+
 export type LedgerItem =
   | { kind: 'divider'; uid: string; label: string }
   | { kind: 'system'; uid: string; text: string; tone?: 'info' }
@@ -154,8 +159,8 @@ export type LedgerItem =
       text: string
       tone: 'plain' | 'summon'
     }
-  | { kind: 'user'; uid: string; t: string; who: string; text: string; chips?: QueueChip[] }
-  | { kind: 'agent'; uid: string; label: string; blocks: AgentBlock[] }
+  | { kind: 'user'; uid: string; t: string; who: string; userId?: string | null; text: string; reply?: MessageReply; chips?: QueueChip[] }
+  | { kind: 'agent'; uid: string; label: string; blocks: AgentBlock[]; reply?: MessageReply }
   | { kind: 'code'; uid: string; lang: string; lines: string[] }
   /** `thinking` is false once the part closed — the card folds itself then,
    *  the way `stream.streaming` marks a reply as settled */
