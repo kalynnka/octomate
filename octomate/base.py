@@ -306,7 +306,8 @@ class Octomate(FastAPI):
         runs in. What it does is published on the nerve as it goes, on a stream
         opened on the thread it was asked on. A thread holds one reflex at a
         time: a kick asked on one whose reflex is still awake is refused with
-        `StillAwake`."""
+        `StillAwake`, but for an answer to a suspended run, which waits for that
+        reflex to fall asleep."""
         with octomate_logfire.span(
             "kick {signal_type}", signal_type=type(signal).__name__
         ) as span:
@@ -337,6 +338,14 @@ class Octomate(FastAPI):
             if origin is None:
                 raise ValueError("A kick names no thread to wake on.")
             thread = ThreadKey.from_address(origin)
+            # TODO: hand the answer to the reflex awake there, not wait it out. Lark
+            # and Discord settle a card before its answer is kicked, so a refused
+            # answer would be lost.
+            while (
+                isinstance(signal, DeferredActionBatchResponse)
+                and thread in self.awakes
+            ):
+                await asyncio.wait({self.awakes[thread]})
             if thread in self.awakes:
                 raise StillAwake()
 

@@ -685,18 +685,22 @@ def build_trunkline_router(
         if batch.status != "pending":
             # A resolved batch must not resume twice (double-click, retry).
             raise HTTPException(status_code=409, detail=f"batch already {batch.status}")
-        try:
-            await octomate.kick(
-                DeferredActionBatchResponse(
-                    batch_id=batch_id,
-                    responder_id=str(user.id),
-                    answers=answers,
-                    approvals=approvals,
-                    allow_session=allow_session,
-                )
+        if (
+            batch.response_mode == "resume"
+            and ThreadKey.from_address(batch.source_address) in octomate.awakes
+        ):
+            # The kick would wait out the turn running there, holding this
+            # request open for as long.
+            raise HTTPException(status_code=409, detail=str(StillAwake()))
+        await octomate.kick(
+            DeferredActionBatchResponse(
+                batch_id=batch_id,
+                responder_id=str(user.id),
+                answers=answers,
+                approvals=approvals,
+                allow_session=allow_session,
             )
-        except StillAwake as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+        )
 
     return router
 

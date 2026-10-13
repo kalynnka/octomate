@@ -1581,6 +1581,17 @@ async def test_batch_resolve_resolves_and_streams(
         )
         assert missing.status_code == 404
 
+        # Waiting out a turn running there would hold the request open: refused,
+        # and the batch stays answerable.
+        async with awake_on(octomate, _console_address("thread-2")):
+            busy = await client.post(
+                f"/api/trunkline/batches/{batch.id}/resolve",
+                json={"approvals": {str(approval_id): True}},
+            )
+        assert busy.status_code == 409
+        assert busy.json()["detail"] == "A turn is still running in this thread."
+        assert (await octomate.deferred_actions.get_batch(batch.id)).status == "pending"
+
         with octomate.nerve.subscribe(thread.key) as live:
             response = await client.post(
                 f"/api/trunkline/batches/{batch.id}/resolve",
