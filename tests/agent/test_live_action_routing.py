@@ -26,6 +26,7 @@ from octomate.tentacles.deepseek.base import DeepseekBridgeContext
 from octomate.types.deferred import DeferredResponseMode
 from tests.support.channels import FakeChannelTentacle
 from tests.support.managers import a_thread
+from tests.support.nerve import kick_and_wait
 
 type LiveAgent = ClaudeCodeTentacle | CodexTentacle | DeepseekTentacle
 
@@ -271,5 +272,5 @@ async def test_missing_waiter_does_not_determine_response_routing(
             await app.kick(response)
         run.assert_not_awaited()
     else:
-        await app.kick(response)
+        await kick_and_wait(app, response)
         run.assert_awaited_once()

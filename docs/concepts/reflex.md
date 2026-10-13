@@ -135,7 +135,9 @@ The graph draws nothing. A kick opens a stream on the nerve, asked on the thread
 the signal came from, and everything the graph does goes out on it as it happens:
 
 - The reflex wakes before anything else and falls asleep last, whatever happened:
-  `reflex_awake` and `reflex_asleep` bracket the whole kick.
+  `reflex_awake` and `reflex_asleep` bracket the whole kick. A thread or chat
+  room holds one reflex at a time: a kick asked on one whose reflex is still
+  awake is refused before it wakes.
 - Each agent run is bracketed by `run_started`, which names the thread the run
   reports into, and `run_ended`. One kick can hold several runs: a summon runs the
   new agent after the first, and a teleport can resume where it landed.

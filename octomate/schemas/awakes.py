@@ -92,3 +92,11 @@ type AwakeSignal = (
     | NativeGatewaySignal
     | DrivenGatewaySignal
 )
+
+
+class StillAwake(RuntimeError):
+    """A kick refused because a reflex is still awake on the thread it was asked
+    on: a thread holds one at a time."""
+
+    def __init__(self) -> None:
+        super().__init__("A turn is still running in this thread.")

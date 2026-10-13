@@ -36,7 +36,7 @@ from octomate.capabilities.harness.events import (
     wire_event_adapter,
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
-from octomate.schemas.awakes import UserMessageSignal
+from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.project import Project
@@ -414,16 +414,20 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             name=directive.user.name,
             nickname=directive.user.nickname,
         )
+        address = ChannelAddress(
+            channel_tentacle_id=self.id,
+            chat_type=event.chat_type,
+            chat_id=event.chat_id,
+            user_id=event.user_id,
+            channel_thread_id=event.channel_thread_id,
+            shared=event.shared,
+        )
+        # Refused before anything is written, so the next turn has no row of it to
+        # answer. A directive racing past this is refused by the kick itself.
+        if ThreadKey.from_address(address) in self.octomate.awakes:
+            raise StillAwake()
         thread = await self.octomate.threads.ensure(
-            ChannelAddress(
-                channel_tentacle_id=self.id,
-                chat_type=event.chat_type,
-                chat_id=event.chat_id,
-                user_id=event.user_id,
-                channel_thread_id=event.channel_thread_id,
-                shared=event.shared,
-            ),
-            project=self.chosen_project(directive.project),
+            address, project=self.chosen_project(directive.project)
         )
         await self.claim_route(thread, directive.model)
         if directive.permission_mode is not None:
@@ -440,6 +444,6 @@ class TrunklineTentacle(ChannelTentacle[TrunklineDirective, WireEvent]):
             )
             await self.octomate.conversations.set_effort(conversation, effort)
         thread_message = await self.octomate.threads.record_inbound(event)
-        self.octomate.kick_soon(
+        await self.octomate.kick(
             UserMessageSignal([event], trigger_thread_message_id=thread_message.id)
         )

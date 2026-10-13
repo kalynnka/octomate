@@ -56,7 +56,7 @@ from octomate.types.permissions import InklingPermissionMode, PermissionMode
 from tests.managers.test_oauth import FakeDeviceFlow
 from tests.support.agents import FakeAgent, build_non_stream_agent, build_scripted_agent
 from tests.support.managers import a_loaded_thread, a_project, a_registry
-from tests.support.nerve import settled
+from tests.support.nerve import awake_on, settled
 
 # The console drives one configured reception agent through octomate.kick.
 RECEPTION_MODEL = "deepseek:deepseek-v4-pro"
@@ -288,6 +288,31 @@ async def test_a_console_watches_a_thread_over_its_live_socket(
     assert "part_start" in first
     assert first[-2:] == ["run_result", "run_ended"]
     assert second[-2:] == ["run_result", "run_ended"]
+
+
+async def test_a_directive_on_an_awake_thread_is_refused_and_leaves_no_row(
+    in_memory_engine: AsyncEngine,
+) -> None:
+    """A thread holds one reflex at a time. The directive is refused before
+    anything is written, so no later turn answers a message the console was told
+    did not go through."""
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["unused"])
+    await _register(octomate, agent)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate),
+        base_url="http://testserver",
+        headers={"X-Octomate-Request": "1"},
+    ) as client:
+        async with awake_on(octomate, _console_address()):
+            refused = await client.post(
+                "/api/trunkline/threads/thread-1/messages", json={"text": "hi there"}
+            )
+
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "A turn is still running in this thread."
+    assert await octomate.threads.list_threads(user_id=CONSOLE_USER_ID) == []
 
 
 async def test_a_live_socket_names_one_thread(in_memory_engine: AsyncEngine) -> None:

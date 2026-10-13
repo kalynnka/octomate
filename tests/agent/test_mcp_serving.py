@@ -447,7 +447,7 @@ async def test_a_native_scheme_kicks_exactly_one_handoff() -> None:
                     "destination": {"kind": "dm", "channel": "im"},
                 },
             )
-        await asyncio.gather(*octomate.background)
+        await asyncio.gather(*octomate.awakes.values())
 
     assert result.data.startswith("Taking this to")
     assert isinstance(octomate, FakeOctomate)

@@ -65,6 +65,9 @@ A group's main channel is never pinned to an owner, so there a mention stays the
 rule even after a long exchange. Set `mention_only: false` to answer everything on
 that channel.
 
+A message sent to a thread or chat room while a turn is running there waits: it
+is in the history, and the turn the next message starts answers it too.
+
 ## Identity
 
 The first time someone speaks, the channel records a **visitor profile**: a platform

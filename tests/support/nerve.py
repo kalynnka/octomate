@@ -20,6 +20,8 @@ from octomate.capabilities.harness.events import (
 from octomate.nerve import ChannelTopic, Impulse
 from octomate.reflex.graph import ReflexGraphResult
 from octomate.schemas.awakes import AwakeSignal
+from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.channel import ChannelTentacle
 from octomate.types.json import JsonObject
 
@@ -81,11 +83,36 @@ async def drained(*channels: ChannelTentacle) -> None:
             await asyncio.sleep(0)
 
 
+@asynccontextmanager
+async def awake_on(octomate: Octomate, address: ChannelAddress) -> AsyncGenerator[None]:
+    """A reflex awake on the thread at `address` for the block, doing nothing."""
+
+    async def asleep_never() -> ReflexGraphResult:
+        await asyncio.Event().wait()
+        raise AssertionError("a reflex that never wakes was woken")
+
+    thread = ThreadKey.from_address(address)
+    octomate.awakes[thread] = asyncio.create_task(asleep_never())
+    try:
+        yield
+    finally:
+        octomate.awakes.pop(thread).cancel()
+
+
+async def kick_and_wait(
+    octomate: Octomate, signal: AwakeSignal
+) -> ReflexGraphResult | None:
+    """`octomate.kick`, returning once the reflex it woke has fallen asleep, with
+    what it came to; None for an answer that went to a live run."""
+    reflex = await octomate.kick(signal)
+    return None if reflex is None else await reflex
+
+
 async def kicked(octomate: Octomate, signal: AwakeSignal) -> ReflexGraphResult | None:
-    """`octomate.kick` on a host whose channels were never entered, returning once
+    """`kick_and_wait` on a host whose channels were never entered, returning once
     each has drawn what the kick published."""
     async with drawing(*octomate.channels.values()):
-        return await octomate.kick(signal)
+        return await kick_and_wait(octomate, signal)
 
 
 def unwired() -> MemoryObjectSendStream[Impulse]:
