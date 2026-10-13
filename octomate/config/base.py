@@ -110,7 +110,7 @@ class OctomateConfig(BaseSettings):
         description="Local account credentials; required to sign in to Trunkline.",
     )
     projects: ProjectsConfig = Field(
-        default_factory=ProjectsConfig,
+        default_factory=dict,
         description=(
             "Declared code locations keyed by project name, reconciled into the "
             "registry at startup. Declaring one is the operator vouching for its "
