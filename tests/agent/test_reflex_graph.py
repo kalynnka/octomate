@@ -1448,6 +1448,10 @@ async def test_teleport_carries_the_history_across_to_a_far_sub_thread(
     if not fork_supported:
         assert len(entry.turns) == 1
         assert entry.relocated == []
+        # A move whose history never arrived is not announced where it left.
+        assert not [
+            event for _, event in im.presented if isinstance(event, GatewayEvent)
+        ]
         return
 
     assert isinstance(result, ReflexResult)
