@@ -11,7 +11,7 @@ A channel is three things, kept apart on purpose:
 
 If you want the MVC analogy: the model is the run's event stream, the segments, the
 ledger and the persisted actions; the feelers are the view; and the controller is
-the reflex `React` node on the way out and the channel's `ingest` on the way in.
+the channel's siphon on the way out and the channel's `ingest` on the way in.
 The chromo is a codec, not a controller.
 
 ## The six feelers
@@ -32,13 +32,36 @@ that accumulates and sends one message at the end, plain-text approval and quest
 cards, a plain-text OAuth message. Slack, Lark and Discord replace nearly all of
 them.
 
-Feelers present events and build none. What a channel shows comes from the run's
-stream, or from what the graph reports outside a run: a move, or a failed turn.
+Feelers present events and build none. What a channel shows comes from what the
+graph publishes on the nerve: a run's stream, or what happens around a run — a
+move, a send, an authorization, a failed turn.
 
 The OAuth feeler's `present` is concrete on the base class and resolves the private
 address itself, redirecting a request made on a shared surface to the person's DM
 and raising when the platform has nowhere private. A subclass fills in `send` and
 never gets to pick where it sends.
+
+## The siphon
+
+The graph never calls a channel to draw. It publishes what a kick does on the
+nerve, and each channel holds one subscription to everything at its own
+addresses, its **siphon**, opened when the channel starts and before any message
+is taken in. The siphon hands each event to the feeler that draws it:
+
+- A run, from its start to its end, goes to the timeline when the channel
+  streams. When it does not, the run's sends, cards and authorizations are drawn
+  as they come and its reply once, at the end.
+- A move's line, a send outside a run, an authorization and a failed turn go to
+  their own feelers as they arrive.
+
+Each thread is drawn in order in a lane of its own, so a slow platform call on one
+thread holds up no other. A rendering that fails is logged and the lane carries
+on; the graph never hears of it, and the reply is already in the ledger. The graph
+records a row before it publishes it, and the event carries the row's id, so the
+siphon marks the row with the platform id it was drawn as.
+
+Trunkline's siphon subscribes to nothing of its own. Each console socket holds the
+subscription of the one thread it watches, whichever channel that thread is on.
 
 ## The timeline pipeline
 
@@ -71,9 +94,10 @@ Tools the timeline never draws: `ask_questions`, `send`, `commission`, `whisper`
 
 ## Cards and how they come back
 
-The suspender creates the batch and hands it to the channel as one event.
-Presenting it shows approvals then questions and records each card's platform
-message id against its action, so the card and the row stay linked. A batch
+The suspender persists the batch and puts it on the run's stream as one event,
+which the siphon presents wherever it draws the run. Presenting it shows approvals
+then questions and records each card's platform message id against its action, so
+the card and the row stay linked. A batch
 either answers a live request or resumes a suspended run; feelers present both
 the same way and do not decide which it is.
 Answering is per channel, and two designs coexist:
@@ -86,7 +110,9 @@ Answering is per channel, and two designs coexist:
   typed but not submitted do not.
 
 Either way the channel builds one `DeferredActionBatchResponse` and kicks. A batch
-already resolved is refused, never resumed twice.
+already resolved is refused, never resumed twice. The answer is published too, so
+a console still showing the cards marks them answered; an IM channel's own cards
+for a batch answered somewhere else are not updated yet.
 
 ## Where a reply lands
 

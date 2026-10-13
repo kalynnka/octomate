@@ -12,8 +12,9 @@ console follows the kick wherever a move carries it. A channel holds one
 subscription for all its threads and draws every run on them; it misses
 nothing and holds nobody up, since what it has yet to read is kept for it. A
 thread's subscriber — the console's live socket — reads the receive end of a
-stream of its own, for as long as its block runs, and one that falls behind
-misses what did not fit. Each such stream is a fiber: a pair of ends in
+stream of its own, for as long as its block runs, and one that falls further
+behind than its backlog reads what was held for it and is cut off, never
+quietly skipped ahead. Each such stream is a fiber: a pair of ends in
 memory today, and the one thing to replace for a stream that outlives the
 process. Publishing is one way and knows nothing of who subscribed, and
 nothing is kept for a reader that is not there: an event published to a

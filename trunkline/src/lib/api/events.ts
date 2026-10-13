@@ -1,4 +1,4 @@
-// The Trunkline wire union — a 1:1 mirror of the backend's SSE payloads
+// The Trunkline wire union — a 1:1 mirror of the backend's live socket payloads
 // (WireEvent in octomate/capabilities/harness/events.py). Every event carries an
 // `event_kind` discriminator; the pydantic-ai members serialize with their own
 // native field names, so these types follow the Python schema exactly.

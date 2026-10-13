@@ -64,9 +64,9 @@ separate triage pass: the entry agent self-routes with the gateway if it wants t
 **React** starts ordinary agent runs. It resolves the agent against the
 channel the run will happen on, records the handoff if one is pending, mounts the
 gateway and the user's capabilities, registers the session at the gateway so a
-second concurrent turn is refused, then runs the agent, streaming through the
-channel's feelers or presenting the result once. A streamed run opens with a
-`run_started` custom event naming the thread it reports into. After the run it reads what the
+second concurrent turn is refused, then runs the agent. The run always streams,
+whatever the channel: what it does goes out on the nerve as it happens, and the
+channel decides whether to draw it live or only its reply. After the run it reads what the
 gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a teleport
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
@@ -85,7 +85,7 @@ decision unset. An agent stream or deferral creates its continuation decision
 when needed, preserving the selected agent and model for resume or teleport.
 
 `React` and `Command` use the stateless `ctx.deps.runtime` service for gateway
-capabilities, deferred approvals, channel presentation, reply bindings and post-run
+capabilities, deferred approvals, publishing the run, reply bindings and post-run
 transitions. State records the selected agent/model and conversation. Each entry
 creates its own session, suspender and capability list; the runtime retains none
 of them across handoffs. Both
@@ -96,12 +96,10 @@ exit; rejected and replayed deliveries do not prepare user tools or save it.
 The inner React graph and its stream contract remain dedicated to agent runs.
 
 Commands submitted through the HTTP API enter this graph for both Trunkline and
-IM destinations. Reflex sends direct feedback, agent output and approval requests
-to the destination channel. Trunkline also streams that output to the browser;
-the HTTP caller receives completion after the graph finishes. A disconnected
-command request cancels execution.
-Cleanup under external graph cancellation is not guaranteed; SDK shutdown, receipt
-persistence and workspace saving may be interrupted.
+IM destinations. Reflex publishes direct feedback, agent output and approval
+requests on the nerve, where the destination channel draws them and a console
+watching the thread sees them; the HTTP caller receives completion after the graph
+finishes.
 
 Explicit command receipts stay in the visible ledger but are omitted from pending
 chat input and automatic room recaps. Their arguments are not another chat turn.
@@ -131,9 +129,30 @@ chat-room kick ran in a sub-thread), restores the user's profile so the resumed 
 keeps the same capabilities and prompt prefix, and re-enters `React` with the
 batch's answers as tool results and no new prompt.
 
-The graph reports each move, and each turn that fails, to the chat it concerns and
-to the console when the operation came from there. Channels only present what it
-reports.
+## Publishing, not presenting
+
+The graph draws nothing. A kick opens a stream on the nerve, asked on the thread
+the signal came from, and everything the graph does goes out on it as it happens:
+
+- The reflex wakes before anything else and falls asleep last, whatever happened:
+  `reflex_awake` and `reflex_asleep` bracket the whole kick.
+- Each agent run is bracketed by `run_started`, which names the thread the run
+  reports into, and `run_ended`. One kick can hold several runs: a summon runs the
+  new agent after the first, and a teleport can resume where it landed.
+- A move leaves its line in the chat it left, a send lands where it was sent, and
+  a turn that fails reports its error where it came from.
+
+The graph records before it publishes: a run's reply, a move's line and a send
+delivered somewhere else are rows in the ledger before their events go out, and
+each event names its row, so the channel that draws it can mark it with the
+platform id it got. A rendering that fails cannot fail the turn.
+
+Each event is heard on the thread it happens at, by that channel and by any
+console watching the thread, and on the thread the kick was asked on, so a console
+follows the kick wherever a move takes it. Something sent to a person's private
+surface, a send into their direct messages or an authorization link, is heard
+only where it lands. See [Feelers](feelers.md#the-siphon) for how a channel
+draws what reaches it.
 
 ## Suspending and resuming
 
@@ -142,9 +161,9 @@ could not resolve itself. The suspender classifies them by the metadata each
 deferral declares, never by tool name: a `teleport` kind goes back to the graph, and
 everything else becomes a persisted **batch** with every address, mode and decision
 the graph needs to come back. A teleport has already passed the agent's own
-permission check by then, so nothing asks about it again. On a streaming channel
-the batch is handed to the timeline as one event to render; otherwise the
-channel's feelers present the cards directly.
+permission check by then, so nothing asks about it again. The batch goes out on
+the run's stream as one event, and the channel presents its cards wherever it
+draws the run.
 
 The batch is a row. When the cards are answered, possibly after a restart, the
 channel kicks the graph with the batch id, `ResumeDeferred` rebuilds the state from
@@ -155,7 +174,9 @@ instead, as the harness bridges do, pauses on the suspender rather than ending.
 Each batch records which it is: `resume` re-enters the graph; `live` delivers the
 answer to the waiting agent. A live batch whose agent is no longer waiting is an
 error, never a reason to start another run. The agent is waiting before the
-batch's cards are shown, so an immediate response reaches it.
+batch's cards are shown, so an immediate response reaches it. Once a batch is
+answered, the answer goes out as well, from the live run that takes it or from
+`ResumeDeferred`, so a console still showing the cards marks them answered.
 
 ## The inner graph
 
@@ -167,6 +188,7 @@ approval that the posture already granted, and why a whole batch goes to the hum
 when any part of it needs one.
 
 The graph runs inside a single `kick`, under one Arcanus materia context, with
-Logfire spans per node. The state object carries the resolved source, the target,
-the pending handoff, the user profile and the prompt; nodes read it and carry only
-transition discriminators of their own.
+Logfire spans per node, and publishes on the stream that kick opened. The state
+object carries the resolved source, the target, the pending handoff, the user
+profile and the prompt; nodes read it and carry only transition discriminators of
+their own.

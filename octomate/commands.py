@@ -178,10 +178,10 @@ async def execute_command(
 
     Every execution answers with the terminal command outcome, after cleanup and
     persistence; clients must not render it as another channel message. Every
-    channel executes through the Reflex command node. IM destinations receive
-    feedback, run output and approvals on their channel; Trunkline's channel
-    events reach the thread's live socket meanwhile, and the run's settling
-    follows them there. A failed execution answers no outcome.
+    channel executes through the Reflex command node, which publishes feedback,
+    run output and approvals on the nerve: the destination channel draws them,
+    and the thread's live socket carries them to a watching console, up to the
+    reflex falling asleep. A failed execution answers no outcome.
     Authentication and request-validation errors remain non-2xx JSON responses.
     """
     invocation = CommandInvocation(command_id=command_id, arguments=arguments)

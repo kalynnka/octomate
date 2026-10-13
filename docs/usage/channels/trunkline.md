@@ -236,8 +236,13 @@ over the channel rail to replace its initials with channel names and thread coun
 moving away restores the initials. Teleport continuation notices use information
 blue for the first line and gray for details, without trailing horizontal rules.
 Each paragraph has one bullet; wrapped lines stay within it.
-Ordinary chat runs stream over server-sent events; a browser that disconnects mid-run only stops
-watching, and the run finishes and records regardless.
+The open thread is watched live, whichever channel it is on: a run that starts
+there from somewhere else, from Slack or from another tab, streams into the panel
+as it happens, and the thread is read again once it settles. A card answered anywhere
+else stops waiting here too. Leave a thread mid-run and come back, and the run so
+far is there. Closing the tab only stops watching; the run finishes and records
+regardless. A console that falls too far behind is disconnected while the run
+carries on; opening the thread again reads it whole.
 
 The address bar names what is open — a thread, a new thread being composed, or a
 control page — so a reload, a shared link, or signing back in after a session
@@ -245,9 +250,8 @@ expires returns there, and Back and Forward step through what you opened. Signin
 out returns the address to the console's start.
 
 Explicit commands submitted through `POST /api/commands/execute` use Reflex for
-user tools, approvals and reply history. Direct feedback and agent activity use
-the normal channel stream, followed by a command outcome for completion tracking.
-Clients display the channel events without displaying the outcome again. A command
-request's disconnect cancels that execution; cleanup and outcome recording may be
-interrupted. Retry with the same delivery ID to read the recorded outcome. If the
+user tools, approvals and reply history. Direct feedback and agent activity reach
+the thread's live socket like any run's; the request answers with the command's
+outcome once it is done, for completion tracking, and the console does not display
+it again. Retry with the same delivery ID to read the recorded outcome. If the
 receipt has no outcome, the retry is refused to avoid running the command twice.

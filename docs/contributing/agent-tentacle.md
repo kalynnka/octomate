@@ -144,26 +144,19 @@ decides whether a conversation is required. The server applies the execution acc
 checks below and resolves the descriptor from a fresh catalog. Browser attachments
 are not supported yet; a nonempty `attachments` field is rejected before dispatch.
 
-Execution responses use `text/event-stream`. Each SSE `data` field is a JSON
-[CommandStreamEvent][octomate.commands.CommandStreamEvent], identified by `event_kind`.
-Each completed delivery ends with one
-[CommandOutcomeEvent][octomate.schemas.commands.CommandOutcomeEvent]
-with `event_kind="command_outcome"` and the `CommandOutcome`
-in its `outcome` field, after runtime cleanup and receipt persistence succeed.
-For Trunkline, direct and replayed feedback, refusals and agent activity use the
-channel's existing wire events before that terminal event. Clients render those
-channel events and use the terminal outcome for completion tracking, without
-displaying its content again. IM HTTP execution returns direct and replayed
-outcomes in the terminal event only. Stream failures close without a terminal outcome.
-A disconnect cancels execution. Trunkline's graph does not shield cleanup from
-external cancellation, so SDK shutdown and receipt persistence may be interrupted.
-Retrying the same delivery returns its saved outcome when present; Trunkline also
-presents any saved feedback through the channel. Agent activity is not replayed.
+Execution answers with one JSON
+[CommandOutcomeEvent][octomate.schemas.commands.CommandOutcomeEvent], with
+`event_kind="command_outcome"` and the `CommandOutcome` in its `outcome` field,
+once runtime cleanup and receipt persistence succeed. Direct and replayed feedback,
+refusals and agent activity go out on the nerve while the command runs, for every
+channel: the destination channel draws them, and a console watching the thread
+reads them off its live socket. Clients render those events and use the outcome for
+completion tracking, without displaying its content again. A failed execution
+answers no outcome. Retrying the same delivery returns its saved outcome when
+present and presents any saved feedback again. Agent activity is not replayed.
 Authentication and request-validation failures remain non-2xx JSON responses.
-The OpenAPI document uses version 3.2 and describes
-each SSE frame through `itemSchema`, with its JSON data contract in `contentSchema`.
-Both Trunkline and IM HTTP execution receive gateway capabilities and a
-deferred-action presenter through Reflex.
+Both Trunkline and IM HTTP execution receive gateway capabilities and the
+suspender through Reflex.
 
 `prefix` filters command names case-insensitively without changing the cached
 catalog. A nonmatching prefix returns an empty ready catalog when discovery

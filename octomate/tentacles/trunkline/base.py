@@ -86,12 +86,12 @@ class RouteLockedError(Exception):
 
 
 class TrunklineSeamNotWired(NotImplementedError):
-    """Raised by the platform send/encode seam, unused by the inline-SSE path."""
+    """Raised by the platform send/encode seam, which the console never uses."""
 
     def __init__(self) -> None:
         super().__init__(
-            "The Trunkline channel streams inline over SSE; the platform "
-            "send/encode seam is unused by the console delivery path."
+            "The Trunkline console reads its threads off their live sockets; the "
+            "platform send/encode seam is unused by the console delivery path."
         )
 
 
