@@ -13,16 +13,16 @@ from datetime import datetime
 from pathlib import Path
 from time import monotonic
 
-import anyio
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
+from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
-from pydantic import ValidationError
+from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 
-from octomate.capabilities.harness.events import StreamEvents
+from octomate.capabilities.harness.events import RunEndedEvent, RunStartedEvent, to_wire
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
-from octomate.schemas.conversation import Conversation
+from octomate.nerve import Impulse
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
@@ -47,11 +47,6 @@ from octomate.tentacles.locks import SessionLocks
 from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
-
-# The live stream is a forward-looking convenience for a future UI channel: bounded and
-# drop-on-full, so a session nobody is watching never backpressures the tailer.
-# Durability rests entirely on the `ExternalAgentRun` sink, never on a consumer existing.
-LIVE_STREAM_BUFFER = 256
 
 # Bound the wait for the session lock when committing a turn, so a wedged hook holder
 # can't hang the stream that feeds it. Timing out propagates — see `close_turn` for
@@ -147,12 +142,12 @@ class TailState:
 
     session_id: str
     transcript_path: Path
-    send_stream: MemoryObjectSendStream[StreamEvents[str]]
-    receive_stream: MemoryObjectReceiveStream[StreamEvents[str]]
     stop_event: asyncio.Event
     # The verified bearer's own profile — who every ledger row this stream
     # writes is attributed to.
     sender: UserProfile
+    address: ChannelAddress  # The native surface resolved by the tentacle.
+    impulses: ObjectSendStream[Impulse]  # The publisher open for this connection.
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
@@ -188,8 +183,10 @@ class ClaudeTranscriptTailer:
     - **durable** — one `ExternalAgentRun` per completed turn, carrying the byte range it
       was built from, replacing the provisional run the hooks sketched for the turn
       (`ClaudeHookIngest.sketch_run`). Idempotent by `prompt_id`.
-    - **live** — a bounded, drop-on-full `StreamEvents` stream for a future UI, which
-      never blocks the tailer and which durability never depends on.
+    - **live** — wire events sent through the connection's nerve publisher at the
+      native thread address, waiting for no reader. Only uncommitted parent turns publish:
+      `run_started`, the fold, then `run_ended` after the reply is bound. A reconnect
+      reopens an unfinished turn with another `run_started`; no reflex is woken.
 
     A turn commits on a proven boundary: the next prompt line, or the drained `eof`
     a relayed `Stop`/`SessionEnd` asks the client for — the transcript is flushed
@@ -213,33 +210,6 @@ class ClaudeTranscriptTailer:
         # same session. Its own registry when the tailer runs standalone.
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
-
-    def new_state(
-        self,
-        session_id: str,
-        transcript_path: Path,
-        sender: UserProfile,
-        offset: int = 0,
-    ) -> TailState:
-        send_stream, receive_stream = anyio.create_memory_object_stream[
-            StreamEvents[str]
-        ](LIVE_STREAM_BUFFER)
-        return TailState(
-            session_id=session_id,
-            transcript_path=transcript_path,
-            send_stream=send_stream,
-            receive_stream=receive_stream,
-            stop_event=asyncio.Event(),
-            sender=sender,
-            offset=offset,
-        )
-
-    def stream(
-        self, session_id: str
-    ) -> MemoryObjectReceiveStream[StreamEvents[str]] | None:
-        """The live event stream for a session, for a consumer that wants to watch it."""
-        state = self.sessions.get(session_id)
-        return state.receive_stream if state is not None else None
 
     async def stop_turn(self, session_id: str, prompt_id: str | None) -> None:
         """The turn just stopped — its `Stop` hook fired: drain it now instead of
@@ -283,12 +253,15 @@ class ClaudeTranscriptTailer:
             )
 
     async def shutdown(self) -> None:
-        for state in self.sessions.values():
-            state.send_stream.close()
         self.sessions.clear()
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path, sender: UserProfile
+        self,
+        session_id: str,
+        transcript_path: Path,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> tuple[TailState, dict[str, int]]:
         """Register a streamed session and answer where each of its files resumes.
 
@@ -299,7 +272,14 @@ class ClaudeTranscriptTailer:
         replaced; the dead route feeds the state object it attached, and its commits
         are idempotent.
         """
-        state = self.new_state(session_id, transcript_path, sender)
+        state = TailState(
+            session_id=session_id,
+            transcript_path=transcript_path,
+            stop_event=asyncio.Event(),
+            sender=sender,
+            address=address,
+            impulses=impulses,
+        )
         await self.prepare(state)
 
         conversation = state.conversation
@@ -383,7 +363,6 @@ class ClaudeTranscriptTailer:
         connection died mid-stream, so its open turns' bytes were never provably
         complete. The next connect resumes from the committed offsets and re-streams
         them."""
-        state.send_stream.close()
         if self.sessions.get(state.session_id) is state:
             del self.sessions[state.session_id]
 
@@ -434,15 +413,20 @@ class ClaudeTranscriptTailer:
             self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
+                if line.prompt_id in state.recorded:
+                    return
                 await self.record_permission_mode(state, line.permission_mode)
                 state.open_turn = self.begin_turn(line, start, end)
+                await state.impulses.send(
+                    Impulse(RunStartedEvent(address=state.address), state.address)
+                )
             elif state.open_turn is not None:
-                self.fold(state, line, end)
+                await self.fold(state, line, end)
         elif isinstance(line, TranscriptAssistantLine):
             if line.is_sidechain:
                 return
             if state.open_turn is not None:
-                self.fold(state, line, end)
+                await self.fold(state, line, end)
         elif isinstance(line, TranscriptSystemLine):
             # Claude writes it once the turn's `Stop` hooks have run, delivered or
             # not: a server down through the stop never hears the hook.
@@ -489,7 +473,7 @@ class ClaudeTranscriptTailer:
                     state.subagent_calls[agent_id] = tool_use_id
                     return
 
-    def fold(
+    async def fold(
         self,
         state: TailState,
         line: TranscriptAssistantLine | TranscriptUserLine,
@@ -502,7 +486,11 @@ class ClaudeTranscriptTailer:
             raise RuntimeError(f"session {state.session_id}: no open turn to fold into")
         written = len(turn.accumulator.messages)
         for event in turn.accumulator.consume(line):
-            self.emit(state, event)
+            if (
+                turn.prompt_id not in state.recorded
+                and (wire := to_wire(event)) is not None
+            ):
+                await state.impulses.send(Impulse(wire, state.address))
         stamp(turn.accumulator.messages[written:], line.timestamp)
         turn.end_offset = end
         turn.last_line_uuid = line.uuid
@@ -605,12 +593,15 @@ class ClaudeTranscriptTailer:
                 state.recorded.add(turn.prompt_id)
                 if run is None:
                     return
-                await self.bind_ledger(
+                reply_id = await self.bind_ledger(
                     state.session_id,
                     run,
                     turn.prompt_text,
                     turn.accumulator.result_text,
                     state.sender,
+                )
+                await state.impulses.send(
+                    Impulse(RunEndedEvent(thread_message_id=reply_id), state.address)
                 )
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -839,11 +830,12 @@ class ClaudeTranscriptTailer:
         prompt_text: str,
         answer: str,
         sender: UserProfile,
-    ) -> None:
+    ) -> UUID7 | None:
         """Cross-reference the human ledger (inbound prompt / outbound answer, keyed by
         `prompt_id = run.id`) to this run. Rows the hooks already wrote live are reused;
         any the live pipe never wrote — a session streamed in only after the fact —
-        are created here from the transcript, so the ledger stands alone."""
+        are created here from the transcript, so the ledger stands alone. Return
+        the bound reply's id, or None when the turn left no answer."""
         thread = await self.thread_manager.ensure(
             ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
         )
@@ -911,13 +903,5 @@ class ClaudeTranscriptTailer:
             await self.thread_manager.bind_assistant_replies(
                 [outbound.id], run_id=run.id
             )
-
-    def emit(self, state: TailState, event: StreamEvents[str]) -> None:
-        try:
-            state.send_stream.send_nowait(event)
-        except (
-            anyio.WouldBlock,
-            anyio.BrokenResourceError,
-            anyio.ClosedResourceError,
-        ):
-            pass  # drop-on-full / no consumer — never block the tailer
+            return outbound.id
+        return None

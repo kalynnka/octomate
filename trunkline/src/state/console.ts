@@ -549,8 +549,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // and the watch steps aside until that run ends.
   let viewing: { thId: string; close: () => void } | undefined
 
-  /** Reload the open thread's ledger once a run kicked elsewhere has settled. */
-  const reloadSettled = async (thId: string) => {
+  /** Reload the ledger after a watched turn settles, preserving a newer live fold. */
+  const reloadSettled = async (thId: string, settled: () => boolean) => {
     const detail = await queryClient.fetchQuery({
       queryKey: ['thread-detail', thId],
       queryFn: () => api.getThreadDetail(thId),
@@ -558,7 +558,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       retry: false,
     })
     if (get().selThreadId !== thId || streamingOn.has(thId)) return
-    set({ detail, live: [], running: false })
+    set(settled() ? { detail, live: [], running: false } : { detail })
     refreshThreads()
   }
 
@@ -572,10 +572,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // A run this console started already carries the thread; its end watches it again.
     if (streamingOn.has(thId)) return
     let fold: TurnFold | undefined
+    let reflex = false
     const shown = () => get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
-      if (event.event_kind === 'reflex_awake') {
+      if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
+        reflex = event.event_kind === 'reflex_awake'
         fold = new TurnFold({
           push: (item) => (shown() ? push(item as LedgerItem) : 'stale'),
           patch: (uid, patchObj) => {
@@ -583,10 +585,12 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           },
           done: () => {},
         })
-        set({ running: true })
-      } else if (event.event_kind === 'reflex_asleep') {
+        set({ live: [], running: true })
+        if (!reflex) fold.feed(event)
+      } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {
         fold = undefined
-        void reloadSettled(thId)
+        reflex = false
+        void reloadSettled(thId, () => fold === undefined)
       } else if (event.event_kind === 'action_batch_answered') {
         markAnswered(thId, event)
       } else {

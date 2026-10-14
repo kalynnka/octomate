@@ -138,6 +138,9 @@ requests through the same bridge without adding another confirmation.
 
 ## Native sessions
 
+A console with the thread open shows the turn as the tail folds it, a whole
+message at a time. When the turn finishes, it settles into the ledger.
+
 `octomate claude hooks install` registers `UserPromptSubmit`, `Stop`, `SessionEnd`,
 `SubagentStart` and `SubagentStop`, and launches a tail on each prompt. The hooks
 sketch the turn live; the tail then replaces the sketch with the full run from the

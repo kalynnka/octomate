@@ -80,6 +80,9 @@ cancels questions at once.
 
 ## Native sessions
 
+A console with the thread open shows the turn as the tail folds it, a whole
+message at a time. When the turn finishes, it settles into the ledger.
+
 `octomate deepseek hooks install --bridge <checkout>/packages/hooks/hooks-claude-code`
 links the bridge plugin that speaks Claude Code's hook dialect and mounts it through
 a patch row. Only `UserPromptSubmit` and `Stop` fire, and the bridge carries no

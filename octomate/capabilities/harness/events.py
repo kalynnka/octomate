@@ -40,12 +40,14 @@ it, with the generic/unserializable members replaced by their wire forms.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
 from pydantic import UUID7, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
-from pydantic_ai import AgentStreamEvent
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.result import FinalResult
+from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.auth import LinkProfileAuthorization
@@ -425,3 +427,25 @@ wire_event_adapter: TypeAdapter[WireEvent] = TypeAdapter(
     WireEvent,
     config=ConfigDict(ser_json_bytes="base64"),
 )
+
+
+def to_wire[OutputT: str | Sequence[MessageSegment] | DeferredToolRequests | None](
+    item: StreamEvents[OutputT] | AgentRunResultEvent[OutputT],
+) -> WireEvent | None:
+    """One run stream item as its wire event, or None for the shapes the wire
+    replaces (see the wire module docstring)."""
+    match item:
+        case AgentRunResultEvent():
+            match item.result.output:
+                case str() | None:
+                    output: str | list[MessageSegment] | None = item.result.output
+                case DeferredToolRequests():
+                    # The suspension already went out as an ActionBatchEvent.
+                    output = None
+                case segments:
+                    output = list(segments)
+            return RunResultEvent(output=output, usage=item.result.usage)
+        case FinalResult():
+            return None
+        case _:
+            return item

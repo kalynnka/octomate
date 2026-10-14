@@ -24,6 +24,7 @@ from typing import (
 )
 
 import anyio
+from anyio.abc import ObjectSendStream
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
@@ -87,6 +88,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
+from octomate.nerve import Impulse
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -362,9 +364,18 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
+        address = ChannelAddress(
+            channel_tentacle_id=self.native_id,
+            chat_type="thread",
+            chat_id=hello.session_id,
+            user_id=sender.channel_user_id,
+        )
         try:
-            async with self.driving(hello.session_id, native=True):
-                await self.stream_attached(websocket, hello, sender)
+            async with (
+                self.driving(hello.session_id, native=True),
+                self.octomate.nerve.publish(address) as impulses,
+            ):
+                await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -372,7 +383,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             await websocket.close(code=1011, reason="transcript sync failed")
 
     async def stream_attached(
-        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+        self,
+        websocket: WebSocket,
+        hello: StreamHello,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> None:
         """The attached half of a stream connection: register the session, answer
         resume offsets, then feed each framed line through the tailer's assembly until
@@ -393,11 +409,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         else:
             project = None
         await self.threads.ensure(
-            ThreadKey(self.native_id, "thread", hello.session_id),
+            ThreadKey.from_address(address),
             project=project,
         )
         state, offsets = await self.session_tailer.attach_remote(
-            hello.session_id, Path(hello.transcript_path), sender
+            hello.session_id, Path(hello.transcript_path), sender, address, impulses
         )
         conversation = state.conversation
         if conversation is None:
