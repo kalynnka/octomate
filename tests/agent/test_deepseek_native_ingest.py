@@ -578,11 +578,14 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
         assert held(live) == []
 
 
-async def test_steering_keeps_its_transcript_position_despite_its_clock() -> None:
+@pytest.mark.parametrize("source", ["user", "user-question-reply"])
+async def test_steering_keeps_its_transcript_position_despite_its_clock(
+    source: str,
+) -> None:
     octomate = Octomate()
     _, tailer = wired(octomate)
     records = turn_events(1, 0, "first ask", "first reply")[:-1]
-    steering = user_message(3, "also check this")
+    steering = user_message(3, "also check this", kind=source)
     steering["time"] = BASE_TIME_MS - 1000
     records.extend(
         [

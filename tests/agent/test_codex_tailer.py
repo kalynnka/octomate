@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.capabilities.harness.events import (
     RunEndedEvent,
+    RunStartedEvent,
     StreamEvents,
 )
 from octomate.schemas.thread import ThreadKey
@@ -259,7 +260,9 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
             events = held(live)
             if finished and not events:
                 break
-            assert events[0].event.event_kind == "run_started"
+            started = events[0].event
+            assert isinstance(started, RunStartedEvent)
+            assert started.sender == SENDER
             prompt = events[1].event
             assert isinstance(prompt, EnqueuedMessagesEvent)
             thread = await a_loaded_thread(octomate.threads, key)

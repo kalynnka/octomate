@@ -62,6 +62,7 @@ from octomate.schemas.deferred import (
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
+from octomate.schemas.user import UserProfile
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -108,6 +109,11 @@ class RunStartedEvent(BaseModel):
 
     event_kind: Literal["run_started"] = "run_started"
     address: ChannelAddress
+    sender: UserProfile | None = Field(
+        default=None,
+        description="The profile supplying a native transcript's prompts; None "
+        "when the run does not have a single native sender.",
+    )
 
 
 class RunEndedEvent(BaseModel):

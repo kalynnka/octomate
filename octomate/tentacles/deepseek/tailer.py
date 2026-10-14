@@ -101,9 +101,9 @@ def human_prompt(event: SessionEvent) -> PendingPrompt | None:
     """The human's own words in a `user/message`, or None. dsh logs injected
     user-role messages in the same turn — `agent-instructions`, `plugin`
     runtime context — which are the harness talking, not the ledger's prompt;
-    only `source.kind == "user"` is the person."""
+    human prompts and late question replies are the person's input."""
     message = user_message_of(event)
-    if message is None or message.source.kind != "user":
+    if message is None or message.source.kind not in {"user", "user-question-reply"}:
         return None
     text = text_of(message.content)
     if not text:

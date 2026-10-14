@@ -343,6 +343,7 @@ export interface RunUsage {
 export interface RunStartedEvent {
   event_kind: 'run_started'
   address: ChannelAddress
+  sender?: ApiUserProfile | null
 }
 
 export interface RunEndedEvent {

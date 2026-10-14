@@ -77,7 +77,9 @@ class NativeTurn:
             recorded.add(run_id)
             return None
         turn = cls(threads, locks, address, sender, impulses, messages, recorded)
-        await impulses.send(Impulse(RunStartedEvent(address=address), address))
+        await impulses.send(
+            Impulse(RunStartedEvent(address=address, sender=sender), address)
+        )
         return turn
 
     async def prompt(

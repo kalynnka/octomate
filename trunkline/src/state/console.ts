@@ -32,7 +32,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
-import { groupLiveThreads, holdingBack, withOlderPage } from '@/lib/api/live'
+import { channelMeta, groupLiveThreads, holdingBack, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 
@@ -554,8 +554,13 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   // overlay. A run this console asked for streams over its own socket instead,
   // and the watch steps aside until that run ends.
   let viewing: { thId: string; close: () => void } | undefined
+  import.meta.hot?.dispose(() => {
+    viewing?.close()
+    viewing = undefined
+    clearTurnTimers()
+  })
 
-  /** Reload the ledger after a watched turn settles, preserving a newer live fold. */
+  /** Read a driven turn or one whose opening was missed, preserving a newer live fold. */
   const reloadSettled = async (thId: string, settled: () => boolean) => {
     const detail = await queryClient.fetchQuery({
       queryKey: ['thread-detail', thId],
@@ -569,9 +574,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     refreshThreads()
   }
 
-  /** Follow the thread just opened until another is: a run starting there folds
-   *  into the overlay, and its settling reloads the ledger. A run already midway
-   *  shows nothing partial — its settling brings it in whole. */
+  /** Keep observed native turns in place when they settle. Driven turns also
+   *  record inbound messages outside the stream, so they still read the ledger,
+   *  as does a native turn whose opening was missed. */
   const watchOpen = async (thId: string) => {
     if (viewing?.thId === thId) return
     viewing?.close()
@@ -583,25 +588,42 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // Reserve the watch before connecting so overlapping opens share it.
     viewing = watching
     let fold: TurnFold | undefined
+    const turnItems = new Set<string>()
     let reflex = false
     const shown = () => viewing === watching && get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
       if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
+        // A replay replaces only the unfinished turn, keeping earlier turns mounted.
+        if (fold) set(s => ({ live: s.live.filter(item => !turnItems.has(item.uid)) }))
+        turnItems.clear()
         reflex = event.event_kind === 'reflex_awake'
         fold = new TurnFold({
-          push: (item) => (shown() ? push(item as LedgerItem) : 'stale'),
+          push: (item) => {
+            if (!shown()) return 'stale'
+            const uid = push(item as LedgerItem)
+            turnItems.add(uid)
+            return uid
+          },
           patch: (uid, patchObj) => {
-            if (shown()) patchLive((x) => (x.uid === uid ? ({ ...x, ...patchObj } as LedgerItem) : x))
+            if (!shown()) return
+            const patch = (item: LedgerItem) => item.uid === uid ? { ...item, ...patchObj } as LedgerItem : item
+            if (get().detail?.ledger.some(item => item.uid === uid)) {
+              set(s => ({ detail: s.detail && { ...s.detail, ledger: s.detail.ledger.map(patch) } }))
+            } else patchLive(patch)
           },
           done: () => {},
-        })
-        set({ live: [], running: true })
+        }, event.event_kind === 'run_started' ? channelMeta(event.address.channel_tentacle_id).label : undefined, [...(get().detail?.ledger ?? []), ...get().live])
+        set({ running: true })
         if (!reflex) fold.feed(event)
       } else if (event.event_kind === 'reflex_asleep' || (event.event_kind === 'run_ended' && !reflex)) {
+        if (fold && !reflex) {
+          fold.feed(event)
+          set({ running: false })
+          refreshThreads()
+        } else void reloadSettled(thId, () => fold === undefined)
         fold = undefined
         reflex = false
-        void reloadSettled(thId, () => fold === undefined)
       } else if (event.event_kind === 'action_batch_answered') {
         markAnswered(thId, event)
       } else {
@@ -928,7 +950,13 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       const transition = document.startViewTransition(update)
       threadTransition = transition
       try {
-        await Promise.all([transition.finished, transition.updateCallbackDone.then(() => (resuming ? undefined : refresh()))])
+        await Promise.all([
+          transition.ready.catch((error: unknown) => {
+            if (!(error instanceof DOMException && error.name === 'AbortError')) throw error
+          }),
+          transition.finished,
+          transition.updateCallbackDone.then(() => (resuming ? undefined : refresh())),
+        ])
       } finally {
         if (threadTransition === transition) {
           threadTransition = undefined
@@ -1200,7 +1228,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       const card = [...(get().detail?.ledger ?? []), ...get().live].find(
         (it) => it.uid === uid,
       )
-      if (card?.kind !== 'ask' || card.state !== 'waiting') return
+      if (card?.kind !== 'ask' || card.state !== 'waiting' || card.nativeCallId) return
       const t = nowClock().slice(0, 5)
       const questions = card.questions.map((q, index) => ({ ...q, answer: answers[index] }))
       const mark = (it: LedgerItem): LedgerItem =>

@@ -201,6 +201,41 @@ def test_tool_call_and_result_pair_into_one_native_response(
     assert native_return.tool_call_id == "c1"
 
 
+def test_question_call_is_published_only_with_complete_arguments() -> None:
+    accumulator = DeepseekRunAccumulator()
+    list(accumulator.consume(frame("turn/start", {"turn": 1})))
+    assert (
+        list(
+            accumulator.consume(
+                chunk(
+                    "tool-call-delta",
+                    id="question",
+                    name="ask_user_question",
+                    argumentsDelta='{"questions":',
+                )
+            )
+        )
+        == []
+    )
+    arguments = '{"questions": [{"id": "scope", "question": "Which scope?"}]}'
+    [event] = list(
+        accumulator.consume(
+            frame(
+                "tool/call",
+                {
+                    "callId": "question",
+                    "name": "ask_user_question",
+                    "arguments": arguments,
+                },
+            )
+        )
+    )
+    assert isinstance(event, FunctionToolCallEvent)
+    assert event.part.args == {
+        "questions": [{"id": "scope", "question": "Which scope?"}]
+    }
+
+
 def test_a_result_without_a_call_synthesizes_the_pairing() -> None:
     accumulator = DeepseekRunAccumulator()
 
