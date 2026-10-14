@@ -1003,3 +1003,23 @@ async def test_the_parent_relation_loads_the_chat_room_when_asked() -> None:
 
     assert loaded is not None
     assert loaded.id == parent.id
+
+
+async def test_ledger_pages_preserve_append_order_despite_source_clocks() -> None:
+    threads = ThreadManager(users=UserManager())
+    for message_id, second in (("new", 3), ("old", 1), ("middle", 2), ("same-time", 2)):
+        incoming = event(message_id, "alice", message_id)
+        incoming.timestamp += second
+        await threads.record_inbound(incoming)
+    thread = await threads.ensure(address())
+    page = await threads.messages_page(thread.id, limit=1)
+    found = list(page.items)
+    while page.has_more:
+        page = await threads.messages_page(thread.id, page.next_cursor, limit=1)
+        found.extend(page.items)
+    assert [m.platform_message_id for m in found] == [
+        "same-time",
+        "middle",
+        "old",
+        "new",
+    ]

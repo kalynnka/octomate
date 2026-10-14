@@ -1,12 +1,15 @@
 import asyncio
+from collections.abc import AsyncIterator
 from itertools import cycle
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from anyio.abc import ObjectSendStream
 from openai_codex.errors import TransportClosedError
 from openai_codex.generated.v2_all import ConfigReadResponse, ModelListResponse
 from openai_codex.models import Notification
 
+from octomate.nerve import Impulse, Nerve
 from octomate.tentacles.codex import ink as codex_ink
 
 
@@ -58,3 +61,10 @@ def codex_catalog(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     runtime.close = client.close
     monkeypatch.setattr(codex_ink, "SharedCodex", MagicMock(return_value=runtime))
     return client
+
+
+@pytest.fixture
+async def tail_impulses() -> AsyncIterator[ObjectSendStream[Impulse]]:
+    """A publisher for assembly tests that do not inspect a host's subscribers."""
+    async with Nerve().publish(None) as impulses:
+        yield impulses

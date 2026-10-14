@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { after, afterEach, before, beforeEach, mock, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { createServer, type ViteDevServer } from 'vite'
+import { createServer, createServerModuleRunner, type ViteDevServer } from 'vite'
 import type { ApiThread, ApiThreadMessage, WireDeferredQuestion, WireEvent } from '../src/lib/api/events.ts'
 import type { OlderPage } from '../src/lib/api/live.ts'
 import type { LedgerItem, ThreadDetail } from '../src/lib/api/types.ts'
@@ -13,6 +13,7 @@ let batchFeelers: typeof import('../src/lib/api/fold.ts').batchFeelers
 let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
+let useAuth: typeof import('../src/state/auth.ts').useAuth
 let callbackResult: void | Promise<void>
 const originalGlobals = ['document', 'window', 'requestAnimationFrame', 'WebSocket', 'location'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const detail: ThreadDetail = {
@@ -42,6 +43,7 @@ before(async () => {
   ;({ liveThreadDetail } = await server.ssrLoadModule('/src/lib/api/live.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
+  ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
 })
 beforeEach(() => {
   const panel = { style: { removeProperty() {}, viewTransitionName: '' } }
@@ -50,7 +52,9 @@ beforeEach(() => {
     startViewTransition(update: () => void | Promise<void>) {
       callbackResult = update()
       const updateCallbackDone = Promise.resolve(callbackResult)
-      return { updateCallbackDone, finished: updateCallbackDone, skipTransition() {} }
+      let skip!: (reason: DOMException) => void
+      const ready = new Promise<void>((resolve, reject) => { skip = reject; queueMicrotask(resolve) })
+      return { ready, updateCallbackDone, finished: updateCallbackDone, skipTransition() { skip(new DOMException('Transition was skipped', 'AbortError')) } }
     },
   } })
   Object.defineProperty(globalThis, 'window', { configurable: true, value: { matchMedia: () => ({ matches: false }) } })
@@ -95,7 +99,7 @@ test('a first visit starts its transition without waiting for data', async () =>
   assert.deepEqual(useConsole.getState().detail, detail)
 })
 
-test('a delayed response cannot replace the newly selected thread', async () => {
+test('skipping a pending transition handles its rejection and keeps the newly selected thread', async () => {
   let resolve!: (value: ThreadDetail) => void
   const first = new Promise<ThreadDetail>((done) => { resolve = done })
   mock.method(api, 'getThreadDetail', (id: string) => id === 'thread-a' ? first : Promise.resolve({ ...detail, key: id }))
@@ -322,3 +326,262 @@ test('a run follows the first reflex its socket sees wake, not the end of one al
   const replies = useConsole.getState().live.filter((item) => item.kind === 'stream')
   assert.deepEqual(replies.map((item) => item.kind === 'stream' && item.text), ['Hello back'])
 })
+
+test('opening the same thread twice during connection renders each event once', async () => {
+  const id = 'overlapping-watch'
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await Promise.all([
+    actions.selectThread('codex-native', id),
+    actions.selectThread('codex-native', id),
+  ])
+  const sockets = LiveSocket.opened.filter(socket => !socket.closed)
+  const events: WireEvent[] = [
+    { event_kind: 'run_started', address: {
+      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+    } },
+    { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Checking the watcher.' } },
+    { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'call-1', tool_name: 'exec', args: '{}' } },
+    { event_kind: 'function_tool_result', part: { part_kind: 'tool-return', tool_call_id: 'call-1', tool_name: 'exec', content: 'Done' } },
+  ]
+  for (const event of events) {
+    for (const socket of sockets) socket.deliver(event)
+  }
+  const live = useConsole.getState().live
+  assert.deepEqual(live.filter(item => item.kind === 'stream').map(item => item.text), ['Checking the watcher.'])
+  assert.equal(live.filter(item => item.kind === 'tool').length, 1)
+  assert.equal(sockets.length, 1)
+})
+
+test('a failed connection releases the watch so the thread can be opened again', async () => {
+  const id = 'failed-watch'
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  const opening = actions.selectThread('codex-native', id)
+  LiveSocket.last().close()
+  await opening
+  await actions.selectThread('codex-native', id)
+  assert.equal(LiveSocket.opened.length, 2)
+  assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
+})
+
+test('a superseded connection cannot resume watching when the reader returns', async () => {
+  mock.method(api, 'getThreadDetail', async (id: string) => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await Promise.all([
+    actions.selectThread('codex-native', 'returning-watch'),
+    actions.selectThread('codex-native', 'between-watches'),
+    actions.selectThread('codex-native', 'returning-watch'),
+  ])
+  const sockets = LiveSocket.opened
+  assert.equal(sockets.length, 3)
+  assert.deepEqual(sockets.map(socket => socket.closed), [true, true, false])
+  const started: WireEvent = { event_kind: 'run_started', address: {
+    channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: 'returning-watch', user_id: 'owner', channel_thread_id: null, shared: false,
+  } }
+  sockets[2].deliver(started, result)
+  sockets[0].deliver(started, { ...result, output: 'Stale reply' })
+  assert.deepEqual(useConsole.getState().live.filter(item => item.kind === 'stream').map(item => item.text), ['Hello back'])
+})
+
+for (const connected of [false, true]) {
+  test(`hot disposal releases a ${connected ? 'connected' : 'connecting'} thread watch`, async () => {
+    const runner = createServerModuleRunner(server.environments.ssr)
+    const { useConsole: store } = await runner.import<typeof import('../src/state/console.ts')>('/src/state/console.ts')
+    const { api: source } = await runner.import<typeof import('../src/lib/api/index.ts')>('/src/lib/api/index.ts')
+    const { queryClient: cache } = await runner.import<typeof import('../src/lib/queryClient.ts')>('/src/lib/queryClient.ts')
+    try {
+      mock.method(source, 'getThreadDetail', async () => detail)
+      const selecting = store.getState().actions.selectThread('codex-native', 'hot-thread')
+      const socket = LiveSocket.last()
+      if (connected) await selecting
+      assert.ok(runner.hmrClient)
+      await runner.hmrClient.prunePaths(['/src/state/console.ts'])
+      await selecting
+      await tick()
+      assert.equal(socket.closed, true)
+      socket.deliver({ event_kind: 'run_started', address: {
+        channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: 'hot-thread', user_id: 'owner', channel_thread_id: null, shared: false,
+      } }, result)
+      assert.deepEqual(store.getState().live, [])
+      assert.equal(store.getState().running, false)
+    } finally {
+      cache.clear()
+      await runner.close()
+    }
+  })
+}
+
+for (const reflex of [false, true]) {
+  test(`an open thread settles a ${reflex ? 'reflex only on reflex_asleep' : 'tailed turn on run_ended'}`, async () => {
+    const id = `native-${reflex}`
+    const opening = { ...detail, key: id }
+    const settled = { ...opening, msgCount: 2 }
+    const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+    queryClient.setQueryData(['thread-detail', id], opening)
+    await useConsole.getState().actions.selectThread('claude', id)
+    const watching = await socketOn(`thread_id=${id}`)
+    const calls = getDetail.mock.callCount()
+    const started: WireEvent = { event_kind: 'run_started', address: {
+      channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }
+    if (reflex) watching.deliver({ event_kind: 'reflex_awake' })
+    watching.deliver(started, result)
+    assert.equal(useConsole.getState().running, true)
+    assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'Hello back'))
+    const visible = useConsole.getState().live
+    getDetail.mock.mockImplementation(async () => settled)
+    watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+    if (reflex) {
+      await tick()
+      assert.equal(getDetail.mock.callCount(), calls)
+      assert.equal(useConsole.getState().running, true)
+      watching.deliver(started, { ...result, output: 'Second run' }, { event_kind: 'run_ended', thread_message_id: 'second' })
+      assert.equal(getDetail.mock.callCount(), calls)
+      watching.deliver({ event_kind: 'reflex_asleep' })
+    }
+    for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+    assert.equal(getDetail.mock.callCount(), calls + (reflex ? 1 : 0))
+    assert.equal(useConsole.getState().running, false)
+    if (reflex) assert.deepEqual(useConsole.getState().live, [])
+    else assert.equal(useConsole.getState().live[0], visible[0])
+    assert.equal(useConsole.getState().detail?.msgCount, reflex ? 2 : 0)
+  })
+}
+
+for (const saved of [false, true]) {
+  test(`a re-streamed tailed turn replaces its fold with the prompt ${saved ? 'already saved' : 'still live'}`, async () => {
+    const sender = { id: 'profile', channel_tentacle_id: 'claude-native', channel_user_id: 'test', name: 'test', user_id: 'native-owner', nickname: null, gender: null, age: null, title: null }
+    const ledger: LedgerItem[] = saved ? [{ kind: 'user', uid: 'native-prompt', text: 'The transcript prompt', who: sender.name, userId: sender.user_id, t: '10:00' }] : []
+    const opening = { ...detail, key: `replayed-native-${saved}`, ledger }
+    mock.method(api, 'getThreadDetail', async () => opening)
+    queryClient.setQueryData(['thread-detail', opening.key], opening)
+    await useConsole.getState().actions.selectThread('claude', opening.key)
+    const watching = await socketOn(`thread_id=${opening.key}`)
+    const started: WireEvent = { event_kind: 'run_started', sender, address: {
+      channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }
+    const prompt: WireEvent = { event_kind: 'enqueued_messages', enqueue_id: 'native-prompt',
+      messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'The transcript prompt' }], timestamp: '2026-10-14T10:00:00Z' }],
+    }
+    watching.deliver(started, prompt, { ...result, output: 'Partial' }, started, prompt, result)
+    const state = useConsole.getState()
+    const prompts = [...(state.detail?.ledger ?? []), ...state.live].filter(item => item.kind === 'user')
+    assert.equal(prompts.length, 1)
+    assert.equal(prompts[0]?.uid, 'native-prompt')
+    assert.equal(prompts[0]?.kind === 'user' && prompts[0].text, 'The transcript prompt')
+    assert.equal(prompts[0]?.kind === 'user' && prompts[0].who, 'test')
+    assert.equal(prompts[0]?.kind === 'user' && prompts[0].userId, 'native-owner')
+    const replies = useConsole.getState().live.filter((item) => item.kind === 'stream')
+    assert.deepEqual(replies.map((item) => item.kind === 'stream' && item.text), ['Hello back'])
+    watching.deliver({ event_kind: 'run_ended', thread_message_id: null })
+    for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+    assert.equal(useConsole.getState().running, false)
+  })
+}
+
+for (const reflex of [false, true]) {
+  test(`an enqueued prompt stays between replies inside ${reflex ? 'a reflex' : 'a tailed turn'}`, async () => {
+    const opening = { ...detail, key: `native-steering-${reflex}`, ledger: [] }
+    mock.method(api, 'getThreadDetail', async () => opening)
+    queryClient.setQueryData(['thread-detail', opening.key], opening)
+    await useConsole.getState().actions.selectThread('deepseek-native', opening.key)
+    const watching = await socketOn(`thread_id=${opening.key}`)
+    if (reflex) watching.deliver({ event_kind: 'reflex_awake' })
+    watching.deliver({ event_kind: 'run_started', address: {
+      channel_tentacle_id: 'deepseek-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }, { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'First reply' } }, {
+      event_kind: 'enqueued_messages', enqueue_id: 'steer',
+      messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'Also check this' }], timestamp: '2026-10-14T10:00:00Z' }],
+    }, { event_kind: 'part_start', index: 1, part: { part_kind: 'text', content: 'Second reply' } })
+    assert.deepEqual(useConsole.getState().live.map(item => 'text' in item && item.text), [
+      'First reply', 'Also check this', 'Second reply',
+    ])
+    assert.equal(useConsole.getState().running, true)
+    watching.deliver({ event_kind: 'run_ended', thread_message_id: null })
+    if (reflex) {
+      assert.equal(useConsole.getState().running, true)
+      watching.deliver({ event_kind: 'reflex_asleep' })
+    }
+    for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  })
+}
+
+test('a missed turn reads its history without clearing the next tailed turn already folding', async () => {
+  const opening = { ...detail, key: 'consecutive-native' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  queryClient.setQueryData(['thread-detail', opening.key], opening)
+  await useConsole.getState().actions.selectThread('claude', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  let resolve!: (value: ThreadDetail) => void
+  const reloading = new Promise<ThreadDetail>((done) => { resolve = done })
+  getDetail.mock.mockImplementation(() => reloading)
+  const started: WireEvent = { event_kind: 'run_started', address: {
+    channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }
+  const next: WireEvent = { event_kind: 'enqueued_messages', enqueue_id: 'next-prompt',
+    messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'Next prompt' }], timestamp: '2026-10-14T10:00:00Z' }],
+  }
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: null }, started, next, result)
+  const prompt = useConsole.getState().live.find(item => item.kind === 'user')
+  assert.equal(prompt?.kind === 'user' && prompt.userId, useAuth.getState().user?.id)
+  resolve({ ...opening, msgCount: 2, ledger: [{ kind: 'user', uid: 'next-prompt', text: 'Next prompt', who: 'Owner', t: '10:00' }] })
+  await tick()
+  assert.equal(useConsole.getState().detail?.msgCount, 2)
+  assert.equal(useConsole.getState().running, true)
+  assert.equal(useConsole.getState().live.filter(item => item.kind === 'user').length, 0)
+  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'Hello back'))
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+  for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
+  assert.equal(useConsole.getState().running, false)
+})
+
+
+test('consecutive watched turns stay mounted and replay replaces only the unfinished turn', async () => {
+  const opening = { ...detail, key: 'stable-native' }
+  const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+  await useConsole.getState().actions.selectThread('codex-native', opening.key)
+  const watching = await socketOn(`thread_id=${opening.key}`)
+  const calls = getDetail.mock.callCount()
+  const started: WireEvent = { event_kind: 'run_started', address: {
+    channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+  } }
+  const text: WireEvent = { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'First turn' } }
+  watching.deliver(started, text)
+  const firstId = useConsole.getState().live[0].uid
+  watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
+  const first = useConsole.getState().live[0]
+  assert.equal(first.uid, firstId)
+  assert.equal(first.kind === 'stream' && first.streaming, false)
+  watching.deliver(started, { ...text, part: { part_kind: 'text', content: 'Incomplete' } })
+  watching.deliver(started, { ...text, part: { part_kind: 'text', content: 'Second turn' } }, { event_kind: 'run_ended', thread_message_id: 'reply-2' })
+  assert.equal(useConsole.getState().live[0], first)
+  assert.deepEqual(useConsole.getState().live.map(item => item.kind === 'stream' && item.text), ['First turn', 'Second turn'])
+  assert.equal(getDetail.mock.callCount(), calls)
+  assert.equal(useConsole.getState().running, false)
+})
+
+for (const saved of [false, true]) {
+  test(`a later watched turn answers a question ${saved ? 'from saved history' : 'kept from an earlier turn'}`, async () => {
+    const question: LedgerItem = {
+      kind: 'ask', uid: 'saved-question', title: 'Question', questions: [{ body: 'Inspect?', options: [], multiSelect: false }],
+      nativeCallId: 'native-q', nativeAgent: 'Codex', tool: 'request_user_input_async', meta: 'Answer in Codex', state: 'waiting',
+    }
+    const opening = { ...detail, key: `question-next-turn-${saved}`, ledger: saved ? [question] : [] }
+    mock.method(api, 'getThreadDetail', async () => opening)
+    await useConsole.getState().actions.selectThread('codex-native', opening.key)
+    const watching = await socketOn(`thread_id=${opening.key}`)
+    const started: WireEvent = { event_kind: 'run_started', address: {
+      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }
+    if (!saved) watching.deliver(started, {
+      event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_name: 'request_user_input_async', tool_call_id: 'native-q', args: { questions: [{ title: 'Inspect?' }] } },
+    }, { event_kind: 'run_ended', thread_message_id: 'reply' })
+    const text = `<send_user_message_question_reply>${JSON.stringify([{ questionItemId: JSON.stringify(['request_user_input_async', 'native-q', 0]), question: 'Inspect?', answer: 'Yes' }])}</send_user_message_question_reply>`
+    watching.deliver(started, { event_kind: 'enqueued_messages', enqueue_id: 'answer', messages: [{ kind: 'request', timestamp: null, parts: [{ part_kind: 'user-prompt', content: text }] }] }, { event_kind: 'run_ended', thread_message_id: 'reply-2' })
+    const state = useConsole.getState()
+    const card = [...state.detail!.ledger, ...state.live].find(item => item.kind === 'ask')
+    assert.equal(card?.kind === 'ask' && card.state, 'answered')
+    assert.equal(card?.kind === 'ask' && card.questions[0].answer, 'Yes')
+  })
+}

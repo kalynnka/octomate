@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Literal
 
@@ -27,6 +28,7 @@ from octomate_protocol.stream import (
     client_message_adapter,
 )
 from uuid_utils.compat import uuid7
+from watchfiles import Change
 from websockets.asyncio.server import ServerConnection, serve
 from websockets.exceptions import ConnectionClosed
 
@@ -218,12 +220,31 @@ async def test_finalize_waits_for_snapshot_receipt_before_eof(
         await finished
 
 
+@pytest.mark.parametrize("notifications", [True, False])
 async def test_file_growth_uploads_before_finalize_and_holds_partial_lines(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, notifications: bool
 ) -> None:
     transcript = tmp_path / "rollout.jsonl"
     transcript.write_bytes(b"first\nsec")
-    monkeypatch.setattr(tail_mod, "IDLE_POLL_MS", 10)
+
+    async def quiet_watch(
+        path: Path,
+        *,
+        stop_event: asyncio.Event,
+        recursive: bool,
+        rust_timeout: int,
+        yield_on_timeout: bool,
+    ) -> AsyncIterator[set[tuple[Change, str]]]:
+        while not stop_event.is_set():
+            try:
+                await asyncio.wait_for(stop_event.wait(), rust_timeout / 1000)
+            except TimeoutError:
+                yield set()
+
+    if notifications:
+        monkeypatch.setattr(tail_mod, "IDLE_POLL_MS", 10)
+    else:
+        monkeypatch.setattr(tail_mod, "awatch", quiet_watch)
     finished: asyncio.Future[None] = asyncio.get_running_loop().create_future()
 
     async def server(websocket: ServerConnection) -> None:

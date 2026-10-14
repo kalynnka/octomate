@@ -39,8 +39,8 @@ from octomate.capabilities.harness.events import WireEvent
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
 
-# How far a kick's own fiber may run ahead of the pump before the kick waits.
-FIBER_BUFFER = 256
+# How far a publisher's fiber may run ahead of the pump before it waits.
+FIBER_BUFFER = 1024
 
 
 @dataclass(frozen=True)
@@ -53,8 +53,8 @@ class Impulse:
     # A delivery to a person's private surface, heard on that thread alone and
     # never on the thread the kick was asked on, which others may be watching.
     private: bool = False
-    # The thread the kick was asked on, which the nerve stamps as it pumps; None
-    # outside a kick, or for a kick that names no thread.
+    # The thread the producer starts on, stamped by the nerve: the asking thread
+    # for a kick, the native thread for a tail, or None when neither names a thread.
     origin: ThreadKey | None = None
 
 
@@ -115,10 +115,12 @@ class Nerve:
     async def publish(
         self, origin: ChannelAddress | None
     ) -> AsyncGenerator[ObjectSendStream[Impulse]]:
-        """The send end of a kick's stream, open for the block, asked on the
-        thread at `origin`. Each impulse sent is heard at the address it names,
-        and on the asking thread too unless it is private. Everything sent before
-        the block ends is delivered."""
+        """The send end of a producer's stream, open for the block. A kick names
+        the thread it was asked on as `origin`; a native tail names its native
+        thread and scopes the stream to its connection. Each impulse is heard at
+        its own address, and on the origin thread too unless private. Sending may
+        wait for the pump, never for a subscriber. Everything sent before the block
+        ends is delivered; closing the stream emits no lifecycle events of its own."""
         fiber = Fiber[Impulse]()
         asked = ThreadKey.from_address(origin) if origin is not None else None
 

@@ -22,6 +22,7 @@ from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelMessage, ModelRequest, ModelResponse
 from octomate.schemas.project import Project
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
 from octomate.schemas.thread import (
     ATTRIBUTABLE_KINDS,
@@ -836,6 +837,91 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 ],
             )
         return rows[0] if rows else None
+
+    async def record_native_prompt(
+        self,
+        address: ChannelAddress,
+        *,
+        message_id: str,
+        text: str,
+        sender: UserProfile,
+        timestamp: datetime,
+    ) -> ThreadMessage:
+        """Record a transcript input once, before the run commits.
+
+        The native message identity survives reconnects. The caller holds its
+        session lock across this lookup and write; the row grants the stream's
+        owner access to a new thread while its model history is still folding.
+        """
+        thread = await self.ensure(ThreadKey.from_address(address))
+        inbound = await self.find_message(thread.id, message_id, "inbound")
+        if inbound is not None:
+            if inbound.happened_at != timestamp:
+                await self.redate_message(inbound, timestamp)
+            return inbound
+        return await self.record_inbound(
+            MessageEvent(
+                tentacle_id=address.channel_tentacle_id,
+                message_id=message_id,
+                chat_id=address.chat_id,
+                chat_type=address.chat_type,
+                user_id=sender.channel_user_id,
+                sender=sender,
+                segments=[TextSegment(data={"text": text})],
+            ),
+            happened_at=timestamp,
+        )
+
+    async def bind_native_run(
+        self,
+        address: ChannelAddress,
+        run: ExternalAgentRun,
+        *,
+        prompts: dict[UUID7, UUID7],
+        answer: str,
+        sender: UserProfile,
+    ) -> UUID7 | None:
+        """Bind transcript prompts and the final reply after the run commits.
+
+        Each prompt maps its ledger id to its committed model message id. The caller holds the session lock and publishes `run_ended`
+        only after this returns, so a reader can immediately reload the ledger.
+        """
+        for prompt_id, message_id in prompts.items():
+            await self.bind_messages(
+                [prompt_id],
+                message_id,
+                kind="request_source",
+                run_id=run.id,
+            )
+        if not answer:
+            return None
+        thread = await self.ensure(ThreadKey.from_address(address))
+        outbound = await self.find_message(thread.id, run.id, "outbound")
+        answered = next(
+            (
+                message
+                for message in reversed(run.messages)
+                if isinstance(message, ModelResponse)
+            ),
+            None,
+        )
+        if outbound is None:
+            outbound = await self.record_outbound(
+                thread,
+                agent_tentacle_id=address.channel_tentacle_id,
+                segments=[MarkdownSegment(data={"text": answer})],
+                sender=sender,
+                platform_message_id=run.id,
+                happened_at=answered.timestamp if answered is not None else None,
+            )
+        elif (
+            answered is not None
+            and answered.timestamp is not None
+            and outbound.happened_at != answered.timestamp
+        ):
+            await self.redate_message(outbound, answered.timestamp)
+        await self.bind_assistant_replies([outbound.id], run_id=run.id)
+        return outbound.id
 
     async def bind_messages(
         self,

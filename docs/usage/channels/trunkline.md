@@ -63,12 +63,16 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Agent replies show the channel bot's name when available, followed by the
   agent's name in parentheses. Quoted replies use the same sender label.
   Native transcript replies show only the runtime's name, such as Codex or Claude.
+  Claude history preserves each transcript's message order.
+  Native turns received live stay in place when they finish.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.
 - **Answer approvals and questions**, for driven conversations on any channel.
   A batch's questions are one card with a page per question, sent together. A batch
   already resolved is refused rather than resumed twice.
+  Questions asked in native sessions and their answers
+  are readable here; answer them in the original agent.
 - **Switch a conversation's permission mode** among the agent's modes.
 - **Set a conversation's reasoning effort** with `/effort`: a scale of the levels
   the thread's model takes, moved with ←→ or by dragging and applied with ↵. The

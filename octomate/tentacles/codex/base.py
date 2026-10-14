@@ -30,6 +30,7 @@ from typing import (
 )
 
 import anyio
+from anyio.abc import ObjectSendStream
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
@@ -93,6 +94,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
+from octomate.nerve import Impulse
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -383,24 +385,23 @@ class CodexTentacle(AgentTentacle[str, None]):
         (`octomate codex tail`) — the server never reads a rollout from disk, this
         machine's sessions included. The guard covers the websocket too: FastAPI
         runs router dependencies at the handshake, so a bad bearer is denied with
-        the same 401 before any socket opens. Each route takes `hook_sender` — the
-        verified bearer resolved to their own profile, on the guard's single
-        per-request check — as the ledger's principal."""
+        the same 401 before any socket opens. `hook_sender` resolves the verified
+        bearer's profile on both routes; only the stream uses it to attribute
+        transcript messages."""
         verifier = hook_guard(self.bearers)
         resolve_sender = hook_sender(self.users, self.native_id, verifier)
         router = APIRouter(tags=["codex"], dependencies=[Depends(verifier)])
 
-        @router.post("/hooks/codex", summary="Codex native-session hook pipe")
-        async def receive_hook(
-            event: CodexHookInput,
-            # `param: T = Depends(dep)` is FastAPI's own dependency contract;
-            # ruff's B008 exemption misses it when T is a custom class (it is
-            # fine with `str`), so the rule bends rather than the checked type.
-            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
-        ) -> JSONResponse:
-            await self.session_ingest.handle(event, sender)
+        @router.post(
+            "/hooks/codex",
+            dependencies=[Depends(resolve_sender)],
+            summary="Codex native-session hook pipe",
+        )
+        async def receive_hook(event: CodexHookInput) -> JSONResponse:
+            await self.session_ingest.handle(event)
             return JSONResponse({})
 
+        # FastAPI resolves this custom profile dependency at the handshake.
         @router.websocket("/hooks/codex/stream")
         async def stream(
             websocket: WebSocket,
@@ -434,9 +435,18 @@ class CodexTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
+        address = ChannelAddress(
+            channel_tentacle_id=self.native_id,
+            chat_type="thread",
+            chat_id=hello.session_id,
+            user_id=sender.channel_user_id,
+        )
         try:
-            async with self.driving(hello.session_id, native=True):
-                await self.stream_attached(websocket, hello, sender)
+            async with (
+                self.driving(hello.session_id, native=True),
+                self.octomate.nerve.publish(address) as impulses,
+            ):
+                await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -444,15 +454,20 @@ class CodexTentacle(AgentTentacle[str, None]):
             await websocket.close(code=1011, reason="transcript sync failed")
 
     async def stream_attached(
-        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+        self,
+        websocket: WebSocket,
+        hello: StreamHello,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> None:
         """The attached half of a stream connection: register the session, answer
         resume offsets, then feed each framed line through the tailer's assembly.
         Codex turns close on their own `task_complete`/`turn_aborted` lines, so
         nothing commits at the boundary either way — `eof` and a drop alike just
         return the registry slot. The stored prefix rebuilds the tailer on the
-        server; the client resumes after it and uploads only appended bytes. A
-        `Stop` on the hook pipe reaches here as the state's `stop_event`
+        server; the client resumes after it and uploads only appended bytes.
+        A `Stop` on the hook pipe reaches here as the state's `stop_event`
         (`stop_turn`, once the stopped turn is durable or its wait ran out); the
         relay sends `finalize`, whose drain re-reads the client's files to EOF —
         rescuing bytes a missed watch wake left behind — and the tail exits until
@@ -478,6 +493,8 @@ class CodexTentacle(AgentTentacle[str, None]):
             hello.session_id,
             Path(hello.transcript_path),
             sender,
+            address,
+            impulses,
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",

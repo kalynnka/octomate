@@ -1191,3 +1191,72 @@ async def test_fork_carries_the_handle_even_with_nothing_to_copy() -> None:
     assert (
         await cold.ensure(source_thread, agent_tentacle_id="claude")
     ).external_id is None
+
+
+async def test_native_message_pages_preserve_transcript_order() -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(
+        await _thread(), agent_tentacle_id="claude-native"
+    )
+    # Turns commit serially even when the transcript's clocks go backwards.
+    for run_id, offset, day in (("earlier", 0, 2), ("later", 100, 1)):
+        await manager.record_external_run(
+            conversation,
+            run_id=run_id,
+            native_session_id="session",
+            start_offset=offset,
+            end_offset=offset + 100,
+            messages=[
+                RawModelRequest(
+                    parts=[UserPromptPart(run_id)],
+                    timestamp=datetime(2026, 1, day, 12, tzinfo=UTC),
+                ),
+                RawModelResponse(
+                    parts=[TextPart(run_id)],
+                    timestamp=datetime(2026, 1, day, 11, tzinfo=UTC),
+                ),
+            ],
+        )
+    page = await manager.messages_page(conversation.thread_id, limit=1)
+    found = list(page.items)
+    while page.has_more:
+        page = await manager.messages_page(
+            conversation.thread_id, page.next_cursor, limit=1
+        )
+        found.extend(page.items)
+    assert [(m.run_id, m.kind) for m in found] == [
+        ("later", "response"),
+        ("later", "request"),
+        ("earlier", "response"),
+        ("earlier", "request"),
+    ]
+    assert [m.id for m in found] == sorted((m.id for m in found), reverse=True)
+
+
+async def test_empty_run_reservation_never_replaces_transcript_messages() -> None:
+    manager = ConversationManager()
+    conversation = await manager.ensure(
+        await _thread(), agent_tentacle_id="claude-native"
+    )
+    placeholder = await manager.record_external_run(
+        conversation, run_id="turn", native_session_id="session"
+    )
+    assert placeholder is not None
+    assert list(placeholder.messages) == []
+    run = await manager.record_external_run(
+        conversation,
+        run_id="turn",
+        native_session_id="session",
+        messages=[RawModelResponse(parts=[TextPart("recorded")])],
+        start_offset=0,
+        end_offset=100,
+    )
+    assert run is not None
+    message_ids = [m.id for m in run.messages]
+    await manager.record_external_run(
+        conversation, run_id="turn", native_session_id="session"
+    )
+    stored = await manager.get(conversation.id)
+    assert len(stored.runs) == 1
+    assert [m.id for m in stored.messages] == message_ids
+    assert stored.runs[0].end_offset == 100

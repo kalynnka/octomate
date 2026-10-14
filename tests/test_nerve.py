@@ -3,6 +3,9 @@ thread the kick was asked on, each once, and waits for none."""
 
 from __future__ import annotations
 
+import anyio
+import pytest
+from anyio.streams.memory import MemoryObjectSendStream
 from pydantic_ai.messages import PartDeltaEvent, TextPartDelta
 
 from octomate.capabilities.harness.events import MessageSentEvent
@@ -83,3 +86,27 @@ async def test_a_reader_past_its_backlog_reads_what_was_held_and_ends() -> None:
 
 def test_delivering_where_nobody_subscribes_is_nothing() -> None:
     Nerve().deliver(Impulse(EVENT, HERE))
+
+
+async def test_publisher_buffers_1024_and_drains_without_waiting_for_readers() -> None:
+    nerve = Nerve()
+    sent = [
+        Impulse(PartDeltaEvent(index=index, delta=TextPartDelta(str(index))), HERE)
+        for index in range(1025)
+    ]
+    with (
+        nerve.subscribe(ThreadKey.from_address(HERE)) as here,
+        nerve.subscribe(ChannelTopic("web"), backlog=2) as behind,
+    ):
+        async with nerve.publish(None) as impulses:
+            assert isinstance(impulses, MemoryObjectSendStream)
+            for impulse in sent[:-1]:
+                impulses.send_nowait(impulse)
+            with pytest.raises(anyio.WouldBlock):
+                impulses.send_nowait(sent[-1])
+            await impulses.send(sent[-1])
+
+        assert held(here) == sent
+        assert [impulse async for impulse in behind] == sent[:2]
+        with pytest.raises(anyio.ClosedResourceError):
+            await impulses.send(sent[-1])

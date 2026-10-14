@@ -20,6 +20,7 @@ from uuid import uuid4
 
 import anyio
 import httpx
+from anyio.abc import ObjectSendStream
 from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from octomate_protocol.deepseek import (
@@ -71,6 +72,7 @@ from octomate.capabilities.harness.events import (
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, DeepseekConfig
+from octomate.nerve import Impulse
 from octomate.prompts import tagged
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -328,9 +330,18 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
+        address = ChannelAddress(
+            channel_tentacle_id=self.native_id,
+            chat_type="thread",
+            chat_id=hello.session_id,
+            user_id=sender.channel_user_id,
+        )
         try:
-            async with self.driving(hello.session_id, native=True):
-                await self.stream_attached(websocket, hello, sender)
+            async with (
+                self.driving(hello.session_id, native=True),
+                self.octomate.nerve.publish(address) as impulses,
+            ):
+                await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -338,7 +349,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
             await websocket.close(code=1011, reason="transcript sync failed")
 
     async def stream_attached(
-        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+        self,
+        websocket: WebSocket,
+        hello: StreamHello,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> None:
         """The attached half of a stream connection: register the session,
         answer the resume seq, then feed each framed entry through the
@@ -350,7 +366,12 @@ class DeepseekTentacle(AgentTentacle[str, None]):
         stopped turn is durable or its wait ran out), and the relayed
         `finalize` asks the client for its final drain and `eof`."""
         state, offsets = await self.session_tailer.attach_remote(
-            hello.session_id, Path(hello.transcript_path), hello.cwd, sender
+            hello.session_id,
+            Path(hello.transcript_path),
+            hello.cwd,
+            sender,
+            address,
+            impulses,
         )
         logger.info(
             "session %s: remote tail connected (octomate %s)",
@@ -402,9 +423,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     )
                     return
                 expected[SESSION_FILE] = message.end
-                await self.session_tailer.feed_remote(
-                    state, None, message.line, message.start, message.end
-                )
+                await self.session_tailer.feed_remote(state, message.line)
         except WebSocketDisconnect:
             pass
         except ValidationError:
