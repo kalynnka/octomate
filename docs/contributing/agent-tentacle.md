@@ -440,6 +440,12 @@ Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
 
+Claude hooks reserve empty runs; the transcript owns messages and their ledger
+bindings. Preserve order within each transcript independently of receipt time or
+wall-clock timestamps. Parent and child transcripts have separate serial workers
+and retain their conversation and spawning-call relationships. See the
+[Claude ingest contract](../api/tentacles/hooks.md#octomate.tentacles.claude.ingest.ClaudeHookIngest).
+
 For live native ingest, follow Claude and DeepSeek: publish the turn on the nerve
 so an open console can show it while the tailer assembles it. Codex currently
 records native history without publishing live events.

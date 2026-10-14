@@ -395,9 +395,15 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     }
   }
 
+  const showDetail = (detail: ThreadDetail) => {
+    const recorded = new Set(detail.ledger.map(item => item.uid))
+    set(s => ({ detail, live: s.live.filter(item => !recorded.has(item.uid)) }))
+  }
+
   const push = (item: Omit<LedgerItem, 'uid'> & { uid?: string }) => {
     const withUid = { ...item, uid: item.uid ?? nextUid() } as LedgerItem
-    if (withUid.kind === 'user') withUid.userId = useAuth.getState().user?.id
+    if (withUid.kind === 'user' && withUid.userId === undefined) withUid.userId = useAuth.getState().user?.id
+    if (get().detail?.ledger.some(item => item.uid === withUid.uid)) return withUid.uid
     set((s) => ({ live: [...s.live, withUid] }))
     scrollChatBottom(true)
     return withUid.uid
@@ -451,7 +457,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       // A reader who moved on, or a refresh that replaced the pages, has no use for it.
       if (get().selThreadId !== thId || !current?.reads || current.reads.cursors[read] !== cursor) return
       const detail = withOlderPage(current, current.reads, older)
-      set({ detail })
+      showDetail(detail)
       queryClient.setQueryData(['thread-detail', thId], detail)
       // A reader already at the top is waiting on this page.
       const log = document.getElementById('trk-chatlog')
@@ -558,14 +564,16 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       retry: false,
     })
     if (get().selThreadId !== thId || streamingOn.has(thId)) return
-    set(settled() ? { detail, live: [], running: false } : { detail })
+    if (settled()) set({ detail, live: [], running: false })
+    else showDetail(detail)
     refreshThreads()
   }
 
   /** Follow the thread just opened until another is: a run starting there folds
    *  into the overlay, and its settling reloads the ledger. A run already midway
-   *  shows nothing partial — its settling brings it in whole. */
-  const watchOpen = async (thId: string) => {
+   *  shows nothing partial — its settling brings it in whole. A dropped watch
+   *  reconnects while this thread stays open and reloads the missed ledger. */
+  const watchOpen = async (thId: string, reconnecting = false) => {
     if (viewing?.thId === thId) return
     viewing?.close()
     viewing = undefined
@@ -597,19 +605,40 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         fold?.feed(event)
       }
     }
+    let retry: ReturnType<typeof setTimeout> | undefined
+    const watching = { thId, close: () => clearTimeout(retry) }
+    viewing = watching
+    const reconnect = () => {
+      retry = setTimeout(() => {
+        if (viewing !== watching || !shown()) return
+        viewing = undefined
+        void watchOpen(thId, true)
+      }, 1000)
+    }
     try {
       const socket = await watchThread({ id: thId }, onEvent)
-      if (get().selThreadId !== thId) {
+      if (viewing !== watching || !shown()) {
         socket.close()
         return
       }
-      const watching = { thId, close: socket.close }
-      viewing = watching
-      // Closed by the relay: the next open of the thread watches it afresh.
+      watching.close = () => {
+        clearTimeout(retry)
+        socket.close()
+      }
+      if (reconnecting) void reloadSettled(thId, () => fold === undefined)
       void socket.closed.then(() => {
-        if (viewing === watching) viewing = undefined
+        if (viewing !== watching) return
+        fold = undefined
+        reflex = false
+        reconnect()
       })
     } catch (error) {
+      if (viewing !== watching || !shown()) return
+      if (reconnecting) {
+        reconnect()
+        return
+      }
+      viewing = undefined
       const reason = error instanceof Error ? error.message : String(error)
       actions.reportThreadError(thId, `live updates did not connect — ${reason}`)
     }
@@ -902,7 +931,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
           retry: false,
         })
         if (selection !== threadSelection || get().selThreadId !== thId) return
-        set({ detail })
+        showDetail(detail)
         scrollChatBottom()
         void (async () => {
           for (let page = 1; page < PRELOAD_PAGES; page++) await pageBack(thId)

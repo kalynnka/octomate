@@ -2,6 +2,8 @@
 
 ::: octomate.tentacles.hooks
 
+::: octomate.tentacles.claude.ingest
+
 ::: octomate.tentacles.locks
 
 ::: octomate.tentacles.claude.tailer

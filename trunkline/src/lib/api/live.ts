@@ -282,7 +282,10 @@ export function holdingBack(reads: ThreadReads): ThreadRead | null {
 }
 
 export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
-  const { thread, modelMessages, unbound, conversations, project, batches, usage: spent } = reads
+  const { thread, modelMessages, conversations, project, batches, usage: spent } = reads
+  // These pages are separate reads: a row can become bound between them.
+  const bound = new Set(modelMessages.flatMap((message) => message.thread_messages.map((row) => row.id)))
+  const unbound = reads.unbound.filter((message) => !bound.has(message.id))
   const messages = [...unbound, ...modelMessages.flatMap((message) => message.thread_messages)]
   const profiles = new Map(messages.flatMap(({ sender }) => sender
     ? [[sender.channel_user_id, sender.name] as const] : []))
@@ -318,8 +321,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     }
   }
 
-  // Every row is keyed by its uuid7, which is when it was written; a run and the
-  // ledger are only appended to, so that is the order things happened in. A
+  // Rows use their uuid7 append order. A
   // card's uid comes from the row it was read off, so reading further back never
   // renames the cards already shown. `session` is the conversation the card
   // belongs to, which is what the timeline buckets on.
@@ -428,9 +430,13 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     }
   }
   // A request nothing was bound to speaks for itself — a turn whose chat row was
-  // never tied to it.
+  // never tied to it. Native hooks and provisional requests name the same turn
+  // before binding completes; prefer that identified ledger row over the sketch.
+  const nativePrompts = new Set(thread.kind === 'native_thread'
+    ? unbound.filter((message) => message.direction === 'inbound').map((message) => message.platform_message_id)
+    : [])
   for (const request of modelMessages) {
-    if (request.kind !== 'request' || request.thread_messages.some((m) => m.direction === 'inbound')) continue
+    if (request.kind !== 'request' || request.thread_messages.some((m) => m.direction === 'inbound') || nativePrompts.has(request.run_id)) continue
     for (const [n, part] of request.parts.entries()) {
       if (part.part_kind !== 'user-prompt') continue
       const text = typeof part.content === 'string' ? part.content : part.content.filter((c) => typeof c === 'string').join('\n')
@@ -471,7 +477,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
   // Stable sort, so the cards of one message keep the order of its parts. Rows
   // older than what the read holding the other back has reached wait for it.
   const back = holdingBack(reads)
-  const horizon = back === null ? '' : back === 'model' ? modelMessages[0].id : unbound[0].id
+  const horizon = back === null ? '' : back === 'model'
+    ? modelMessages[0].id
+    : reads.unbound[0].id
   keyed.sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0))
   const shown = new Set<string>()
   const ledger: LedgerItem[] = []
@@ -573,9 +581,9 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
 
 /**
  * `detail` with one more page of either read folded on. The cards it already
- * shows stay as they are — an answer marked on a feeler survives — and the new
- * ones go above them: a page only reaches further back, and a row waits until
- * both reads are past it. Sessions keep what was changed on them and take their
+ * shows keep their state — an answer marked on a feeler survives — in the
+ * rebuilt order. Rows newly found to be bound replace their earlier rendering.
+ * Sessions keep what was changed on them and take their
  * anchors afresh, since a session's first card may be on this page.
  */
 export function withOlderPage(detail: ThreadDetail, reads: ThreadReads, older: OlderPage): ThreadDetail {
@@ -587,19 +595,19 @@ export function withOlderPage(detail: ThreadDetail, reads: ThreadReads, older: O
       ? { ...reads, cursors, totals, modelMessages: [...older.page.items].reverse().concat(reads.modelMessages) }
       : { ...reads, cursors, totals, unbound: [...older.page.items].reverse().concat(reads.unbound) },
   )
-  const shown = new Set(detail.ledger.map((item) => item.uid))
-  const refreshed = new Map(fresh.ledger.map((item) => [item.uid, item]))
+  const shown = new Map(detail.ledger.map((item) => [item.uid, item]))
   return {
     ...detail,
     msgCount: fresh.msgCount,
     earlier: fresh.earlier,
     reads: fresh.reads,
-    ledger: [...fresh.ledger.filter((item) => !shown.has(item.uid)), ...detail.ledger.map((item) => {
-      const updated = refreshed.get(item.uid)
-      if (item.kind === 'user' && updated?.kind === 'user') return { ...item, text: updated.text, ...(updated.reply && { reply: updated.reply }) }
-      if (item.kind === 'agent' && updated?.kind === 'agent' && updated.reply) return { ...item, reply: updated.reply }
+    ledger: fresh.ledger.map((updated) => {
+      const item = shown.get(updated.uid)
+      if (!item) return updated
+      if (item.kind === 'user' && updated.kind === 'user') return { ...item, text: updated.text, ...(updated.reply && { reply: updated.reply }) }
+      if (item.kind === 'agent' && updated.kind === 'agent' && updated.reply) return { ...item, reply: updated.reply }
       return item
-    })],
+    }),
     sessions: detail.sessions.map((session) => ({
       ...session,
       anchor: fresh.sessions.find((each) => each.conversationId === session.conversationId)?.anchor,

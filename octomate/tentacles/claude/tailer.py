@@ -18,7 +18,11 @@ from octomate_protocol.stream import SESSION_FILE
 from pydantic import UUID7, ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 
-from octomate.capabilities.harness.events import RunEndedEvent, RunStartedEvent, to_wire
+from octomate.capabilities.harness.events import (
+    RunEndedEvent,
+    RunStartedEvent,
+    to_wire,
+)
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
@@ -30,6 +34,7 @@ from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
     ThreadKey,
+    ThreadMessage,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
@@ -70,10 +75,8 @@ REMOTE_DRAIN_TIMEOUT = 5.0
 def assembled(conversation: Conversation) -> set[str]:
     """The ids of the turns already built from the transcript — the ones a tail may skip.
 
-    The byte range is the mark: a run without one is the hooks' provisional sketch of a
-    turn (`ClaudeHookIngest.sketch_run`), which the tailer is precisely what replaces. It
-    must never seed a committed-turn guard, or the sketch would be mistaken for the real
-    timeline and the turn would never be filled in.
+    Only a completed transcript range seeds the guard. Empty hook reservations
+    and older provisional sketches must still be filled from the transcript.
     """
     return {
         run.id
@@ -85,7 +88,7 @@ def assembled(conversation: Conversation) -> set[str]:
 def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> None:
     """Date the messages a transcript record produced by that record's own clock — the
     accumulator stamps `now`, which is wrong for a run replayed off disk
-    (`AgentRun.started_at` and ordering both read from these)."""
+    (`AgentRun.started_at` and displayed times read from these)."""
     if timestamp is None:
         return
     for message in messages:
@@ -101,7 +104,7 @@ class OpenTurn:
     `finalize`."""
 
     prompt_id: str
-    prompt_text: str  # the human's clean prompt, for creating the inbound ledger row
+    prompt_text: str  # transcript prompt used for the live event and ledger row
     source: str | None  # the transcript `entrypoint` (claude-vscode / cli / …)
     # Where the turn's opening prompt line says it ran — the opening line specifically,
     # because a transcript carries a `cwd` on every line and a turn's tools wander into
@@ -120,8 +123,7 @@ class OpenTurn:
 class SubagentTail:
     """One subagent transcript's cursor within a session's tail. A subagent writes its
     own file (`<session>/subagents/agent-<agentId>.jsonl`), so it gets its own byte
-    cursor, conversation, and open turn — pumped by the owning session's loop rather
-    than a watcher of its own. Its turns frame on `promptId` change: subagent files
+    cursor, conversation, open turn, and serial stream worker. Its turns frame on `promptId` change: subagent files
     carry no `promptSource`, and a resumed subagent's next turn may open on a
     tool-result line, not a prompt."""
 
@@ -153,10 +155,9 @@ class TailState:
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
     open_turn: OpenTurn | None = None
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
-    # agentId -> the parent-turn tool_use_id that spawned it, harvested from the
-    # parent's tool-result lines (`toolUseResult.agentId`); stamps each child run's
-    # `parent_tool_call_id`.
-    subagent_calls: dict[str, str] = field(default_factory=dict)
+    # (agentId, parent turn) -> spawning call; resumed children may be processed
+    # after the parent has already recorded the next invocation.
+    subagent_calls: dict[tuple[str, str], str] = field(default_factory=dict)
     # The prompt id of a turn whose `Stop` hook fired (`stop_turn`): commit it without
     # waiting for the next prompt line — but commit nothing newer, so a prompt queued
     # into the drain window is left open for the next connect to re-stream.
@@ -174,15 +175,15 @@ class TailState:
 class ClaudeTranscriptTailer:
     """Assembles Claude turns from transcript lines streamed in by `octomate claude
     tail` — the only assembler: the server never opens a transcript, even for a
-    session on this machine, and a session no tail streams keeps only the hooks'
-    prompt/answer sketch.
+    session on this machine. Hooks can reserve empty runs, but only the transcript
+    produces model messages and ledger rows.
 
     Each framed line feeds a `ClaudeRunAccumulator` — the same translation the live
     tentacle and the whole-file restore use — driving two decoupled sinks:
 
     - **durable** — one `ExternalAgentRun` per completed turn, carrying the byte range it
-      was built from, replacing the provisional run the hooks sketched for the turn
-      (`ClaudeHookIngest.sketch_run`). Idempotent by `prompt_id`.
+      was built from, filling any empty run reserved by a hook. Older hook sketches
+      are replaced for compatibility. Idempotent by `prompt_id`.
     - **live** — wire events sent through the connection's nerve publisher at the
       native thread address, waiting for no reader. Only uncommitted parent turns publish:
       `run_started`, the fold, then `run_ended` after the reply is bound. A reconnect
@@ -206,8 +207,7 @@ class ClaudeTranscriptTailer:
         self.conversation_manager = conversation_manager
         self.thread_manager = thread_manager
         # Per-session locks, shared with the hook ingest when wired together, so a turn's
-        # run/ledger commit here can't interleave with the hooks' ledger writes for the
-        # same session. Its own registry when the tailer runs standalone.
+        # run commit here can't race a hook reserving the same run. Its own registry when the tailer runs standalone.
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
 
@@ -220,8 +220,7 @@ class ClaudeTranscriptTailer:
         the tail process exits, and the next prompt's launcher spawns a fresh one.
         Scoped by `prompt_id` so nothing newer than the stopped turn ever commits
         early; without one there is nothing to scope, and the turn keeps its old
-        boundary. A session no stream covers has nothing to drain — the hooks'
-        sketch is its record until a tail connects.
+        boundary. A session no stream covers has nothing to drain.
         """
         if prompt_id is None:
             return
@@ -410,15 +409,32 @@ class ClaudeTranscriptTailer:
         if isinstance(line, TranscriptUserLine):
             if line.is_sidechain:
                 return
-            self.harvest_subagent_call(state, line)
+            await self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
                 if line.prompt_id in state.recorded:
                     return
+                if (
+                    await self.conversation_manager.driven_run(
+                        CLAUDE_NATIVE_ID, state.session_id, line.prompt_id
+                    )
+                    is not None
+                ):
+                    state.recorded.add(line.prompt_id)
+                    return
                 await self.record_permission_mode(state, line.permission_mode)
-                state.open_turn = self.begin_turn(line, start, end)
+                state.open_turn, prompt = await self.begin_turn(state, line, start, end)
                 await state.impulses.send(
-                    Impulse(RunStartedEvent(address=state.address), state.address)
+                    Impulse(
+                        RunStartedEvent(
+                            address=state.address,
+                            text=state.open_turn.prompt_text,
+                            sender=state.sender,
+                            timestamp=line.timestamp,
+                            thread_message_id=prompt.id,
+                        ),
+                        state.address,
+                    )
                 )
             elif state.open_turn is not None:
                 await self.fold(state, line, end)
@@ -452,8 +468,9 @@ class ClaudeTranscriptTailer:
         )
         await self.thread_manager.rename(thread, title)
 
-    @staticmethod
-    def harvest_subagent_call(state: TailState, line: TranscriptUserLine) -> None:
+    async def harvest_subagent_call(
+        self, state: TailState, line: TranscriptUserLine
+    ) -> None:
         """Remember which parent tool call spawned which subagent: an `Agent` call's
         tool-result line names the child (`toolUseResult.agentId`) while its content
         block names the call. Stamps child runs' `parent_tool_call_id` at commit."""
@@ -466,12 +483,23 @@ class ClaudeTranscriptTailer:
         content = line.message.content
         if not isinstance(content, list):
             return
-        for block in content:
-            if isinstance(block, dict) and block.get("type") == "tool_result":
-                tool_use_id = block.get("tool_use_id")
-                if isinstance(tool_use_id, str):
-                    state.subagent_calls[agent_id] = tool_use_id
-                    return
+        tool_use_id = next(
+            (
+                block.get("tool_use_id")
+                for block in content
+                if isinstance(block, dict) and block.get("type") == "tool_result"
+            ),
+            None,
+        )
+        if not isinstance(tool_use_id, str):
+            return
+        async with self.locks.hold(f"{state.session_id}/{agent_id}"):
+            state.subagent_calls[agent_id, line.prompt_id] = tool_use_id
+            await self.conversation_manager.link_parent_run(
+                f"{agent_id}:{line.prompt_id}",
+                parent_run_id=line.prompt_id,
+                parent_tool_call_id=tool_use_id,
+            )
 
     async def fold(
         self,
@@ -526,12 +554,37 @@ class ClaudeTranscriptTailer:
             conversation, permission_mode
         )
 
-    def begin_turn(self, line: TranscriptUserLine, start: int, end: int) -> OpenTurn:
+    async def begin_turn(
+        self, state: TailState, line: TranscriptUserLine, start: int, end: int
+    ) -> tuple[OpenTurn, ThreadMessage]:
+        """Open the fold and record its attributed prompt before publishing the start.
+
+        The ledger row makes a new thread readable by the stream's owner. It is
+        reused on replay and bound to the model request when the turn commits.
+        """
         text = prompt_text(line.message)
+        thread = await self.thread_manager.ensure(ThreadKey.from_address(state.address))
+        async with self.locks.hold(state.session_id):
+            prompt = await self.thread_manager.find_message(
+                thread.id, line.prompt_id, "inbound"
+            )
+            if prompt is None:
+                prompt = await self.thread_manager.record_inbound(
+                    MessageEvent(
+                        tentacle_id=CLAUDE_NATIVE_ID,
+                        message_id=line.prompt_id,
+                        chat_id=state.session_id,
+                        chat_type="thread",
+                        user_id=state.sender.channel_user_id,
+                        sender=state.sender,
+                        segments=[TextSegment(data={"text": text})],
+                    ),
+                    happened_at=line.timestamp,
+                )
         accumulator = ClaudeRunAccumulator()
         accumulator.begin(text)
         stamp(accumulator.messages, line.timestamp)
-        return OpenTurn(
+        turn = OpenTurn(
             prompt_id=line.prompt_id,
             prompt_text=text,
             source=line.entrypoint,
@@ -542,12 +595,13 @@ class ClaudeTranscriptTailer:
             last_line_uuid=line.uuid,
             permission_mode=line.permission_mode,
         )
+        return turn, prompt
 
     async def close_turn(self, state: TailState) -> None:
         """Commit the open turn as an `ExternalAgentRun` with its byte range, then bind
         the turn's human-ledger rows to it. Idempotent by `prompt_id`, so a re-driven
         overlap after a resume is a safe no-op. Held under the session lock so the commit
-        can't interleave with the hooks' ledger writes for the same turn.
+        cannot race a hook reserving the same turn.
 
         A commit that cannot be made propagates instead of being skipped past. A
         reconnect resumes from the last committed turn's `end_offset`, which only
@@ -785,7 +839,8 @@ class ClaudeTranscriptTailer:
             messages=len(turn.accumulator.messages),
         ) as span:
             async with self.locks.hold(
-                state.session_id, acquire_timeout=COMMIT_LOCK_TIMEOUT
+                f"{state.session_id}/{tail.agent_id}",
+                acquire_timeout=COMMIT_LOCK_TIMEOUT,
             ):
                 run = await self.conversation_manager.record_external_run(
                     conversation,
@@ -801,7 +856,9 @@ class ClaudeTranscriptTailer:
                     end_offset=turn.end_offset,
                     last_line_uuid=turn.last_line_uuid,
                     parent_run_id=turn.prompt_id,
-                    parent_tool_call_id=state.subagent_calls.get(tail.agent_id),
+                    parent_tool_call_id=state.subagent_calls.get(
+                        (tail.agent_id, turn.prompt_id)
+                    ),
                 )
                 span.set_attribute("committed", run is not None)
                 if run is None:
@@ -832,9 +889,9 @@ class ClaudeTranscriptTailer:
         sender: UserProfile,
     ) -> UUID7 | None:
         """Cross-reference the human ledger (inbound prompt / outbound answer, keyed by
-        `prompt_id = run.id`) to this run. Rows the hooks already wrote live are reused;
-        any the live pipe never wrote — a session streamed in only after the fact —
-        are created here from the transcript, so the ledger stands alone. Return
+        `prompt_id = run.id`) to this run. Create rows from the transcript and reuse
+        rows left by older hook installations, so importing them cannot duplicate
+        their ledger. Return
         the bound reply's id, or None when the turn left no answer."""
         thread = await self.thread_manager.ensure(
             ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)

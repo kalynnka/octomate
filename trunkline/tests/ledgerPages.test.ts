@@ -240,3 +240,32 @@ test('usage is the relay total, and the context is the newest response in hand',
   })
   assert.equal(latest.ctxK, 6)
 })
+
+for (const runtime of ['claude-native', 'codex-native', 'deepseek-native']) {
+  test(`${runtime} preserves append order despite source clocks, including the pagination horizon`, () => {
+    const native = { ...thread, kind: 'native_thread' as const, channel_tentacle_id: runtime, handoffs: [] }
+    const earlier = { ...answer, id: '010', timestamp: '2026-10-09T11:00:00Z', parts: [{ part_kind: 'text' as const, content: 'Earlier' }] }
+    const later = { ...answer, id: '090', timestamp: '2026-10-09T09:00:00Z' }
+    const middle = { ...notice, id: '020', happened_at: at }
+    const source = { ...reads([earlier, later], [middle], { model: 'more', unbound: 'more' }), thread: native }
+    assert.equal(holdingBack(source), 'unbound')
+    const latest = liveThreadDetail(source)
+    assert.deepEqual(latest.ledger.map((item) => item.uid), ['020.0', '090.0'])
+    const whole = withOlderPage(latest, source, { read: 'unbound', page: page([]) })
+    assert.deepEqual(whole.ledger.map((item) => item.uid), ['010.0', '020.0', '090.0'])
+  })
+}
+
+test('a ledger row returned both unbound and bound renders only through its model message', () => {
+  const reply = { ...said('090', 'fixed', 'human'), direction: 'outbound' as const, actor_kind: 'agent' as const }
+  const response = { ...answer, thread_messages: [reply] }
+  const detail = liveThreadDetail(reads([prompt, response], [prompt.thread_messages[0], reply], { model: null, unbound: null }))
+  assert.deepEqual(kinds(detail.ledger), ['session-open', 'user', 'agent'])
+})
+
+test('an unbound native prompt and its provisional request share the native turn identity', () => {
+  const request = { ...prompt, thread_messages: [] }
+  const row = { ...said('010', 'fix the build', 'human'), platform_message_id: request.run_id }
+  const source = { ...reads([request], [row], { model: null, unbound: null }), thread: { ...thread, kind: 'native_thread' as const, handoffs: [] } }
+  assert.deepEqual(liveThreadDetail(source).ledger.map((item) => item.kind === 'user' && item.who), ['Ada'])
+})

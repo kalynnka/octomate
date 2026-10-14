@@ -63,6 +63,9 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
   Agent replies show the channel bot's name when available, followed by the
   agent's name in parentheses. Quoted replies use the same sender label.
   Native transcript replies show only the runtime's name, such as Codex or Claude.
+  Claude history preserves each transcript's message order.
+  If a live connection drops while a thread is open, the console reconnects and
+  reloads its saved history.
 - **Resize the input** by dragging the composer's top edge up or down. The chosen
   height stays while you type or use commands. Double-click the edge to return to
   automatic sizing; when the handle has keyboard focus, ↑ and ↓ adjust it.

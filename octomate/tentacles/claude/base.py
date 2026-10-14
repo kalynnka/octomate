@@ -24,7 +24,7 @@ from typing import (
 )
 
 import anyio
-from anyio.abc import ObjectSendStream
+from anyio.abc import ObjectSendStream, TaskGroup
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
@@ -456,49 +456,74 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # instead of a silently mis-assembled turn. The welcome's map, already sent,
         # doubles as the tracker.
         expected_offsets = offsets
-        clean = False
-        try:
+        queues: dict[str, asyncio.Queue[StreamLine | None]] = {}
+
+        async def consume(queue: asyncio.Queue[StreamLine | None], kept: int) -> None:
+            while (message := await queue.get()) is not None:
+                # Finish the current line on disconnect: a run checkpoint and its
+                # ledger bindings span commits, and must not be split by cancellation.
+                with anyio.CancelScope(shield=True):
+                    await self.session_tailer.feed_remote(
+                        state,
+                        message.agent_id,
+                        message.line,
+                        message.start,
+                        message.end,
+                    )
+                    if message.agent_id is None and sender.user_id is not None:
+                        kept = await self.keep_transcript(
+                            conversation, message, kept, owner_id=sender.user_id
+                        )
+
+        async def receive_lines(workers: TaskGroup) -> bool:
             while True:
                 message = client_message_adapter.validate_json(
                     await websocket.receive_text()
                 )
                 if isinstance(message, StreamEof):
-                    clean = True
-                    return
-                if isinstance(message, StreamHello):
-                    await websocket.close(code=1008, reason="hello already received")
-                    return
+                    for queue in queues.values():
+                        await queue.put(None)
+                    return True
                 if not isinstance(message, StreamLine):
                     await websocket.close(
                         code=1008, reason="expected a transcript line"
                     )
-                    return
+                    return False
                 key = message.agent_id or SESSION_FILE
                 want = expected_offsets.get(key, 0)
                 if message.start != want:
                     await websocket.close(
                         code=4000,
-                        reason=f"offset gap for {key or 'session'}: expected {want}, "
-                        f"got {message.start}",
+                        reason=f"offset gap for {key or 'session'}: expected {want}, got {message.start}",
                     )
-                    return
+                    return False
                 expected_offsets[key] = message.end
-                await self.session_tailer.feed_remote(
-                    state, message.agent_id, message.line, message.start, message.end
-                )
-                if message.agent_id is None and sender.user_id is not None:
-                    kept = await self.keep_transcript(
-                        conversation, message, kept, owner_id=sender.user_id
+                queue = queues.get(key)
+                if queue is None:
+                    queue = queues[key] = asyncio.Queue(64)
+                    workers.start_soon(consume, queue, kept)
+                await queue.put(message)
+
+        clean = False
+        drained = False
+        try:
+            async with anyio.create_task_group() as workers:
+                try:
+                    clean = await receive_lines(workers)
+                except WebSocketDisconnect:
+                    pass
+                except ValidationError:
+                    await websocket.close(
+                        code=1008, reason="unparseable stream message"
                     )
-        except WebSocketDisconnect:
-            pass
-        except ValidationError:
-            await websocket.close(code=1008, reason="unparseable stream message")
+                if not clean:
+                    workers.cancel_scope.cancel()
+            drained = clean
         finally:
             relay.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await relay
-            if clean:
+            if drained:
                 await self.session_tailer.finish_remote(state)
                 with contextlib.suppress(Exception):
                     await websocket.close()

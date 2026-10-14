@@ -176,6 +176,9 @@ reviewer, including `auto_review`; Octomate does not add another confirmation.
 
 ## Native sessions
 
+Opening a native thread in the console shows one copy of each prompt and reply,
+even while the full turn history is still arriving.
+
 `octomate codex hooks install` registers `SessionStart`, `UserPromptSubmit`,
 `Stop`, `SubagentStart` and `SubagentStop`. Codex must trust the hooks: open
 `/hooks` in Codex after installing. The tail streams the rollout file, and child

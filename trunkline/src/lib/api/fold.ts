@@ -74,7 +74,7 @@ export function batchFeelers(
 }
 
 export interface FoldSink {
-  push(item: LedgerItemDraft): string
+  push(item: LedgerItemDraft & { uid?: string }): string
   patch(uid: string, patch: Partial<LedgerItem>): void
   /** called once, on run_result / run_error, after the closing items are pushed */
   done(): void
@@ -416,6 +416,17 @@ export class TurnFold {
     // No early return on `ended`: the suspend path emits its action_batch
     // after run_result, and those feeler cards must still land.
     switch (event.event_kind) {
+      case 'run_started': {
+        if (event.text != null && event.sender && event.timestamp && event.thread_message_id) {
+          const at = new Date(event.timestamp)
+          this.sink.push({
+            kind: 'user', uid: event.thread_message_id, text: event.text, who: event.sender.name,
+            userId: event.sender.user_id ?? undefined,
+            t: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
+          })
+        }
+        break
+      }
       case 'part_start':
         this.openPart(event.part)
         break

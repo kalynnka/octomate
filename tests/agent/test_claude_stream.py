@@ -6,6 +6,7 @@ without `eof` leaves its open turns for the next connect to re-stream."""
 from __future__ import annotations
 
 import asyncio
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -30,7 +31,7 @@ from pydantic import SecretStr
 from pydantic_ai.messages import ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse
-from starlette.websockets import WebSocketDisconnect
+from starlette.websockets import WebSocket, WebSocketDisconnect
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, OctomateConfig
@@ -662,3 +663,242 @@ def test_an_offset_gap_closes_for_resync() -> None:
             websocket.receive_text()
     assert disconnect.value.code == 4000
     assert "offset gap" in (disconnect.value.reason or "")
+
+
+def test_a_blocked_parent_does_not_stop_a_child_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, tentacle = stream_client()
+    child_done = asyncio.Event()
+    seen: list[str] = []
+
+    async def consume(
+        state: TailState, agent_id: str | None, raw: str, start: int, end: int
+    ) -> None:
+        if agent_id is None:
+            await asyncio.wait_for(child_done.wait(), timeout=2)
+        seen.append(raw)
+        if agent_id is not None:
+            child_done.set()
+
+    monkeypatch.setattr(tentacle.session_tailer, "feed_remote", consume)
+    monkeypatch.setattr(tentacle, "keep_transcript", AsyncMock(return_value=0))
+    with client, client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as socket:
+        socket.send_text(hello_json())
+        socket.receive_text()
+        for agent_id, line, start in (
+            (None, "parent 1", 0),
+            (None, "parent 2", 9),
+            ("child", "child 1", 0),
+            ("child", "child 2", 8),
+        ):
+            socket.send_text(
+                StreamLine(
+                    agent_id=agent_id, line=line, start=start, end=start + len(line) + 1
+                ).model_dump_json()
+            )
+        socket.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect):
+            socket.receive_text()
+    assert [line for line in seen if line.startswith("parent")] == [
+        "parent 1",
+        "parent 2",
+    ]
+    assert [line for line in seen if line.startswith("child")] == ["child 1", "child 2"]
+    assert seen.index("child 1") < seen.index("parent 1")
+
+
+async def test_child_finishing_before_parent_metadata_keeps_its_hierarchy(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, tail_impulses
+    )
+    await feed(tailer, state, frames(SUB_TURN_ONE, agent_id=AGENT_ID))
+    await tailer.close_subagent_turn(state, state.subagents[AGENT_ID])
+    [child] = await subagent_runs_of(octomate)
+    assert child.parent_tool_call_id is None
+    await feed(tailer, state, frames([TURN_ONE[0], *agent_spawn_records("p1", 2)]))
+    [child] = await subagent_runs_of(octomate)
+    assert child.parent_run_id == "p1"
+    assert child.parent_tool_call_id == f"toolu-agent-{AGENT_ID}"
+    tailer.detach_remote(state)
+
+
+def test_worker_failure_after_eof_never_finalizes_partial_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, tentacle = stream_client()
+    finished = AsyncMock()
+    eof_received = asyncio.Event()
+    receive = WebSocket.receive_text
+
+    async def observe_eof(socket: WebSocket) -> str:
+        raw = await receive(socket)
+        if raw == StreamEof().model_dump_json():
+            eof_received.set()
+        return raw
+
+    async def fail_after_eof(
+        state: TailState, agent_id: str | None, raw: str, start: int, end: int
+    ) -> None:
+        await eof_received.wait()
+        raise RuntimeError("commit failed")
+
+    monkeypatch.setattr(WebSocket, "receive_text", observe_eof)
+    monkeypatch.setattr(tentacle.session_tailer, "feed_remote", fail_after_eof)
+    monkeypatch.setattr(tentacle.session_tailer, "finish_remote", finished)
+    with client, client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as socket:
+        socket.send_text(hello_json())
+        socket.receive_text()
+        socket.send_text(
+            StreamLine(agent_id=None, line="line", start=0, end=5).model_dump_json()
+        )
+        socket.send_text(StreamEof().model_dump_json())
+        with pytest.raises(WebSocketDisconnect) as closed:
+            socket.receive_text()
+        assert closed.value.code == 1011
+    finished.assert_not_awaited()
+    assert tentacle.session_tailer.sessions == {}
+
+
+async def test_child_commit_does_not_take_the_parent_lock(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, tail_impulses
+    )
+    await feed(tailer, state, frames(SUB_TURN_ONE, agent_id=AGENT_ID))
+    async with tailer.locks.hold(SESSION_ID):
+        await asyncio.wait_for(
+            tailer.close_subagent_turn(state, state.subagents[AGENT_ID]), timeout=1
+        )
+    [run] = await subagent_runs_of(octomate)
+    assert run.parent_run_id == "p1"
+    assert run.end_offset is not None
+    tailer.detach_remote(state)
+
+
+async def test_resumed_child_uses_the_spawning_call_of_its_own_parent_turn(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, tail_impulses
+    )
+    # The parent is ahead of the child: both invocation records arrived before
+    # the child's first turn. Each invocation must retain its own call identity.
+    offset = 0
+    for prompt_id in ("p1", "p2"):
+        for record in agent_spawn_records(prompt_id, 2):
+            raw = (
+                line_bytes(record)
+                .decode()
+                .replace(f"toolu-agent-{AGENT_ID}", f"call-{prompt_id}")
+            )
+            end = offset + len(raw.encode())
+            await tailer.feed_remote(state, None, raw.rstrip("\n"), offset, end)
+            offset = end
+    await feed(tailer, state, frames(SUB_TURN_ONE, agent_id=AGENT_ID))
+    await tailer.close_subagent_turn(state, state.subagents[AGENT_ID])
+    [child] = await subagent_runs_of(octomate)
+    assert child.parent_run_id == "p1"
+    assert child.parent_tool_call_id == "call-p1"
+    tailer.detach_remote(state)
+
+
+async def test_transcript_ledger_uses_the_authenticated_stream_sender(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+    user = await a_user("tail-owner")
+    sender = await octomate.users.native_profile("claude-native", user.username)
+    assert sender is not None
+    state, _ = await tailer.attach_remote(
+        SESSION_ID, CLIENT_PATH, sender, SESSION_ADDRESS, tail_impulses
+    )
+    await feed(tailer, state, frames(TURN_ONE))
+    await tailer.finish_remote(state)
+    thread = await octomate.threads.ensure(
+        ThreadKey("claude-native", "thread", SESSION_ID)
+    )
+    page = await octomate.threads.messages_page(thread.id, limit=100)
+    assert len(page.items) == 2
+    profile = await octomate.users.profile("claude-native", sender.channel_user_id)
+    assert profile is not None
+    assert all(row.sender_id == profile.id for row in page.items)
+    prompt = next(row for row in page.items if row.direction == "inbound")
+    assert prompt.user_id == sender.channel_user_id
+    owner = await octomate.users.owner(profile)
+    assert owner is not None
+    assert owner.id == user.id
+
+
+async def test_opening_transcript_prompt_grants_access_and_replays_once(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
+    octomate, tailer = remote_tailer()
+    user = await a_user("tail-owner")
+    sender = await octomate.users.native_profile("claude-native", user.username)
+    assert sender is not None
+    key = ThreadKey("claude-native", "thread", SESSION_ID)
+
+    for _ in range(2):
+        state, offsets = await tailer.attach_remote(
+            SESSION_ID,
+            CLIENT_PATH,
+            sender,
+            key.address(sender.channel_user_id),
+            tail_impulses,
+        )
+        assert offsets == {SESSION_FILE: 0}
+        await feed(tailer, state, frames(TURN_ONE[:1]))
+        thread = await octomate.threads.get(key, user_id=user.id)
+        assert thread is not None
+        assert len(thread.messages) == 1
+        assert thread.messages[0].platform_message_id == "p1"
+        assert thread.messages[0].message_text == "list the files"
+        assert await runs_of(octomate) == []
+        tailer.detach_remote(state)
+
+
+def test_disconnect_finishes_the_current_line_before_stopping_workers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, tentacle = stream_client()
+    started = threading.Event()
+    disconnected = asyncio.Event()
+    completed: list[str] = []
+    receive = WebSocket.receive_text
+
+    async def observe_disconnect(socket: WebSocket) -> str:
+        try:
+            return await receive(socket)
+        except WebSocketDisconnect:
+            disconnected.set()
+            raise
+
+    async def consume(
+        state: TailState, agent_id: str | None, raw: str, start: int, end: int
+    ) -> None:
+        started.set()
+        await disconnected.wait()
+        # Give the worker group's cancellation a checkpoint inside the line.
+        await asyncio.sleep(0)
+        completed.append(raw)
+
+    monkeypatch.setattr(WebSocket, "receive_text", observe_disconnect)
+    monkeypatch.setattr(tentacle.session_tailer, "feed_remote", consume)
+    monkeypatch.setattr(tentacle, "keep_transcript", AsyncMock(return_value=0))
+    with client, client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as socket:
+        socket.send_text(hello_json())
+        socket.receive_text()
+        socket.send_text(
+            StreamLine(agent_id=None, line="line", start=0, end=5).model_dump_json()
+        )
+        assert started.wait(timeout=2)
+        socket.close()
+    assert completed == ["line"]
+    assert tentacle.session_tailer.sessions == {}

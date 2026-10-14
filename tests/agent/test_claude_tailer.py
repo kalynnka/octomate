@@ -24,8 +24,10 @@ from octomate import Octomate
 from octomate.capabilities.harness.events import RunEndedEvent
 from octomate.database import async_session
 from octomate.nerve import Impulse, Nerve
+from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
+from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import MessageBinding, ThreadKey
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.claude import tailer as tailer_mod
@@ -298,6 +300,10 @@ async def test_streams_live_events_to_a_consumer() -> None:
     with octomate.nerve.subscribe(SESSION_KEY) as live:
         await stream_in(tailer, octomate.nerve, TURN_ONE, sub=SUB_TURN_ONE)
         impulses = held(live)
+        opening = impulses[0].event
+        assert opening.event_kind == "run_started"
+        assert opening.text == "list the files"
+        assert opening.sender == SENDER
         assert [impulse.event.event_kind for impulse in impulses] == [
             "run_started",
             "part_start",
@@ -316,6 +322,9 @@ async def test_streams_live_events_to_a_consumer() -> None:
         ended = impulses[-1].event
         assert isinstance(ended, RunEndedEvent)
         thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
+        assert opening.thread_message_id == next(
+            message.id for message in thread.messages if message.direction == "inbound"
+        )
         assert ended.thread_message_id in [message.id for message in thread.messages]
         assert not octomate.awakes
         await stream_in(tailer, octomate.nerve, TURN_ONE)
@@ -449,7 +458,7 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     octomate = Octomate()
     ingest, tailer = wired(octomate)
 
-    # The hooks write each turn's human ledger as it happens…
+    # The hooks reserve turn identities before the transcript arrives.
     await ingest.handle(
         hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
         SENDER,
@@ -463,7 +472,7 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     await ingest.handle(
         hook_event("Stop", "p2", last_assistant_message="Committed."), SENDER
     )
-    # …and the stream is what lands the full timeline.
+    # The stream creates the full timeline and ledger.
     await stream_in(tailer, octomate.nerve, TURN_ONE + TURN_TWO)
     await ingest.handle(
         hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other"), SENDER
@@ -472,7 +481,7 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     # Both turns recorded as external runs.
     assert [run.id for run in await runs_of(octomate)] == ["p1", "p2"]
 
-    # The hooks wrote the human ledger for both turns.
+    # The transcript supplied the human ledger for both turns.
     thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
     ledger = {(m.direction, m.platform_message_id) for m in thread.messages}
     assert {("inbound", "p1"), ("outbound", "p1")} <= ledger
@@ -488,10 +497,8 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     assert {binding.run_id for binding in bindings} == {"p1", "p2"}
 
 
-async def test_the_tailer_supersedes_the_hooks_sketch_of_a_turn() -> None:
-    """One run per turn across both tiers: the hooks sketch it live from what they see,
-    and closing the turn supersedes that with the transcript's full timeline. `prompt_id`
-    is the run id both write under, so the sketch is upgraded, never duplicated."""
+async def test_the_tailer_fills_the_hooks_empty_run() -> None:
+    """The transcript fills the reserved run without a competing hook message."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
 
@@ -503,13 +510,10 @@ async def test_the_tailer_supersedes_the_hooks_sketch_of_a_turn() -> None:
         hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
     )
 
-    # In flight: the prompt and the answer, and no byte range — the mark of a sketch.
+    # Before transcript arrival the reserved run has no messages or byte range.
     [sketch] = await runs_of(octomate)
     assert sketch.id == "p1"
-    assert [message.message_text for message in sketch.messages] == [
-        "list the files",
-        "Done.",
-    ]
+    assert list(sketch.messages) == []
     assert sketch.end_offset is None
 
     await stream_in(tailer, octomate.nerve, TURN_ONE)
@@ -653,17 +657,18 @@ async def test_the_commit_reuses_live_ledger_rows() -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
-    # The hooks already wrote p1's ledger; the commit binds those rows, not duplicates.
-    ingest = ClaudeHookIngest(
-        tailer,
-        conversations=octomate.conversations,
-        projects=octomate.projects,
-        threads=octomate.threads,
+    # A row written by an older hook installation must still be reused.
+    await octomate.threads.record_inbound(
+        MessageEvent(
+            tentacle_id=CLAUDE_NATIVE_ID,
+            message_id="p1",
+            chat_id=SESSION_ID,
+            chat_type="thread",
+            user_id=SENDER.channel_user_id,
+            sender=SENDER,
+            segments=[TextSegment(data={"text": "list the files"})],
+        )
     )
-    await ingest.record_prompt(
-        hook("p1", prompt="list the files"), "list the files", SENDER
-    )
-    await ingest.record_answer(hook("p1"), "Done.", SENDER)
 
     await stream_in(tailer, octomate.nerve, TURN_ONE + TURN_TWO)
 
@@ -677,8 +682,7 @@ async def test_the_commit_reuses_live_ledger_rows() -> None:
 
 
 async def test_session_end_with_no_stream_is_a_noop() -> None:
-    """No stream ever covered this session — the hooks' sketches are its record, and
-    `SessionEnd` has nothing to finalize. The server does not read the path the hook
+    """No stream ever covered this session, so `SessionEnd` has nothing to finalize. The server does not read the path the hook
     names; a backfill is a by-hand `octomate claude tail` run."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
@@ -719,14 +723,25 @@ async def test_commit_redates_the_hooks_ledger_to_the_transcript_clock() -> None
     clock, the same one the run is dated by, so the run's cards can never sort above
     the prompt that caused them."""
     octomate = Octomate()
-    ingest, tailer = wired(octomate)
-
-    await ingest.handle(
-        hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
-        SENDER,
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    thread = await octomate.threads.ensure(SESSION_KEY)
+    await octomate.threads.record_inbound(
+        MessageEvent(
+            tentacle_id=CLAUDE_NATIVE_ID,
+            message_id="p1",
+            chat_id=SESSION_ID,
+            chat_type="thread",
+            user_id=SENDER.channel_user_id,
+            sender=SENDER,
+            segments=[TextSegment(data={"text": "list the files"})],
+        )
     )
-    await ingest.handle(
-        hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
+    await octomate.threads.record_outbound(
+        thread,
+        agent_tentacle_id=CLAUDE_NATIVE_ID,
+        segments=[TextSegment(data={"text": "Done."})],
+        sender=SENDER,
+        platform_message_id="p1",
     )
     await stream_in(tailer, octomate.nerve, TURN_ONE)
 
@@ -979,15 +994,14 @@ async def test_subagent_stop_commits_the_child_run_without_waiting(
     tailer.detach_remote(state)
 
 
-async def test_subagent_start_sketches_the_child_run_when_keyed(
+async def test_subagent_start_reserves_the_child_run_when_keyed(
     tail_impulses: ObjectSendStream[Impulse],
 ) -> None:
     """With a prompt_id on the event, the child run exists from SubagentStart — a
-    dated, provisional sketch the stream later replaces under the same id."""
+    reservation the stream later fills under the same id."""
     octomate = Octomate()
     ingest, tailer = wired(octomate)
 
-    before = datetime.now(UTC)
     await ingest.handle(
         subagent_hook(
             "SubagentStart",
@@ -997,18 +1011,15 @@ async def test_subagent_start_sketches_the_child_run_when_keyed(
         ),
         SENDER,
     )
-    after = datetime.now(UTC)
 
     [sketch] = await subagent_runs_of(octomate)
     assert sketch.id == f"{AGENT_ID}:p1"
     assert sketch.end_offset is None  # provisional: no byte range yet
     assert sketch.parent_run_id == "p1"
-    assert sketch.started_at is not None
-    assert before <= sketch.started_at <= after
-    assert [message.message_text for message in sketch.messages] == ["audit the repo"]
+    assert sketch.started_at is None
+    assert list(sketch.messages) == []
 
-    # The child's lines stream in and the subagent stops: the full timeline replaces
-    # the sketch as the same run, now final.
+    # The child's transcript fills the same run, now final.
     state, _ = await tailer.attach_remote(
         SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses=tail_impulses
     )

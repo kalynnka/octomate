@@ -115,7 +115,7 @@ class CodexHookIngest:
                 await self.start_session(event)
                 if event.hook_event_name == "UserPromptSubmit" and event.prompt:
                     await self.record_prompt(event, event.prompt, sender)
-                    await self.sketch_run(event)
+                    await self.sketch_run(event, sender)
                     logger.info(
                         "session %s: turn %s asked",
                         event.session_id,
@@ -126,7 +126,7 @@ class CodexHookIngest:
         async with self.locks.hold(event.session_id):
             if event.last_assistant_message:
                 await self.record_answer(event, event.last_assistant_message, sender)
-                await self.sketch_run(event)
+                await self.sketch_run(event, sender)
                 logger.info(
                     "session %s: turn %s answered",
                     event.session_id,
@@ -219,7 +219,11 @@ class CodexHookIngest:
             platform_message_id=event.turn_id or "",
         )
 
-    async def sketch_run(self, event: CodexHookInput) -> None:
+    async def sketch_run(self, event: CodexHookInput, sender: UserProfile) -> None:
+        """Record the provisional turn and bind its ledger rows immediately, so
+        the console reads each prompt and reply once before the rollout arrives.
+        Replacing the sketch also renews its ledger bindings.
+        """
         if not event.turn_id:
             return
         thread = await self.session_thread(event)
@@ -239,7 +243,7 @@ class CodexHookIngest:
         conversation = await self.conversations.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
-        await self.conversations.record_external_run(
+        run = await self.conversations.record_external_run(
             conversation,
             run_id=event.turn_id,
             messages=messages,
@@ -247,3 +251,11 @@ class CodexHookIngest:
             cwd=Path(event.cwd) if event.cwd else None,
             native_session_id=event.session_id,
         )
+        if run is not None:
+            await self.tailer.bind_ledger(
+                event.session_id,
+                run,
+                prompt.message_text,
+                event.last_assistant_message or "",
+                sender,
+            )

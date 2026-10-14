@@ -216,8 +216,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
     ) -> Page[ModelRequest | ModelResponse]:
         """The model messages of the thread's own conversations, newest first, a
         page at a time and continued from an Arcanus `cursor`. Ids are uuid7 and a
-        run's messages are only appended, so id order is the order they happened
-        in, across every conversation the thread has had.
+        run's messages are appended in processing order, so id order preserves
+        each transcript's sequence across committed turns.
 
         Each carries the chat rows bound to it — the ones a request was built from,
         the ones a response was delivered as — so a reader has who said what
@@ -354,7 +354,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         self,
         conversation: Conversation,
         run_id: str,
-        messages: Sequence[PydanticModelMessage],
+        messages: Sequence[PydanticModelMessage] = (),
         *,
         name: str | None = None,
         model_name: str | None = None,
@@ -384,7 +384,10 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         at the durable sink: a caller's in-memory guard only knows the runs *it* wrote,
         never one another tailer already committed.
 
-        A run with no byte range is provisional — the hooks' sketch of a turn still in
+        Omitting messages reserves a run identity without changing an existing run.
+        Claude hooks use this so the transcript remains the only message writer.
+
+        A run with no byte range can also be provisional — a hook's sketch of a turn still in
         flight, which sees the prompt and the answer but nothing of the thinking and
         tool calls between them. It exists so a live turn is a whole
         conversation → run → messages chain rather than messages with nowhere to hang.
@@ -392,8 +395,6 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         timeline superseding the sketch once the turn closes: the run keeps its row,
         and with it every history that includes it.
         """
-        if not messages:
-            return None
         driven = await self.driven_run(
             conversation.agent_tentacle_id, native_session_id, run_id
         )
@@ -410,7 +411,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
             cwd=cwd,
             parent_run_id=parent_run_id,
             parent_tool_call_id=parent_tool_call_id,
-            started_at=messages[0].timestamp,
+            started_at=messages[0].timestamp if messages else None,
             messages=[vars(m) for m in messages],  # pyright: ignore[reportArgumentType]
             native_session_id=native_session_id,
             source=source,
@@ -423,6 +424,8 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 AgentRun, expressions=[AgentRun["id"] == run_id]
             )
             if stored is not None:
+                if not messages:
+                    return stored if isinstance(stored, ExternalAgentRun) else None
                 if (
                     not isinstance(stored, ExternalAgentRun)
                     or stored.end_offset is not None
@@ -481,6 +484,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 reloaded.runs.append(run)
                 reloaded.external_id = external_id
             await session.commit()
+            await run.messages
         return run
 
     async def fork(

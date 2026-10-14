@@ -36,6 +36,7 @@ import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from importlib.metadata import PackageNotFoundError, version
+from itertools import zip_longest
 from pathlib import Path
 from time import monotonic
 from typing import Literal
@@ -200,12 +201,15 @@ class SessionTail:
     async def pump(self, websocket: ClientConnection) -> bool:
         """Ship every complete new line of every file; True if anything went out."""
         sent = False
-        for key in self.discover():
-            cursor = self.cursor(key)
-            for start, end, raw in cursor.read_lines():
-                # Transcripts are UTF-8; a mangled byte is replaced rather than
-                # allowed to wedge this tail forever on one line — the server skips
-                # what it cannot parse, which is the same posture.
+        keys = self.discover()
+        # Interleave files without reordering any file's lines. A parent's backfill
+        # must not sit ahead of every live child on the shared connection.
+        batches = zip_longest(*(self.cursor(key).read_lines() for key in keys))
+        for batch in batches:
+            for key, line in zip(keys, batch, strict=True):
+                if line is None:
+                    continue
+                start, end, raw = line
                 await websocket.send(
                     StreamLine(
                         agent_id=key or None,

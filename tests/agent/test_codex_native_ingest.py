@@ -172,6 +172,13 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
         ),
         SENDER,
     )
+    thread = await octomate.threads.ensure(
+        ThreadKey(CODEX_NATIVE_ID, "thread", SESSION_ID)
+    )
+    unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
+    assert not unbound.items
+    [request] = (await octomate.conversations.messages_page(thread.id, limit=100)).items
+    assert [row.platform_message_id for row in request.thread_messages] == [TURN_ID]
     await ingest.handle(
         CodexHookInput.model_validate(
             {
@@ -194,6 +201,14 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
     [sketch] = conversation.runs
     assert isinstance(sketch, ExternalAgentRun)
     assert sketch.end_offset is None
+    unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
+    assert not unbound.items
+    page = await octomate.conversations.messages_page(thread.id, limit=100)
+    assert sorted(
+        (message.kind, row.direction)
+        for message in page.items
+        for row in message.thread_messages
+    ) == [("request", "inbound"), ("response", "outbound")]
 
     write_rollout(path)
     await stream_rollout(tailer, SESSION_ID, path)
@@ -212,6 +227,15 @@ async def test_hooks_sketch_then_rollout_replaces_with_full_turn(
         None,
         "done",
     ]
+    unbound = await octomate.threads.messages_page(thread.id, unbound=True, limit=100)
+    assert not unbound.items
+    page = await octomate.conversations.messages_page(thread.id, limit=100)
+    assert [
+        row.platform_message_id
+        for message in page.items
+        for row in message.thread_messages
+        if row.direction == "inbound"
+    ] == [TURN_ID]
     await tailer.shutdown()
 
 

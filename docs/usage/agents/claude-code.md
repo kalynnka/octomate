@@ -138,17 +138,19 @@ requests through the same bridge without adding another confirmation.
 
 ## Native sessions
 
-A console with the thread open shows the turn as the tail folds it, a whole
-message at a time. When the turn finishes, it settles into the ledger.
+A thread becomes available as its opening prompt arrives from the transcript.
+A console with the thread open shows the turn a whole message at a time.
+When the turn finishes, it settles into the ledger. Saved history preserves the
+transcript's message order even when timestamps disagree.
 
-`octomate claude hooks install` registers `UserPromptSubmit`, `Stop`, `SessionEnd`,
-`SubagentStart` and `SubagentStop`, and launches a tail on each prompt. The hooks
-sketch the turn live; the tail then replaces the sketch with the full run from the
-transcript, subagents included, each subagent as its own conversation under the
-same thread. A turn is recorded when the transcript shows it ended, so one that
-stopped while Octomate was down lands once the tail reconnects. A session's own
-title becomes the thread's name. Permission mode changes are observed and
-recorded, never set.
+`octomate claude hooks install` starts transcript streaming on each prompt.
+Messages appear only as their transcript reaches Octomate; a disconnected tail
+leaves them waiting to sync. Each subagent keeps its own ordered conversation
+under the parent. A session's own title becomes the thread's name. Permission
+mode changes are observed and recorded, never set.
+
+The [hook and tailer reference](../../api/tentacles/hooks.md) describes session
+lifecycle, run reservations and transcript processing.
 
 The tail's bytes of the session transcript are also kept, for their owner, so the
 session can [teleport](../gateway.md#teleport): its history up to the last whole

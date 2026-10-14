@@ -1684,3 +1684,51 @@ async def test_first_directive_refuses_a_mode_absent_from_its_agent(
         )
     assert response.status_code == 422
     assert "not one of inkling's modes" in response.json()["detail"]
+
+
+async def test_native_history_endpoints_page_by_message_id() -> None:
+    octomate = Octomate()
+    agent, _ = build_scripted_agent(["done"])
+    await _register(octomate, agent)
+    key = ThreadKey(CLAUDE_NATIVE_ID, "thread", "native-session")
+    thread = await octomate.threads.ensure(key)
+    conversation = await octomate.conversations.ensure(
+        thread.id, agent_tentacle_id=CLAUDE_NATIVE_ID
+    )
+    for index, (run_id, minute) in enumerate((("first", 2), ("second", 1))):
+        at = datetime(2026, 10, 14, 9, minute, tzinfo=UTC)
+        await octomate.threads.record_inbound(
+            MessageEvent(
+                tentacle_id=CLAUDE_NATIVE_ID,
+                chat_type="thread",
+                chat_id=key.chat_id,
+                message_id=run_id,
+                timestamp=at.timestamp(),
+                sender=UserProfile(channel_user_id="operator", user_id=CONSOLE_USER_ID),
+                segments=[TextSegment(data={"text": run_id})],
+            )
+        )
+        await octomate.conversations.record_external_run(
+            conversation,
+            run_id=run_id,
+            native_session_id=key.chat_id,
+            messages=[ModelRequest(parts=[UserPromptPart(run_id)], timestamp=at)],
+            start_offset=index * 100,
+            end_offset=(index + 1) * 100,
+        )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=octomate), base_url="http://testserver"
+    ) as client:
+        for suffix, identity in (
+            ("messages", "platform_message_id"),
+            ("conversations/messages", "run_id"),
+        ):
+            url = f"/api/trunkline/threads/{thread.id}/{suffix}"
+            first = (await client.get(url, params={"limit": 1})).json()
+            rest = (
+                await client.get(url, params={"cursor": first["next_cursor"]})
+            ).json()
+            assert [m[identity] for m in first["items"] + rest["items"]] == [
+                "second",
+                "first",
+            ]
