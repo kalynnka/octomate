@@ -62,6 +62,10 @@ is where prompt caching is turned on by default for Anthropic, Bedrock and OpenA
 
 ## What it can do
 
+Ordinary replies stream as text. You can also ask Inkling to quote a message,
+mention someone, or send media. These use structured content rendered according
+to the [channel's capabilities](../channels/index.md).
+
 Every Inkling run carries:
 
 - `ask_questions`, the one way it asks the user something, batched.
