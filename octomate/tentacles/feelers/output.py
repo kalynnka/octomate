@@ -72,7 +72,12 @@ from octomate.capabilities.harness.events import (
     WireEvent,
 )
 from octomate.schemas.conversation import ChannelAddress
-from octomate.schemas.segments import MessageSegment, ReplySegment, Segment
+from octomate.schemas.segments import (
+    MarkdownSegment,
+    MessageSegment,
+    ReplySegment,
+    Segment,
+)
 from octomate.schemas.todos import Todo
 from octomate.telemetry import channel_logfire
 from octomate.types.todos import STATUS_MARKERS
@@ -1071,21 +1076,30 @@ class DefaultTimelineState[RawT, MessageT](TimelineState):
     """The timeline for a channel with no live transport: collects the answer and
     todos, and sends them as one message when the run ends."""
 
-    ink: Ink[MessageT]
-    chromo: Chromo[RawT, MessageT]
+    segments: DefaultSegmentsFeeler[RawT, MessageT]
     address: ChannelAddress
     ask_questions: QuestionFeeler
     approvals: ApprovalFeeler
     oauth: OAuthFeeler
     deferred_actions: DeferredActionManager
-    parts: list[str] = field(default_factory=list)
+    parts: list[MessageSegment] = field(default_factory=list)
+    text_part: MarkdownSegment | None = None
     todos: dict[str, Todo] = field(default_factory=dict)
     message_id: IMMessageID | None = None
     reply_to: str | None = None
 
     async def answer_delta(self, text: str) -> None:
         self.noticed = True
-        self.parts.append(text)
+        if self.text_part is None:
+            self.text_part = MarkdownSegment(data={"text": text})
+            self.parts.append(self.text_part)
+        else:
+            self.text_part.data["text"] += text
+
+    async def answer_segment(self, segment: MessageSegment) -> None:
+        self.noticed = True
+        self.text_part = None
+        self.parts.append(segment)
 
     async def todo(self, event: TodoEvent) -> None:
         await self.begin_entry()
@@ -1102,35 +1116,33 @@ class DefaultTimelineState[RawT, MessageT](TimelineState):
         await self.send_parts()
 
     async def send_parts(self, *, todo_block: bool = False) -> None:
-        markdown = "".join(self.parts)
-        self.parts.clear()
         if todo_block and self.todos:
             block = "Tasks:\n" + "\n".join(render_todo_lines(self.todos.values()))
-            markdown = f"{markdown}\n\n{block}" if markdown else block
-        if not markdown:
+            await self.answer_delta(f"\n\n{block}" if self.parts else block)
+        segments, self.parts = self.parts, []
+        self.text_part = None
+        if not segments:
             return
         logger.warning(
             "Channel %s: timeline has no streaming transport; "
             "sending the reply as a single message",
             self.address.channel_tentacle_id,
         )
-        self.message_id = await present_markdown(
-            ink=self.ink,
-            chromo=self.chromo,
-            address=self.address,
-            markdown=markdown,
-            reply_to=self.reply_to,
-        )
+        if self.reply_to is not None:
+            segments.insert(0, ReplySegment(data={"id": self.reply_to}))
+        self.message_id = await self.segments.present(self.address, segments)
 
 
 class DefaultTimelineFeeler[RawT, MessageT](TimelineFeeler):
     """Answer-only timeline for platforms with no streaming transport (NapCat).
 
     Stateless; `open(address)` yields a fresh `DefaultTimelineState`. Thinking/tool
-    are inherited no-ops; the reply text is accumulated and sent as a single
-    message on exit (a mid-run notice rotates out as its own message), with a
-    warning that streaming was unavailable.
+    are inherited no-ops; text deltas are accumulated and native segments are
+    preserved, then sent on exit (a mid-run notice rotates out as its own
+    message), with a warning that streaming was unavailable.
     """
+
+    segments: DefaultSegmentsFeeler[RawT, MessageT]
 
     def __init__(
         self,
@@ -1142,8 +1154,7 @@ class DefaultTimelineFeeler[RawT, MessageT](TimelineFeeler):
         oauth: OAuthFeeler,
         deferred_actions: DeferredActionManager,
     ) -> None:
-        self.ink = ink
-        self.chromo = chromo
+        self.segments = DefaultSegmentsFeeler(ink=ink, chromo=chromo)
         self.ask_questions = ask_questions
         self.approvals = approvals
         self.oauth = oauth
@@ -1154,8 +1165,7 @@ class DefaultTimelineFeeler[RawT, MessageT](TimelineFeeler):
         self, address: ChannelAddress
     ) -> AsyncGenerator[DefaultTimelineState[RawT, MessageT]]:
         state = DefaultTimelineState(
-            ink=self.ink,
-            chromo=self.chromo,
+            segments=self.segments,
             address=address,
             ask_questions=self.ask_questions,
             approvals=self.approvals,
