@@ -1,7 +1,7 @@
 """Hook-driven ingest of a native Codex session.
 
-The hooks write the session skeleton and the prompt/answer sketch of each turn
-ahead of the streamed rollout, which replaces the sketch.
+Hooks establish session and run identities and signal transcript boundaries.
+Only the rollout tail writes messages.
 """
 
 from __future__ import annotations
@@ -10,22 +10,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from pydantic_ai.messages import (
-    ModelMessage,
-    ModelRequest,
-    ModelResponse,
-    TextPart,
-    UserPromptPart,
-)
-
-from octomate.schemas.events import MessageEvent
-from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
     Thread,
     ThreadKey,
 )
-from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.hooks import CodexHookInput
 from octomate.tentacles.locks import SessionLocks
@@ -40,11 +29,11 @@ logger = logging.getLogger(__name__)
 
 
 class CodexHookIngest:
-    """The hook pipe's half of native-session ingest: the immediate ledger sketch
-    (prompt at `UserPromptSubmit`, answer at `Stop`) and the session skeleton. The
-    transcript itself arrives only through the stream (`octomate codex tail`) — the
-    server never opens a rollout, so a hook's `transcript_path` is recorded context,
-    never something to follow."""
+    """Reserve native session/run identities and request a drain when a turn stops.
+
+    Hooks never write message history. The authenticated stream owns attribution
+    and the rollout is the sole source of prompts, replies and tool activity.
+    """
 
     conversations: ConversationManager
     projects: ProjectManager
@@ -71,10 +60,8 @@ class CodexHookIngest:
         "codex.hook {event.hook_event_name} [{event.session_id}]",
         extract_args=["event"],
     )
-    async def handle(self, event: CodexHookInput, sender: UserProfile) -> None:
-        """`sender` is the verified bearer's own profile (the route's
-        `hook_sender` dependency) — the person every ledger row this event
-        writes is attributed to."""
+    async def handle(self, event: CodexHookInput) -> None:
+        """Handle an authenticated hook; the stream owns message attribution."""
         if (
             event.agent_id is None
             and event.turn_id
@@ -108,34 +95,24 @@ class CodexHookIngest:
                 await self.conversations.set_name(conversation, event.session_name)
                 await self.threads.rename(thread, event.session_name)
         if event.hook_event_name == "Stop":
-            await self.on_stop(event, sender)
+            await self.on_stop(event)
             return
         if event.hook_event_name in {"SessionStart", "UserPromptSubmit"}:
             async with self.locks.hold(event.session_id):
                 await self.start_session(event)
-                if event.hook_event_name == "UserPromptSubmit" and event.prompt:
-                    await self.record_prompt(event, event.prompt, sender)
-                    await self.sketch_run(event, sender)
+                if event.hook_event_name == "UserPromptSubmit":
+                    await self.reserve_run(event)
                     logger.info(
                         "session %s: turn %s asked",
                         event.session_id,
                         event.turn_id,
                     )
 
-    async def on_stop(self, event: CodexHookInput, sender: UserProfile) -> None:
+    async def on_stop(self, event: CodexHookInput) -> None:
         async with self.locks.hold(event.session_id):
-            if event.last_assistant_message:
-                await self.record_answer(event, event.last_assistant_message, sender)
-                await self.sketch_run(event, sender)
-                logger.info(
-                    "session %s: turn %s answered",
-                    event.session_id,
-                    event.turn_id,
-                )
-        # Stop is a turn boundary in Codex, not a session boundary. Settle after the
-        # hook releases the shared lock: the rollout's task_complete line flushes a
-        # beat behind the hook, and the tailer waits it out (then drains a remote
-        # tail) instead of leaving the turn to the watch's next wake.
+            await self.reserve_run(event)
+        # Return the hook so Codex can flush its terminal line; that line settles
+        # the turn and asks the connected tail to drain.
         await self.tailer.stop_turn(event.session_id, event.turn_id)
 
     async def on_subagent_start(self, event: CodexHookInput) -> None:
@@ -181,81 +158,18 @@ class CodexHookIngest:
             project=project,
         )
 
-    async def record_prompt(
-        self, event: CodexHookInput, prompt: str, sender: UserProfile
-    ) -> None:
-        thread = await self.session_thread(event)
-        # A hook can fire more than once (a retry, a repeated Stop); the per-turn
-        # turn_id + direction dedups so a re-fire is a no-op.
-        if event.turn_id and await self.threads.find_message(
-            thread.id, event.turn_id, "inbound"
-        ):
-            return
-        await self.threads.record_inbound(
-            MessageEvent(
-                tentacle_id=CODEX_NATIVE_ID,
-                message_id=event.turn_id or "",
-                chat_id=event.session_id,
-                chat_type="thread",
-                user_id=sender.channel_user_id,
-                sender=sender,
-                segments=[TextSegment(data={"text": prompt})],
-            )
-        )
-
-    async def record_answer(
-        self, event: CodexHookInput, answer: str, sender: UserProfile
-    ) -> None:
-        thread = await self.session_thread(event)
-        if event.turn_id and await self.threads.find_message(
-            thread.id, event.turn_id, "outbound"
-        ):
-            return
-        await self.threads.record_outbound(
-            thread,
-            agent_tentacle_id=CODEX_NATIVE_ID,
-            segments=[MarkdownSegment(data={"text": answer})],
-            sender=sender,
-            platform_message_id=event.turn_id or "",
-        )
-
-    async def sketch_run(self, event: CodexHookInput, sender: UserProfile) -> None:
-        """Record the provisional turn and bind its ledger rows immediately, so
-        the console reads each prompt and reply once before the rollout arrives.
-        Replacing the sketch also renews its ledger bindings.
-        """
+    async def reserve_run(self, event: CodexHookInput) -> None:
+        """Keep the native identity available without creating any messages."""
         if not event.turn_id:
             return
         thread = await self.session_thread(event)
-        prompt = await self.threads.find_message(thread.id, event.turn_id, "inbound")
-        if prompt is None or prompt.message_text is None:
-            return
-        messages: list[ModelMessage] = [
-            ModelRequest(
-                parts=[UserPromptPart(prompt.message_text)],
-                timestamp=prompt.happened_at,
-            )
-        ]
-        if event.last_assistant_message:
-            messages.append(
-                ModelResponse(parts=[TextPart(event.last_assistant_message)])
-            )
         conversation = await self.conversations.ensure(
             thread.id, agent_tentacle_id=CODEX_NATIVE_ID
         )
-        run = await self.conversations.record_external_run(
+        await self.conversations.record_external_run(
             conversation,
             run_id=event.turn_id,
-            messages=messages,
             name=CODEX_NATIVE_ID,
             cwd=Path(event.cwd) if event.cwd else None,
             native_session_id=event.session_id,
         )
-        if run is not None:
-            await self.tailer.bind_ledger(
-                event.session_id,
-                run,
-                prompt.message_text,
-                event.last_assistant_message or "",
-                sender,
-            )

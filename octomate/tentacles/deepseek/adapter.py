@@ -350,9 +350,9 @@ class DeepseekRunAccumulator:
             self.pending_events.append(payload)
             return
         state = self.native_tools.get(call.call_id)
+        opened = state is None
         if state is None:
             state = self.open_native_tool(call.call_id, call.name, payload)
-            yield FunctionToolCallEvent(part=state.live_call)
         else:
             state.events.append(payload)
         state.arguments = call.arguments or state.arguments
@@ -361,6 +361,8 @@ class DeepseekRunAccumulator:
         state.live_call.args = args
         state.native_call.tool_name = call.name
         state.native_call.args = args
+        if opened:
+            yield FunctionToolCallEvent(part=state.live_call)
 
     def consume_tool_result(
         self, event: SessionEvent, payload: JsonObject

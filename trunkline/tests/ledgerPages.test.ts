@@ -255,17 +255,3 @@ for (const runtime of ['claude-native', 'codex-native', 'deepseek-native']) {
     assert.deepEqual(whole.ledger.map((item) => item.uid), ['010.0', '020.0', '090.0'])
   })
 }
-
-test('a ledger row returned both unbound and bound renders only through its model message', () => {
-  const reply = { ...said('090', 'fixed', 'human'), direction: 'outbound' as const, actor_kind: 'agent' as const }
-  const response = { ...answer, thread_messages: [reply] }
-  const detail = liveThreadDetail(reads([prompt, response], [prompt.thread_messages[0], reply], { model: null, unbound: null }))
-  assert.deepEqual(kinds(detail.ledger), ['session-open', 'user', 'agent'])
-})
-
-test('an unbound native prompt and its provisional request share the native turn identity', () => {
-  const request = { ...prompt, thread_messages: [] }
-  const row = { ...said('010', 'fix the build', 'human'), platform_message_id: request.run_id }
-  const source = { ...reads([request], [row], { model: null, unbound: null }), thread: { ...thread, kind: 'native_thread' as const, handoffs: [] } }
-  assert.deepEqual(liveThreadDetail(source).ledger.map((item) => item.kind === 'user' && item.who), ['Ada'])
-})

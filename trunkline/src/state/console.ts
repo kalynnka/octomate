@@ -571,17 +571,20 @@ export const useConsole = create<ConsoleState>()((set, get) => {
 
   /** Follow the thread just opened until another is: a run starting there folds
    *  into the overlay, and its settling reloads the ledger. A run already midway
-   *  shows nothing partial — its settling brings it in whole. A dropped watch
-   *  reconnects while this thread stays open and reloads the missed ledger. */
-  const watchOpen = async (thId: string, reconnecting = false) => {
+   *  shows nothing partial — its settling brings it in whole. */
+  const watchOpen = async (thId: string) => {
     if (viewing?.thId === thId) return
     viewing?.close()
     viewing = undefined
     // A run this console started already carries the thread; its end watches it again.
     if (streamingOn.has(thId)) return
+    let socket: Awaited<ReturnType<typeof watchThread>> | undefined
+    const watching = { thId, close: () => socket?.close() }
+    // Reserve the watch before connecting so overlapping opens share it.
+    viewing = watching
     let fold: TurnFold | undefined
     let reflex = false
-    const shown = () => get().selThreadId === thId && !streamingOn.has(thId)
+    const shown = () => viewing === watching && get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
       if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
@@ -605,39 +608,18 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         fold?.feed(event)
       }
     }
-    let retry: ReturnType<typeof setTimeout> | undefined
-    const watching = { thId, close: () => clearTimeout(retry) }
-    viewing = watching
-    const reconnect = () => {
-      retry = setTimeout(() => {
-        if (viewing !== watching || !shown()) return
-        viewing = undefined
-        void watchOpen(thId, true)
-      }, 1000)
-    }
     try {
-      const socket = await watchThread({ id: thId }, onEvent)
-      if (viewing !== watching || !shown()) {
+      socket = await watchThread({ id: thId }, onEvent)
+      if (!shown()) {
         socket.close()
         return
       }
-      watching.close = () => {
-        clearTimeout(retry)
-        socket.close()
-      }
-      if (reconnecting) void reloadSettled(thId, () => fold === undefined)
+      // Closed by the relay: the next open of the thread watches it afresh.
       void socket.closed.then(() => {
-        if (viewing !== watching) return
-        fold = undefined
-        reflex = false
-        reconnect()
+        if (viewing === watching) viewing = undefined
       })
     } catch (error) {
-      if (viewing !== watching || !shown()) return
-      if (reconnecting) {
-        reconnect()
-        return
-      }
+      if (viewing !== watching) return
       viewing = undefined
       const reason = error instanceof Error ? error.message : String(error)
       actions.reportThreadError(thId, `live updates did not connect — ${reason}`)

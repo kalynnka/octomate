@@ -196,7 +196,7 @@ async def test_real_harness_drives_resumes_and_reads_native_history(
             impulses=tail_impulses,
         )
         for record in records:
-            await tailer.feed_remote(state, None, json.dumps(record), 0, 0)
+            await tailer.feed_remote(state, json.dumps(record))
         assert state.conversation is not None
         assert state.conversation.name == conversation.name
         tailer.detach_remote(state)

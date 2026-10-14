@@ -13,6 +13,7 @@ let batchFeelers: typeof import('../src/lib/api/fold.ts').batchFeelers
 let liveThreadDetail: typeof import('../src/lib/api/live.ts').liveThreadDetail
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
 let useConsole: typeof import('../src/state/console.ts').useConsole
+let useAuth: typeof import('../src/state/auth.ts').useAuth
 let callbackResult: void | Promise<void>
 const originalGlobals = ['document', 'window', 'requestAnimationFrame', 'WebSocket', 'location'].map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)] as const)
 const detail: ThreadDetail = {
@@ -42,6 +43,7 @@ before(async () => {
   ;({ liveThreadDetail } = await server.ssrLoadModule('/src/lib/api/live.ts'))
   ;({ queryClient } = await server.ssrLoadModule('/src/lib/queryClient.ts'))
   ;({ useConsole } = await server.ssrLoadModule('/src/state/console.ts'))
+  ;({ useAuth } = await server.ssrLoadModule('/src/state/auth.ts'))
 })
 beforeEach(() => {
   const panel = { style: { removeProperty() {}, viewTransitionName: '' } }
@@ -323,6 +325,63 @@ test('a run follows the first reflex its socket sees wake, not the end of one al
   assert.deepEqual(replies.map((item) => item.kind === 'stream' && item.text), ['Hello back'])
 })
 
+test('opening the same thread twice during connection renders each event once', async () => {
+  const id = 'overlapping-watch'
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await Promise.all([
+    actions.selectThread('codex-native', id),
+    actions.selectThread('codex-native', id),
+  ])
+  const sockets = LiveSocket.opened.filter(socket => !socket.closed)
+  const events: WireEvent[] = [
+    { event_kind: 'run_started', address: {
+      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
+    } },
+    { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'Checking the watcher.' } },
+    { event_kind: 'function_tool_call', part: { part_kind: 'tool-call', tool_call_id: 'call-1', tool_name: 'exec', args: '{}' } },
+    { event_kind: 'function_tool_result', part: { part_kind: 'tool-return', tool_call_id: 'call-1', tool_name: 'exec', content: 'Done' } },
+  ]
+  for (const event of events) {
+    for (const socket of sockets) socket.deliver(event)
+  }
+  const live = useConsole.getState().live
+  assert.deepEqual(live.filter(item => item.kind === 'stream').map(item => item.text), ['Checking the watcher.'])
+  assert.equal(live.filter(item => item.kind === 'tool').length, 1)
+  assert.equal(sockets.length, 1)
+})
+
+test('a failed connection releases the watch so the thread can be opened again', async () => {
+  const id = 'failed-watch'
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  const opening = actions.selectThread('codex-native', id)
+  LiveSocket.last().close()
+  await opening
+  await actions.selectThread('codex-native', id)
+  assert.equal(LiveSocket.opened.length, 2)
+  assert.deepEqual(LiveSocket.opened.map(socket => socket.closed), [true, false])
+})
+
+test('a superseded connection cannot resume watching when the reader returns', async () => {
+  mock.method(api, 'getThreadDetail', async (id: string) => ({ ...detail, key: id }))
+  const actions = useConsole.getState().actions
+  await Promise.all([
+    actions.selectThread('codex-native', 'returning-watch'),
+    actions.selectThread('codex-native', 'between-watches'),
+    actions.selectThread('codex-native', 'returning-watch'),
+  ])
+  const sockets = LiveSocket.opened
+  assert.equal(sockets.length, 3)
+  assert.deepEqual(sockets.map(socket => socket.closed), [true, true, false])
+  const started: WireEvent = { event_kind: 'run_started', address: {
+    channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: 'returning-watch', user_id: 'owner', channel_thread_id: null, shared: false,
+  } }
+  sockets[2].deliver(started, result)
+  sockets[0].deliver(started, { ...result, output: 'Stale reply' })
+  assert.deepEqual(useConsole.getState().live.filter(item => item.kind === 'stream').map(item => item.text), ['Hello back'])
+})
+
 for (const reflex of [false, true]) {
   test(`an open thread settles a ${reflex ? 'reflex only on reflex_asleep' : 'tailed turn on run_ended'}`, async () => {
     const id = `native-${reflex}`
@@ -368,11 +427,11 @@ for (const saved of [false, true]) {
     const watching = await socketOn(`thread_id=${opening.key}`)
     const started: WireEvent = { event_kind: 'run_started', address: {
       channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
-    },
-      thread_message_id: 'native-prompt', text: 'The transcript prompt', timestamp: '2026-10-14T10:00:00Z',
-      sender: { id: 'sender', channel_tentacle_id: 'claude-native', channel_user_id: 'owner', name: 'Owner', nickname: null, gender: null, age: null, title: null, user_id: null },
+    } }
+    const prompt: WireEvent = { event_kind: 'enqueued_messages', enqueue_id: 'native-prompt',
+      messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'The transcript prompt' }], timestamp: '2026-10-14T10:00:00Z' }],
     }
-    watching.deliver(started, { ...result, output: 'Partial' }, started, result)
+    watching.deliver(started, prompt, { ...result, output: 'Partial' }, started, prompt, result)
     const state = useConsole.getState()
     const prompts = [...(state.detail?.ledger ?? []), ...state.live].filter(item => item.kind === 'user')
     assert.equal(prompts.length, 1)
@@ -383,6 +442,33 @@ for (const saved of [false, true]) {
     watching.deliver({ event_kind: 'run_ended', thread_message_id: null })
     for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
     assert.equal(useConsole.getState().running, false)
+  })
+}
+
+for (const reflex of [false, true]) {
+  test(`an enqueued prompt stays between replies inside ${reflex ? 'a reflex' : 'a tailed turn'}`, async () => {
+    const opening = { ...detail, key: `native-steering-${reflex}`, ledger: [] }
+    mock.method(api, 'getThreadDetail', async () => opening)
+    queryClient.setQueryData(['thread-detail', opening.key], opening)
+    await useConsole.getState().actions.selectThread('deepseek-native', opening.key)
+    const watching = await socketOn(`thread_id=${opening.key}`)
+    if (reflex) watching.deliver({ event_kind: 'reflex_awake' })
+    watching.deliver({ event_kind: 'run_started', address: {
+      channel_tentacle_id: 'deepseek-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }, { event_kind: 'part_start', index: 0, part: { part_kind: 'text', content: 'First reply' } }, {
+      event_kind: 'enqueued_messages', enqueue_id: 'steer',
+      messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'Also check this' }], timestamp: '2026-10-14T10:00:00Z' }],
+    }, { event_kind: 'part_start', index: 1, part: { part_kind: 'text', content: 'Second reply' } })
+    assert.deepEqual(useConsole.getState().live.map(item => 'text' in item && item.text), [
+      'First reply', 'Also check this', 'Second reply',
+    ])
+    assert.equal(useConsole.getState().running, true)
+    watching.deliver({ event_kind: 'run_ended', thread_message_id: null })
+    if (reflex) {
+      assert.equal(useConsole.getState().running, true)
+      watching.deliver({ event_kind: 'reflex_asleep' })
+    }
+    for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
   })
 }
 
@@ -398,13 +484,12 @@ test('a settled ledger reload preserves the next tailed turn already folding', a
   const started: WireEvent = { event_kind: 'run_started', address: {
     channel_tentacle_id: 'claude', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
   } }
-  const next: WireEvent = { ...started,
-    thread_message_id: 'next-prompt', text: 'Next prompt', timestamp: '2026-10-14T10:00:00Z',
-    sender: { id: 'sender', channel_tentacle_id: 'claude-native', channel_user_id: 'owner', name: 'Owner', nickname: null, gender: null, age: null, title: null, user_id: 'owner-id' },
+  const next: WireEvent = { event_kind: 'enqueued_messages', enqueue_id: 'next-prompt',
+    messages: [{ kind: 'request', parts: [{ part_kind: 'user-prompt', content: 'Next prompt' }], timestamp: '2026-10-14T10:00:00Z' }],
   }
-  watching.deliver(started, { event_kind: 'run_ended', thread_message_id: null }, next, result)
+  watching.deliver(started, { event_kind: 'run_ended', thread_message_id: null }, started, next, result)
   const prompt = useConsole.getState().live.find(item => item.kind === 'user')
-  assert.equal(prompt?.kind === 'user' && prompt.userId, 'owner-id')
+  assert.equal(prompt?.kind === 'user' && prompt.userId, useAuth.getState().user?.id)
   resolve({ ...opening, msgCount: 2, ledger: [{ kind: 'user', uid: 'next-prompt', text: 'Next prompt', who: 'Owner', t: '10:00' }] })
   await tick()
   assert.equal(useConsole.getState().detail?.msgCount, 2)
@@ -414,60 +499,4 @@ test('a settled ledger reload preserves the next tailed turn already folding', a
   watching.deliver({ event_kind: 'run_ended', thread_message_id: 'reply' })
   for (let at = 0; at < 200 && useConsole.getState().running; at++) await tick()
   assert.equal(useConsole.getState().running, false)
-})
-
-test('an open thread reconnects after a lost socket and reloads the missed ledger', async (t) => {
-  const id = 'reconnect-native'
-  const getDetail = mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
-  await useConsole.getState().actions.selectThread('claude-native', id)
-  const first = await socketOn(`thread_id=${id}`)
-  getDetail.mock.mockImplementation(async () => ({ ...detail, key: id, msgCount: 12 }))
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  first.close()
-  await Promise.resolve()
-  t.mock.timers.tick(1000)
-  t.mock.timers.reset()
-  const next = await socketOn(`thread_id=${id}`)
-  assert.notEqual(next, first)
-  await tick()
-  assert.equal(useConsole.getState().detail?.msgCount, 12)
-  next.deliver({ event_kind: 'run_started', address: {
-    channel_tentacle_id: 'claude-native', chat_type: 'thread', chat_id: id, user_id: 'owner', channel_thread_id: null, shared: false,
-  } }, result)
-  assert.ok(useConsole.getState().live.some((item) => item.kind === 'stream' && item.text === 'Hello back'))
-})
-
-test('leaving a disconnected thread cancels its pending reconnect', async (t) => {
-  mock.method(api, 'getThreadDetail', async (id: string) => ({ ...detail, key: id }))
-  await useConsole.getState().actions.selectThread('claude-native', 'disconnected')
-  const first = await socketOn('thread_id=disconnected')
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  first.close()
-  await Promise.resolve()
-  await useConsole.getState().actions.selectThread('claude-native', 'elsewhere')
-  const count = LiveSocket.opened.length
-  t.mock.timers.tick(1000)
-  t.mock.timers.reset()
-  await tick()
-  assert.equal(LiveSocket.opened.length, count)
-  assert.equal(useConsole.getState().selThreadId, 'elsewhere')
-})
-
-test('a reconnect keeps retrying while the relay is unavailable', async (t) => {
-  const id = 'relay-restarting'
-  mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))
-  await useConsole.getState().actions.selectThread('claude-native', id)
-  const first = await socketOn(`thread_id=${id}`)
-  t.mock.timers.enable({ apis: ['setTimeout'] })
-  first.close()
-  await Promise.resolve()
-  t.mock.timers.tick(1000)
-  const refused = LiveSocket.last()
-  refused.close()
-  await Promise.resolve()
-  t.mock.timers.tick(1000)
-  t.mock.timers.reset()
-  const next = await socketOn(`thread_id=${id}`)
-  assert.notEqual(next, refused)
-  await tick()
 })

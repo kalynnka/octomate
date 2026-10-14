@@ -158,7 +158,6 @@ async def claude_hook(octomate: Octomate, cwd: str) -> None:
                 "prompt_id": "p1",
             }
         ),
-        SENDER,
     )
 
 
@@ -280,7 +279,6 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
                 "transcript_path": str(transcript),
             }
         ),
-        SENDER,
     )
     [sketch] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert sketch.cwd is None
@@ -358,7 +356,6 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
                 "turn_id": CODEX_TURN,
             }
         ),
-        SENDER,
     )
 
     [sketch] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)

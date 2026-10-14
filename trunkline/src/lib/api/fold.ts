@@ -416,15 +416,19 @@ export class TurnFold {
     // No early return on `ended`: the suspend path emits its action_batch
     // after run_result, and those feeler cards must still land.
     switch (event.event_kind) {
-      case 'run_started': {
-        if (event.text != null && event.sender && event.timestamp && event.thread_message_id) {
-          const at = new Date(event.timestamp)
-          this.sink.push({
-            kind: 'user', uid: event.thread_message_id, text: event.text, who: event.sender.name,
-            userId: event.sender.user_id ?? undefined,
-            t: `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`,
-          })
-        }
+      case 'enqueued_messages': {
+        const requests = event.messages.filter(message => message.kind === 'request')
+        const prompts = requests.flatMap(message => message.parts.filter(part => part.part_kind === 'user-prompt'))
+        if (!prompts.length) break
+        this.closeThink()
+        this.closeStream()
+        const timestamp = requests[0]?.timestamp
+        const at = timestamp ? new Date(timestamp) : null
+        this.sink.push({
+          kind: 'user', uid: event.enqueue_id, who: 'operator',
+          text: prompts.map(part => typeof part.content === 'string' ? part.content : part.content.filter(c => typeof c === 'string').join('\n')).join('\n'),
+          t: at ? `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}` : '',
+        })
         break
       }
       case 'part_start':
@@ -580,7 +584,6 @@ export class TurnFold {
       case 'output_tool_result':
       case 'deferred_tool_requests':
       case 'deferred_tool_results':
-      case 'enqueued_messages':
         break
     }
   }

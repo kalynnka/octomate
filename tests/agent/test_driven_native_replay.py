@@ -76,7 +76,6 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 prompt_id=old_turn,
                 prompt="same prompt",
             ),
-            SENDER,
         )
     elif runtime == "codex":
         codex_tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
@@ -93,7 +92,6 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 turn_id=old_turn,
                 prompt="same prompt",
             ),
-            SENDER,
         )
 
     async with async_session() as session:
@@ -136,7 +134,13 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
                 octomate.conversations, octomate.threads
             )
             codex_state, offsets = await codex_tailer.attach_remote(
-                SESSION_ID, Path("/client/rollout.jsonl"), SENDER
+                SESSION_ID,
+                Path("/client/rollout.jsonl"),
+                SENDER,
+                ThreadKey(native_id, "thread", SESSION_ID).address(
+                    SENDER.channel_user_id
+                ),
+                tail_impulses,
             )
             assert offsets == {SESSION_FILE: 0}
             offset = 0
@@ -189,7 +193,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             ]
             for event in events:
                 await deepseek_tailer.feed_remote(
-                    deepseek_state, None, json.dumps({"event": event}), 0, 0
+                    deepseek_state, json.dumps({"event": event})
                 )
             deepseek_tailer.detach_remote(deepseek_state)
 

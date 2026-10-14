@@ -17,6 +17,7 @@ import anyio
 import pytest
 from anyio.abc import ObjectSendStream
 from pydantic import JsonValue
+from pydantic_ai.messages import EnqueuedMessagesEvent, ModelRequest, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from uuid_utils.compat import uuid7
 
@@ -293,6 +294,65 @@ async def test_the_posture_a_session_runs_under_is_read_off_its_transcript(
     ]
 
 
+async def test_mid_turn_prompt_keeps_its_transcript_position_and_ledger_identity() -> (
+    None
+):
+    octomate = Octomate()
+    tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
+    steering = prompt_record("p1", "also check tests", 0)
+    del steering["promptSource"]
+    steering["uuid"] = "steering-p1"
+    records = [
+        prompt_record("p1", "inspect files", 1),
+        assistant_record("first", 2, [{"type": "text", "text": "First reply"}]),
+        steering,
+        assistant_record("last", 3, [{"type": "text", "text": "Final reply"}]),
+    ]
+    with octomate.nerve.subscribe(SESSION_KEY) as live:
+        await stream_in(tailer, octomate.nerve, records)
+        events = [impulse.event for impulse in held(live)]
+    assert [event.event_kind for event in events] == [
+        "run_started",
+        "enqueued_messages",
+        "part_start",
+        "part_end",
+        "enqueued_messages",
+        "part_start",
+        "part_end",
+        "run_ended",
+    ]
+    [run] = await runs_of(octomate)
+    assert [message.message_text for message in run.messages] == [
+        "inspect files",
+        "First reply",
+        "also check tests",
+        "Final reply",
+    ]
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
+    prompts = sorted(
+        (row for row in thread.messages if row.direction == "inbound"),
+        key=lambda row: row.id,
+    )
+    delivered = [event for event in events if isinstance(event, EnqueuedMessagesEvent)]
+    assert [str(row.id) for row in prompts] == [event.enqueue_id for event in delivered]
+    async with async_session() as session:
+        bindings = await session.list(MessageBinding, limit=None, order_bys=[])
+    sources = {
+        binding.thread_message_id: binding.model_message_id
+        for binding in bindings
+        if binding.kind == "request_source"
+    }
+    assert [sources[row.id] for row in prompts] == [
+        run.messages[0].id,
+        run.messages[2].id,
+    ]
+    with octomate.nerve.subscribe(SESSION_KEY) as live:
+        await stream_in(tailer, octomate.nerve, records)
+        assert held(live) == []
+    thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
+    assert len(thread.messages) == 3
+
+
 async def test_streams_live_events_to_a_consumer() -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
@@ -300,12 +360,16 @@ async def test_streams_live_events_to_a_consumer() -> None:
     with octomate.nerve.subscribe(SESSION_KEY) as live:
         await stream_in(tailer, octomate.nerve, TURN_ONE, sub=SUB_TURN_ONE)
         impulses = held(live)
-        opening = impulses[0].event
-        assert opening.event_kind == "run_started"
-        assert opening.text == "list the files"
-        assert opening.sender == SENDER
+        opening = impulses[1].event
+        assert opening.event_kind == "enqueued_messages"
+        assert isinstance(opening, EnqueuedMessagesEvent)
+        request = opening.messages[0]
+        assert isinstance(request, ModelRequest)
+        assert isinstance(request.parts[0], UserPromptPart)
+        assert request.parts[0].content == "list the files"
         assert [impulse.event.event_kind for impulse in impulses] == [
             "run_started",
+            "enqueued_messages",
             "part_start",
             "part_end",
             "function_tool_call",
@@ -322,8 +386,10 @@ async def test_streams_live_events_to_a_consumer() -> None:
         ended = impulses[-1].event
         assert isinstance(ended, RunEndedEvent)
         thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
-        assert opening.thread_message_id == next(
-            message.id for message in thread.messages if message.direction == "inbound"
+        assert opening.enqueue_id == next(
+            str(message.id)
+            for message in thread.messages
+            if message.direction == "inbound"
         )
         assert ended.thread_message_id in [message.id for message in thread.messages]
         assert not octomate.awakes
@@ -461,21 +527,16 @@ async def test_full_lifecycle_records_runs_and_binds_the_ledger() -> None:
     # The hooks reserve turn identities before the transcript arrives.
     await ingest.handle(
         hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
-        SENDER,
     )
+    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
     await ingest.handle(
-        hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
+        hook_event("UserPromptSubmit", "p2", CLIENT_PATH, prompt="now commit")
     )
-    await ingest.handle(
-        hook_event("UserPromptSubmit", "p2", CLIENT_PATH, prompt="now commit"), SENDER
-    )
-    await ingest.handle(
-        hook_event("Stop", "p2", last_assistant_message="Committed."), SENDER
-    )
+    await ingest.handle(hook_event("Stop", "p2", last_assistant_message="Committed."))
     # The stream creates the full timeline and ledger.
     await stream_in(tailer, octomate.nerve, TURN_ONE + TURN_TWO)
     await ingest.handle(
-        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other"), SENDER
+        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other")
     )
 
     # Both turns recorded as external runs.
@@ -504,11 +565,8 @@ async def test_the_tailer_fills_the_hooks_empty_run() -> None:
 
     await ingest.handle(
         hook_event("UserPromptSubmit", "p1", CLIENT_PATH, prompt="list the files"),
-        SENDER,
     )
-    await ingest.handle(
-        hook_event("Stop", "p1", last_assistant_message="Done."), SENDER
-    )
+    await ingest.handle(hook_event("Stop", "p1", last_assistant_message="Done."))
 
     # Before transcript arrival the reserved run has no messages or byte range.
     [sketch] = await runs_of(octomate)
@@ -688,7 +746,7 @@ async def test_session_end_with_no_stream_is_a_noop() -> None:
     ingest, tailer = wired(octomate)
 
     await ingest.handle(
-        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other"), SENDER
+        hook_event("SessionEnd", transcript=CLIENT_PATH, reason="other")
     )
 
     assert await runs_of(octomate) == []
@@ -977,10 +1035,9 @@ async def test_subagent_stop_commits_the_child_run_without_waiting(
             transcript_path=str(CLIENT_PATH),
             prompt="audit the repo",
         ),
-        SENDER,
     )
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="two findings"), SENDER
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
     )
 
     [child_run] = await subagent_runs_of(octomate)
@@ -1009,7 +1066,6 @@ async def test_subagent_start_reserves_the_child_run_when_keyed(
             prompt_id="p1",
             prompt="audit the repo",
         ),
-        SENDER,
     )
 
     [sketch] = await subagent_runs_of(octomate)
@@ -1026,7 +1082,7 @@ async def test_subagent_start_reserves_the_child_run_when_keyed(
     await feed_records(tailer, state, [TURN_ONE[0], *agent_spawn_records("p1", 2)])
     await feed_records(tailer, state, SUB_TURN_ONE, agent_id=AGENT_ID)
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="two findings"), SENDER
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
     )
     [child_run] = await subagent_runs_of(octomate)
     assert child_run.id == f"{AGENT_ID}:p1"
@@ -1052,7 +1108,6 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
                 "agent_id": AGENT_ID,
             }
         ),
-        SENDER,
     )
     await ingest.handle(
         ClaudeHookInput.model_validate(
@@ -1064,7 +1119,6 @@ async def test_an_event_carrying_agent_id_never_touches_the_parent_turn() -> Non
                 "agent_id": AGENT_ID,
             }
         ),
-        SENDER,
     )
 
     thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
@@ -1086,7 +1140,6 @@ async def test_subagent_stop_with_no_stream_is_a_noop() -> None:
             transcript_path=str(CLIENT_PATH),
             last_assistant_message="two findings",
         ),
-        SENDER,
     )
 
     assert await subagent_runs_of(octomate) == []
@@ -1117,7 +1170,7 @@ async def test_subagent_stop_waits_for_the_answer_line_to_land(
 
     writer = asyncio.ensure_future(late_writer())
     await ingest.handle(
-        subagent_hook("SubagentStop", last_assistant_message="two findings"), SENDER
+        subagent_hook("SubagentStop", last_assistant_message="two findings")
     )
     await writer
 
@@ -1147,7 +1200,6 @@ async def test_subagent_stop_never_hangs_on_an_answer_that_never_lands(
 
     await ingest.handle(
         subagent_hook("SubagentStop", last_assistant_message="words never written"),
-        SENDER,
     )
 
     # Bounded: it committed what actually streamed rather than waiting forever.
@@ -1175,7 +1227,6 @@ async def test_a_diverging_announced_answer_settles_on_quiescence(
         subagent_hook(
             "SubagentStop", last_assistant_message="two findings… [truncated]"
         ),
-        SENDER,
     )
     elapsed = monotonic() - started
 
@@ -1200,7 +1251,9 @@ async def test_failed_commit_never_publishes_run_ended(
         )
     else:
         monkeypatch.setattr(
-            tailer, "bind_ledger", AsyncMock(side_effect=RuntimeError("commit failed"))
+            octomate.threads,
+            "bind_native_run",
+            AsyncMock(side_effect=RuntimeError("commit failed")),
         )
     with octomate.nerve.subscribe(SESSION_KEY) as live:
         with pytest.raises(RuntimeError, match="commit failed"):

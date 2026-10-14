@@ -15,7 +15,6 @@ from octomate.schemas.thread import (
     Thread,
     ThreadKey,
 )
-from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
 from octomate.tentacles.claude.hooks import ClaudeHookInput
 from octomate.tentacles.locks import SessionLocks
@@ -66,7 +65,7 @@ class ClaudeHookIngest:
         # registry reclaims a session's lock on its own once no one holds it.
         self.locks = locks if locks is not None else SessionLocks()
 
-    async def handle(self, event: ClaudeHookInput, sender: UserProfile) -> None:
+    async def handle(self, event: ClaudeHookInput) -> None:
         """Handle an authenticated hook; message attribution belongs to the stream."""
         if (
             event.agent_id is None
@@ -90,18 +89,16 @@ class ClaudeHookIngest:
                 # A child's Stop must never drain the parent turn.
                 return
             case "UserPromptSubmit":
-                await self.on_user_prompt_submit(event, sender)
+                await self.on_user_prompt_submit(event)
             case "Stop":
-                await self.on_stop(event, sender)
+                await self.on_stop(event)
             case "SessionEnd":
                 await self.on_session_end(event)
 
     @claude_logfire.instrument(
         "claude.hook UserPromptSubmit [{event.session_id}]", extract_args=["event"]
     )
-    async def on_user_prompt_submit(
-        self, event: ClaudeHookInput, sender: UserProfile
-    ) -> None:
+    async def on_user_prompt_submit(self, event: ClaudeHookInput) -> None:
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             await self.ensure_run(event)
@@ -109,7 +106,7 @@ class ClaudeHookIngest:
     @claude_logfire.instrument(
         "claude.hook Stop [{event.session_id}]", extract_args=["event"]
     )
-    async def on_stop(self, event: ClaudeHookInput, sender: UserProfile) -> None:
+    async def on_stop(self, event: ClaudeHookInput) -> None:
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
             await self.ensure_run(event)
@@ -141,8 +138,7 @@ class ClaudeHookIngest:
             return
         async with self.locks.hold(event.session_id):
             await self.start_session(event)
-        if event.prompt_id:
-            async with self.locks.hold(f"{event.session_id}/{event.agent_id}"):
+            if event.prompt_id:
                 await self.ensure_subagent_run(event)
         logger.info("session %s: subagent %s started", event.session_id, event.agent_id)
 

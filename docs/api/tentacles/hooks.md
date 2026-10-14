@@ -6,6 +6,8 @@
 
 ::: octomate.tentacles.locks
 
+::: octomate.tentacles.tailer
+
 ::: octomate.tentacles.claude.tailer
 
 ::: octomate.tentacles.deepseek.tailer

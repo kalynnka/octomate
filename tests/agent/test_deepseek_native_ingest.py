@@ -116,11 +116,7 @@ async def feed_events(
     """Feed events as the stream client frames them — one history entry per
     line, seqs standing in for byte offsets."""
     for event in events:
-        seq = event["seq"]
-        assert isinstance(seq, int)
-        await tailer.feed_remote(
-            state, None, json.dumps({"event": event}), seq, seq + 1
-        )
+        await tailer.feed_remote(state, json.dumps({"event": event}))
 
 
 async def stream_events(
@@ -236,7 +232,7 @@ async def test_native_titles_are_persisted_and_revised_outside_turns(
 async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     """dsh logs `agent-instructions` and `plugin` context as user-role
     messages inside the turn; the ledger's prompt is the human's words only —
-    the opening prompt plus anything steered in later."""
+    each human input stays at its own transcript position."""
     octomate = Octomate()
     _, tailer = wired(octomate)
 
@@ -276,13 +272,18 @@ async def test_injected_user_messages_stay_out_of_the_prompt_row() -> None:
     request = next(m for m in run.messages if isinstance(m, ModelRequest))
     part = request.parts[0]
     assert isinstance(part, UserPromptPart)
-    assert part.content == "hi\n\nalso check the tests"
+    assert part.content == "hi"
     assert run.source == "gateway"
     thread = await a_loaded_thread(
         octomate.threads, ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     )
     inbound = [m.message_text for m in thread.messages if m.direction == "inbound"]
-    assert inbound == ["hi\n\nalso check the tests"]
+    assert inbound == ["hi", "also check the tests"]
+    assert [message.message_text for message in run.messages] == [
+        "hi",
+        "also check the tests",
+        "done",
+    ]
 
 
 async def test_a_reconnect_resumes_past_the_committed_floor(
@@ -546,10 +547,13 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
         first = held(live)
         assert first[0].event.event_kind == "run_started"
         assert all(impulse.event.event_kind != "run_ended" for impulse in first)
+        thread = await a_loaded_thread(octomate.threads, key)
+        assert [message.message_text for message in thread.messages] == ["inspect it"]
         await stream_events(tailer, octomate.nerve, records)
         impulses = held(live)
         assert [impulse.event.event_kind for impulse in impulses] == [
             "run_started",
+            "enqueued_messages",
             "part_start",
             "part_end",
             "run_ended",
@@ -574,6 +578,32 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
         assert held(live) == []
 
 
+async def test_steering_keeps_its_transcript_position_despite_its_clock() -> None:
+    octomate = Octomate()
+    _, tailer = wired(octomate)
+    records = turn_events(1, 0, "first ask", "first reply")[:-1]
+    steering = user_message(3, "also check this")
+    steering["time"] = BASE_TIME_MS - 1000
+    records.extend(
+        [
+            steering,
+            turn_events(1, 2, "unused", "final reply")[2],
+            ev(5, "turn/end", {"turn": 1, "reason": {"kind": "completed"}}),
+        ]
+    )
+    await stream_events(tailer, octomate.nerve, records)
+    conversation = await native_conversation(octomate)
+    assert [message.message_text for message in conversation.messages] == [
+        "first ask",
+        "first reply",
+        "also check this",
+        "final reply",
+    ]
+    assert [message.id for message in conversation.messages] == sorted(
+        message.id for message in conversation.messages
+    )
+
+
 @pytest.mark.parametrize("fail_at", ["run", "ledger"])
 async def test_failed_commit_never_publishes_run_ended(
     monkeypatch: pytest.MonkeyPatch, fail_at: str
@@ -588,7 +618,9 @@ async def test_failed_commit_never_publishes_run_ended(
         )
     else:
         monkeypatch.setattr(
-            tailer, "bind_ledger", AsyncMock(side_effect=RuntimeError("commit failed"))
+            octomate.threads,
+            "bind_native_run",
+            AsyncMock(side_effect=RuntimeError("commit failed")),
         )
     key = ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     with octomate.nerve.subscribe(key) as live:

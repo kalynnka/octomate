@@ -24,7 +24,7 @@ from typing import (
 )
 
 import anyio
-from anyio.abc import ObjectSendStream, TaskGroup
+from anyio.abc import ObjectSendStream
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
@@ -289,26 +289,20 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     def hook_router(self) -> APIRouter:
         """The routes behind `routers()`; cached so they are built once. The guard
         covers the websocket too: FastAPI runs router dependencies at the handshake,
-        so a bad bearer is denied with the same 401 before any socket opens. Each
-        route takes `hook_sender` — the verified bearer resolved to their own
-        profile, on the guard's single per-request check — as the ledger's
-        principal."""
+        so a bad bearer is denied with the same 401 before any socket opens.
+        `hook_sender` resolves the verified bearer's profile on both routes;
+        only the stream uses that profile to attribute transcript messages."""
         verifier = hook_guard(self.bearers)
         resolve_sender = hook_sender(self.users, self.native_id, verifier)
         router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
 
         @router.post(
             "/hooks/claude",
-            summary="Claude Code hook pipe — streams a native session's human ledger in",
+            dependencies=[Depends(resolve_sender)],
+            summary="Claude Code native-session hook pipe",
         )
-        async def receive_hook(
-            event: ClaudeHookInput,
-            # `param: T = Depends(dep)` is FastAPI's own dependency contract;
-            # ruff's B008 exemption misses it when T is a custom class (it is
-            # fine with `str`), so the rule bends rather than the checked type.
-            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
-        ) -> JSONResponse:
-            await self.session_ingest.handle(event, sender)
+        async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
+            await self.session_ingest.handle(event)
             teleport = gateway_tool(GatewayTool.TELEPORT)
             if (
                 event.hook_event_name == "PreToolUse"
@@ -331,6 +325,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
 
+        # FastAPI resolves this custom profile dependency at the handshake.
         @router.websocket("/hooks/claude/stream")
         async def stream(
             websocket: WebSocket,
@@ -456,74 +451,49 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         # instead of a silently mis-assembled turn. The welcome's map, already sent,
         # doubles as the tracker.
         expected_offsets = offsets
-        queues: dict[str, asyncio.Queue[StreamLine | None]] = {}
-
-        async def consume(queue: asyncio.Queue[StreamLine | None], kept: int) -> None:
-            while (message := await queue.get()) is not None:
-                # Finish the current line on disconnect: a run checkpoint and its
-                # ledger bindings span commits, and must not be split by cancellation.
-                with anyio.CancelScope(shield=True):
-                    await self.session_tailer.feed_remote(
-                        state,
-                        message.agent_id,
-                        message.line,
-                        message.start,
-                        message.end,
-                    )
-                    if message.agent_id is None and sender.user_id is not None:
-                        kept = await self.keep_transcript(
-                            conversation, message, kept, owner_id=sender.user_id
-                        )
-
-        async def receive_lines(workers: TaskGroup) -> bool:
+        clean = False
+        try:
             while True:
                 message = client_message_adapter.validate_json(
                     await websocket.receive_text()
                 )
                 if isinstance(message, StreamEof):
-                    for queue in queues.values():
-                        await queue.put(None)
-                    return True
+                    clean = True
+                    return
+                if isinstance(message, StreamHello):
+                    await websocket.close(code=1008, reason="hello already received")
+                    return
                 if not isinstance(message, StreamLine):
                     await websocket.close(
                         code=1008, reason="expected a transcript line"
                     )
-                    return False
+                    return
                 key = message.agent_id or SESSION_FILE
                 want = expected_offsets.get(key, 0)
                 if message.start != want:
                     await websocket.close(
                         code=4000,
-                        reason=f"offset gap for {key or 'session'}: expected {want}, got {message.start}",
+                        reason=f"offset gap for {key or 'session'}: expected {want}, "
+                        f"got {message.start}",
                     )
-                    return False
+                    return
                 expected_offsets[key] = message.end
-                queue = queues.get(key)
-                if queue is None:
-                    queue = queues[key] = asyncio.Queue(64)
-                    workers.start_soon(consume, queue, kept)
-                await queue.put(message)
-
-        clean = False
-        drained = False
-        try:
-            async with anyio.create_task_group() as workers:
-                try:
-                    clean = await receive_lines(workers)
-                except WebSocketDisconnect:
-                    pass
-                except ValidationError:
-                    await websocket.close(
-                        code=1008, reason="unparseable stream message"
+                await self.session_tailer.feed_remote(
+                    state, message.agent_id, message.line, message.start, message.end
+                )
+                if message.agent_id is None and sender.user_id is not None:
+                    kept = await self.keep_transcript(
+                        conversation, message, kept, owner_id=sender.user_id
                     )
-                if not clean:
-                    workers.cancel_scope.cancel()
-            drained = clean
+        except WebSocketDisconnect:
+            pass
+        except ValidationError:
+            await websocket.close(code=1008, reason="unparseable stream message")
         finally:
             relay.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await relay
-            if drained:
+            if clean:
                 await self.session_tailer.finish_remote(state)
                 with contextlib.suppress(Exception):
                     await websocket.close()

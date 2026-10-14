@@ -65,10 +65,10 @@ from octomate_cli.config import (
     user_config_path,
 )
 
-# Mirror the server tailer's cadence: the watch wakes at least this often, and a
-# session quiet this long is drained and closed out.
-IDLE_TIMEOUT = 30 * 60.0
-IDLE_POLL_MS = 60_000
+# Native notifications can miss appends to an open file. Re-read at least once a
+# second; the idle lifetime is independent of this live-delivery cadence.
+IDLE_TIMEOUT = 5 * 60.0
+IDLE_POLL_MS = 1_000
 
 # Reconnect backoff, capped so a long server outage retries steadily rather than
 # giving up — the retries stop on their own once the session goes idle-quiet.

@@ -7,22 +7,30 @@ commits each completed turn as an `ExternalAgentRun`.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
 from pydantic import ValidationError
 from pydantic_ai.messages import (
+    AgentStreamEvent,
+    FunctionToolCallEvent,
+    FunctionToolResultEvent,
     ModelMessage,
     ModelRequest,
     ModelResponse,
     NativeToolCallPart,
     NativeToolReturnPart,
+    PartEndEvent,
+    PartStartEvent,
     TextPart,
     ThinkingPart,
+    ToolCallPart,
+    ToolReturnPart,
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
@@ -30,10 +38,8 @@ from uuid_utils import UUID
 
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
-from octomate.schemas.conversation import Conversation
-from octomate.schemas.events import MessageEvent
-from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.segments import MarkdownSegment, TextSegment
+from octomate.nerve import Impulse
+from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
     ThreadKey,
@@ -50,24 +56,12 @@ from octomate.tentacles.codex.transcript import (
     session_metadata_adapter,
 )
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.tailer import NativeTurn
 from octomate.types.json import JsonObject
 
 logger = logging.getLogger(__name__)
 
 COMMIT_LOCK_TIMEOUT = 30.0
-
-# Codex flushes the rollout's trailing lines *after* firing the Stop hook (measured:
-# `task_complete` lands ~1-3s behind it), so a Stop waits for the stopped turn's
-# commit before asking the drain — bounded well under the hook pipe's 10s budget.
-STOP_SETTLE_TIMEOUT = 5.0
-
-
-def assembled(conversation: Conversation) -> set[str]:
-    return {
-        run.id
-        for run in conversation.runs
-        if isinstance(run, ExternalAgentRun) and run.end_offset is not None
-    }
 
 
 @dataclass
@@ -85,13 +79,12 @@ class OpenTurn:
     source: str | None
     model_name: str | None = None
     permission_mode: str | None = None
-    prompt: str = ""
     messages: list[ModelMessage] = field(default_factory=list)
     answer: str = ""
     pending_calls: dict[str, NativeToolCallPart] = field(default_factory=dict)
     usage: RequestUsage | None = None
-    parent_run_id: str | None = None
-    parent_tool_call_id: str | None = None
+    part_index: int = 0
+    native: NativeTurn | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +133,8 @@ class TailState:
     # The verified bearer's own profile — who every ledger row this stream
     # writes is attributed to.
     sender: UserProfile
+    address: ChannelAddress
+    impulses: ObjectSendStream[Impulse]
     offset: int = 0
     conversation: Conversation | None = None
     recorded: set[str] = field(default_factory=set)
@@ -150,20 +145,19 @@ class TailState:
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
     subagent_calls: dict[str, list[SubagentCall]] = field(default_factory=dict)
     classified_rollouts: set[Path] = field(default_factory=set)
-    # The turn a relayed `Stop` waits on before asking the drain, and the pulse
-    # `close_turn` answers with when that turn commits — set by `stop_turn`, so the
-    # wait ends the moment the streamed `task_complete` lands instead of on a poll.
+    # Stop requests a drain after this turn's terminal transcript line commits.
     drain_turn: str | None = None
-    drain_ready: asyncio.Event = field(default_factory=asyncio.Event)
 
 
 class CodexTranscriptTailer:
     """Assembles Codex turns from rollout lines streamed in by `octomate codex tail`.
 
     The stream is the only assembler — the server never opens a rollout file, even
-    for a session on this machine; a session without a tail keeps only the hooks'
-    prompt/final-answer sketch. The rollout replaces that sketch at `task_complete`
-    with response items, tool activity, reasoning summaries, and usage. Codex
+    for a session on this machine. Hooks reserve empty run identities; only the
+    rollout writes prompts, response items, tool activity, reasoning and usage.
+    Each connection publishes run brackets and whole-item events at its native
+    address. Committed and driven turns stay silent; replay of an open turn starts
+    a fresh fold. The end is published only after the run and ledger are durable. Codex
     documents `transcript_path` for hook convenience while warning that its format
     is unstable, so parsing is deliberately narrow and fail-forward.
     """
@@ -180,32 +174,32 @@ class CodexTranscriptTailer:
         self.sessions: dict[str, TailState] = {}
 
     async def stop_turn(self, session_id: str, turn_id: str | None) -> None:
-        """The turn just stopped — its `Stop` hook fired: wait for the stopped turn
-        to become durable, then ask the stream to drain.
+        """Request a drain after this turn's terminal line, without holding Stop.
 
-        The session's lines feed themselves while this waits: Codex flushes
-        `task_complete` a beat after the hook, and `close_turn` pulses `drain_ready`
-        the moment the streamed line commits the turn. Only then does `stop_event`
-        make the route relay `finalize` — whose drain re-reads the client's files to
-        EOF, rescuing exactly the bytes a missed watch wake left behind — and the
-        tail exits until the next prompt's launcher. The wait is bounded; a turn
-        that outlives it is left for the drain or the next connect to land. A
-        session no stream covers has nothing to settle: the hooks' sketch is its
-        record until a tail connects."""
+        Codex may flush the reply and `task_complete` only after its hook returns.
+        A timeout must not finalize the stream before those bytes arrive. An open
+        turn stays attached until its matching terminal line commits; a turn already
+        finished can drain immediately. Without a turn id, the idle limit owns exit.
+        """
         state = self.sessions.get(session_id)
-        if state is None:
+        if state is None or turn_id is None:
             return
         state.drain_turn = turn_id
-        if turn_id is not None and turn_id not in state.recorded:
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(state.drain_ready.wait(), STOP_SETTLE_TIMEOUT)
-        state.stop_event.set()
+        if turn_id in state.recorded and (
+            state.open_turn is None or state.open_turn.turn_id != turn_id
+        ):
+            state.stop_event.set()
 
     async def shutdown(self) -> None:
         self.sessions.clear()
 
     async def attach_remote(
-        self, session_id: str, transcript_path: Path, sender: UserProfile
+        self,
+        session_id: str,
+        transcript_path: Path,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> tuple[TailState, dict[str, int]]:
         """Register a streamed session — its rollout lives on the client machine
         that streams it (`octomate codex tail`) — and answer where its files resume.
@@ -222,9 +216,11 @@ class CodexTranscriptTailer:
         dead route feeds the state object it attached, and its commits are
         idempotent.
         """
-        state = TailState(session_id, transcript_path, asyncio.Event(), sender)
+        state = TailState(
+            session_id, transcript_path, asyncio.Event(), sender, address, impulses
+        )
         state.conversation = await self.ensure_session(session_id)
-        state.recorded = assembled(state.conversation)
+        state.recorded = state.conversation.native_run_ids
         self.sessions[session_id] = state
         logger.info("session %s: remote tail attached", session_id)
         return state, {SESSION_FILE: 0}
@@ -338,6 +334,17 @@ class CodexTranscriptTailer:
                 timestamp=line.timestamp,
                 source=state.source,
             )
+            state.open_turn.native = await NativeTurn.open(
+                run_id=turn_id,
+                recorded=state.recorded,
+                conversations=self.conversation_manager,
+                threads=self.thread_manager,
+                locks=self.locks,
+                address=state.address,
+                sender=state.sender,
+                impulses=state.impulses,
+                messages=state.open_turn.messages,
+            )
             return
         turn = state.open_turn
         if turn is None:
@@ -346,48 +353,51 @@ class CodexTranscriptTailer:
         if line.type == "turn_context":
             self.consume_turn_context(turn, line)
             return
-        if line.type == "event_msg":
-            if kind == "user_message":
-                prompt = line.payload.get("message")
-                if isinstance(prompt, str) and prompt:
-                    turn.prompt = prompt
-                    turn.messages.append(
-                        ModelRequest(
-                            parts=[UserPromptPart(content=prompt)],
-                            timestamp=line.timestamp,
-                            metadata=codex_metadata(),
-                        )
-                    )
-            elif kind == "token_count":
-                turn.usage = self.parse_usage(line.payload)
-            elif kind == "sub_agent_activity":
-                child_thread_id = line.payload.get("agent_thread_id")
-                tool_call_id = line.payload.get("event_id")
-                occurred_at_ms = line.payload.get("occurred_at_ms")
-                activity_kind = line.payload.get("kind")
-                if (
-                    isinstance(child_thread_id, str)
-                    and isinstance(tool_call_id, str)
-                    and isinstance(occurred_at_ms, int)
-                    and activity_kind in {"started", "interacted"}
-                ):
-                    state.subagent_calls.setdefault(child_thread_id, []).append(
-                        SubagentCall(turn.turn_id, tool_call_id, occurred_at_ms)
-                    )
-            elif kind in {"task_complete", "turn_aborted"}:
-                ended_id = line.payload.get("turn_id")
-                if ended_id == turn.turn_id:
-                    # An aborted turn is still real work in the file — commit what it
-                    # reached, as an interrupted Claude turn commits at the next
-                    # prompt. (`turn_aborted` carries no last message; the fallback
-                    # read is a no-op there.)
-                    fallback = line.payload.get("last_agent_message")
-                    if not turn.answer and isinstance(fallback, str):
-                        turn.answer = fallback
-                    await self.close_turn(state)
+        if line.type == "response_item" and turn.native is not None:
+            await turn.native.fold(self.consume_response_item(turn, line))
             return
-        if line.type == "response_item":
-            self.consume_response_item(turn, line)
+        if line.type != "event_msg":
+            return
+        if kind == "user_message":
+            prompt = line.payload.get("message")
+            if turn.native is not None and isinstance(prompt, str) and prompt:
+                await turn.native.prompt(
+                    message_id=turn.turn_id
+                    if not turn.native.prompts
+                    else f"{turn.turn_id}:{start}",
+                    text=prompt,
+                    timestamp=line.timestamp,
+                    metadata=codex_metadata(),
+                )
+        elif kind == "token_count":
+            turn.usage = self.parse_usage(line.payload)
+        elif kind == "sub_agent_activity":
+            child_thread_id = line.payload.get("agent_thread_id")
+            tool_call_id = line.payload.get("event_id")
+            occurred_at_ms = line.payload.get("occurred_at_ms")
+            activity_kind = line.payload.get("kind")
+            if (
+                isinstance(child_thread_id, str)
+                and isinstance(tool_call_id, str)
+                and isinstance(occurred_at_ms, int)
+                and activity_kind in {"started", "interacted"}
+            ):
+                state.subagent_calls.setdefault(child_thread_id, []).append(
+                    SubagentCall(turn.turn_id, tool_call_id, occurred_at_ms)
+                )
+        elif kind in {"task_complete", "turn_aborted"}:
+            ended_id = line.payload.get("turn_id")
+            if ended_id == turn.turn_id:
+                # An aborted turn is still real work in the file — commit what it
+                # reached, as an interrupted Claude turn commits at the next
+                # prompt. (`turn_aborted` carries no last message; the fallback
+                # read is a no-op there.)
+                fallback = line.payload.get("last_agent_message")
+                if not turn.answer and isinstance(fallback, str):
+                    turn.answer = fallback
+                await self.close_turn(state)
+                if ended_id == state.drain_turn:
+                    state.stop_event.set()
 
     def subagent_from_metadata(
         self, state: TailState, metadata: SessionMetadata, path: Path
@@ -430,7 +440,12 @@ class CodexTranscriptTailer:
             subagent_id=tail.thread_id,
             parent_conversation_id=parent.id,
         )
-        tail.recorded = assembled(tail.conversation)
+        tail.recorded = tail.conversation.native_run_ids
+        tail.linked_call_ids = {
+            run.parent_tool_call_id
+            for run in tail.conversation.runs
+            if run.parent_tool_call_id is not None
+        }
 
     async def process_subagent_line(
         self,
@@ -459,44 +474,43 @@ class CodexTranscriptTailer:
             )
             return
         turn = tail.open_turn
-        if turn is None:
+        if turn is None or turn.turn_id in tail.recorded:
             return
         turn.end_offset = end
         if line.type == "turn_context":
             self.consume_turn_context(turn, line)
             return
-        if line.type == "event_msg":
-            if kind == "token_count":
-                turn.usage = self.parse_usage(line.payload)
-            elif kind in {"task_complete", "turn_aborted"}:
-                ended_id = line.payload.get("turn_id")
-                if ended_id == turn.turn_id:
-                    fallback = line.payload.get("last_agent_message")
-                    if not turn.answer and isinstance(fallback, str):
-                        turn.answer = fallback
-                    await self.close_subagent_turn(state, tail)
-            return
         if line.type == "response_item":
-            self.consume_response_item(turn, line)
+            for _ in self.consume_response_item(turn, line):
+                pass
+            return
+        if line.type != "event_msg":
+            return
+        if kind == "user_message":
+            prompt = line.payload.get("message")
+            if isinstance(prompt, str) and prompt:
+                turn.messages.append(
+                    ModelRequest(
+                        parts=[UserPromptPart(content=prompt)],
+                        timestamp=line.timestamp,
+                        metadata=codex_metadata(),
+                    )
+                )
+        elif kind == "token_count":
+            turn.usage = self.parse_usage(line.payload)
+        elif kind in {"task_complete", "turn_aborted"}:
+            ended_id = line.payload.get("turn_id")
+            if ended_id == turn.turn_id:
+                fallback = line.payload.get("last_agent_message")
+                if not turn.answer and isinstance(fallback, str):
+                    turn.answer = fallback
+                await self.close_subagent_turn(state, tail)
 
     async def close_subagent_turn(self, state: TailState, tail: SubagentTail) -> None:
         turn = tail.open_turn
         tail.open_turn = None
         if turn is None or turn.turn_id in tail.recorded or not turn.messages:
             return
-        call = next(
-            (
-                candidate
-                for candidate in reversed(state.subagent_calls.get(tail.thread_id, []))
-                if candidate.occurred_at_ms <= int(turn.timestamp.timestamp() * 1000)
-                and candidate.parent_tool_call_id not in tail.linked_call_ids
-            ),
-            None,
-        )
-        if call is not None:
-            tail.linked_call_ids.add(call.parent_tool_call_id)
-            turn.parent_run_id = call.parent_run_id
-            turn.parent_tool_call_id = call.parent_tool_call_id
         for message in reversed(turn.messages):
             if isinstance(message, ModelResponse):
                 if turn.usage is not None:
@@ -516,6 +530,18 @@ class CodexTranscriptTailer:
             async with self.locks.hold(
                 state.session_id, acquire_timeout=COMMIT_LOCK_TIMEOUT
             ):
+                call = next(
+                    (
+                        candidate
+                        for candidate in reversed(
+                            state.subagent_calls.get(tail.thread_id, [])
+                        )
+                        if candidate.occurred_at_ms
+                        <= int(turn.timestamp.timestamp() * 1000)
+                        and candidate.parent_tool_call_id not in tail.linked_call_ids
+                    ),
+                    None,
+                )
                 run = await self.conversation_manager.record_external_run(
                     conversation,
                     run_id=turn.turn_id,
@@ -528,13 +554,17 @@ class CodexTranscriptTailer:
                     source=turn.source,
                     start_offset=turn.start_offset,
                     end_offset=turn.end_offset,
-                    parent_run_id=turn.parent_run_id,
-                    parent_tool_call_id=turn.parent_tool_call_id,
+                    parent_run_id=call.parent_run_id if call is not None else None,
+                    parent_tool_call_id=call.parent_tool_call_id
+                    if call is not None
+                    else None,
                 )
                 span.set_attribute("committed", run is not None)
                 if run is None:
                     return
                 tail.recorded.add(turn.turn_id)
+                if call is not None:
+                    tail.linked_call_ids.add(call.parent_tool_call_id)
                 logger.info(
                     "session %s: subagent %s turn %s synced — %d messages, bytes %d-%d",
                     state.session_id,
@@ -548,7 +578,7 @@ class CodexTranscriptTailer:
     async def close_turn(self, state: TailState) -> None:
         turn = state.open_turn
         state.open_turn = None
-        if turn is None or turn.turn_id in state.recorded or not turn.messages:
+        if turn is None or turn.native is None:
             return
         for message in reversed(turn.messages):
             if isinstance(message, ModelResponse):
@@ -582,14 +612,7 @@ class CodexTranscriptTailer:
                     end_offset=turn.end_offset,
                 )
                 span.set_attribute("committed", run is not None)
-                state.recorded.add(turn.turn_id)
-                if turn.turn_id == state.drain_turn:
-                    state.drain_ready.set()
-                if run is None:
-                    return
-                await self.bind_ledger(
-                    state.session_id, run, turn.prompt, turn.answer, state.sender
-                )
+                await turn.native.close(run, run_id=turn.turn_id, answer=turn.answer)
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
                     state.session_id,
@@ -598,76 +621,6 @@ class CodexTranscriptTailer:
                     turn.start_offset,
                     turn.end_offset,
                 )
-
-    async def bind_ledger(
-        self,
-        session_id: str,
-        run: ExternalAgentRun,
-        prompt: str,
-        answer: str,
-        sender: UserProfile,
-    ) -> None:
-        thread = await self.thread_manager.ensure(
-            ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
-        )
-        request = next(
-            (message for message in run.messages if isinstance(message, ModelRequest)),
-            None,
-        )
-        # A row born here is history, so it is dated by the transcript's clock rather
-        # than this replay's: each message carries the time of the line that produced
-        # it, which is when the turn really happened.
-        if request is not None and prompt:
-            inbound = await self.thread_manager.find_message(
-                thread.id, run.id, "inbound"
-            )
-            if inbound is None:
-                inbound = await self.thread_manager.record_inbound(
-                    MessageEvent(
-                        tentacle_id=CODEX_NATIVE_ID,
-                        message_id=run.id,
-                        chat_id=session_id,
-                        chat_type="thread",
-                        user_id=sender.channel_user_id,
-                        sender=sender,
-                        segments=[TextSegment(data={"text": prompt})],
-                    ),
-                    happened_at=request.timestamp,
-                )
-            elif request.timestamp is not None:
-                # A row the hooks wrote live is on the receipt clock, a beat behind
-                # the rollout line the run is dated by — left alone, the console
-                # sorts the run's work above the prompt that caused it.
-                await self.thread_manager.redate_message(inbound, request.timestamp)
-            await self.thread_manager.bind_messages(
-                [inbound.id], request.id, kind="request_source", run_id=run.id
-            )
-        if answer:
-            answered = next(
-                (
-                    message
-                    for message in reversed(run.messages)
-                    if isinstance(message, ModelResponse)
-                ),
-                None,
-            )
-            outbound = await self.thread_manager.find_message(
-                thread.id, run.id, "outbound"
-            )
-            if outbound is None:
-                outbound = await self.thread_manager.record_outbound(
-                    thread,
-                    agent_tentacle_id=CODEX_NATIVE_ID,
-                    segments=[MarkdownSegment(data={"text": answer})],
-                    sender=sender,
-                    platform_message_id=run.id,
-                    happened_at=answered.timestamp if answered is not None else None,
-                )
-            elif answered is not None and answered.timestamp is not None:
-                await self.thread_manager.redate_message(outbound, answered.timestamp)
-            await self.thread_manager.bind_assistant_replies(
-                [outbound.id], run_id=run.id
-            )
 
     @staticmethod
     def turn_belongs_to_subagent(thread_id: str, turn_id: str) -> bool:
@@ -721,24 +674,29 @@ class CodexTranscriptTailer:
             logger.warning("Codex turn %s has unsupported permissions", turn.turn_id)
 
     @staticmethod
-    def consume_response_item(turn: OpenTurn, line: RolloutLine) -> None:
+    def consume_response_item(
+        turn: OpenTurn, line: RolloutLine
+    ) -> Iterator[AgentStreamEvent]:
+        """Yield whole-item events without changing the rollout's stored message shape."""
         payload = line.payload
         kind = payload_type(line)
         if kind == "message" and payload.get("role") == "assistant":
             texts: list[str] = []
             content = payload.get("content")
-            if isinstance(content, list):
-                for part in content:
-                    if isinstance(part, dict):
-                        part_text = part.get("text")
-                        if isinstance(part_text, str):
-                            texts.append(part_text)
+            if not isinstance(content, list):
+                return
+            for part in content:
+                if isinstance(part, dict) and isinstance(
+                    part_text := part.get("text"), str
+                ):
+                    texts.append(part_text)
             text = "\n".join(texts)
             if text:
                 response_id = payload.get("id")
+                part = TextPart(content=text)
                 turn.messages.append(
                     ModelResponse(
-                        parts=[TextPart(content=text)],
+                        parts=[part],
                         timestamp=line.timestamp,
                         provider_name=CODEX_PROVIDER_NAME,
                         provider_response_id=response_id
@@ -747,6 +705,9 @@ class CodexTranscriptTailer:
                         metadata=codex_metadata(),
                     )
                 )
+                yield PartStartEvent(index=turn.part_index, part=part)
+                yield PartEndEvent(index=turn.part_index, part=part)
+                turn.part_index += 1
                 if (
                     payload.get("phase") == "final_answer"
                     or payload.get("phase") is None
@@ -756,34 +717,48 @@ class CodexTranscriptTailer:
         if kind == "reasoning":
             summary = payload.get("summary")
             texts = []
-            if isinstance(summary, list):
-                for part in summary:
-                    if isinstance(part, str):
-                        texts.append(part)
-                    elif isinstance(part, dict):
-                        part_text = part.get("text")
-                        if isinstance(part_text, str):
-                            texts.append(part_text)
+            if not isinstance(summary, list):
+                return
+            for part in summary:
+                if isinstance(part, str):
+                    texts.append(part)
+                elif isinstance(part, dict) and isinstance(
+                    part_text := part.get("text"), str
+                ):
+                    texts.append(part_text)
             if texts:
+                part = ThinkingPart(content="\n".join(texts))
                 turn.messages.append(
                     ModelResponse(
-                        parts=[ThinkingPart(content="\n".join(texts))],
+                        parts=[part],
                         timestamp=line.timestamp,
                         provider_name=CODEX_PROVIDER_NAME,
                         metadata=codex_metadata(),
                     )
                 )
+                yield PartStartEvent(index=turn.part_index, part=part)
+                yield PartEndEvent(index=turn.part_index, part=part)
+                turn.part_index += 1
             return
         if kind in {"custom_tool_call", "function_call"}:
             call_id = payload.get("call_id")
             name = payload.get("name")
             if isinstance(call_id, str) and isinstance(name, str):
                 args = payload.get("input", payload.get("arguments", {}))
-                turn.pending_calls[call_id] = NativeToolCallPart(
+                call = NativeToolCallPart(
                     tool_name=name,
                     args=args if isinstance(args, str | dict) else {},
                     tool_call_id=call_id,
                     provider_name=CODEX_PROVIDER_NAME,
+                )
+                turn.pending_calls[call_id] = call
+                yield FunctionToolCallEvent(
+                    part=ToolCallPart(
+                        tool_name=call.tool_name,
+                        args=call.args,
+                        tool_call_id=call_id,
+                        provider_name=CODEX_PROVIDER_NAME,
+                    )
                 )
             return
         if kind in {"custom_tool_call_output", "function_call_output"}:
@@ -794,17 +769,22 @@ class CodexTranscriptTailer:
             if call is None:
                 return
             output = payload.get("output", "")
+            yield FunctionToolResultEvent(
+                part=ToolReturnPart(
+                    tool_name=call.tool_name,
+                    content=output,
+                    tool_call_id=call_id,
+                )
+            )
+            result = NativeToolReturnPart(
+                tool_name=call.tool_name,
+                content=output,
+                tool_call_id=call_id,
+                provider_name=CODEX_PROVIDER_NAME,
+            )
             turn.messages.append(
                 ModelResponse(
-                    parts=[
-                        call,
-                        NativeToolReturnPart(
-                            tool_name=call.tool_name,
-                            content=output,
-                            tool_call_id=call_id,
-                            provider_name=CODEX_PROVIDER_NAME,
-                        ),
-                    ],
+                    parts=[call, result],
                     timestamp=line.timestamp,
                     provider_name=CODEX_PROVIDER_NAME,
                     provider_response_id=call_id,

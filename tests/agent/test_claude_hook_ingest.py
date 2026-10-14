@@ -56,7 +56,7 @@ async def test_a_hooks_transcript_path_is_never_followed() -> None:
         threads=octomate.threads,
     )
 
-    await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"), SENDER)
+    await ingest.handle(hook("UserPromptSubmit", "p1", prompt="hi"))
 
     assert tailer.sessions == {}
     assert await ledger(octomate) == []
@@ -64,13 +64,12 @@ async def test_a_hooks_transcript_path_is_never_followed() -> None:
 
 
 async def submit(ingest: ClaudeHookIngest, prompt_id: str, prompt: str) -> None:
-    await ingest.handle(hook("UserPromptSubmit", prompt_id, prompt=prompt), SENDER)
+    await ingest.handle(hook("UserPromptSubmit", prompt_id, prompt=prompt))
 
 
 async def stop(ingest: ClaudeHookIngest, prompt_id: str, answer: str) -> None:
     await ingest.handle(
         hook("Stop", prompt_id, stop_hook_active=False, last_assistant_message=answer),
-        SENDER,
     )
 
 
@@ -191,7 +190,7 @@ async def test_hooks_for_an_sdk_session_are_recorded_as_external() -> None:
 
     await submit(ingest, "p1", "hello")
     await stop(ingest, "p1", "hi")
-    await ingest.handle(hook("SessionEnd", reason="other"), SENDER)
+    await ingest.handle(hook("SessionEnd", reason="other"))
 
     assert await ledger(octomate) == []
     assert await reserved(octomate) == [("p1", [])]
@@ -223,8 +222,8 @@ async def test_empty_prompt_and_empty_answer_are_skipped() -> None:
         threads=octomate.threads,
     )
 
-    await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""), SENDER)
-    await ingest.handle(hook("Stop", "p1", last_assistant_message=""), SENDER)
+    await ingest.handle(hook("UserPromptSubmit", "p1", prompt=""))
+    await ingest.handle(hook("Stop", "p1", last_assistant_message=""))
 
     assert await ledger(octomate) == []
 
@@ -247,7 +246,6 @@ async def test_session_locks_self_clean_and_session_end_finalizes() -> None:
         ClaudeHookInput.model_validate(
             {"hook_event_name": "SessionEnd", "session_id": SESSION_ID, "reason": "x"}
         ),
-        SENDER,
     )
     assert len(ingest.locks.by_session) == 0
 
@@ -262,10 +260,8 @@ async def test_unhandled_events_are_ignored() -> None:
     )
 
     await ingest.handle(
-        hook("PreToolUse", "p1", tool_name="Bash", tool_input={"command": "ls"}), SENDER
+        hook("PreToolUse", "p1", tool_name="Bash", tool_input={"command": "ls"})
     )
-    await ingest.handle(
-        hook("MessageDisplay", "p1", delta="thinking...", final=False), SENDER
-    )
+    await ingest.handle(hook("MessageDisplay", "p1", delta="thinking...", final=False))
 
     assert await ledger(octomate) == []

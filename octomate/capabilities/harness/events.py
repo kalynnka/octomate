@@ -42,7 +42,6 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
 from typing import Annotated, Literal
 
 from pydantic import UUID7, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
@@ -63,7 +62,6 @@ from octomate.schemas.deferred import (
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
-from octomate.schemas.user import UserProfile
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -110,19 +108,6 @@ class RunStartedEvent(BaseModel):
 
     event_kind: Literal["run_started"] = "run_started"
     address: ChannelAddress
-    text: str | None = Field(
-        default=None,
-        description="The opening prompt read from a native turn's transcript.",
-    )
-    sender: UserProfile | None = Field(
-        default=None, description="The authenticated sender of the native prompt."
-    )
-    timestamp: datetime | None = Field(
-        default=None, description="The native prompt's timestamp in its transcript."
-    )
-    thread_message_id: UUID7 | None = Field(
-        default=None, description="The ledger row of the native prompt."
-    )
 
 
 class RunEndedEvent(BaseModel):

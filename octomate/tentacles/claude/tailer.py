@@ -15,26 +15,17 @@ from time import monotonic
 
 from anyio.abc import ObjectSendStream
 from octomate_protocol.stream import SESSION_FILE
-from pydantic import UUID7, ValidationError
+from pydantic import ValidationError
 from pydantic_ai.messages import ModelMessage as PydanticModelMessage
 
-from octomate.capabilities.harness.events import (
-    RunEndedEvent,
-    RunStartedEvent,
-    to_wire,
-)
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.events import MessageEvent
-from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.segments import MarkdownSegment, TextSegment
 from octomate.schemas.thread import (
     CLAUDE_NATIVE_ID,
     ThreadKey,
-    ThreadMessage,
 )
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import claude_logfire
@@ -49,6 +40,7 @@ from octomate.tentacles.claude.transcript import (
     transcript_line_adapter,
 )
 from octomate.tentacles.locks import SessionLocks
+from octomate.tentacles.tailer import NativeTurn
 from octomate.types.permissions import is_claude_mode
 
 logger = logging.getLogger(__name__)
@@ -72,19 +64,6 @@ SUBAGENT_SETTLE_POLL = 0.2
 REMOTE_DRAIN_TIMEOUT = 5.0
 
 
-def assembled(conversation: Conversation) -> set[str]:
-    """The ids of the turns already built from the transcript — the ones a tail may skip.
-
-    Only a completed transcript range seeds the guard. Empty hook reservations
-    and older provisional sketches must still be filled from the transcript.
-    """
-    return {
-        run.id
-        for run in conversation.runs
-        if isinstance(run, ExternalAgentRun) and run.end_offset is not None
-    }
-
-
 def stamp(messages: list[PydanticModelMessage], timestamp: datetime | None) -> None:
     """Date the messages a transcript record produced by that record's own clock — the
     accumulator stamps `now`, which is wrong for a run replayed off disk
@@ -104,7 +83,6 @@ class OpenTurn:
     `finalize`."""
 
     prompt_id: str
-    prompt_text: str  # transcript prompt used for the live event and ledger row
     source: str | None  # the transcript `entrypoint` (claude-vscode / cli / …)
     # Where the turn's opening prompt line says it ran — the opening line specifically,
     # because a transcript carries a `cwd` on every line and a turn's tools wander into
@@ -117,13 +95,14 @@ class OpenTurn:
     accumulator: ClaudeRunAccumulator
     last_line_uuid: str | None
     permission_mode: str | None  # Permission mode on the turn's opening prompt.
+    native: NativeTurn | None = None
 
 
 @dataclass
 class SubagentTail:
     """One subagent transcript's cursor within a session's tail. A subagent writes its
     own file (`<session>/subagents/agent-<agentId>.jsonl`), so it gets its own byte
-    cursor, conversation, open turn, and serial stream worker. Its turns frame on `promptId` change: subagent files
+    cursor, conversation, and open turn. Its turns frame on `promptId` change: subagent files
     carry no `promptSource`, and a resumed subagent's next turn may open on a
     tool-result line, not a prompt."""
 
@@ -155,8 +134,7 @@ class TailState:
     recorded: set[str] = field(default_factory=set)  # prompt_ids already committed
     open_turn: OpenTurn | None = None
     subagents: dict[str, SubagentTail] = field(default_factory=dict)
-    # (agentId, parent turn) -> spawning call; resumed children may be processed
-    # after the parent has already recorded the next invocation.
+    # A parent's file may be ahead of its child, including resumed invocations.
     subagent_calls: dict[tuple[str, str], str] = field(default_factory=dict)
     # The prompt id of a turn whose `Stop` hook fired (`stop_turn`): commit it without
     # waiting for the next prompt line — but commit nothing newer, so a prompt queued
@@ -298,7 +276,7 @@ class ClaudeTranscriptTailer:
                 continue
             tail = self.subagent_tail(state, child.subagent_id)
             tail.conversation = child
-            tail.recorded = assembled(child)
+            tail.recorded = child.native_run_ids
             tail.offset = max(
                 (
                     run.end_offset or 0
@@ -369,7 +347,7 @@ class ClaudeTranscriptTailer:
         """Resolve the session's conversation and seed the committed-turn guard from it,
         so a resume never re-commits a run the last run already wrote."""
         state.conversation = await self.ensure_session(state.session_id)
-        state.recorded = assembled(state.conversation)
+        state.recorded = state.conversation.native_run_ids
 
     async def ensure_session(self, session_id: str) -> Conversation:
         """Map a native Claude session id to its Octomate home — the session's thread and
@@ -412,30 +390,8 @@ class ClaudeTranscriptTailer:
             await self.harvest_subagent_call(state, line)
             if line.prompt_source is not None:
                 await self.close_turn(state)
-                if line.prompt_id in state.recorded:
-                    return
-                if (
-                    await self.conversation_manager.driven_run(
-                        CLAUDE_NATIVE_ID, state.session_id, line.prompt_id
-                    )
-                    is not None
-                ):
-                    state.recorded.add(line.prompt_id)
-                    return
                 await self.record_permission_mode(state, line.permission_mode)
-                state.open_turn, prompt = await self.begin_turn(state, line, start, end)
-                await state.impulses.send(
-                    Impulse(
-                        RunStartedEvent(
-                            address=state.address,
-                            text=state.open_turn.prompt_text,
-                            sender=state.sender,
-                            timestamp=line.timestamp,
-                            thread_message_id=prompt.id,
-                        ),
-                        state.address,
-                    )
-                )
+                state.open_turn = await self.begin_turn(state, line, start, end)
             elif state.open_turn is not None:
                 await self.fold(state, line, end)
         elif isinstance(line, TranscriptAssistantLine):
@@ -493,7 +449,7 @@ class ClaudeTranscriptTailer:
         )
         if not isinstance(tool_use_id, str):
             return
-        async with self.locks.hold(f"{state.session_id}/{agent_id}"):
+        async with self.locks.hold(state.session_id):
             state.subagent_calls[agent_id, line.prompt_id] = tool_use_id
             await self.conversation_manager.link_parent_run(
                 f"{agent_id}:{line.prompt_id}",
@@ -512,13 +468,16 @@ class ClaudeTranscriptTailer:
         turn = state.open_turn
         if turn is None:
             raise RuntimeError(f"session {state.session_id}: no open turn to fold into")
+        if turn.native is None:
+            return
         written = len(turn.accumulator.messages)
-        for event in turn.accumulator.consume(line):
-            if (
-                turn.prompt_id not in state.recorded
-                and (wire := to_wire(event)) is not None
-            ):
-                await state.impulses.send(Impulse(wire, state.address))
+        if isinstance(line, TranscriptUserLine) and (text := prompt_text(line.message)):
+            await turn.native.prompt(
+                message_id=line.uuid,
+                text=text,
+                timestamp=line.timestamp,
+            )
+        await turn.native.fold(turn.accumulator.consume(line))
         stamp(turn.accumulator.messages[written:], line.timestamp)
         turn.end_offset = end
         turn.last_line_uuid = line.uuid
@@ -556,37 +515,27 @@ class ClaudeTranscriptTailer:
 
     async def begin_turn(
         self, state: TailState, line: TranscriptUserLine, start: int, end: int
-    ) -> tuple[OpenTurn, ThreadMessage]:
-        """Open the fold and record its attributed prompt before publishing the start.
-
-        The ledger row makes a new thread readable by the stream's owner. It is
-        reused on replay and bound to the model request when the turn commits.
-        """
-        text = prompt_text(line.message)
-        thread = await self.thread_manager.ensure(ThreadKey.from_address(state.address))
-        async with self.locks.hold(state.session_id):
-            prompt = await self.thread_manager.find_message(
-                thread.id, line.prompt_id, "inbound"
-            )
-            if prompt is None:
-                prompt = await self.thread_manager.record_inbound(
-                    MessageEvent(
-                        tentacle_id=CLAUDE_NATIVE_ID,
-                        message_id=line.prompt_id,
-                        chat_id=state.session_id,
-                        chat_type="thread",
-                        user_id=state.sender.channel_user_id,
-                        sender=state.sender,
-                        segments=[TextSegment(data={"text": text})],
-                    ),
-                    happened_at=line.timestamp,
-                )
+    ) -> OpenTurn:
+        """Open the native lifecycle at the transcript's prompt boundary."""
         accumulator = ClaudeRunAccumulator()
-        accumulator.begin(text)
-        stamp(accumulator.messages, line.timestamp)
-        turn = OpenTurn(
+        native = await NativeTurn.open(
+            run_id=line.prompt_id,
+            recorded=state.recorded,
+            conversations=self.conversation_manager,
+            threads=self.thread_manager,
+            locks=self.locks,
+            address=state.address,
+            sender=state.sender,
+            impulses=state.impulses,
+            messages=accumulator.messages,
+        )
+        text = prompt_text(line.message)
+        if native is not None:
+            await native.prompt(
+                message_id=line.prompt_id, text=text, timestamp=line.timestamp
+            )
+        return OpenTurn(
             prompt_id=line.prompt_id,
-            prompt_text=text,
             source=line.entrypoint,
             cwd=line.cwd,
             start_offset=start,
@@ -594,8 +543,8 @@ class ClaudeTranscriptTailer:
             accumulator=accumulator,
             last_line_uuid=line.uuid,
             permission_mode=line.permission_mode,
+            native=native,
         )
-        return turn, prompt
 
     async def close_turn(self, state: TailState) -> None:
         """Commit the open turn as an `ExternalAgentRun` with its byte range, then bind
@@ -613,7 +562,7 @@ class ClaudeTranscriptTailer:
         """
         turn = state.open_turn
         state.open_turn = None
-        if turn is None or turn.prompt_id in state.recorded:
+        if turn is None or turn.native is None:
             return
         conversation = state.conversation
         if conversation is None:
@@ -644,18 +593,8 @@ class ClaudeTranscriptTailer:
                     last_line_uuid=turn.last_line_uuid,
                 )
                 span.set_attribute("committed", run is not None)
-                state.recorded.add(turn.prompt_id)
-                if run is None:
-                    return
-                reply_id = await self.bind_ledger(
-                    state.session_id,
-                    run,
-                    turn.prompt_text,
-                    turn.accumulator.result_text,
-                    state.sender,
-                )
-                await state.impulses.send(
-                    Impulse(RunEndedEvent(thread_message_id=reply_id), state.address)
+                await turn.native.close(
+                    run, run_id=turn.prompt_id, answer=turn.accumulator.result_text
                 )
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -745,7 +684,7 @@ class ClaudeTranscriptTailer:
             subagent_id=tail.agent_id,
             parent_conversation_id=parent.id,
         )
-        tail.recorded = assembled(tail.conversation)
+        tail.recorded = tail.conversation.native_run_ids
 
     async def process_subagent_line(
         self,
@@ -785,7 +724,6 @@ class ClaudeTranscriptTailer:
         stamp(accumulator.messages, line.timestamp)
         return OpenTurn(
             prompt_id=line.prompt_id,
-            prompt_text=text,
             source=line.entrypoint,
             cwd=line.cwd,
             start_offset=start,
@@ -839,8 +777,7 @@ class ClaudeTranscriptTailer:
             messages=len(turn.accumulator.messages),
         ) as span:
             async with self.locks.hold(
-                f"{state.session_id}/{tail.agent_id}",
-                acquire_timeout=COMMIT_LOCK_TIMEOUT,
+                state.session_id, acquire_timeout=COMMIT_LOCK_TIMEOUT
             ):
                 run = await self.conversation_manager.record_external_run(
                     conversation,
@@ -879,86 +816,3 @@ class ClaudeTranscriptTailer:
         final `close_turn`, at a session-ending drain (`finish_remote`)."""
         for tail in state.subagents.values():
             await self.close_subagent_turn(state, tail)
-
-    async def bind_ledger(
-        self,
-        session_id: str,
-        run: ExternalAgentRun,
-        prompt_text: str,
-        answer: str,
-        sender: UserProfile,
-    ) -> UUID7 | None:
-        """Cross-reference the human ledger (inbound prompt / outbound answer, keyed by
-        `prompt_id = run.id`) to this run. Create rows from the transcript and reuse
-        rows left by older hook installations, so importing them cannot duplicate
-        their ledger. Return
-        the bound reply's id, or None when the turn left no answer."""
-        thread = await self.thread_manager.ensure(
-            ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
-        )
-        prompt_request = next(
-            (
-                message
-                for message in run.messages
-                if isinstance(message, ModelRequest) and message.role == "user"
-            ),
-            None,
-        )
-        # A row born here is history, so it is dated by the transcript's clock rather
-        # than this replay's: `stamp` gave each message the time of the line that
-        # produced it, which is when the turn really happened.
-        if prompt_request is not None:
-            inbound = await self.thread_manager.find_message(
-                thread.id, run.id, "inbound"
-            )
-            if inbound is None:
-                inbound = await self.thread_manager.record_inbound(
-                    MessageEvent(
-                        tentacle_id=CLAUDE_NATIVE_ID,
-                        message_id=run.id,
-                        chat_id=session_id,
-                        chat_type="thread",
-                        user_id=sender.channel_user_id,
-                        sender=sender,
-                        segments=[TextSegment(data={"text": prompt_text})],
-                    ),
-                    happened_at=prompt_request.timestamp,
-                )
-            elif prompt_request.timestamp is not None:
-                # A row the hooks wrote live is on the receipt clock, a beat behind
-                # the transcript line the run is dated by — left alone, the console
-                # sorts the run's work above the prompt that caused it.
-                await self.thread_manager.redate_message(
-                    inbound, prompt_request.timestamp
-                )
-            await self.thread_manager.bind_messages(
-                [inbound.id], prompt_request.id, kind="request_source", run_id=run.id
-            )
-        if answer:
-            answered = next(
-                (
-                    message
-                    for message in reversed(run.messages)
-                    if isinstance(message, ModelResponse)
-                ),
-                None,
-            )
-            outbound = await self.thread_manager.find_message(
-                thread.id, run.id, "outbound"
-            )
-            if outbound is None:
-                outbound = await self.thread_manager.record_outbound(
-                    thread,
-                    agent_tentacle_id=CLAUDE_NATIVE_ID,
-                    segments=[MarkdownSegment(data={"text": answer})],
-                    sender=sender,
-                    platform_message_id=run.id,
-                    happened_at=answered.timestamp if answered is not None else None,
-                )
-            elif answered is not None and answered.timestamp is not None:
-                await self.thread_manager.redate_message(outbound, answered.timestamp)
-            await self.thread_manager.bind_assistant_replies(
-                [outbound.id], run_id=run.id
-            )
-            return outbound.id
-        return None

@@ -440,15 +440,15 @@ Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
 
-Claude hooks reserve empty runs; the transcript owns messages and their ledger
+Claude and Codex hooks reserve empty runs; the transcript owns messages and their ledger
 bindings. Preserve order within each transcript independently of receipt time or
-wall-clock timestamps. Parent and child transcripts have separate serial workers
-and retain their conversation and spawning-call relationships. See the
+wall-clock timestamps. Parent and child transcripts retain their separate
+conversations and spawning-call relationships. See the
 [Claude ingest contract](../api/tentacles/hooks.md#octomate.tentacles.claude.ingest.ClaudeHookIngest).
 
-For live native ingest, follow Claude and DeepSeek: publish the turn on the nerve
-so an open console can show it while the tailer assembles it. Codex currently
-records native history without publishing live events.
+All three native tailers publish turns on the nerve so an open console can show
+them as they are assembled. DeepSeek's hooks carry no turn identity; its tail
+creates the complete run from the session log.
 
 After validating the stream's hello and resolving its sender, construct the
 native address in the tentacle and keep its publisher open for the connection:
@@ -467,15 +467,13 @@ async with (
     await self.stream_attached(websocket, hello, sender, address, impulses)
 ```
 
-The connection handler passes the address and publisher to the tailer. Reuse
-[`to_wire`](../api/capabilities/harness.md#octomate.capabilities.harness.events.to_wire)
-to translate accumulator events, as the reflex graph does. The
-[`Nerve.publish` contract](../api/tentacles/nerve.md#octomate.nerve.Nerve.publish)
-covers buffering and draining; the
-[Claude tailer](../api/tentacles/hooks.md#octomate.tentacles.claude.tailer.ClaudeTranscriptTailer)
-and [DeepSeek fold](../api/tentacles/hooks.md#octomate.tentacles.deepseek.tailer.DeepseekEventTailer.fold)
-document turn brackets, ledger settlement and replay. Native ingest observes the
-runtime without waking a reflex.
+The connection handler passes the address and publisher to the tailer. Use
+[`NativeTurn`](../api/tentacles/hooks.md#octomate.tentacles.tailer.NativeTurn)
+for the shared turn lifecycle, including prompt delivery, replay exclusion and
+ledger settlement. Keep the runtime's transcript parsing in its own tailer.
+The [`Nerve.publish` contract](../api/tentacles/nerve.md#octomate.nerve.Nerve.publish)
+covers buffering and draining. Native ingest observes the runtime without waking
+a reflex.
 
 To support native-history teleport, implement `read_fork_transcript`, which
 answers the owner's uploaded history up to its latest whole turn, and

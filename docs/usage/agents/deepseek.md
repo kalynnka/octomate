@@ -81,7 +81,8 @@ cancels questions at once.
 ## Native sessions
 
 A console with the thread open shows the turn as the tail folds it, a whole
-message at a time. When the turn finishes, it settles into the ledger.
+message at a time. Prompts sent during a turn stay between the replies they
+arrived between. When the turn finishes, it settles into the ledger in that order.
 
 `octomate deepseek hooks install --bridge <checkout>/packages/hooks/hooks-claude-code`
 links the bridge plugin that speaks Claude Code's hook dialect and mounts it through

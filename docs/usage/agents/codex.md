@@ -176,8 +176,12 @@ reviewer, including `auto_review`; Octomate does not add another confirmation.
 
 ## Native sessions
 
-Opening a native thread in the console shows one copy of each prompt and reply,
-even while the full turn history is still arriving.
+A console with the native thread open shows prompts, reasoning, tool activity
+and replies as the tail reads them, a whole item at a time. The completed turn
+settles into the ledger. Prompts sent while a turn is running stay between the
+replies they arrived between. Without a connected tail, no messages are imported.
+The tail keeps watching after a reply finishes until its completed turn is saved,
+so the final reply does not need another prompt to appear in the console.
 
 `octomate codex hooks install` registers `SessionStart`, `UserPromptSubmit`,
 `Stop`, `SubagentStart` and `SubagentStop`. Codex must trust the hooks: open

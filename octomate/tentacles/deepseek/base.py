@@ -423,9 +423,7 @@ class DeepseekTentacle(AgentTentacle[str, None]):
                     )
                     return
                 expected[SESSION_FILE] = message.end
-                await self.session_tailer.feed_remote(
-                    state, None, message.line, message.start, message.end
-                )
+                await self.session_tailer.feed_remote(state, message.line)
         except WebSocketDisconnect:
             pass
         except ValidationError:

@@ -368,7 +368,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         parent_run_id: str | None = None,
         parent_tool_call_id: str | None = None,
     ) -> ExternalAgentRun | None:
-        """Persist a turn of an external runtime's session (native Claude) as the
+        """Persist a turn of a native runtime's session as the
         `external` variant. `cwd` is the directory the turn ran in, as the hook or
         the transcript reported it. `native_session_id` doubles as the
         conversation's resumable handle (`external_id`).
@@ -385,15 +385,11 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
         never one another tailer already committed.
 
         Omitting messages reserves a run identity without changing an existing run.
-        Claude hooks use this so the transcript remains the only message writer.
+        Native hooks use this so the transcript remains the only message writer.
 
-        A run with no byte range can also be provisional — a hook's sketch of a turn still in
-        flight, which sees the prompt and the answer but nothing of the thinking and
-        tool calls between them. It exists so a live turn is a whole
-        conversation → run → messages chain rather than messages with nowhere to hang.
-        Recording over it replaces its contents in place, the transcript's full
-        timeline superseding the sketch once the turn closes: the run keeps its row,
-        and with it every history that includes it.
+        Completing a reserved run fills its messages in transcript order while
+        preserving its identity. Older incomplete imports may contain provisional
+        messages; the completed transcript replaces those in the same commit.
         """
         driven = await self.driven_run(
             conversation.agent_tentacle_id, native_session_id, run_id
@@ -424,7 +420,7 @@ class ConversationManager(Manager, Locks[tuple[UUID7, str, str]]):
                 AgentRun, expressions=[AgentRun["id"] == run_id]
             )
             if stored is not None:
-                if not messages:
+                if not messages and end_offset is None:
                     return stored if isinstance(stored, ExternalAgentRun) else None
                 if (
                     not isinstance(stored, ExternalAgentRun)

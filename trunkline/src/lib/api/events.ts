@@ -216,7 +216,10 @@ export interface DeferredToolResultsEvent {
 export interface EnqueuedMessagesEvent {
   event_kind: 'enqueued_messages'
   enqueue_id: string
-  messages: unknown[]
+  messages: Array<
+    | Pick<Extract<ApiModelMessage, { kind: 'request' }>, 'kind' | 'parts' | 'timestamp'>
+    | Pick<Extract<ApiModelMessage, { kind: 'response' }>, 'kind' | 'parts' | 'timestamp'>
+  >
 }
 
 // ---- octomate extension events --------------------------------------------
@@ -340,14 +343,8 @@ export interface RunUsage {
 export interface RunStartedEvent {
   event_kind: 'run_started'
   address: ChannelAddress
-  text?: string | null
-  sender?: ApiUserProfile | null
-  timestamp?: string | null
-  thread_message_id?: string | null
 }
 
-/** An agent run over, finished or failed, after everything it streamed: the
- *  counterpart of `RunStartedEvent`. */
 export interface RunEndedEvent {
   event_kind: 'run_ended'
 }
