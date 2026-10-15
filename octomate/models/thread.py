@@ -349,7 +349,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         String,
         nullable=False,
         server_default="message",
-        comment="Whether this ledger row is a chat message or an explicit command.",
+        comment="Whether this ledger row is a chat message, explicit command, or MCP app.",
     )
 
     thread_id: Mapped[UUID7] = mapped_column(
@@ -449,6 +449,21 @@ class ThreadCommand(ThreadMessage):
         JSON(none_as_null=True),
         nullable=True,
         comment="Recorded command outcome; NULL means no terminal outcome was recorded, not permission to retry.",
+    )
+
+
+class ThreadMcpAppInvocation(ThreadMessage):
+    """A recorded app invocation in the shared ledger, separate from model input."""
+
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "mcp_app"}
+
+    app_invocation: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment=(
+            "MCP app invocation: original installation identity, tool declaration, "
+            "UI resource URI, arguments, and complete result. Retained after uninstall."
+        ),
     )
 
 

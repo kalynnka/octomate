@@ -35,13 +35,16 @@ from octomate.schemas.segments import MessageSegment
 # resolves a transmuter's relation hints in its own module and re-reads an
 # unresolved one on every access, so each module is given the other's names.
 messages.__dict__.update(
-    ThreadMessage=thread.ThreadMessage, ThreadCommand=thread.ThreadCommand
+    ThreadMessage=thread.ThreadMessage,
+    ThreadCommand=thread.ThreadCommand,
+    ThreadMcpAppInvocation=thread.ThreadMcpAppInvocation,
 )
 thread.__dict__.update(
     ModelRequest=messages.ModelRequest, ModelResponse=messages.ModelResponse
 )
 thread.ThreadMessage.model_rebuild()
 thread.ThreadCommand.model_rebuild()
+thread.ThreadMcpAppInvocation.model_rebuild()
 messages.ModelMessage.model_rebuild()
 rebuild_dataclass(messages.ModelRequest)
 rebuild_dataclass(messages.ModelResponse)

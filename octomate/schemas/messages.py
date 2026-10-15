@@ -38,7 +38,11 @@ from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
-    from octomate.schemas.thread import ThreadCommand, ThreadMessage
+    from octomate.schemas.thread import (
+        ThreadCommand,
+        ThreadMcpAppInvocation,
+        ThreadMessage,
+    )
 
 # `metadata` is reserved on SQLAlchemy's DeclarativeBase, so the ORM column
 # lives on the `meta` Python attribute. arcanus' bless resolves ORM attributes
@@ -82,7 +86,9 @@ class ModelMessage(BaseTransmuter, ABC):
     timestamp: AwareDatetime | None = None
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
-    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
+    thread_messages: RelationCollection[
+        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+    ] = Relationships()
 
     @abstractmethod
     def _concrete_message(self) -> None:
@@ -104,7 +110,9 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     message_text: str | None = None
     # The chat rows this request was built from: who said them, and what they
     # said before the prompt dressed it.
-    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
+    thread_messages: RelationCollection[
+        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+    ] = Relationships()
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:
@@ -142,7 +150,9 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
     # The chat rows that delivered this response's answer.
-    thread_messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
+    thread_messages: RelationCollection[
+        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+    ] = Relationships()
 
     @model_validator(mode="after")
     def _derive_message_fields(self) -> Self:

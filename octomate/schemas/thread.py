@@ -24,6 +24,7 @@ from octomate.models import thread as thread_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.commands import CommandInvocation, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.mcp import McpAppInvocation, McpAppReference
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
@@ -154,7 +155,7 @@ class ThreadMessage(BaseTransmuter):
     kind: Literal["message"] = Field(
         default="message",
         frozen=True,
-        description="Whether this ledger row is a chat message or an explicit command.",
+        description="Whether this ledger row is a chat message, explicit command, or MCP app.",
     )
     thread_id: UUID7
     platform_message_id: str | None = None
@@ -221,6 +222,32 @@ class ThreadCommand(ThreadMessage):
         if not self.platform_message_id:
             raise ValueError("command deliveries require a platform_message_id")
         return self
+
+
+@sqlalchemy_materia.bless(thread_models.ThreadMcpAppInvocation)
+class ThreadMcpAppInvocation(ThreadMessage):
+    """A durable app card whose invocation is read through an authorized loader.
+
+    Generic ledger serialization carries only `app`, the card's reference. The
+    full payload is persisted by Arcanus but excluded from that public shape.
+    """
+
+    kind: Literal["mcp_app"] = Field(default="mcp_app", frozen=True)
+    app_invocation: McpAppInvocation = Field(
+        exclude=True,
+        repr=False,
+        description="Recorded invocation, accessible only through the authorized app read.",
+    )
+
+    @computed_field
+    @property
+    def app(self) -> McpAppReference:
+        """The card reference shared by ledger readers and live availability events."""
+        return McpAppReference(
+            id=self.id,
+            provider_name=self.app_invocation.provider_name,
+            tool_name=self.app_invocation.tool.name,
+        )
 
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
@@ -331,7 +358,9 @@ class Thread(BaseTransmuter):
     )
     parent: Relation[Thread | None] = Field(default_factory=Relation, frozen=True)
 
-    messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
+    messages: RelationCollection[
+        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+    ] = Relationships()
     handoffs: RelationCollection[Handoff] = Relationships()
     conversations: RelationCollection[Conversation] = Relationships(exclude=True)
 

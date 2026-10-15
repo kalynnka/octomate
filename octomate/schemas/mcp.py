@@ -8,13 +8,15 @@ from typing import Annotated, Literal, Self
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from mcp.types import Tool
+from mcp.types import CallToolResult, Tool
 from pydantic import (
     UUID7,
+    AnyUrl,
     AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
+    JsonValue,
     SecretStr,
     UrlConstraints,
     model_validator,
@@ -24,6 +26,41 @@ from uuid_utils.compat import uuid7
 from octomate.models import mcp as mcp_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
+
+
+class McpAppInvocation(BaseModel):
+    """A completed MCP app call, retained independently of its installation.
+
+    The tool declaration and complete result are snapshots: replay needs neither
+    another tool call nor a namespace lookup that could resolve a replacement
+    installation. The UI resource itself is fetched under the viewer's access.
+    """
+
+    installation_id: UUID7 = Field(
+        description="The original installation's identity, retained after uninstall."
+    )
+    namespace: str = Field(description="The installation's namespace at execution.")
+    provider_name: str = Field(
+        description="The installation's display name at execution."
+    )
+    tool: Tool = Field(description="The upstream tool declaration at execution.")
+    resource_uri: Annotated[AnyUrl, UrlConstraints(allowed_schemes=["ui"])] = Field(
+        description="The UI resource declared by the tool, read through its installation.",
+    )
+    arguments: dict[str, JsonValue] = Field(
+        description="Original arguments passed to the upstream tool, without clipping."
+    )
+    result: CallToolResult = Field(
+        description="Complete upstream result, including structured content and metadata."
+    )
+
+
+class McpAppReference(BaseModel):
+    """A ledger card's identity and label, without its private invocation data."""
+
+    id: UUID7 = Field(description="The ledger row containing the recorded invocation.")
+    provider_name: str = Field(description="The installation's recorded display name.")
+    tool_name: str = Field(description="The upstream tool's recorded name.")
 
 
 class NoAuth(BaseModel):

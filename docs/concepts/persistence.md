@@ -27,6 +27,7 @@ Thread                           a chat room, or a piece of work
  ├─ project_id                   only for a thread or a native thread
  ├─ ThreadMessage                the chat ledger, one row per visible message
  │    ├─ ThreadCommand           explicit command receipt and outcome
+ │    ├─ ThreadMcpAppInvocation  recorded MCP app invocation
  │    └─ MessageBinding ──▶ ModelMessage
  ├─ Handoff                      append-only ownership transfers
  └─ Conversation                 one per (agent, subagent) in the thread

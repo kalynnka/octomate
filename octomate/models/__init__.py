@@ -48,6 +48,7 @@ from octomate.models.thread import (
     Thread,
     ThreadCommand,
     ThreadLedger,
+    ThreadMcpAppInvocation,
     ThreadMessage,
 )
 from octomate.models.todos import Todo
@@ -89,6 +90,7 @@ __all__ = [
     "Thread",
     "ThreadCommand",
     "ThreadLedger",
+    "ThreadMcpAppInvocation",
     "ThreadMessage",
     "Todo",
     "ToolOutputSpill",
