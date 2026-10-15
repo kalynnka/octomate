@@ -30,7 +30,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import NATIVE_TELEPORT_STARTED, TELEPORT_RECORDED
 from octomate.mcp.server import octomate_mcp
-from octomate.nerve import ThreadTopic
+from octomate.nerve import Nerve, ThreadTopic
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -591,7 +591,7 @@ async def test_a_native_scheme_kicks_its_handoff_at_once(
 async def a_turn_of_alices(in_memory_engine: AsyncEngine) -> FastMCP:
     """A driven turn answering alice in a sub-thread. Her history is the chat she
     spoke in, bob's replies there included; bob's own direct messages are not."""
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
 
     def said(message_id: str, chat_id: str, user_id: str, text: str) -> MessageEvent:
         return MessageEvent(
@@ -663,7 +663,7 @@ async def test_a_native_session_reads_its_users_history(
     any turn."""
     await a_user("luhui", profiles={"im": "alice"})
     users = UserManager()
-    threads = ThreadManager(users=users)
+    threads = ThreadManager(nerve=Nerve(), users=users)
     await threads.record_inbound(
         MessageEvent(
             tentacle_id="im",

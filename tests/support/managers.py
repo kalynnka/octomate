@@ -32,6 +32,7 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager, message_text_from_segments
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Nerve
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.conversation import (
     ChannelAddress,
@@ -125,7 +126,7 @@ async def a_thread(chat_id: str = "chat") -> UUID7:
     """A persisted `threads` row to hang conversations off, idempotent per
     `chat_id`. A conversation's `thread_id` is a real foreign key, so a bare
     `uuid7()` names a parent that does not exist."""
-    thread = await ThreadManager(users=UserManager()).ensure(
+    thread = await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(
         ThreadKey(channel_tentacle_id="test", chat_type="dm", chat_id=chat_id)
     )
     return thread.id
@@ -313,6 +314,7 @@ class FakeUserManager(UserManager):
 @dataclass
 class FakeThreadManager(ThreadManager):
     users: UserManager = field(default_factory=FakeUserManager)
+    nerve: Nerve = field(default_factory=Nerve)
     threads_by_key: dict[ThreadKey, Thread] = field(default_factory=dict)
     # Kept apart from `threads_by_key`: a sub-thread shares its chat room's key,
     # and nothing ever looks one up by address.

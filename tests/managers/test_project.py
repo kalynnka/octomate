@@ -18,6 +18,7 @@ from octomate.database import async_session
 from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.project import DirectoryUpstream, Project, RemoteUpstream
 from octomate.schemas.thread import Thread, ThreadKey
 from tests.support.managers import a_project, a_registry
@@ -466,7 +467,7 @@ async def test_a_declared_name_a_registered_project_already_holds_is_refused(
 
 async def a_work_thread(project: Project | None) -> Thread:
     """A thread of the one kind that carries a project, attributed or not."""
-    return await ThreadManager(users=UserManager()).ensure(
+    return await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(
         ThreadKey(
             channel_tentacle_id="test",
             chat_type="thread",

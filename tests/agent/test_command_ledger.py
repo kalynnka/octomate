@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.commands import CommandError, CommandInvocation, CommandResult
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
@@ -17,7 +18,7 @@ from octomate.schemas.user import UserProfile
 
 @pytest.fixture
 async def receipt(in_memory_engine: AsyncEngine) -> ThreadCommand:
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     opening = await threads.record_inbound(
         MessageEvent(
             tentacle_id="im",
@@ -73,7 +74,7 @@ async def test_command_receipt_and_outcome_roundtrip(
         assert stored.outcome is None
         stored.outcome = outcome
         await session.commit()
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     delivery = await threads.find_message(receipt.thread_id, "command-1", "inbound")
     assert isinstance(delivery, ThreadCommand)
     assert delivery.outcome == outcome
@@ -86,7 +87,7 @@ async def test_commands_stay_in_history_without_consuming_pending_chat(
     async with async_session() as session:
         session.add(receipt)
         await session.commit()
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await threads.get(receipt.thread_id)
     assert thread is not None
     assert [message.kind for message in thread.messages] == ["message", "command"]

@@ -40,6 +40,7 @@ from octomate.managers.user import UserManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.managers.workspaces.base import thread_ref
 from octomate.managers.workspaces.mirrors import run_git
+from octomate.nerve import Nerve
 from octomate.reflex import (
     DeferredResult,
     ReflexDeps,
@@ -2336,7 +2337,7 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     )
     project = workspaces.projects.get("inky")
     assert project is not None
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2391,7 +2392,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         mirrors=MirrorManager(config=MirrorsConfig(), mirrors_dir=tmp_path / "mirrors"),
         workspaces_dir=tmp_path / "workspaces",
     )
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",
@@ -2464,7 +2465,7 @@ async def test_a_teleport_out_of_a_project_thread_takes_the_project_and_its_tree
     )
     project = workspaces.projects.get("inky")
     assert project is not None
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     address = ChannelAddress(
         channel_tentacle_id="im",
         chat_type="thread",

@@ -23,6 +23,7 @@ from octomate.managers.gateway import (
 )
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import ThreadKey
@@ -1214,7 +1215,7 @@ async def test_a_native_call_binds_only_a_session_its_caller_wrote(
     else's session, or one never uploaded, finds nothing to move."""
     owner = await a_user("luhui")
     users = UserManager()
-    threads = ThreadManager(users=users)
+    threads = ThreadManager(nerve=Nerve(), users=users)
     profile = await users.native_profile(CLAUDE_NATIVE_ID, "luhui")
     assert profile is not None
     written = await threads.ensure(ThreadKey(CLAUDE_NATIVE_ID, "thread", "sess-1"))

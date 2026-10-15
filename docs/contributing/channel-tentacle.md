@@ -237,6 +237,12 @@ published to a registered user's topic. Publishers establish who may receive a
 notification and publish separately to each user's topic. See the
 [nerve subscription contract](../api/tentacles/nerve.md#octomate.nerve.Nerve.subscribe).
 
+Thread listing changes notify registered participants after the change commits,
+with distinct events carrying the affected values.
+Inherited history does not grant notifications, and work sub-threads are excluded,
+just as they are from the listing. See the
+[thread notification contract](../api/managers/conversations.md#octomate.managers.thread.ThreadManager.publish).
+
 ## 7. Tests
 
 Replay the canonical scenarios from `tests/support/scenarios.py` through your
