@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.artifacts import Artifact, McpAppArtifact
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.mcp import McpAppInvocation, NoAuthMcp
@@ -77,7 +78,7 @@ async def app_artifact(in_memory_engine: AsyncEngine) -> McpAppArtifact:
 
 @pytest.fixture
 async def app_entry(app_artifact: McpAppArtifact) -> ThreadArtifact:
-    opening = await ThreadManager(users=UserManager()).record_inbound(
+    opening = await ThreadManager(nerve=Nerve(), users=UserManager()).record_inbound(
         MessageEvent(
             tentacle_id="im",
             chat_type="group",
@@ -126,7 +127,9 @@ async def test_generic_ledger_serialization_exposes_only_the_artifact_id(
     async with async_session() as session:
         session.add(app_entry)
         await session.commit()
-    thread = await ThreadManager(users=UserManager()).get(app_entry.thread_id)
+    thread = await ThreadManager(nerve=Nerve(), users=UserManager()).get(
+        app_entry.thread_id
+    )
     assert thread is not None
     stored = thread.messages[-1]
     assert isinstance(stored, ThreadArtifact)
@@ -234,7 +237,7 @@ async def test_distinct_artifact_entries_follow_ledger_paging_and_fork_cuts(
             )
         )
         await session.commit()
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     newest = await threads.messages_page(app_entry.thread_id, limit=1, unbound=True)
     assert [row.id for row in newest.items] == [second.id]
     assert newest.has_more
