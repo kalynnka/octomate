@@ -33,6 +33,7 @@ from octomate.types.threads import (
 )
 
 if TYPE_CHECKING:
+    from octomate.models.artifacts import Artifact
     from octomate.models.conversation import Conversation
     from octomate.models.messages import ModelMessage
     from octomate.models.project import Project
@@ -349,7 +350,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         String,
         nullable=False,
         server_default="message",
-        comment="Whether this ledger row is a chat message or an explicit command.",
+        comment="Whether this ledger row is a chat message, explicit command, or artifact reference.",
     )
 
     thread_id: Mapped[UUID7] = mapped_column(
@@ -450,6 +451,21 @@ class ThreadCommand(ThreadMessage):
         nullable=True,
         comment="Recorded command outcome; NULL means no terminal outcome was recorded, not permission to retry.",
     )
+
+
+class ThreadArtifact(ThreadMessage):
+    """An artifact's appearance in a ledger, independent of the content's lifetime."""
+
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "artifact"}
+
+    artifact_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("artifacts.id", name="fk_thread_artifact", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+        comment="Referenced artifact; its identity and ownership are independent of this ledger row.",
+    )
+    artifact: Mapped[Artifact] = relationship("Artifact", lazy="raise_on_sql")
 
 
 class Handoff(Base, TransmuterProxiedMixin):

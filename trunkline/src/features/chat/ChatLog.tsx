@@ -26,6 +26,8 @@ export function ChatLog() {
   // Latest page first; scroll-top reveals earlier pages (loadOlder), reading
   // them off the relay once the ones in hand run out.
   const visible = ledger.slice(-ledgerN)
+  const saved = new Set(ledger.map((item) => item.uid))
+  const items = [...visible, ...live.filter((item) => !saved.has(item.uid))]
   const earlier = visible.length < ledger.length || detail?.earlier === true
   const blank = ntOn && live.length === 0
 
@@ -82,18 +84,15 @@ export function ChatLog() {
             </span>
           </div>
         )}
-        {visible.map((item, i) => (
+        {items.map((item, i) => (
           // Motion runs newest-first: the stagger index counts up from the
           // bottom, so the latest page rises while earlier reveals stay calm.
           <LedgerRow
             key={item.uid}
             item={item}
             cardMax={CARD_MAX}
-            i={Math.min(visible.length - 1 - i, 7)}
+            i={Math.min(items.length - 1 - i, 7)}
           />
-        ))}
-        {live.map((item) => (
-          <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />
         ))}
         {notices.map((item) => (
           <LedgerRow key={item.uid} item={item} cardMax={CARD_MAX} />

@@ -6,7 +6,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from arcanus import Cursor, Page
+from arcanus import Cursor, Page, Relation
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
@@ -26,6 +26,7 @@ from octomate.managers.base import Locks, Manager
 from octomate.managers.conversation import own_runs
 from octomate.managers.user import UserManager
 from octomate.nerve import Impulse, Nerve, UserTopic
+from octomate.schemas.artifacts import Artifact
 from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
@@ -40,6 +41,7 @@ from octomate.schemas.thread import (
     MessageBinding,
     MessageBindingKind,
     Thread,
+    ThreadArtifact,
     ThreadCommand,
     ThreadKey,
     ThreadLedger,
@@ -560,6 +562,31 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 )
             )
         await self.publish(thread, *events)
+
+    async def record_artifact(
+        self,
+        thread_id: UUID7,
+        artifact: Artifact,
+        *,
+        sender: UserProfile,
+        agent_tentacle_id: str,
+    ) -> ThreadArtifact:
+        """Commit an artifact and its ledger reference together before publication."""
+        thread = await self.get(thread_id, with_messages=False)
+        if thread is None:
+            raise ValueError(f"unknown thread {thread_id}")
+        sender = await self.users.ensure_profile(thread.channel_tentacle_id, sender)
+        message = ThreadArtifact(
+            thread_id=thread.id,
+            direction="outbound",
+            actor_kind="agent",
+            sender_id=sender.id,
+            agent_tentacle_id=agent_tentacle_id,
+            artifact_id=artifact.id,
+            artifact=Relation(artifact),
+        )
+        await self.store_message(message, thread)
+        return message
 
     async def record_command_outcome(
         self, receipt_id: uuid.UUID, outcome: CommandOutcome

@@ -257,7 +257,9 @@ def tentacles_mcp(
     )
     async def list_tools(namespace: str) -> McpToolCatalog:
         try:
-            return await manager.catalog(await resolve_session(), namespace)
+            return await manager.catalog(
+                await resolve_session(), namespace, refresh=True
+            )
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
         except (httpx2.HTTPError, MCPError, TimeoutError) as error:
@@ -277,13 +279,18 @@ def tentacles_mcp(
         arguments: dict[str, JsonValue],
     ) -> ToolResult:
         try:
-            async with manager.acquire(await resolve_session(), namespace) as client:
-                result = await client.call_tool_mcp(name, arguments)
-                return ToolResult(
-                    content=result.content,
-                    structured_content=result.structured_content,
-                    is_error=result.is_error,
-                )
+            result = await manager.call_tool(
+                await resolve_session(),
+                namespace,
+                name,
+                arguments,
+            )
+            return ToolResult(
+                content=result.content,
+                structured_content=result.structured_content,
+                is_error=result.is_error,
+                meta=result.meta,
+            )
         except McpUnavailable as error:
             raise ToolError(str(error)) from error
         except (httpx2.HTTPError, MCPError, TimeoutError) as error:

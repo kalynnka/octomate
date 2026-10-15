@@ -88,7 +88,13 @@ from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
+from octomate.schemas.thread import (
+    Thread,
+    ThreadArtifact,
+    ThreadCommand,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -433,7 +439,7 @@ def build_trunkline_router(
     @router.get(
         "/threads/{thread_id}/messages",
         summary="The thread's chat ledger, newest first, a page at a time",
-        response_model=Page[ThreadMessage | ThreadCommand],
+        response_model=Page[ThreadMessage | ThreadCommand | ThreadArtifact],
         response_model_exclude={"items": {"__all__": {"model_messages"}}},
     )
     async def thread_messages(
@@ -443,8 +449,8 @@ def build_trunkline_router(
         unbound: bool = False,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> Page[ThreadMessage]:
-        """Every row the thread shows, its commands among them. `cursor` is a
-        page's `next_cursor`, read further back. `unbound` keeps to the rows no
+        """Every row the thread shows, including command receipts and artifact references.
+        `cursor` is a page's `next_cursor`, read further back. `unbound` keeps to the rows no
         model message of the thread carries — notices, commands, a chat room's
         talk — since the rest arrive bound to the model messages they prompted or
         delivered."""

@@ -22,6 +22,7 @@ export default defineConfig({
       // `ws` carries the console's live socket, `/api/trunkline/live`, through too.
       '/api': { target: apiUrl, ws: true },
       '/oauth': apiUrl,
+      '^/artifacts/sandbox(?:\\.js)?(?:\\?|$)': apiUrl,
     },
   },
 })

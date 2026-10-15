@@ -35,6 +35,7 @@ import { TurnFold } from '@/lib/api/fold'
 import { channelMeta, holdingBack, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
+import { withArtifact } from '@/features/artifacts/ledger'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
@@ -564,7 +565,7 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       retry: false,
     })
     if (get().selThreadId !== thId || streamingOn.has(thId)) return
-    if (settled()) set({ detail, live: [], running: false })
+    if (settled()) set((s) => ({ detail, live: s.live.filter((item) => item.kind === 'artifact' && !detail.ledger.some((saved) => saved.uid === item.uid)), running: false }))
     else showDetail(detail)
   }
 
@@ -587,7 +588,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const shown = () => viewing === watching && get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
-      if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
+      if (event.event_kind === 'artifact_available') {
+        set((s) => ({ live: withArtifact(s.live, event, s.detail?.ledger) }))
+      } else if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
         // A replay replaces only the unfinished turn, keeping earlier turns mounted.
         if (fold) set(s => ({ live: s.live.filter(item => !turnItems.has(item.uid)) }))
         turnItems.clear()
@@ -711,6 +714,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
       received++
+      if (event.event_kind === 'artifact_available') {
+        clearDots()
+        edit((live) => withArtifact(live, event, here() ? get().detail?.ledger : undefined))
+        return
+      }
       if (event.event_kind === 'run_result' || event.event_kind === 'run_error' || event.event_kind === 'command_outcome') {
         terminal = true
       }
@@ -765,6 +773,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // sees wake: anything before it ends a reflex that woke before the socket.
     let woke = joinsAwake
     const onEvent = (event: WireEvent) => {
+      if (event.event_kind === 'artifact_available' && !following) {
+        feed(event)
+        return
+      }
       if (event.event_kind === 'reflex_awake') {
         woke = true
         return

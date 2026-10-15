@@ -24,6 +24,7 @@ from rich.style import Style
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from octomate.config.base import OctomateConfig
+from octomate.managers.artifacts import ArtifactManager
 from octomate.managers.auth import AuthManager
 from octomate.managers.commands import CommandManager
 from octomate.managers.conversation import ConversationManager
@@ -138,6 +139,7 @@ class Octomate(FastAPI):
     auth: AuthManager | None = field(init=False)
     oauth: OAuthManager = field(init=False)
     mcp: McpManager = field(init=False)
+    artifacts: ArtifactManager = field(init=False)
     users: UserManager = field(default_factory=UserManager)
     files: FileManager = field(default_factory=FileManager)
 
@@ -209,6 +211,11 @@ class Octomate(FastAPI):
             cipher=self.oauth.cipher,
             idle_timeout=self.config.mcp_pool.idle_timeout,
             oauth=self.oauth,
+        )
+        self.artifacts = ArtifactManager(
+            config=self.config.artifacts,
+            mcp=self.mcp,
+            threads=self.threads,
         )
 
         @self.exception_handler(RequestValidationError)
@@ -495,12 +502,14 @@ class Octomate(FastAPI):
 
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
+        from octomate.artifacts import ArtifactSandbox, artifact_router
         from octomate.auth import auth_router
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
         from octomate.tentacles.trunkline.base import ConsoleFiles, TrunklineTentacle
 
+        self.include_router(artifact_router)
         self.include_router(auth_router)
         self.include_router(command_router)
         self.include_router(mcp_router)
@@ -529,4 +538,7 @@ class Octomate(FastAPI):
                 )
                 break
 
-        return super().build_middleware_stack()
+        return ArtifactSandbox(
+            super().build_middleware_stack(),
+            origin=self.config.artifacts.sandbox_origin,
+        )

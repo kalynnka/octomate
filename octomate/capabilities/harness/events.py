@@ -276,6 +276,21 @@ class DisplayEvent(BaseModel):
     """Fire-and-forget outbound event; the run continues after it is emitted."""
 
 
+class ArtifactAvailableEvent(DisplayEvent):
+    """An artifact and its ledger reference have been committed.
+
+    The message ID deduplicates this appearance across live events and history;
+    the artifact ID identifies the content for an independently authorized read.
+    No invocation data or resource contents travel in this event.
+    """
+
+    event_kind: Literal["artifact_available"] = "artifact_available"
+    message_id: UUID7 = Field(
+        description="Committed ledger row referencing the artifact."
+    )
+    artifact_id: UUID7 = Field(description="The artifact's independent identity.")
+
+
 class TodoCreatedEvent(DisplayEvent):
     """A todo was created."""
 
@@ -479,6 +494,7 @@ type WireEvent = (
     | ResultTextDeltaEvent
     | TodoEvent
     | MessageSentEvent
+    | ArtifactAvailableEvent
     | OAuthDeviceAuthorizationEvent
     | OAuthAuthorizationEvent
     | ActionBatchEvent

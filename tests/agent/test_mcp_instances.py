@@ -1,4 +1,5 @@
 import pytest
+from arcanus import Relation
 from fastmcp.exceptions import ToolError
 from mcp.types import TextContent
 from pydantic import SecretStr, TypeAdapter
@@ -134,7 +135,7 @@ async def test_inkling_and_claude_mount_personal_discovery_without_tentacles(
 ) -> None:
     user = await a_user()
     host = Octomate(oauth_encryption_key=ENCRYPTION_KEY)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     await host.mcp.install(user.id, install_request())
     server = tentacles_mcp(fixed_session(scope), manager=host.mcp)
     toolset = TentaclesToolset(server)
@@ -152,7 +153,7 @@ async def test_upstream_tool_errors_are_retries_in_inkling(
 ) -> None:
     user = await a_user()
     host = Octomate()
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     instance = await host.mcp.install(user.id, install_request())
     server = tentacles_mcp(fixed_session(scope), manager=host.mcp)
     toolset = TentaclesToolset(server)

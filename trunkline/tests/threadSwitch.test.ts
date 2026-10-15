@@ -327,6 +327,54 @@ test('a run follows the first reflex its socket sees wake, not the end of one al
   assert.deepEqual(replies.map((item) => item.kind === 'stream' && item.text), ['Hello back'])
 })
 
+test('artifact availability outside a turn deduplicates events and saved history', async () => {
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, ledger: [{ kind: 'artifact', uid: 'saved-row', artifactId: 'saved-app' }] } satisfies ThreadDetail))
+  await useConsole.getState().actions.selectThread('codex', 'thread-a')
+  const socket = await socketOn('thread_id=thread-a')
+  socket.deliver(
+    { event_kind: 'artifact_available', message_id: 'saved-row', artifact_id: 'saved-app' },
+    { event_kind: 'artifact_available', message_id: 'new-row', artifact_id: 'new-app' },
+    { event_kind: 'artifact_available', message_id: 'new-row', artifact_id: 'new-app' },
+    { event_kind: 'artifact_available', message_id: 'second-row', artifact_id: 'new-app' },
+  )
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'artifact'), [
+    { kind: 'artifact', uid: 'new-row', artifactId: 'new-app' },
+    { kind: 'artifact', uid: 'second-row', artifactId: 'new-app' },
+  ])
+})
+
+for (const nextTurn of [false, true]) {
+  test(`history refresh preserves new artifacts ${nextTurn ? 'while the next turn streams' : 'after the turn settles'}`, async () => {
+    const opening = { ...detail, key: `artifact-refresh-${nextTurn}` }
+    const getDetail = mock.method(api, 'getThreadDetail', async () => opening)
+    await useConsole.getState().actions.selectThread('codex', opening.key)
+    const watching = await socketOn(`thread_id=${opening.key}`)
+    let resolve!: (value: ThreadDetail) => void
+    const reloading = new Promise<ThreadDetail>((done) => { resolve = done })
+    getDetail.mock.mockImplementation(() => reloading)
+    watching.deliver(
+      { event_kind: 'reflex_awake' }, result,
+      { event_kind: 'artifact_available', message_id: 'saved-row', artifact_id: 'saved-app' },
+      { event_kind: 'reflex_asleep' },
+      { event_kind: 'artifact_available', message_id: 'new-row', artifact_id: 'new-app' },
+    )
+    if (nextTurn) watching.deliver({ event_kind: 'run_started', address: {
+      channel_tentacle_id: 'codex-native', chat_type: 'thread', chat_id: opening.key, user_id: 'owner', channel_thread_id: null, shared: false,
+    } }, { ...result, output: 'Next reply' })
+    const artifact: LedgerItem = { kind: 'artifact', uid: 'saved-row', artifactId: 'saved-app' }
+    resolve({ ...opening, ledger: [artifact] })
+    await tick()
+    const state = useConsole.getState()
+    assert.deepEqual(state.detail?.ledger, [artifact])
+    assert.deepEqual(state.live.filter(item => item.kind === 'artifact'), [{ kind: 'artifact', uid: 'new-row', artifactId: 'new-app' }])
+    assert.equal(state.running, nextTurn)
+    if (nextTurn) {
+      assert.ok(state.live.some(item => item.kind === 'stream' && item.text === 'Next reply'))
+      watching.deliver({ event_kind: 'run_ended', thread_message_id: 'next-reply' })
+    } else assert.deepEqual(state.live.map(item => item.kind), ['artifact'])
+  })
+}
+
 test('opening the same thread twice during connection renders each event once', async () => {
   const id = 'overlapping-watch'
   mock.method(api, 'getThreadDetail', async () => ({ ...detail, key: id }))

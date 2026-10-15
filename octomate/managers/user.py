@@ -7,6 +7,7 @@ import hashlib
 import secrets
 from datetime import UTC, datetime, timedelta
 
+from arcanus import Relation
 from pydantic import UUID7, AnyHttpUrl, SecretStr
 from sqlalchemy.orm.exc import StaleDataError
 
@@ -131,6 +132,7 @@ class UserManager(Manager, Locks[tuple[str, str] | UUID7]):
             channel_tentacle_id=runtime,
             channel_user_id=username,
             user_id=user.id,
+            user=Relation(user),
             name=user.name,
             nickname=user.nickname,
         )

@@ -233,6 +233,71 @@ gets no extra chat message.
 The console's HTTP API, its request bodies and the events it streams are in the
 [API reference](../../api/tentacles/trunkline.md).
 
+## Artifacts
+
+When an installed MCP tool declares an app, calls made in a channel conversation
+retain the original input and complete result as an owned artifact alongside the
+ordinary tool output. Each call creates its own artifact, including calls made
+inside a code wrapper. Thread history references the artifact; deleting the thread
+does not delete its content. These artifacts keep the original installation
+identity after removal; reinstalling under the same name does not reconnect old
+app history to the new installation.
+
+MCP app support is shared across channels. Artifacts are recorded even when no
+sandbox origin is configured; browser hosting settings apply only to displaying them.
+
+Trunkline displays these artifacts in separate inline cards alongside tool output.
+**Open** opens the artifact's own page; the default address is
+`/artifacts/<artifact UUID>`. Signing in is required, and thread access alone does
+not grant access to another user's artifact. Older cards return when their history
+page loads, including references inherited by a fork.
+
+**Reload** fetches the current app UI and replays the saved input and complete result.
+It never executes the original tool again. Transient edits, zoom, and layout changes
+are lost. The original installation must still be enabled and authorized. Missing
+configuration, unavailable resources, and loading failures appear on the card.
+
+Configure the viewer and its isolated runtime in `octomate.yaml`:
+
+```yaml
+artifacts:
+  path: /artifacts
+  sandbox_origin: https://sandbox.example.com
+```
+
+Point the sandbox origin at the existing Octomate backend. Preserve the external
+Host and scheme through the reverse proxy, and configure the server to trust only
+that proxy's forwarded headers. This origin serves only the sandbox and its script;
+it must bypass the frontend static server and its catch-all page routing. Octomate
+does not start another listener. Rebuild the Trunkline frontend to install the viewer.
+
+A different port on the same hostname also works. With Tailscale, the same node can
+expose a second HTTPS port; a second Tailscale installation is unnecessary. For an
+Octomate backend already listening on port 8000, run on that host (from any directory):
+
+```sh
+tailscale serve --bg --https=8443 http://127.0.0.1:8000
+```
+
+This changes the node's Serve configuration. Set `sandbox_origin` to the node's
+HTTPS URL with `:8443`; keep the console on its existing port. See
+[Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve) for its
+port options. In local development, the console can use `http://127.0.0.1:5173`
+and the sandbox `http://127.0.0.1:8000`; Vite proxies console API requests to the
+same backend. A subpath alone does not provide a separate origin. See the
+[artifact settings reference](../../api/config/artifacts.md) and
+[sandbox and loading contracts](../../api/mcp/artifacts.md).
+
+Apps receive the console theme and container dimensions. They start at 480 pixels
+high and can request up to 1,000 pixels. Browser permissions, fullscreen, downloads,
+app-initiated tool calls, resource reads, messages, and model-context updates are
+unsupported. Apps whose declared resource policy includes the console hostname
+cannot load. Calls from native terminal sessions are not recorded as artifacts;
+publishing generated HTML and saving edits are not yet available.
+The recording and availability contracts are in the
+[MCP manager reference](../../api/managers/mcp.md) and
+[artifact schemas](../../api/schemas/resources.md#octomate.schemas.artifacts).
+
 ## The console surface
 
 One screen: a threads sidebar with a channel rail, the chat ledger in the middle, a

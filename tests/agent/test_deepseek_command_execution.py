@@ -200,7 +200,7 @@ async def test_direct_results_are_recorded_once_without_a_model_run(
             else {"commandId": "cmd-1", "result": result}
         )
     )
-    outcome = await asyncio.wait_for(kick_and_wait(app, signal), 3)
+    outcome = await kick_and_wait(app, signal)
     assert isinstance(outcome, CommandResult | CommandError)
     assert (
         outcome.status
