@@ -232,6 +232,11 @@ after `super().__init__`, keeping the defaults you do not replace.
   Override `Feelers.present` only to draw a move or a failed turn as something
   other than a message.
 
+Readers can subscribe to a channel, one thread, or notifications explicitly
+published to a registered user's topic. Publishers establish who may receive a
+notification and publish separately to each user's topic. See the
+[nerve subscription contract](../api/tentacles/nerve.md#octomate.nerve.Nerve.subscribe).
+
 ## 7. Tests
 
 Replay the canonical scenarios from `tests/support/scenarios.py` through your

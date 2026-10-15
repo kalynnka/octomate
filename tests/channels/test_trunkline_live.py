@@ -13,7 +13,7 @@ from starlette.websockets import WebSocket
 from octomate import Octomate
 from octomate.capabilities.harness.events import wire_event_adapter
 from octomate.config.channels import TrunklineChannelConfig
-from octomate.nerve import Impulse
+from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.trunkline import base as trunkline_base
 from octomate.tentacles.trunkline.base import TrunklineTentacle
@@ -65,7 +65,7 @@ async def streaming(socket: ConsoleSocket) -> tuple[Octomate, asyncio.Task[None]
     task = asyncio.create_task(channel.siphon.watch(socket.websocket, KEY))
     # The fake socket never suspends, so one turn of the loop subscribes it.
     await asyncio.sleep(0)
-    assert octomate.nerve.subscribers[KEY]
+    assert octomate.nerve.subscribers[ThreadTopic(KEY)]
     return octomate, task
 
 
@@ -73,8 +73,8 @@ async def test_a_threads_events_reach_its_socket() -> None:
     socket = ConsoleSocket()
     octomate, task = await streaming(socket)
 
-    octomate.nerve.deliver(Impulse(EVENT, KEY.address("lu")))
-    octomate.nerve.deliver(Impulse(EVENT, OTHER.address("lu")))
+    octomate.nerve.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
+    octomate.nerve.deliver(ThreadTopic(OTHER), Impulse(EVENT, OTHER.address("lu")))
     # One turn of the loop pumps it down the socket.
     await asyncio.sleep(0)
     socket.leave()
@@ -89,7 +89,7 @@ async def test_a_console_that_is_gone_ends_quietly() -> None:
     octomate, task = await streaming(socket)
     socket.gone = True
 
-    octomate.nerve.deliver(Impulse(EVENT, KEY.address("lu")))
+    octomate.nerve.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
     await asyncio.sleep(0)
     socket.leave()
     await task
@@ -107,7 +107,7 @@ async def test_a_console_that_fell_behind_is_closed_to_read_the_thread_again(
 
     # Nothing is read in between, so the second finds the backlog full.
     for _ in range(2):
-        octomate.nerve.deliver(Impulse(EVENT, KEY.address("lu")))
+        octomate.nerve.deliver(ThreadTopic(KEY), Impulse(EVENT, KEY.address("lu")))
     await asyncio.wait_for(socket.closed.wait(), 1)
     socket.leave()
     await task

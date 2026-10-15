@@ -36,6 +36,7 @@ from octomate.capabilities.harness.events import (
     wire_event_adapter,
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
+from octomate.nerve import ThreadTopic
 from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -191,7 +192,7 @@ class TrunklineSiphon(Siphon):
         `CONSOLE_BACKLOG` events behind is closed with 1013 to read the thread
         again; one that is gone ends the same way, once its close is read."""
         nerve = self.channel.octomate.nerve
-        with nerve.subscribe(key, backlog=CONSOLE_BACKLOG) as impulses:
+        with nerve.subscribe(ThreadTopic(key), backlog=CONSOLE_BACKLOG) as impulses:
             await websocket.accept()
 
             async def send() -> None:

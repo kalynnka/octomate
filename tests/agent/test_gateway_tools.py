@@ -30,6 +30,7 @@ from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.gateway import NATIVE_TELEPORT_STARTED, TELEPORT_RECORDED
 from octomate.mcp.server import octomate_mcp
+from octomate.nerve import ThreadTopic
 from octomate.schemas.awakes import NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -363,7 +364,7 @@ async def test_send_here_reaches_the_console_watching_a_trunkline_thread() -> No
         threads,
         manager=McpManager(users=threads.users, cipher=None),
     )
-    with octomate.nerve.subscribe(ThreadKey.from_address(address)) as live:
+    with octomate.nerve.subscribe(ThreadTopic(ThreadKey.from_address(address))) as live:
         async with Client(server) as client:
             result = await client.call_tool(
                 "gateway_send",

@@ -24,7 +24,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.capabilities.harness.events import RunEndedEvent
 from octomate.database import async_session
-from octomate.nerve import Impulse, Nerve
+from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
@@ -308,7 +308,7 @@ async def test_mid_turn_prompt_keeps_its_transcript_position_and_ledger_identity
         steering,
         assistant_record("last", 3, [{"type": "text", "text": "Final reply"}]),
     ]
-    with octomate.nerve.subscribe(SESSION_KEY) as live:
+    with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
         await stream_in(tailer, octomate.nerve, records)
         events = [impulse.event for impulse in held(live)]
     assert [event.event_kind for event in events] == [
@@ -346,7 +346,7 @@ async def test_mid_turn_prompt_keeps_its_transcript_position_and_ledger_identity
         run.messages[0].id,
         run.messages[2].id,
     ]
-    with octomate.nerve.subscribe(SESSION_KEY) as live:
+    with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
         await stream_in(tailer, octomate.nerve, records)
         assert held(live) == []
     thread = await a_loaded_thread(octomate.threads, SESSION_KEY)
@@ -357,7 +357,7 @@ async def test_streams_live_events_to_a_consumer() -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
-    with octomate.nerve.subscribe(SESSION_KEY) as live:
+    with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
         await stream_in(tailer, octomate.nerve, TURN_ONE, sub=SUB_TURN_ONE)
         impulses = held(live)
         opening = impulses[1].event
@@ -1255,7 +1255,7 @@ async def test_failed_commit_never_publishes_run_ended(
             "bind_native_run",
             AsyncMock(side_effect=RuntimeError("commit failed")),
         )
-    with octomate.nerve.subscribe(SESSION_KEY) as live:
+    with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
         with pytest.raises(RuntimeError, match="commit failed"):
             await stream_in(tailer, octomate.nerve, TURN_ONE)
         events = held(live)
@@ -1266,7 +1266,7 @@ async def test_failed_commit_never_publishes_run_ended(
 async def test_an_unfinished_turn_publishes_its_start_again_on_reconnect() -> None:
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
-    with octomate.nerve.subscribe(SESSION_KEY) as live:
+    with octomate.nerve.subscribe(ThreadTopic(SESSION_KEY)) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
             state, _ = await tailer.attach_remote(
                 SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses

@@ -50,7 +50,7 @@ from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
 from octomate.managers.files import FileManager
-from octomate.nerve import Impulse
+from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
@@ -338,7 +338,7 @@ async def test_a_stop_returns_before_the_late_reply_and_completion(
     """Codex can flush its reply and terminal line only after Stop returns."""
     octomate, tailer = remote_tailer()
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with octomate.nerve.subscribe(key) as live:
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as impulses:
             state, _ = await tailer.attach_remote(
                 SESSION_ID, CLIENT_PATH, SENDER, SESSION_ADDRESS, impulses
