@@ -488,6 +488,7 @@ class McpManager(Manager, Locks[UUID7]):
             user = (
                 scope.user_profile.user.value
                 if scope.user_profile is not None
+                and scope.user_profile.user_id is not None
                 else None
             )
         if user is None:
