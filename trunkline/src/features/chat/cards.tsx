@@ -1138,7 +1138,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
   const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
     case 'artifact':
-      return <div id={`pm-${item.uid}`} className="lt-entry" style={{ width: '100%', maxWidth: cardMax }}>
+      return <div id={`pm-${item.uid}`} className="lt-entry" style={{ width: '100%', maxWidth: 960, minWidth: 0 }}>
         <ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} />
       </div>
     case 'divider':
