@@ -24,6 +24,7 @@ from typing import (
 )
 
 import anyio
+from anyio.abc import ObjectSendStream
 from claude_agent_sdk import (
     ClaudeAgentOptions,
     HookContext,
@@ -87,6 +88,7 @@ from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEve
 from octomate.config.agents import Claim, ClaudeCodeConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_SERVER_NAME, octomate_instructions
+from octomate.nerve import Impulse
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
     CommandCatalog,
@@ -287,26 +289,20 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
     def hook_router(self) -> APIRouter:
         """The routes behind `routers()`; cached so they are built once. The guard
         covers the websocket too: FastAPI runs router dependencies at the handshake,
-        so a bad bearer is denied with the same 401 before any socket opens. Each
-        route takes `hook_sender` — the verified bearer resolved to their own
-        profile, on the guard's single per-request check — as the ledger's
-        principal."""
+        so a bad bearer is denied with the same 401 before any socket opens.
+        `hook_sender` resolves the verified bearer's profile on both routes;
+        only the stream uses that profile to attribute transcript messages."""
         verifier = hook_guard(self.bearers)
         resolve_sender = hook_sender(self.users, self.native_id, verifier)
         router = APIRouter(tags=["claude"], dependencies=[Depends(verifier)])
 
         @router.post(
             "/hooks/claude",
-            summary="Claude Code hook pipe — streams a native session's human ledger in",
+            dependencies=[Depends(resolve_sender)],
+            summary="Claude Code native-session hook pipe",
         )
-        async def receive_hook(
-            event: ClaudeHookInput,
-            # `param: T = Depends(dep)` is FastAPI's own dependency contract;
-            # ruff's B008 exemption misses it when T is a custom class (it is
-            # fine with `str`), so the rule bends rather than the checked type.
-            sender: UserProfile = Depends(resolve_sender),  # noqa: B008
-        ) -> JSONResponse:
-            await self.session_ingest.handle(event, sender)
+        async def receive_hook(event: ClaudeHookInput) -> JSONResponse:
+            await self.session_ingest.handle(event)
             teleport = gateway_tool(GatewayTool.TELEPORT)
             if (
                 event.hook_event_name == "PreToolUse"
@@ -329,6 +325,7 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             # decides nothing, which is what an observer should do.
             return JSONResponse({})
 
+        # FastAPI resolves this custom profile dependency at the handshake.
         @router.websocket("/hooks/claude/stream")
         async def stream(
             websocket: WebSocket,
@@ -362,9 +359,18 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
                 f"{STREAM_PROTOCOL}",
             )
             return
+        address = ChannelAddress(
+            channel_tentacle_id=self.native_id,
+            chat_type="thread",
+            chat_id=hello.session_id,
+            user_id=sender.channel_user_id,
+        )
         try:
-            async with self.driving(hello.session_id, native=True):
-                await self.stream_attached(websocket, hello, sender)
+            async with (
+                self.driving(hello.session_id, native=True),
+                self.octomate.nerve.publish(address) as impulses,
+            ):
+                await self.stream_attached(websocket, hello, sender, address, impulses)
         except WebSocketDisconnect:
             pass
         except Exception:
@@ -372,7 +378,12 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
             await websocket.close(code=1011, reason="transcript sync failed")
 
     async def stream_attached(
-        self, websocket: WebSocket, hello: StreamHello, sender: UserProfile
+        self,
+        websocket: WebSocket,
+        hello: StreamHello,
+        sender: UserProfile,
+        address: ChannelAddress,
+        impulses: ObjectSendStream[Impulse],
     ) -> None:
         """The attached half of a stream connection: register the session, answer
         resume offsets, then feed each framed line through the tailer's assembly until
@@ -393,11 +404,11 @@ class ClaudeCodeTentacle(AgentTentacle[str, None]):
         else:
             project = None
         await self.threads.ensure(
-            ThreadKey(self.native_id, "thread", hello.session_id),
+            ThreadKey.from_address(address),
             project=project,
         )
         state, offsets = await self.session_tailer.attach_remote(
-            hello.session_id, Path(hello.transcript_path), sender
+            hello.session_id, Path(hello.transcript_path), sender, address, impulses
         )
         conversation = state.conversation
         if conversation is None:

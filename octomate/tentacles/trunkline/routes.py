@@ -80,6 +80,7 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import ThreadTopic, UserTopic
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse, StillAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -717,6 +718,18 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
     handshake has no method for that guard to read."""
     router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
 
+    @router.websocket("/live/user")
+    async def watch_user(
+        websocket: WebSocket,
+        user: Annotated[User, Depends(current_user)],
+    ) -> None:
+        """Subscribe to the authenticated user's topic, without replay.
+
+        The subscription precedes acceptance. Read the thread list after the
+        handshake, then apply the events received while that read was pending.
+        """
+        await channel.siphon.watch(websocket, UserTopic(user.id))
+
     @router.websocket("/live")
     async def watch_thread(
         websocket: WebSocket,
@@ -755,6 +768,6 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
                 code=1008, reason="Name the thread by its id or by its key, not both"
             )
             return
-        await channel.siphon.watch(websocket, key)
+        await channel.siphon.watch(websocket, ThreadTopic(key))
 
     return router

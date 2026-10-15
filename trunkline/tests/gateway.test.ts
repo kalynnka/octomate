@@ -376,7 +376,7 @@ test('an error after a run result still appears in the message panel', async () 
 test('the header follows the relay: an in-place summon is open with no suggested address', () => {
   useConsole.getInitialState().selThreadId = 'source'
   useConsole.getInitialState().detail = { key: 'source', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
-  queryClient.setQueryData(['threads'], {})
+  queryClient.setQueryData(['threads'], [])
   queryClient.setQueryData(['thread-operations', 'source'], options)
   const header = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
   assert.ok(header.includes('>Summon</span></button>'))
@@ -388,7 +388,7 @@ test('the header selects the operation opened through a command', () => {
   useConsole.getInitialState().selThreadId = 'source'
   useConsole.getInitialState().gatewayMode = { threadId: 'source', action: 'summon' }
   useConsole.getInitialState().detail = { key: 'source', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
-  queryClient.setQueryData(['threads'], {})
+  queryClient.setQueryData(['threads'], [])
   queryClient.setQueryData(['thread-operations', 'source'], { ...options, teleport: { ...inPlace, destinations: [fresh] } })
   const header = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ChatHeader)))
   assert.ok(header.includes('>Summon</span></button>'))
@@ -679,7 +679,7 @@ for (const [teleport, summon, expected] of [
   test(`operation priority picks ${expected} with eligibility ${teleport}/${summon}`, () => {
     useConsole.getInitialState().selThreadId = 'source'
     useConsole.getInitialState().detail = { key: 'source', msgCount: 0, sessions: [], ledger: [], ctxK: 0, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cacheRate: null } }
-    queryClient.setQueryData(['threads'], {})
+    queryClient.setQueryData(['threads'], [])
     queryClient.setQueryData(['thread-operations', 'source'], {
       teleport: teleport ? inPlace : refused,
       summon: summon ? inPlace : refused,

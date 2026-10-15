@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate import Octomate
 from octomate.config.agents import ClaudeCodeConfig, CodexConfig
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.runs import AgentRun
 from octomate.schemas.thread import Thread, ThreadKey
@@ -157,7 +158,6 @@ async def claude_hook(octomate: Octomate, cwd: str) -> None:
                 "prompt_id": "p1",
             }
         ),
-        SENDER,
     )
 
 
@@ -181,16 +181,24 @@ async def test_a_claude_hook_with_no_cwd_records_none() -> None:
     assert sketch.cwd is None
 
 
-async def stream_transcript(tailer: ClaudeTranscriptTailer, transcript: Path) -> None:
+async def stream_transcript(
+    tailer: ClaudeTranscriptTailer, nerve: Nerve, transcript: Path
+) -> None:
     """Stream one transcript file the way production reaches it: attach and feed its
     framed lines — the server never opens the file itself."""
-    state, _ = await tailer.attach_remote(CLAUDE_SESSION, transcript, SENDER)
-    offset = 0
-    for raw in (await asyncio.to_thread(transcript.read_bytes)).split(b"\n")[:-1]:
-        end = offset + len(raw) + 1
-        await tailer.feed_remote(state, None, raw.decode(), offset, end)
-        offset = end
-    await tailer.finish_remote(state)
+    address = ThreadKey(CLAUDE_NATIVE_ID, "thread", CLAUDE_SESSION).address(
+        SENDER.channel_user_id
+    )
+    async with nerve.publish(address) as impulses:
+        state, _ = await tailer.attach_remote(
+            CLAUDE_SESSION, transcript, SENDER, address, impulses
+        )
+        offset = 0
+        for raw in (await asyncio.to_thread(transcript.read_bytes)).split(b"\n")[:-1]:
+            end = offset + len(raw) + 1
+            await tailer.feed_remote(state, None, raw.decode(), offset, end)
+            offset = end
+        await tailer.finish_remote(state)
 
 
 async def test_each_claude_turn_records_its_own_prompt_directory(
@@ -211,7 +219,7 @@ async def test_each_claude_turn_records_its_own_prompt_directory(
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
-    await stream_transcript(tailer, transcript)
+    await stream_transcript(tailer, octomate.nerve, transcript)
 
     runs = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert {run.id: run.cwd for run in runs} == {
@@ -236,7 +244,7 @@ async def test_a_claude_turn_keeps_the_directory_it_was_asked_in(
     octomate = Octomate()
     tailer = ClaudeTranscriptTailer(octomate.conversations, octomate.threads)
 
-    await stream_transcript(tailer, transcript)
+    await stream_transcript(tailer, octomate.nerve, transcript)
 
     [run] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert run.cwd == Path(REPO)
@@ -271,7 +279,6 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
                 "transcript_path": str(transcript),
             }
         ),
-        SENDER,
     )
     [sketch] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert sketch.cwd is None
@@ -280,7 +287,7 @@ async def test_the_rebuilt_claude_turn_supersedes_the_sketch_directory(
         transcript,
         [claude_prompt("p1", "here", 1, REPO), claude_answer("a1", 2, "ok", REPO)],
     )
-    await stream_transcript(tailer, transcript)
+    await stream_transcript(tailer, octomate.nerve, transcript)
 
     [run] = await runs_of(octomate, CLAUDE_NATIVE_ID, CLAUDE_SESSION)
     assert run.cwd == Path(REPO)
@@ -349,7 +356,6 @@ async def test_a_codex_hook_sketch_records_the_directory_the_hook_reported() -> 
                 "turn_id": CODEX_TURN,
             }
         ),
-        SENDER,
     )
 
     [sketch] = await runs_of(octomate, CODEX_NATIVE_ID, CODEX_SESSION)

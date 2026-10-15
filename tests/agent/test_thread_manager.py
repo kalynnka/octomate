@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
 from octomate.managers.thread import history_match_query
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
@@ -62,7 +63,7 @@ def event(message_id: str, user_id: str, text: str) -> MessageEvent:
 
 
 async def test_ensure_thread_ignores_sender_user_id() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     alice_thread = await manager.ensure(address("alice"))
     bob_thread = await manager.ensure(address("bob"))
@@ -70,7 +71,8 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
     await manager.record_inbound(event("m2", "bob", "beta"))
 
     fresh_thread = await a_loaded_thread(
-        ThreadManager(users=UserManager()), address("charlie")
+        ThreadManager(nerve=Nerve(), users=UserManager()),
+        address("charlie"),
     )
 
     assert alice_thread.id == bob_thread.id == fresh_thread.id
@@ -81,7 +83,7 @@ async def test_ensure_thread_ignores_sender_user_id() -> None:
 async def test_group_titles_come_from_channel_but_subthreads_can_name(
     chat_type: ChatType,
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     opening = event("group-message", "alice", "An opening line")
     opening.chat_type = chat_type
     opening.channel_thread_id = None
@@ -112,7 +114,7 @@ async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
     which escapes into `follow`'s handler and strands the rest of the session.
     A session's follow task preparing while a hook pokes it does exactly this,
     and so do two people replying at once in a chat with no thread row yet."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     key = ThreadKey(
         channel_tentacle_id="slack",
         chat_type="thread",
@@ -128,7 +130,7 @@ async def test_concurrent_first_sightings_of_one_key_insert_once() -> None:
 
 
 async def test_ensure_locks_only_the_matching_thread() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     key = ThreadKey.from_address(address())
     other_key = ThreadKey(
         channel_tentacle_id="slack",
@@ -150,7 +152,7 @@ async def test_a_re_delivered_message_is_recorded_once() -> None:
     """A platform re-sends when it misses an ack, and the second send is the same
     message. Recording is idempotent: asking again is answered with the row that
     already exists, not with a second one."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     first = await manager.record_inbound(event("m1", "alice", "hello"))
 
@@ -165,7 +167,7 @@ async def test_a_re_delivered_message_is_recorded_once() -> None:
 async def test_a_message_the_platform_never_named_is_always_recorded() -> None:
     """There is nothing to recognise it by, so refusing one would drop real
     messages rather than duplicates."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
 
     first = await manager.record_inbound(event("", "alice", "hello"))
@@ -180,7 +182,7 @@ async def test_a_message_the_platform_never_named_is_always_recorded() -> None:
 async def test_a_reply_may_share_the_id_of_the_message_it_answers() -> None:
     """A native runtime files a turn's prompt and its answer under one id — the
     pair is what its transcript names — so direction is part of the key."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
 
     inbound = await manager.record_inbound(event("m1", "alice", "asked"))
@@ -196,7 +198,7 @@ async def test_a_reply_may_share_the_id_of_the_message_it_answers() -> None:
 
 
 async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     human_message = await manager.record_inbound(event("m1", "alice", "human asks"))
     bot_message = await manager.record_inbound(
@@ -247,11 +249,13 @@ async def test_pending_prompt_messages_and_cursor_skip_active_agent_output() -> 
 
 
 async def test_pending_prompt_messages_ensures_thread() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     trigger = await manager.record_inbound(event("m1", "alice", "wake now"))
 
-    pending = await ThreadManager(users=UserManager()).pending_prompt_messages(
+    pending = await ThreadManager(
+        nerve=Nerve(), users=UserManager()
+    ).pending_prompt_messages(
         thread,
         trigger.id,
         active_agent_id="inkling",
@@ -263,7 +267,7 @@ async def test_pending_prompt_messages_ensures_thread() -> None:
 async def test_record_inbound_stamps_linked_identity_on_the_event() -> None:
     await a_user("luhui", name="Lu Hui", profiles={"slack": "U1", "lark": "ou_1"})
     users = UserManager()
-    manager = ThreadManager(users=users)
+    manager = ThreadManager(nerve=Nerve(), users=users)
 
     slack = event("m1", "U1", "hello from slack")
     await manager.record_inbound(slack)
@@ -291,7 +295,7 @@ async def test_record_inbound_stamps_linked_identity_on_the_event() -> None:
 
 
 async def test_sender_line_leaves_an_undeclared_sender_as_a_visitor() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     stranger = event("m1", "alice", "plain")
     await manager.record_inbound(stranger)
@@ -303,7 +307,7 @@ async def test_sender_line_leaves_an_undeclared_sender_as_a_visitor() -> None:
 
 
 async def test_record_handoff_updates_the_active_owner() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
 
     await manager.record_handoff(
@@ -331,7 +335,7 @@ async def test_record_handoff_updates_the_active_owner() -> None:
 
 
 async def test_chat_history_search_paging_and_message_bindings() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     first = await manager.record_inbound(event("m1", "alice", "alpha first"))
     second = await manager.record_inbound(event("m2", "bob", "beta second"))
@@ -389,7 +393,7 @@ async def test_chat_history_search_paging_and_message_bindings() -> None:
 
 
 async def test_chat_history_search_ranks_bm25_then_newest() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     moment = datetime(2026, 1, 1, tzinfo=UTC)
     older = await manager.record_inbound(
         event("m1", "alice", "authentication bug"), happened_at=moment
@@ -415,7 +419,7 @@ async def test_chat_history_search_ranks_bm25_then_newest() -> None:
 
 
 async def test_chat_history_search_stems_and_requires_every_literal_term() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     matching = await manager.record_inbound(
         event("m1", "alice", "The corrected authentication settings are stable.")
     )
@@ -437,7 +441,7 @@ async def test_chat_history_search_stems_and_requires_every_literal_term() -> No
 
 
 async def test_chat_history_actor_filter_is_applied_before_limit() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     human = await manager.record_inbound(event("m1", "alice", "alpha"))
     await manager.record_outbound(
         address(),
@@ -458,7 +462,7 @@ async def test_chat_history_actor_filter_is_applied_before_limit() -> None:
 async def test_message_and_fts_index_write_share_a_transaction(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     async with in_memory_engine.begin() as connection:
         await connection.exec_driver_sql("DROP TABLE thread_messages_fts")
@@ -473,7 +477,7 @@ async def test_message_and_fts_index_write_share_a_transaction(
 async def test_history_index_follows_arcanus_message_writes(
     initial_text: str | None, in_memory_engine: AsyncEngine
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     sender = await manager.users.ensure_profile(
         "slack", UserProfile(channel_user_id="alice", name="Alice")
@@ -521,7 +525,7 @@ async def test_history_index_follows_arcanus_message_writes(
 
 
 async def test_history_index_is_mapped_through_arcanus() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     message = await manager.record_inbound(event("m1", "alice", "mapped marker"))
     async with async_session() as session:
         hit = await session.one(
@@ -537,7 +541,7 @@ async def test_history_index_is_mapped_through_arcanus() -> None:
 
 
 async def test_history_index_rolls_back_with_message_changes() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     message = await manager.record_inbound(event("m1", "alice", "original marker"))
     sender = await manager.users.profile("slack", "alice")
     assert sender is not None
@@ -556,7 +560,7 @@ async def test_history_index_rolls_back_with_message_changes() -> None:
 async def test_history_index_follows_database_cascade(
     in_memory_engine: AsyncEngine,
 ) -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     message = await manager.record_inbound(event("m1", "alice", "cascade marker"))
     # Delete the parent in SQL so only the database can maintain the index.
     async with in_memory_engine.begin() as connection:
@@ -569,7 +573,7 @@ async def test_history_index_follows_database_cascade(
 
 
 async def test_assistant_reply_binding_uses_persisted_response() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     thread = await manager.ensure(address())
     reply = await manager.record_outbound(
         thread,
@@ -641,7 +645,7 @@ async def test_history_written_late_still_sorts_where_it_happened() -> None:
     written last are the ones that happened first. The uuid7 `id` carries the moment of
     writing, so ordering on it puts a newcomer at the head of its own history.
     """
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     earlier = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
     later = datetime(2026, 7, 9, 11, 0, tzinfo=UTC)
 
@@ -667,7 +671,7 @@ async def test_one_instant_keeps_the_order_it_was_written_in() -> None:
     """`happened_at` alone is not a total order: a transcript line can produce several
     messages at one instant, and a clock has finite resolution. `id` breaks the tie, so
     rows sharing an instant stay in the order they were written rather than shuffling."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     same = datetime(2026, 7, 9, 10, 0, tzinfo=UTC)
 
     first = await manager.record_inbound(
@@ -694,7 +698,7 @@ async def test_a_kick_never_reads_the_rooms_whole_ledger(
     `selectinload` creeping back onto either, which reads the whole room to answer
     a question about one row.
     """
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     for index in range(12):
         await manager.record_inbound(event(f"m-{index}", "alice", f"line {index}"))
 
@@ -730,7 +734,7 @@ async def test_a_kick_never_reads_the_rooms_whole_ledger(
 async def test_unbound_chat_is_what_no_model_message_of_the_thread_carries() -> None:
     """A prompt is read through the request it was bound into; a notice nothing
     was built from stays on the thread's own ledger, a page at a time."""
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     conversations = ConversationManager()
     asked = await threads.record_inbound(event("m-1", "alice", "fix the build"))
     notice = await threads.record_inbound(
@@ -766,7 +770,7 @@ async def test_a_row_is_never_undated() -> None:
     """The order is only total if every row carries a `happened_at` — and every outbound
     caller but the tailers passes none, so the manager owns the answer rather than the
     call sites."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     inbound = await manager.record_inbound(
         MessageEvent(
@@ -809,7 +813,7 @@ async def test_a_persons_history_is_every_thread_their_accounts_spoke_in() -> No
     never spoke, are his and not hers."""
     await a_user("alice", profiles={"slack": "alice", "lark": "ou_alice"})
     users = UserManager()
-    manager = ThreadManager(users=users)
+    manager = ThreadManager(nerve=Nerve(), users=users)
     await manager.record_inbound(event("m1", "alice", "alpha on slack"))
     await manager.record_inbound(
         said("lark", "l1", "ou_alice", "alpha on lark", 1710000001.0)
@@ -833,7 +837,7 @@ async def test_a_persons_history_is_every_thread_their_accounts_spoke_in() -> No
 
 
 async def test_chat_message_resolves_a_handle_within_a_persons_history() -> None:
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     first = await manager.record_inbound(event("1710000000.000002", "alice", "first"))
     await manager.record_inbound(said("slack", "b1", "bob", "bob alone", 1710000001.0))
     alice = await manager.users.profile("slack", "alice")
@@ -857,7 +861,7 @@ def chat_room() -> ThreadKey:
 async def test_a_chat_room_can_hold_more_than_one_sub_thread() -> None:
     """The key that pins one row per chat would otherwise refuse the second: a
     sub-thread shares its chat room's address, having none of its own."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     parent = await manager.ensure(chat_room())
 
     first = await manager.open_sub_thread(parent)
@@ -874,7 +878,7 @@ async def test_a_sub_thread_shares_its_chat_rooms_address() -> None:
     """Nothing is invented here. A channel sends a reply to whatever
     `channel_thread_id` holds, so a made-up one would be posted at the platform —
     and sharing the chat room's is what makes a sub-thread's key resolve to it."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     parent = await manager.ensure(chat_room())
 
     child = await manager.open_sub_thread(parent)
@@ -892,7 +896,7 @@ async def test_a_chat_room_is_one_row_however_its_address_is_spelled() -> None:
     """A channel reporting no thread writes `""` where another writes NULL. They
     name the same chat, and a key that kept both spellings would file it twice —
     under different unique indexes, so neither would catch the other."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     blank = ThreadKey(
         channel_tentacle_id="slack",
         chat_type="dm",
@@ -907,7 +911,7 @@ async def test_a_chat_room_is_one_row_however_its_address_is_spelled() -> None:
 
 async def test_entering_a_chat_room_opens_a_sub_thread() -> None:
     """What a kick in a dm or a group chat actually runs in."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     entered = await manager.enter(chat_room())
 
@@ -917,7 +921,7 @@ async def test_entering_a_chat_room_opens_a_sub_thread() -> None:
 async def test_entering_a_thread_is_the_thread_itself() -> None:
     """A thread is a piece of work already, so nothing is opened inside it and the
     turn runs where it always did."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     entered = await manager.enter(address())
 
@@ -928,7 +932,7 @@ async def test_entering_a_thread_is_the_thread_itself() -> None:
 async def test_each_kick_in_a_chat_room_enters_its_own_sub_thread() -> None:
     """The discontinuity this whole shape exists for: two kicks in one chat room
     answer in two threads, and so in two model contexts."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
 
     first = await manager.enter(chat_room())
     second = await manager.enter(chat_room())
@@ -940,7 +944,7 @@ async def test_each_kick_in_a_chat_room_enters_its_own_sub_thread() -> None:
 async def test_entering_the_chat_room_a_turn_is_in_keeps_its_sub_thread() -> None:
     """An agent taking the conversation over in place is still answering the same
     kick, and a second sub-thread would split one answer across two contexts."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     entered = await manager.enter(chat_room())
 
     again = await manager.enter(chat_room(), current=entered)
@@ -950,7 +954,7 @@ async def test_entering_the_chat_room_a_turn_is_in_keeps_its_sub_thread() -> Non
 
 async def test_a_chat_room_nests_one_level() -> None:
     """The rule that keeps `surface` a single hop rather than a walk."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     parent = await manager.ensure(chat_room())
     child = await manager.open_sub_thread(parent)
 
@@ -961,7 +965,7 @@ async def test_a_chat_room_nests_one_level() -> None:
 async def test_a_sub_threads_surface_is_its_chat_room() -> None:
     """The split this whole shape rests on: the work is the sub-thread's, the
     surface is the chat room, and one call says which is which."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     parent = await manager.ensure(chat_room())
     child = await manager.open_sub_thread(parent)
 
@@ -973,7 +977,7 @@ async def test_a_sub_threads_surface_is_its_chat_room() -> None:
 async def test_a_listing_names_chat_rooms_and_not_their_sub_threads() -> None:
     """A listing names the surfaces a person can open. A chat room's sub-threads
     are reached through it, and a busy one would otherwise bury every other."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     parent = await manager.ensure(chat_room())
     await manager.open_sub_thread(parent)
     await manager.open_sub_thread(parent)
@@ -988,7 +992,7 @@ async def test_the_parent_relation_loads_the_chat_room_when_asked() -> None:
     """`remote_side` points the self-reference at the parent rather than at the
     children, and `raise_on_sql` keeps it off every read that did not ask: a listing
     that fetched each row's parent would read the same chat rooms over again."""
-    manager = ThreadManager(users=UserManager())
+    manager = ThreadManager(nerve=Nerve(), users=UserManager())
     parent = await manager.ensure(chat_room())
     child = await manager.open_sub_thread(parent)
 
@@ -1003,3 +1007,23 @@ async def test_the_parent_relation_loads_the_chat_room_when_asked() -> None:
 
     assert loaded is not None
     assert loaded.id == parent.id
+
+
+async def test_ledger_pages_preserve_append_order_despite_source_clocks() -> None:
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
+    for message_id, second in (("new", 3), ("old", 1), ("middle", 2), ("same-time", 2)):
+        incoming = event(message_id, "alice", message_id)
+        incoming.timestamp += second
+        await threads.record_inbound(incoming)
+    thread = await threads.ensure(address())
+    page = await threads.messages_page(thread.id, limit=1)
+    found = list(page.items)
+    while page.has_more:
+        page = await threads.messages_page(thread.id, page.next_cursor, limit=1)
+        found.extend(page.items)
+    assert [m.platform_message_id for m in found] == [
+        "same-time",
+        "middle",
+        "old",
+        "new",
+    ]

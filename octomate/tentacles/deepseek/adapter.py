@@ -105,6 +105,7 @@ class NativeToolState:
     # event's full string is authoritative when it arrives.
     arguments: str = ""
     events: list[JsonValue] = field(default_factory=list)
+    published: bool = False  # A complete call has been sent to live readers.
 
 
 def map_usage(usage: DeepseekUsage) -> RequestUsage:
@@ -270,7 +271,7 @@ class DeepseekRunAccumulator:
         elif isinstance(delta, ReasoningDeltaChunk):
             yield from self.stream_delta(ThinkingPart, delta.text, payload)
         elif isinstance(delta, ToolCallDeltaChunk):
-            yield from self.stream_tool_arguments(delta, payload)
+            self.stream_tool_arguments(delta, payload)
         elif isinstance(delta, UsageChunk):
             self.step_usage = map_usage(delta.usage)
             self.pending_events.append(payload)
@@ -330,11 +331,10 @@ class DeepseekRunAccumulator:
 
     def stream_tool_arguments(
         self, delta: ToolCallDeltaChunk, payload: JsonObject
-    ) -> Iterator[StreamEvents[str]]:
+    ) -> None:
         state = self.native_tools.get(delta.id)
         if state is None:
             state = self.open_native_tool(delta.id, delta.name or "", payload)
-            yield FunctionToolCallEvent(part=state.live_call)
         else:
             state.events.append(payload)
             if delta.name:
@@ -352,7 +352,6 @@ class DeepseekRunAccumulator:
         state = self.native_tools.get(call.call_id)
         if state is None:
             state = self.open_native_tool(call.call_id, call.name, payload)
-            yield FunctionToolCallEvent(part=state.live_call)
         else:
             state.events.append(payload)
         state.arguments = call.arguments or state.arguments
@@ -361,6 +360,9 @@ class DeepseekRunAccumulator:
         state.live_call.args = args
         state.native_call.tool_name = call.name
         state.native_call.args = args
+        if not state.published:
+            state.published = True
+            yield FunctionToolCallEvent(part=state.live_call)
 
     def consume_tool_result(
         self, event: SessionEvent, payload: JsonObject
@@ -376,13 +378,14 @@ class DeepseekRunAccumulator:
             # name, so the placeholder is all there is.
             state = self.open_native_tool(result.call_id, "deepseek_tool", payload)
             del self.native_tools[result.call_id]
-            yield FunctionToolCallEvent(part=state.live_call)
         else:
             state.events.append(payload)
         if state.arguments and not state.native_call.args:
             args = parse_arguments(state.arguments)
             state.live_call.args = args
             state.native_call.args = args
+        if not state.published:
+            yield FunctionToolCallEvent(part=state.live_call)
         outcome: ToolOutcome = "failed" if result.is_error else "success"
         live_return = ToolReturnPart(
             tool_name=state.live_call.tool_name,

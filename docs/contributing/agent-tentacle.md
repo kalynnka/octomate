@@ -433,10 +433,47 @@ A runtime people also run by hand gets a hook router and a transcript stream.
 Declare `native_id`, return the router from `routers()`, guard it with
 `hook_guard` for the `hooks` scope and `hook_sender` to attribute rows, and write a
 tailer that assembles turns from the streamed lines, committing each as an
-`ExternalAgentRun` with its byte range so a reconnect resumes where it left off.
+`ExternalAgentRun` with its source range (byte offsets or event sequence numbers)
+so a reconnect resumes after the last committed turn. Keep the runtime's
+transcript read-only.
 Add the matching installer under `cli/octomate_cli/tentacles/<runtime>/`, which
 must stay importable without the server package. The three existing tailers show
 three different transcript shapes.
+
+Claude and Codex hooks reserve empty runs; the transcript owns messages and their ledger
+bindings. Preserve order within each transcript independently of receipt time or
+wall-clock timestamps. Parent and child transcripts retain their separate
+conversations and spawning-call relationships. See the
+[Claude ingest contract](../api/tentacles/hooks.md#octomate.tentacles.claude.ingest.ClaudeHookIngest).
+
+All three native tailers publish turns on the nerve so an open console can show
+them as they are assembled. DeepSeek's hooks carry no turn identity; its tail
+creates the complete run from the session log.
+
+After validating the stream's hello and resolving its sender, construct the
+native address in the tentacle and keep its publisher open for the connection:
+
+```python
+address = ChannelAddress(
+    channel_tentacle_id=self.native_id,
+    chat_type="thread",
+    chat_id=hello.session_id,
+    user_id=sender.channel_user_id,
+)
+async with (
+    self.driving(hello.session_id, native=True),
+    self.octomate.nerve.publish(address) as impulses,
+):
+    await self.stream_attached(websocket, hello, sender, address, impulses)
+```
+
+The connection handler passes the address and publisher to the tailer. Use
+[`NativeTurn`](../api/tentacles/hooks.md#octomate.tentacles.tailer.NativeTurn)
+for the shared turn lifecycle, including prompt delivery, replay exclusion and
+ledger settlement. Keep the runtime's transcript parsing in its own tailer.
+The [`Nerve.publish` contract](../api/tentacles/nerve.md#octomate.nerve.Nerve.publish)
+covers buffering and draining. Native ingest observes the runtime without waking
+a reflex.
 
 To support native-history teleport, implement `read_fork_transcript`, which
 answers the owner's uploaded history up to its latest whole turn, and
@@ -459,3 +496,9 @@ model level; the reflex graph tests drive both. A harness tentacle's own tests
 typically fake the SDK client and assert the launch options, the disabled
 customisation, and the approval bridge, as `tests/agent/test_claude_tentacle.py`
 and `test_codex_tentacle.py` do. Document the agent under `docs/usage/agents/`.
+
+For live native ingest, subscribe to the nerve in tests and verify that a parent
+turn reaches its native thread and settles only after its ledger rows are bound.
+Cover silent replay of committed turns, restart of unfinished turns, failed
+commits without a settlement signal, and subagent turns staying out of the parent
+stream. Exercise the authenticated stream endpoint as well as the fold.

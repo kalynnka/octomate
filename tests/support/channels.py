@@ -33,11 +33,11 @@ from octomate.capabilities.harness.events import (
     SubagentStartedEvent,
     TodoEvent,
     WireEvent,
+    to_wire,
 )
 from octomate.capabilities.harness.react import ReactStreamEvent
 from octomate.config import ChannelConfig, ChannelStreamConfig
 from octomate.managers.deferred import DeferredActionManager
-from octomate.reflex.state import ReflexDeps
 from octomate.schemas.awakes import AwakeSignal
 from octomate.schemas.conversation import ChannelAddress, ChatType
 from octomate.schemas.deferred import DeferredApproval, DeferredQuestion
@@ -87,7 +87,7 @@ async def carried(
     """A run's stream as the graph carries it onto the nerve: each item as its
     wire event."""
     async for item in stream:
-        event = ReflexDeps.to_wire(item)
+        event = to_wire(item)
         if event is not None:
             yield event
 

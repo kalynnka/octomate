@@ -35,16 +35,19 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
+from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.thread import Thread
+from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.deepseek import DeepseekTentacle
 from octomate.types.json import JsonObject
 from tests.agent.test_deepseek_native_ingest import (
     LOG_LABEL,
+    SESSION_ADDRESS,
     SESSION_ID,
     turn_events,
 )
 from tests.support.managers import a_thread
+from tests.support.nerve import held
 from tests.support.users import a_api_key, a_user, auth_config
 
 SECRET = SecretStr("the-hook-secret")
@@ -129,9 +132,10 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
     """End to end through the endpoint: hello/welcome, framed entries, eof, and
     the server's close. The next connect is welcomed at the seq after the
     committed turn — the client re-reads its gateway from there."""
-    client, _ = stream_client()
+    client, tentacle = stream_client()
 
-    with client:
+    key = ThreadKey.from_address(SESSION_ADDRESS)
+    with client, tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())
@@ -143,6 +147,15 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
             with pytest.raises(WebSocketDisconnect):
                 websocket.receive_text()
 
+        impulses = held(live)
+        assert [
+            impulse.event.event_kind
+            for impulse in impulses
+            if impulse.event.event_kind in {"run_started", "run_ended"}
+        ] == ["run_started", "run_ended"]
+        assert all(impulse.address == SESSION_ADDRESS for impulse in impulses)
+        assert all(impulse.origin == key for impulse in impulses)
+        assert not tentacle.octomate.awakes
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

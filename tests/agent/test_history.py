@@ -28,6 +28,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.capabilities.history import HistoryCapability
 from octomate.managers import ConversationManager, ThreadManager, UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.messages import ModelRequest, ModelResponse
@@ -293,7 +294,7 @@ async def _bound(thread_manager: ThreadManager, user_id: str) -> HistoryCapabili
 
 
 async def test_the_thread_tools_read_what_the_user_spoke_in() -> None:
-    thread_manager = ThreadManager(users=UserManager())
+    thread_manager = ThreadManager(nerve=Nerve(), users=UserManager())
     first = await thread_manager.record_inbound(
         _event("m1", "alice", "stored while asleep")
     )
@@ -325,7 +326,7 @@ async def test_a_receiver_reads_every_thread_its_user_spoke_in() -> None:
     anywhere, the receiver searches the chat she spoke in — bob's replies there
     included — while bob's own direct messages, where she never spoke, are not
     hers; read as bob, they are, and so is the chat he replied in."""
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     await threads.record_inbound(_event("m1", "alice", "find the auth bug"))
     await threads.record_inbound(_event("m2", "bob", "the bug is in login"))
     own = await threads.record_inbound(
@@ -379,7 +380,7 @@ async def test_a_receiver_reads_every_thread_its_user_spoke_in() -> None:
 
 
 async def test_history_capability_retries_a_blank_search() -> None:
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     await threads.record_inbound(_event("m1", "alice", "something searchable"))
     capability = await _bound(threads, "alice")
 
@@ -390,7 +391,7 @@ async def test_history_capability_retries_a_blank_search() -> None:
 async def test_the_template_serves_no_run_itself() -> None:
     """The mounted capability is bound per run by `for_profile`; the template's
     own tools have nobody to read for and say so rather than reading nothing."""
-    capability = HistoryCapability(ThreadManager(users=UserManager()))
+    capability = HistoryCapability(ThreadManager(nerve=Nerve(), users=UserManager()))
 
     with pytest.raises(RuntimeError, match="mount the copy `for_profile` gives"):
         await capability.search_thread_history("anything")

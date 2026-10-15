@@ -17,6 +17,8 @@ One stream, with these event families:
 - **Action batch** (`ActionBatchEvent`) — a persisted batch of deferred actions
   (questions + approvals) presented as one unit; the run suspends until the user
   replies. `batch_id` correlates the reply through the deferred-action machinery.
+- **Thread metadata** (`ThreadEvent`) — committed titles, project bindings,
+  handoffs, ledger entries and command outcomes published by the thread manager.
 - **Subagent lifecycle** (`SubagentStartedEvent`/`SubagentSettledEvent`) — an
   accomplice's run opening and finishing around its `commission` or `whisper` call.
 
@@ -40,16 +42,27 @@ it, with the generic/unserializable members replaced by their wire forms.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Annotated, Literal
 
-from pydantic import UUID7, BaseModel, ConfigDict, Field, JsonValue, TypeAdapter
-from pydantic_ai import AgentStreamEvent
+from pydantic import (
+    UUID7,
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+)
+from pydantic_ai import AgentRunResultEvent, AgentStreamEvent
 from pydantic_ai.result import FinalResult
+from pydantic_ai.tools import DeferredToolRequests
 from pydantic_ai.usage import RunUsage
 
 from octomate.schemas.auth import LinkProfileAuthorization
 from octomate.schemas.awakes import DeferredActionBatchResponse
+from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     DeferredActionBatch,
@@ -58,8 +71,10 @@ from octomate.schemas.deferred import (
     QuestionAnswer,
 )
 from octomate.schemas.segments import MessageSegment
+from octomate.schemas.thread import Handoff
 from octomate.schemas.todos import Todo
 from octomate.schemas.triage import GatewayAction
+from octomate.schemas.user import UserProfile
 
 SubagentActivityKind = Literal["commission", "whisper"]
 SubagentActivityStatus = Literal["completed", "failed", "timed_out", "cancelled"]
@@ -99,6 +114,67 @@ class ReflexAsleepEvent(BaseModel):
     event_kind: Literal["reflex_asleep"] = "reflex_asleep"
 
 
+class ThreadTitleChangedEvent(BaseModel):
+    """A committed title change, including a title derived from an opening message."""
+
+    event_kind: Literal["thread_title_changed"] = "thread_title_changed"
+    thread_id: UUID7
+    title: str | None
+    updated_at: AwareDatetime
+
+
+class ThreadProjectBoundEvent(BaseModel):
+    """A thread committed its project binding."""
+
+    event_kind: Literal["thread_project_bound"] = "thread_project_bound"
+    thread_id: UUID7
+    project_id: UUID7
+    updated_at: AwareDatetime
+
+
+class ThreadHandoffRecordedEvent(BaseModel):
+    """A committed handoff identifies the thread's new agent and model."""
+
+    event_kind: Literal["thread_handoff_recorded"] = "thread_handoff_recorded"
+    thread_id: UUID7
+    handoff: Handoff
+
+
+class ThreadMessageRecordedEvent(BaseModel):
+    """A ledger entry committed, advancing the thread's listing timestamp.
+
+    Includes command receipts and fork notices. The first recorded entry makes
+    the thread visible to its registered participants; an unknown thread can be
+    loaded by its id. No message content is copied into a listing notification.
+    """
+
+    event_kind: Literal["thread_message_recorded"] = "thread_message_recorded"
+    thread_id: UUID7
+    message_id: UUID7
+    updated_at: AwareDatetime
+
+
+class ThreadCommandOutcomeRecordedEvent(BaseModel):
+    """A command's terminal outcome committed to its receipt."""
+
+    event_kind: Literal["thread_command_outcome_recorded"] = (
+        "thread_command_outcome_recorded"
+    )
+    thread_id: UUID7
+    receipt_id: UUID7
+    outcome: CommandOutcome
+    updated_at: AwareDatetime
+
+
+type ThreadEvent = (
+    ThreadTitleChangedEvent
+    | ThreadProjectBoundEvent
+    | ThreadHandoffRecordedEvent
+    | ThreadMessageRecordedEvent
+    | ThreadCommandOutcomeRecordedEvent
+)
+
+
 class RunStartedEvent(BaseModel):
     """An agent run beginning, before anything it streams: the thread it reports
     into — another than the one asked about when a move carried the turn there.
@@ -106,6 +182,11 @@ class RunStartedEvent(BaseModel):
 
     event_kind: Literal["run_started"] = "run_started"
     address: ChannelAddress
+    sender: UserProfile | None = Field(
+        default=None,
+        description="The profile supplying a native transcript's prompts; None "
+        "when the run does not have a single native sender.",
+    )
 
 
 class RunEndedEvent(BaseModel):
@@ -423,6 +504,7 @@ type WireEvent = (
     | RunResultEvent
     | ReflexAwakeEvent
     | ReflexAsleepEvent
+    | ThreadEvent
     | RunStartedEvent
     | RunEndedEvent
     | RunErrorEvent
@@ -441,3 +523,25 @@ wire_event_adapter: TypeAdapter[WireEvent] = TypeAdapter(
     WireEvent,
     config=ConfigDict(ser_json_bytes="base64"),
 )
+
+
+def to_wire[OutputT: str | Sequence[MessageSegment] | DeferredToolRequests | None](
+    item: StreamEvents[OutputT] | AgentRunResultEvent[OutputT],
+) -> WireEvent | None:
+    """One run stream item as its wire event, or None for the shapes the wire
+    replaces (see the wire module docstring)."""
+    match item:
+        case AgentRunResultEvent():
+            match item.result.output:
+                case str() | None:
+                    output: str | list[MessageSegment] | None = item.result.output
+                case DeferredToolRequests():
+                    # The suspension already went out as an ActionBatchEvent.
+                    output = None
+                case segments:
+                    output = list(segments)
+            return RunResultEvent(output=output, usage=item.result.usage)
+        case FinalResult():
+            return None
+        case _:
+            return item

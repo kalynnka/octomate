@@ -9,6 +9,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from anyio.abc import ObjectSendStream
 from octomate_cli.tentacles.claude import CLAUDE_STREAM_PATH
 from octomate_protocol.stream import StreamEof, StreamLine
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -16,6 +17,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, OctomateConfig
+from octomate.nerve import Impulse
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import CLAUDE_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
@@ -72,13 +74,19 @@ async def kept_bytes(
     return await octomate.files.read(stored.transcript_file_id, owner_id=owner_id)
 
 
-async def test_a_native_session_keeps_its_own_bytes_across_a_reconnect() -> None:
+async def test_a_native_session_keeps_its_own_bytes_across_a_reconnect(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
     """A reconnect resends the turn it dropped in; what is kept already is skipped,
     and a line past a gap is never kept, so the file stays the session's own."""
     octomate, tentacle, sender = await a_native_session()
     assert sender.user_id is not None
     state, _ = await tentacle.session_tailer.attach_remote(
-        SESSION_ID, CLIENT_PATH, sender
+        SESSION_ID,
+        CLIENT_PATH,
+        sender,
+        SESSION_KEY.address(sender.channel_user_id),
+        impulses=tail_impulses,
     )
     conversation = state.conversation
     assert conversation is not None
@@ -142,7 +150,9 @@ def test_lines_over_the_socket_are_kept_for_their_owner() -> None:
 
 
 async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    tail_impulses: ObjectSendStream[Impulse],
 ) -> None:
     """The kept history up to the last whole turn is laid where the landed
     thread's workspace files sessions and forked there; the staged copy goes."""
@@ -150,7 +160,13 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
     octomate, tentacle, sender = await a_native_session()
     assert sender.user_id is not None
     tailer = tentacle.session_tailer
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, sender)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID,
+        CLIENT_PATH,
+        sender,
+        SESSION_KEY.address(sender.channel_user_id),
+        impulses=tail_impulses,
+    )
     conversation = state.conversation
     assert conversation is not None
     kept = 0
@@ -190,13 +206,21 @@ async def test_a_native_session_forks_into_a_session_this_tentacle_drives(
     assert copy.external_id == "forked-session"
 
 
-async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork() -> None:
+async def test_a_session_on_a_model_this_server_does_not_offer_cannot_fork(
+    tail_impulses: ObjectSendStream[Impulse],
+) -> None:
     """Refused while nothing has moved: resumed here, the session could only run
     on a model its history was never written on."""
     octomate, tentacle, sender = await a_native_session()
     assert sender.user_id is not None
     tailer = tentacle.session_tailer
-    state, _ = await tailer.attach_remote(SESSION_ID, CLIENT_PATH, sender)
+    state, _ = await tailer.attach_remote(
+        SESSION_ID,
+        CLIENT_PATH,
+        sender,
+        SESSION_KEY.address(sender.channel_user_id),
+        impulses=tail_impulses,
+    )
     conversation = state.conversation
     assert conversation is not None
     kept = 0

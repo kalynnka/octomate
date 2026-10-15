@@ -185,6 +185,18 @@ class Conversation(BaseTransmuter):
     messages: RelationCollection[ModelRequest | ModelResponse] = Relationships()
 
     @property
+    def native_run_ids(self) -> set[str]:
+        """Native runs with a completed transcript range, safe to skip on replay.
+
+        Empty hook reservations and incomplete imports still need their transcript.
+        """
+        return {
+            run.id
+            for run in self.runs
+            if isinstance(run, ExternalAgentRun) and run.end_offset is not None
+        }
+
+    @property
     def latest_run(self) -> AgentRun | ExternalAgentRun | None:
         """The last run in the loaded, ordered history, or None before the first run."""
         return self.runs[-1] if self.runs else None

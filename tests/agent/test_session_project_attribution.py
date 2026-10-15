@@ -68,7 +68,6 @@ async def claude_session(octomate: Octomate, session_id: str, cwd: Path | str) -
                 "prompt_id": "p1",
             }
         ),
-        SENDER,
     )
     thread = await octomate.threads.ensure(
         ThreadKey(CLAUDE_NATIVE_ID, "thread", session_id)
@@ -96,7 +95,6 @@ async def codex_session(octomate: Octomate, session_id: str, cwd: Path | str) ->
                 "turn_id": "t1",
             }
         ),
-        SENDER,
     )
     thread = await octomate.threads.ensure(
         ThreadKey(CODEX_NATIVE_ID, "thread", session_id)
@@ -295,7 +293,6 @@ async def end_session(octomate: Octomate, session_id: str, cwd: Path | str) -> N
                 "cwd": str(cwd),
             }
         ),
-        SENDER,
     )
 
 

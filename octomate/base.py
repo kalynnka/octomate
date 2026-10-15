@@ -179,7 +179,7 @@ class Octomate(FastAPI):
             redoc_url=None,
             lifespan=self.lifespan,
         )
-        self.threads = ThreadManager(users=self.users)
+        self.threads = ThreadManager(users=self.users, nerve=self.nerve)
         self.commands = CommandManager(
             tentacles=self.tentacles,
             users=self.users,

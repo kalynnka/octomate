@@ -1,6 +1,7 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useConsole } from '@/state/console'
 import { followAddress } from '@/state/url'
+import { watchThreads } from '@/state/threads'
 import { ThreadsSidebar } from '@/features/threads/ThreadsSidebar'
 import { ControlRail } from '@/features/control/ControlRail'
 import { ReviewPanel } from '@/features/review/ReviewPanel'
@@ -9,15 +10,17 @@ import { TimelinePanel } from '@/features/timeline/TimelinePanel'
 import { StatusBar } from './StatusBar'
 
 export function ConsoleShell() {
-  const { applyViewport, closeOverlays, cyclePermissionMode } = useConsole((s) => s.actions)
+  const [threadListError, setThreadListError] = useState<string | null>(null)
+  useEffect(() => watchThreads(setThreadListError), [])
+  const actions = useConsole((s) => s.actions)
+  const { applyViewport, closeOverlays, cyclePermissionMode } = actions
   const overlayOpen = useConsole(
     (s) => !s.sbFold || (!s.mgmtSec && (s.mgmtOpen || (s.traceOn === true && !s.pvOpen))),
   )
   // Boot into what the address names, else the newest live thread; an empty or
   // unreachable relay opens the new-thread flow (the status bar carries the
-  // offline state). The shell mounts once per sign-in, and the address follows
-  // what is open for as long as it stays mounted.
-  useEffect(() => followAddress(), [])
+  // offline state). Reattach when hot reload replaces the store's actions.
+  useEffect(() => followAddress(), [actions])
   useEffect(() => {
     const measure = () => applyViewport(window.innerWidth)
     measure()
@@ -54,6 +57,7 @@ export function ConsoleShell() {
         fontFamily: 'var(--font-sans)',
       }}
     >
+      {threadListError && <div role="alert">{threadListError} Reload to resume thread-list updates.</div>}
       <div className="trk-shell-row" style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
         <ThreadsSidebar />
         <ControlRail />

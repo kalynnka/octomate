@@ -15,7 +15,7 @@ import type {
   ApiThreadMessage,
   ApiUsage,
 } from './events'
-import { batchFeelers, replayRun, segmentText, type ReplayChild } from './fold'
+import { batchFeelers, nativeQuestionAnswered, nativeQuestionReplies, promptText, replayRun, segmentText, type NativeQuestionReply, type ReplayChild } from './fold'
 import type {
   ChannelMeta,
   LedgerItem,
@@ -374,6 +374,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
             .map((message) => ({ key: request.id, message, session: ranIn.get(request.run_id)?.id })),
     ),
   ]
+  const questionReplies: NativeQuestionReply[] = []
   for (const { key, message, session } of said) {
     if (message.kind === 'artifact') {
       keyed.push({ key, session, item: { kind: 'artifact', uid: message.id, artifactId: message.artifact_id } })
@@ -382,6 +383,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     const text = textOf(message)
     const reply = replyOf(message)
     if (message.direction === 'inbound' && message.actor_kind === 'human') {
+      questionReplies.push(...nativeQuestionReplies(text) ?? [])
       keyed.push({
         key,
         session,
@@ -391,7 +393,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
           t: clock(message.happened_at),
           who: message.sender?.name || 'operator',
           userId: message.sender?.user_id,
-          text,
+          text: promptText(text),
           ...(reply && { reply }),
         },
       })
@@ -438,10 +440,11 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     for (const [n, part] of request.parts.entries()) {
       if (part.part_kind !== 'user-prompt') continue
       const text = typeof part.content === 'string' ? part.content : part.content.filter((c) => typeof c === 'string').join('\n')
+      questionReplies.push(...nativeQuestionReplies(text) ?? [])
       keyed.push({
         key: request.id,
         session: ranIn.get(request.run_id)?.id,
-        item: { kind: 'user', uid: `${request.id}.${n}`, t: request.timestamp ? clock(request.timestamp) : '', who: 'operator', text },
+        item: { kind: 'user', uid: `${request.id}.${n}`, t: request.timestamp ? clock(request.timestamp) : '', who: 'operator', text: promptText(text) },
       })
     }
   }
@@ -462,7 +465,10 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
       const outbound = message.thread_messages.find((row) => row.direction === 'outbound')
       return outbound ? [[message.id, { label: senderOf(outbound), reply: replyOf(outbound) }] as const] : []
     }))
-    for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children)) {
+    for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children, runtime.native === true)) {
+      if (card.item.kind === 'ask' && card.item.nativeCallId) {
+        card.item = nativeQuestionAnswered(card.item, questionReplies)
+      }
       const delivery = deliveries.get(card.message)
       if (card.item.kind === 'agent' && delivery) {
         card.item = { ...card.item, label: delivery.label ?? card.item.label, ...(delivery.reply && { reply: delivery.reply }) }
