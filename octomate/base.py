@@ -502,7 +502,7 @@ class Octomate(FastAPI):
 
     def build_middleware_stack(self) -> ASGIApp:
         # The router imports the dependency providers, which import Octomate.
-        from octomate.artifacts import artifact_router
+        from octomate.artifacts import ArtifactSandbox, artifact_router
         from octomate.auth import auth_router
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
@@ -538,4 +538,7 @@ class Octomate(FastAPI):
                 )
                 break
 
-        return super().build_middleware_stack()
+        return ArtifactSandbox(
+            super().build_middleware_stack(),
+            origin=self.config.artifacts.sandbox_origin,
+        )

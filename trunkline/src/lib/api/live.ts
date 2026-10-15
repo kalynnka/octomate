@@ -375,6 +375,10 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     ),
   ]
   for (const { key, message, session } of said) {
+    if (message.kind === 'artifact') {
+      keyed.push({ key, session, item: { kind: 'artifact', uid: message.id, artifactId: message.artifact_id } })
+      continue
+    }
     const text = textOf(message)
     const reply = replyOf(message)
     if (message.direction === 'inbound' && message.actor_kind === 'human') {

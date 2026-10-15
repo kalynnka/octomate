@@ -240,3 +240,12 @@ test('usage is the relay total, and the context is the newest response in hand',
   })
   assert.equal(latest.ctxK, 6)
 })
+
+test('artifact references survive pagination with their row identity and no text card', () => {
+  const artifact: ApiThreadMessage = { ...said('060', '', 'system'), kind: 'artifact', artifact_id: 'saved-app' }
+  const detail = liveThreadDetail(reads([], [artifact], { model: null, unbound: null }))
+  assert.deepEqual(detail.ledger.filter((item) => item.kind === 'artifact'), [{ kind: 'artifact', uid: '060', artifactId: 'saved-app' }])
+  assert.equal(detail.ledger.some((item) => item.kind === 'system'), false)
+  const paged = withOlderPage(detail, detail.reads!, { read: 'unbound', page: page([artifact]) })
+  assert.equal(paged.ledger.filter((item) => item.kind === 'artifact').length, 1)
+})

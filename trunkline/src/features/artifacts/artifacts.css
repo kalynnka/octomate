@@ -1,0 +1,9 @@
+.trk-artifact { width: 100%; min-width: 0; border: 1px solid var(--line-divider); background: var(--page-bg); color: var(--fg-1); }
+.trk-artifact-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-bottom: 1px solid var(--line-divider); }
+.trk-artifact-header span { display: flex; align-items: center; gap: 12px; }
+.trk-artifact-header button { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line-divider); padding: 3px 8px; cursor: pointer; }
+.trk-artifact a { color: var(--color-accent); }
+.trk-artifact p { margin: 14px; }
+.trk-artifact [role="alert"] { color: var(--color-terra, #b63c27); }
+.trk-artifact-page { max-width: 1280px; padding: 24px; margin: auto; }
+.trk-artifact-page > a { display: inline-block; margin-bottom: 16px; color: var(--fg-1); }

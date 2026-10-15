@@ -411,7 +411,14 @@ export interface GatewayEvent {
   announcement: string | null
 }
 
+export interface ArtifactAvailableEvent {
+  event_kind: 'artifact_available'
+  message_id: string
+  artifact_id: string
+}
+
 export type WireEvent =
+  | ArtifactAvailableEvent
   | PartStartEvent
   | PartDeltaEvent
   | PartEndEvent
@@ -650,6 +657,7 @@ export type ApiThreadMessage = {
 } & (
   | { kind: 'message' }
   | { kind: 'command'; outcome: CommandOutcome | null }
+  | { kind: 'artifact'; artifact_id: string }
 )
 
 /** One recorded run. `kind` tells an Octomate-driven run from one rebuilt out

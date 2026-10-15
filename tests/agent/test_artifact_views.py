@@ -15,6 +15,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.database import async_session
+from octomate.managers.artifacts import ArtifactSandboxUnavailable
 from octomate.managers.auth import AuthManager
 from octomate.schemas.artifacts import McpAppArtifact, McpAppView
 from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
@@ -110,6 +111,10 @@ async def test_view_reloads_html_and_preserves_invocation(
             )
             assert response.status_code == 200
             assert response.headers["cache-control"] == "no-store"
+            # Optional MCP fields use omission on the wire; SDK schemas reject null.
+            assert (
+                "description" not in response.json()["artifact"]["invocation"]["tool"]
+            )
             view = McpAppView.model_validate(response.json())
             assert view.artifact.invocation == case.artifact.invocation
             assert view.resource.html == html
@@ -233,8 +238,14 @@ async def test_view_requires_separate_sandbox_origin(
         ) as client,
     ):
         response = await client.get(case.url)
-        assert response.status_code == 503
-        assert response.headers["cache-control"] == "no-store"
+        # The configured sandbox host now exposes no API routes at all.
+        assert response.status_code == (404 if origin else 503)
+        with pytest.raises(ArtifactSandboxUnavailable, match="separate"):
+            await case.host.artifacts.load(
+                case.artifact.id,
+                case.user,
+                console_origin=AnyHttpUrl("https://console.example"),
+            )
         assert requests.methods == []
 
 

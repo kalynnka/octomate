@@ -1,5 +1,7 @@
 """Owned artifact loading, including access through a thread's visible ledger."""
 
+from urllib.parse import urlencode
+
 from arcanus.materia.sqlalchemy import noload
 from pydantic import UUID7, AnyHttpUrl
 
@@ -8,7 +10,8 @@ from octomate.database import async_session
 from octomate.managers.base import Manager
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.thread import ThreadManager, in_ledger
-from octomate.schemas.artifacts import McpAppArtifact, McpAppView
+from octomate.schemas.artifacts import ArtifactSandboxPolicy, McpAppArtifact, McpAppView
+from octomate.schemas.mcp import McpAppResourceCSP
 from octomate.schemas.thread import ThreadArtifact
 from octomate.schemas.user import User
 
@@ -62,7 +65,18 @@ class ArtifactManager(Manager):
             resource = await self.mcp.app_resource(user, artifact.invocation)
         except McpUnavailable as error:
             raise ArtifactUnavailable("Artifact installation unavailable") from error
-        return McpAppView(artifact=artifact, resource=resource, sandbox_origin=sandbox)
+        policy = ArtifactSandboxPolicy(
+            parent_origin=console_origin,
+            csp=resource.ui.csp or McpAppResourceCSP(),
+        )
+        query = urlencode({"policy": policy.model_dump_json(by_alias=True)})
+        return McpAppView(
+            artifact=artifact,
+            resource=resource,
+            sandbox_origin=sandbox,
+            sandbox_url=AnyHttpUrl(f"{sandbox}artifacts/sandbox?{query}"),
+            viewer_path=f"{self.config.path}/{artifact.id}",
+        )
 
     async def load_from_message(
         self,

@@ -12,7 +12,7 @@ class ArtifactConfig(BaseModel):
         description=(
             "Root-relative URL prefix for artifact viewers on the console host. "
             "Use slash-separated segments of letters, digits, hyphens, or underscores, "
-            "without a trailing slash. Viewer routing is not yet implemented."
+            "without a trailing slash. Each viewer appends the artifact UUID."
         ),
     )
     sandbox_origin: AnyHttpUrl | None = Field(

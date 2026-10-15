@@ -322,3 +322,19 @@ test('a run follows the first reflex its socket sees wake, not the end of one al
   const replies = useConsole.getState().live.filter((item) => item.kind === 'stream')
   assert.deepEqual(replies.map((item) => item.kind === 'stream' && item.text), ['Hello back'])
 })
+
+test('artifact availability outside a turn deduplicates events and saved history', async () => {
+  mock.method(api, 'getThreadDetail', async () => ({ ...detail, ledger: [{ kind: 'artifact', uid: 'saved-row', artifactId: 'saved-app' }] } satisfies ThreadDetail))
+  await useConsole.getState().actions.selectThread('codex', 'thread-a')
+  const socket = await socketOn('thread_id=thread-a')
+  socket.deliver(
+    { event_kind: 'artifact_available', message_id: 'saved-row', artifact_id: 'saved-app' },
+    { event_kind: 'artifact_available', message_id: 'new-row', artifact_id: 'new-app' },
+    { event_kind: 'artifact_available', message_id: 'new-row', artifact_id: 'new-app' },
+    { event_kind: 'artifact_available', message_id: 'second-row', artifact_id: 'new-app' },
+  )
+  assert.deepEqual(useConsole.getState().live.filter((item) => item.kind === 'artifact'), [
+    { kind: 'artifact', uid: 'new-row', artifactId: 'new-app' },
+    { kind: 'artifact', uid: 'second-row', artifactId: 'new-app' },
+  ])
+})

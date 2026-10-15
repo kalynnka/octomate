@@ -83,6 +83,7 @@ your-channel-profiles).
 |---|---|---|---|---|---|
 | Streaming text | Native stream | Streaming card | Message edits | No; completed messages | Every event, live |
 | Thinking and tool cards | Folding plan | Cards that fold | No | No | Yes |
+| MCP app artifacts | No | No | No | No | Inline cards and standalone pages |
 | Todo checklist | Plan tasks | Card | No | Text with the final reply | Yes |
 | Approval cards | Buttons, paged | One card each | Buttons, one each | Text only | Yes |
 | Question cards | One message | One card | Buttons and a modal | Text only | Yes |

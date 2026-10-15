@@ -150,6 +150,7 @@ export interface MessageReply {
 }
 
 export type LedgerItem =
+  | { kind: 'artifact'; uid: string; artifactId: string }
   | { kind: 'divider'; uid: string; label: string }
   | { kind: 'system'; uid: string; text: string; tone?: 'info' }
   | {
