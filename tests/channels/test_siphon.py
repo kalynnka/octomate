@@ -15,7 +15,7 @@ from octomate.capabilities.harness.events import (
     RunStartedEvent,
 )
 from octomate.config import ChannelConfig, ChannelStreamConfig
-from octomate.nerve import Impulse
+from octomate.nerve import ChannelTopic, Impulse
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment
 from octomate.schemas.thread import ThreadMessage
@@ -81,7 +81,7 @@ async def test_a_streaming_channel_draws_a_run_on_its_timeline_and_marks_it() ->
 
     async with drawing(channel):
         for impulse in a_run(ALICE, reply=reply):
-            channel.octomate.nerve.deliver(impulse)
+            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
 
     [(where, rendered)] = channel.consumed
     assert where == ALICE
@@ -96,7 +96,7 @@ async def test_a_quiet_channel_posts_its_sends_then_the_reply_once() -> None:
 
     async with drawing(channel):
         for impulse in a_run(ALICE, sent("working on it"), reply=reply):
-            channel.octomate.nerve.deliver(impulse)
+            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
 
     assert channel.consumed == []
     assert texts(channel) == ["working on it", "done"]
@@ -130,7 +130,7 @@ async def test_a_slow_thread_holds_up_no_other() -> None:
 
     async with drawing(channel):
         for impulse in [*a_run(ALICE, answer="alice's"), *a_run(BOB, answer="bob's")]:
-            channel.octomate.nerve.deliver(impulse)
+            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
         await asyncio.wait_for(held.posted_elsewhere.wait(), 1)
         assert texts(channel) == ["bob's"]
         held.release.set()
@@ -161,6 +161,6 @@ async def test_a_rendering_that_fails_leaves_its_thread_drawing() -> None:
 
     async with drawing(channel):
         for impulse in [Impulse(sent("lost"), ALICE), Impulse(sent("kept"), ALICE)]:
-            channel.octomate.nerve.deliver(impulse)
+            channel.octomate.nerve.deliver(ChannelTopic(channel.id), impulse)
 
     assert texts(channel) == ["kept"]

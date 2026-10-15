@@ -24,7 +24,7 @@ from pydantic import UUID7
 from octomate.capabilities.harness.events import WireEvent
 from octomate.managers.base import Manager
 from octomate.managers.workspaces.mirrors import run_git
-from octomate.nerve import Impulse, Nerve
+from octomate.nerve import ChannelTopic, Impulse, Nerve, ThreadTopic
 from octomate.schemas.awakes import DrivenGatewaySignal, NativeGatewaySignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.operations import (
@@ -163,7 +163,8 @@ class OctomateSession:
             return
         if self.nerve is None:
             raise RuntimeError("a spell no kick drives publishes on the host's nerve")
-        self.nerve.deliver(impulse)
+        self.nerve.deliver(ChannelTopic(address.channel_tentacle_id), impulse)
+        self.nerve.deliver(ThreadTopic(ThreadKey.from_address(address)), impulse)
 
     @property
     def allow_here(self) -> bool:

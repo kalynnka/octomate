@@ -57,8 +57,9 @@ async def drawing(*channels: ChannelTentacle) -> AsyncGenerator[None]:
         yield
     finally:
         for channel in channels:
-            topic = ChannelTopic(channel.id)
-            for fiber in channel.octomate.nerve.subscribers.get(topic, set()):
+            for fiber in channel.octomate.nerve.subscribers.get(
+                ChannelTopic(channel.id), set()
+            ):
                 fiber.send.close()
             if channel.siphon.reading is not None:
                 await channel.siphon.reading

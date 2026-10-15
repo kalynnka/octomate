@@ -54,6 +54,7 @@ from octomate.managers.workspaces.mirrors import (
     MirrorManager,
     run_git,
 )
+from octomate.nerve import Nerve
 from octomate.schemas.thread import Thread, ThreadKey
 from tests.support.dependencies import Probe, probing, runs
 from tests.support.managers import a_project, a_registry
@@ -106,7 +107,7 @@ async def a_bound_thread(manager: WorkspaceManager) -> Thread:
     """A thread of the one kind that carries a project, filed under the registered
     one. `save` finds the mirror to push to through this, so a bare uuid has
     nowhere to go."""
-    return await ThreadManager(users=UserManager()).ensure(
+    return await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(
         ThreadKey("test", "thread", "chat", str(uuid7())),
         project=manager.projects.get("inky"),
     )
@@ -958,7 +959,7 @@ async def test_a_chat_run_leaves_nothing_in_the_blank_mirror(
     # The mirror is what makes a project workspace disposable; this one has nothing
     # to be disposable about. A ref per conversation for work nobody intends to keep
     # is the opposite of what a mirror is for.
-    thread = await ThreadManager(users=UserManager()).ensure(
+    thread = await ThreadManager(nerve=Nerve(), users=UserManager()).ensure(
         ThreadKey("test", "thread", "chat", str(uuid7()))
     )
 

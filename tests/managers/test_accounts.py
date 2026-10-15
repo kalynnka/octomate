@@ -17,6 +17,7 @@ from octomate.config.channels import TrunklineChannelConfig
 from octomate.database import AsyncSession, async_session
 from octomate.managers.auth import AuthManager, InvalidCredentials, UsernameUnavailable
 from octomate.managers.user import UserManager
+from octomate.nerve import ThreadTopic
 from octomate.schemas.auth import UserInvitation, UserSession
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.thread import ThreadKey
@@ -582,7 +583,7 @@ async def test_private_threads_and_mutations_are_isolated(
     assert (await client.get("/api/trunkline/threads")).status_code == 401
     alice = (await enroll(client, auth)).json()
     with app.nerve.subscribe(
-        ThreadKey("trunkline", "thread", alice["id"], "shared-key")
+        ThreadTopic(ThreadKey("trunkline", "thread", alice["id"], "shared-key"))
     ) as live:
         posted = await client.post(
             "/api/trunkline/threads/shared-key/messages",
@@ -638,7 +639,7 @@ async def test_private_threads_and_mutations_are_isolated(
     ).status_code == 404
     assert (await app.deferred_actions.get_batch(batch.id)).status == "pending"
     with app.nerve.subscribe(
-        ThreadKey("trunkline", "thread", bob["id"], "shared-key")
+        ThreadTopic(ThreadKey("trunkline", "thread", bob["id"], "shared-key"))
     ) as live:
         second = await client.post(
             "/api/trunkline/threads/shared-key/messages",

@@ -16,6 +16,7 @@ from octomate.managers.gateway import GatewayManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import Nerve
 from octomate.schemas.commands import (
     CommandCatalog,
     CommandContext,
@@ -71,7 +72,7 @@ def manager() -> CommandManager:
         tentacles={},
         users=users,
         conversations=ConversationManager(),
-        threads=ThreadManager(users=users),
+        threads=ThreadManager(nerve=Nerve(), users=users),
         workspaces=WorkspaceManager(),
         gateway=GatewayManager(),
     )

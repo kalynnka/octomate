@@ -35,7 +35,7 @@ from starlette.websockets import WebSocketDisconnect
 from octomate import Octomate
 from octomate.config import ClaudeCodeConfig, OctomateConfig
 from octomate.database import async_session
-from octomate.nerve import Impulse
+from octomate.nerve import Impulse, ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.schemas.user import UserProfile
@@ -350,7 +350,7 @@ def test_lines_over_the_socket_commit_and_the_next_welcome_resumes() -> None:
     # One entered client, so both connects share a portal loop — the in-memory
     # database's connection is loop-bound, and two portals would strand it.
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with client, tentacle.octomate.nerve.subscribe(key) as live:
+    with client, tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
         with client.websocket_connect(CLAUDE_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

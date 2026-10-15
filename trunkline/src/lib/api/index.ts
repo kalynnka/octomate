@@ -33,8 +33,8 @@ import type {
   ApiProject,
   ApiRoute,
 } from './events'
-import { channelMeta, groupLiveThreads, liveThreadDetail, type OlderPage, type ThreadRead } from './live'
-import type { ChannelMeta, EffortStep, ThreadDetail, ThreadSummary } from './types'
+import { channelMeta, liveThreadDetail, type OlderPage, type ThreadRead } from './live'
+import type { ChannelMeta, EffortStep, ThreadDetail } from './types'
 
 export interface RoutesResult {
   routes: ApiRoute[]
@@ -89,9 +89,7 @@ export const api = {
     return patchEffort(conversationId, effort)
   },
 
-  async listThreads(): Promise<Record<string, ThreadSummary[]>> {
-    return groupLiveThreads(await fetchThreads())
-  },
+  listThreads: fetchThreads,
 
   /**
    * One thread, read as the relay shapes it: the row, the latest page of its own

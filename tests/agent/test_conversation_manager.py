@@ -31,6 +31,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.database import async_session
 from octomate.managers import ConversationManager, ThreadManager, UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import AgentRun, ExternalAgentRun
@@ -837,7 +838,7 @@ async def test_a_threads_model_messages_page_newest_first_across_its_conversatio
     """One stream across every conversation the thread has had, in the order it
     happened; a subagent's work is its own conversation's and stays out. A request
     carries the chat rows it was built from."""
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     service = ConversationManager()
     thread_id = await _thread()
     first = await service.ensure(thread_id, agent_tentacle_id="inkling")

@@ -23,6 +23,7 @@ from octomate.database import async_session
 from octomate.managers.conversation import ConversationManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
+from octomate.nerve import Nerve
 from octomate.schemas.commands import CommandInvocation, CommandResult
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.messages import ModelMessage
@@ -52,7 +53,7 @@ async def test_fork_shares_the_source_history_and_grows_apart(
 ) -> None:
     manager = ConversationManager()
     surface_id = await a_thread("source")
-    threads = ThreadManager(users=UserManager())
+    threads = ThreadManager(nerve=Nerve(), users=UserManager())
     surface = await threads.get(surface_id)
     assert surface is not None
     thread = await threads.open_sub_thread(surface) if subthread else surface
@@ -358,7 +359,9 @@ async def test_native_fork_leaves_unfinished_turns_behind(bound: bool) -> None:
     await manager.fork(source, target, external_id="forked-session", end_offset=10)
     forked = await manager.get(target.id)
     assert [run.id for run in forked.runs] == [recorded[0].id]
-    landed = await ThreadManager(users=UserManager()).get(target.thread_id)
+    landed = await ThreadManager(nerve=Nerve(), users=UserManager()).get(
+        target.thread_id
+    )
     assert landed is not None
     assert [message.message_text for message in landed.messages] == ["completed"]
     # The source's handoffs stay with it; the fork's own conversation owns the fork.

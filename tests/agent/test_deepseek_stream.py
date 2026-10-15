@@ -35,6 +35,7 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.config.agents import DeepseekConfig
 from octomate.database import async_session
+from octomate.nerve import ThreadTopic
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.thread import Thread, ThreadKey
 from octomate.tentacles.deepseek import DeepseekTentacle
@@ -134,7 +135,7 @@ def test_entries_flow_over_the_socket_and_the_next_connect_resumes() -> None:
     client, tentacle = stream_client()
 
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with client, tentacle.octomate.nerve.subscribe(key) as live:
+    with client, tentacle.octomate.nerve.subscribe(ThreadTopic(key)) as live:
         with client.websocket_connect(DEEPSEEK_STREAM_PATH, headers=AUTH) as websocket:
             websocket.send_text(hello_json())
             welcome = server_message_adapter.validate_json(websocket.receive_text())

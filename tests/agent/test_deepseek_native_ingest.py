@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate import Octomate
 from octomate.capabilities.harness.events import RunEndedEvent
-from octomate.nerve import Impulse, Nerve
+from octomate.nerve import Impulse, Nerve, ThreadTopic
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import DEEPSEEK_NATIVE_ID, ThreadKey
 from octomate.schemas.user import UserProfile
@@ -542,7 +542,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent() 
     _, tailer = wired(octomate)
     key = ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
     records = turn_events(1, 0, "inspect it", "done")
-    with octomate.nerve.subscribe(key) as live:
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         await stream_events(tailer, octomate.nerve, records[:-1])
         first = held(live)
         assert first[0].event.event_kind == "run_started"
@@ -626,7 +626,7 @@ async def test_failed_commit_never_publishes_run_ended(
             AsyncMock(side_effect=RuntimeError("commit failed")),
         )
     key = ThreadKey(DEEPSEEK_NATIVE_ID, "thread", SESSION_ID)
-    with octomate.nerve.subscribe(key) as live:
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         with pytest.raises(RuntimeError, match="commit failed"):
             await stream_events(
                 tailer, octomate.nerve, turn_events(1, 0, "inspect it", "done")

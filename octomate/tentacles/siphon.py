@@ -61,8 +61,9 @@ class Siphon:
         """Subscribe to the channel's addresses now, so nothing published from
         here on is missed, and read in the background until `stop`."""
         nerve = self.channel.octomate.nerve
-        topic = ChannelTopic(self.channel.id)
-        impulses = self.subscription.enter_context(nerve.subscribe(topic))
+        impulses = self.subscription.enter_context(
+            nerve.subscribe(ChannelTopic(self.channel.id))
+        )
         self.reading = asyncio.create_task(self.read(impulses))
 
     async def stop(self) -> None:
