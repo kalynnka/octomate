@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from base64 import b64decode
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, datetime
@@ -16,7 +17,7 @@ from fastmcp.apps.config import UI_EXTENSION_ID, UI_MIME_TYPE
 from fastmcp.client.transports import StreamableHttpTransport
 from mcp.client.extension import advertise
 from mcp.shared._httpx_utils import McpHttpClientFactory
-from mcp.types import CallToolResult
+from mcp.types import CallToolResult, TextResourceContents
 from pydantic import UUID7, JsonValue
 from sqlalchemy.exc import IntegrityError
 from uuid_utils.compat import uuid7
@@ -37,6 +38,7 @@ from octomate.schemas.mcp import (
     BearerMcp,
     Mcp,
     McpAppInvocation,
+    McpAppResource,
     McpAppToolMeta,
     McpAuthorizationResult,
     McpAuthorizationStatus,
@@ -594,6 +596,36 @@ class McpManager(Manager, Locks[UUID7]):
             ),
         )
         return result
+
+    async def app_resource(
+        self, user: User, invocation: McpAppInvocation
+    ) -> McpAppResource:
+        """Read only the saved UI URI from its still-authorized installation UUID.
+
+        This performs one resource read, never discovery or tool execution. The
+        response must contain one matching MCP Apps HTML resource, as text or
+        base64-encoded UTF-8. UI metadata is validated before reaching a browser.
+        """
+        async with self.acquire(user, mcp_id=invocation.installation_id) as client:
+            contents = await client.read_resource(invocation.resource_uri)
+        if len(contents) != 1:
+            raise ValueError("An MCP app must return exactly one UI resource")
+        resource = contents[0]
+        if (
+            resource.uri != str(invocation.resource_uri)
+            or resource.mime_type != UI_MIME_TYPE
+        ):
+            raise ValueError("MCP app resource URI or MIME type does not match")
+        html = (
+            resource.text
+            if isinstance(resource, TextResourceContents)
+            else b64decode(resource.blob, validate=True).decode("utf-8")
+        )
+        return McpAppResource(
+            uri=invocation.resource_uri,
+            html=html,
+            ui=(resource.meta or {}).get("ui", {}),
+        )
 
     @asynccontextmanager
     async def acquire(

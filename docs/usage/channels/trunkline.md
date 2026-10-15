@@ -242,8 +242,18 @@ app history to the new installation.
 MCP app support is shared across channels. Artifacts are recorded even when no
 sandbox origin is configured; browser hosting settings apply only to displaying them.
 
-Calls from native terminal sessions are not recorded as artifacts. Inline display,
-loading saved app views, and publishing generated HTML are not yet available.
+Artifact owners can retrieve saved app data through the
+[artifact HTTP API](../../api/mcp/artifacts.md). Each load fetches the current UI
+resource and returns the original input and result without executing the tool again.
+The original installation must still be enabled and authorized. Thread access alone
+does not grant access to another user's artifact.
+
+Loading requires `artifacts.sandbox_origin` to name a different origin from the
+console. A separate hostname or port works, including in local development. See the
+[artifact settings reference](../../api/config/artifacts.md).
+
+Calls from native terminal sessions are not recorded as artifacts. The browser
+viewer, sandbox hosting, inline display, and publishing generated HTML are not yet available.
 The recording and availability contracts are in the
 [MCP manager reference](../../api/managers/mcp.md) and
 [artifact schemas](../../api/schemas/resources.md#octomate.schemas.artifacts).

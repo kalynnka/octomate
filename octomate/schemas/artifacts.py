@@ -5,12 +5,12 @@ from typing import Annotated, Literal
 
 from arcanus import BaseTransmuter
 from arcanus.base import Identity
-from pydantic import UUID7, AwareDatetime, ConfigDict, Field
+from pydantic import UUID7, AnyHttpUrl, AwareDatetime, BaseModel, ConfigDict, Field
 from uuid_utils.compat import uuid7
 
 from octomate.models import artifacts as artifact_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.mcp import McpAppInvocation
+from octomate.schemas.mcp import McpAppInvocation, McpAppResource
 
 
 @sqlalchemy_materia.bless(artifact_models.Artifact)
@@ -50,4 +50,18 @@ class McpAppArtifact(Artifact):
     invocation: McpAppInvocation = Field(
         repr=False,
         description="Original call and complete result, kept outside generic ledger responses.",
+    )
+
+
+class McpAppView(BaseModel):
+    """An authorized artifact snapshot and freshly fetched resource for replay."""
+
+    artifact: McpAppArtifact = Field(
+        description="The artifact and complete saved invocation."
+    )
+    resource: McpAppResource = Field(
+        description="Untrusted HTML and resource UI metadata."
+    )
+    sandbox_origin: AnyHttpUrl = Field(
+        description="Configured origin for the isolated sandbox."
     )
