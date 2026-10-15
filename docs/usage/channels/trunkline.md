@@ -243,6 +243,10 @@ over the channel rail to replace its initials with channel names and thread coun
 moving away restores the initials. Teleport continuation notices use information
 blue for the first line and gray for details, without trailing horizontal rules.
 Each paragraph has one bullet; wrapped lines stay within it.
+The thread list updates as activity is recorded, including threads on other
+channels and changes made in another tab. Titles and agent handoffs update in
+place, and newly visible threads appear without reloading. If list updates
+disconnect, the console asks you to reload to resume them.
 The open thread is watched live, whichever channel it is on: a run that starts
 there from somewhere else, from Slack or from another tab, streams into the panel
 as it happens, and the thread is read again once it settles. A card answered anywhere

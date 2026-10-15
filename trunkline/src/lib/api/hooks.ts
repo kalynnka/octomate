@@ -3,16 +3,13 @@ import { fetchApiKeys, fetchProfileAuthorizations } from './auth'
 import { fetchAddresses, fetchCommandCatalog, fetchThreadOperations } from './client'
 import type { CommandContextBody } from './events'
 import { api } from './index'
+import { groupLiveThreads } from './live'
 
 export const useChannels = () =>
   useQuery({ queryKey: ['channels'], queryFn: api.listChannels, staleTime: Infinity })
 
-// Threads arrive without the console asking: a native session is tailed in
-// through the hooks, and an IM turn lands on its own channel. Until a standing
-// stream exists (README's gap list) the listing is re-read on a timer, so a
-// session that started after this page did still shows up in the rail.
 export const useThreads = () =>
-  useQuery({ queryKey: ['threads'], queryFn: api.listThreads, refetchInterval: 10_000 })
+  useQuery({ queryKey: ['threads'], queryFn: api.listThreads, select: groupLiveThreads, staleTime: Infinity })
 
 export const useHealth = () =>
   useQuery({

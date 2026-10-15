@@ -32,7 +32,7 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
-import { channelMeta, groupLiveThreads, holdingBack, withOlderPage } from '@/lib/api/live'
+import { channelMeta, holdingBack, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
 
@@ -437,10 +437,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const docsOf = (s: ConsoleState) => s.docs ?? s.detail?.docs ?? {}
   const cmtsOf = (s: ConsoleState) => s.cmts ?? s.detail?.comments ?? []
 
-  const refreshThreads = () => {
-    void queryClient.invalidateQueries({ queryKey: ['threads'] })
-  }
-
   // Threads with a ledger page in flight; one page at a time for each.
   const paging = new Set<string>()
 
@@ -517,7 +513,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const landedThread = async (from: string, address: ChannelAddress) => {
     await queryClient.invalidateQueries({ queryKey: ['thread-detail', from] })
     const threads = await fetchThreads()
-    queryClient.setQueryData(['threads'], groupLiveThreads(threads))
     const landed = threads.find((thread) =>
       thread.channel_tentacle_id === address.channel_tentacle_id
       && thread.chat_type === address.chat_type
@@ -571,7 +566,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     if (get().selThreadId !== thId || streamingOn.has(thId)) return
     if (settled()) set({ detail, live: [], running: false })
     else showDetail(detail)
-    refreshThreads()
   }
 
   /** Keep observed native turns in place when they settle. Driven turns also
@@ -620,7 +614,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (fold && !reflex) {
           fold.feed(event)
           set({ running: false })
-          refreshThreads()
         } else void reloadSettled(thId, () => fold === undefined)
         fold = undefined
         reflex = false
@@ -843,7 +836,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         } else parked.delete(selId)
       }
       void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
-      refreshThreads()
     }
   }
 
@@ -1172,7 +1164,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       } finally {
         set({ gatewayPending: null })
         void queryClient.invalidateQueries({ queryKey: ['thread-operations', threadId] })
-        refreshThreads()
       }
     },
     /**

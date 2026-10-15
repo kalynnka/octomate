@@ -5,8 +5,9 @@ Unlike the Vercel dev-UI channel it replaces, nothing is transcoded to a
 third-party UI protocol: the run's own event union (the harness `WireEvent`)
 is what the console renders, read off the nerve. The channel draws nothing
 through feelers: its siphon holds a subscription for each live socket, on the
-thread the socket watches, whichever channel it is on, and sends what the
-nerve carries there down it, where the kick's `reflex_asleep` arrives last. A
+authenticated user's topic or the thread the socket watches, whichever channel
+it is on, and sends what the nerve carries there down it. On a thread socket,
+the kick's `reflex_asleep` arrives last. A
 directive, a batch answer or a thread operation is answered as soon as its
 kick is on its way. Keyed as a
 `flat_thread` channel, every directive carries its thread id and streams
@@ -36,7 +37,7 @@ from octomate.capabilities.harness.events import (
     wire_event_adapter,
 )
 from octomate.config.channels import AgentModelConfig, TrunklineChannelConfig
-from octomate.nerve import ThreadTopic
+from octomate.nerve import Topic
 from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
@@ -172,27 +173,27 @@ class TrunklineChromo(Chromo[TrunklineDirective, WireEvent]):
 
 
 # How far behind a console's socket may fall before it is closed rather than
-# held for: the console reads the thread again when it reopens.
+# held for: the console reads its state again when it reopens.
 CONSOLE_BACKLOG = 4096
 
 
 class TrunklineSiphon(Siphon):
     """The console's siphon. It subscribes to nothing of its own: a console
-    picks the threads it watches, on any channel, and each live socket holds a
-    subscription to its thread for as long as it is open."""
+    watches its user topic and any selected thread, on any channel. Each live
+    socket holds one subscription for as long as it is open."""
 
     def start(self) -> None:
         """Nothing to subscribe to until a socket opens."""
 
-    async def watch(self, websocket: WebSocket, key: ThreadKey) -> None:
-        """Hold the console's socket on a thread until the console closes it,
-        sending each event the nerve carries to the thread down it meanwhile.
+    async def watch(self, websocket: WebSocket, topic: Topic) -> None:
+        """Hold the console's socket on a topic until the console closes it,
+        sending each event the nerve carries to that topic down it meanwhile.
         The subscription is open before the handshake completes, so a request
         the console sends once the socket is open misses nothing. A console
-        `CONSOLE_BACKLOG` events behind is closed with 1013 to read the thread
+        `CONSOLE_BACKLOG` events behind is closed with 1013 to read its state
         again; one that is gone ends the same way, once its close is read."""
         nerve = self.channel.octomate.nerve
-        with nerve.subscribe(ThreadTopic(key), backlog=CONSOLE_BACKLOG) as impulses:
+        with nerve.subscribe(topic, backlog=CONSOLE_BACKLOG) as impulses:
             await websocket.accept()
 
             async def send() -> None:
