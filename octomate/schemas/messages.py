@@ -39,8 +39,8 @@ from octomate.types.json import JsonObject
 
 if TYPE_CHECKING:
     from octomate.schemas.thread import (
+        ThreadArtifact,
         ThreadCommand,
-        ThreadMcpAppInvocation,
         ThreadMessage,
     )
 
@@ -87,7 +87,7 @@ class ModelMessage(BaseTransmuter, ABC):
     role: Literal["user", "assistant"] = "assistant"
     message_text: str | None = None
     thread_messages: RelationCollection[
-        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+        ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
 
     @abstractmethod
@@ -111,7 +111,7 @@ class ModelRequest(Transmuter, PydanticModelRequest):
     # The chat rows this request was built from: who said them, and what they
     # said before the prompt dressed it.
     thread_messages: RelationCollection[
-        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+        ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
 
     @model_validator(mode="after")
@@ -151,7 +151,7 @@ class ModelResponse(Transmuter, PydanticModelResponse):
     message_text: str | None = None
     # The chat rows that delivered this response's answer.
     thread_messages: RelationCollection[
-        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
+        ThreadMessage | ThreadCommand | ThreadArtifact
     ] = Relationships()
 
     @model_validator(mode="after")

@@ -4,6 +4,7 @@ and summaries."""
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from functools import cached_property
 from typing import Annotated, Literal, Self
 
 from arcanus import BaseTransmuter
@@ -11,6 +12,8 @@ from arcanus.base import Identity
 from mcp.types import CallToolResult, Tool
 from pydantic import (
     UUID7,
+    AliasChoices,
+    AliasPath,
     AnyUrl,
     AwareDatetime,
     BaseModel,
@@ -26,6 +29,23 @@ from uuid_utils.compat import uuid7
 from octomate.models import mcp as mcp_models
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.types.oauth import HttpsUrl, OAuthConnectionStatus, OAuthFlowKind
+
+
+class McpAppToolMeta(BaseModel):
+    """Extract the app URI, including the SDK's legacy spelling.
+
+    Unrelated metadata is ignored here and preserved on the original Tool.
+    """
+
+    resource_uri: Annotated[AnyUrl, UrlConstraints(allowed_schemes=["ui"])] | None = (
+        Field(
+            default=None,
+            validation_alias=AliasChoices(
+                AliasPath("ui", "resourceUri"), "ui/resourceUri"
+            ),
+            description="The UI resource advertised by a tool, when present.",
+        )
+    )
 
 
 class McpAppInvocation(BaseModel):
@@ -53,14 +73,6 @@ class McpAppInvocation(BaseModel):
     result: CallToolResult = Field(
         description="Complete upstream result, including structured content and metadata."
     )
-
-
-class McpAppReference(BaseModel):
-    """A ledger card's identity and label, without its private invocation data."""
-
-    id: UUID7 = Field(description="The ledger row containing the recorded invocation.")
-    provider_name: str = Field(description="The installation's recorded display name.")
-    tool_name: str = Field(description="The upstream tool's recorded name.")
 
 
 class NoAuth(BaseModel):
@@ -234,6 +246,11 @@ class McpToolCatalog(BaseModel):
 
     instructions: str = Field(description="The selected provider's tool instructions.")
     tools: list[Tool] = Field(description="The selected provider's MCP tool schemas.")
+
+    @cached_property
+    def tools_by_name(self) -> dict[str, Tool]:
+        """Index this discovery snapshot once; refresh creates a new catalog."""
+        return {tool.name: tool for tool in self.tools}
 
 
 type McpVariant = NoAuthMcp | BearerMcp | OAuthMcp

@@ -37,14 +37,14 @@ from octomate.schemas.segments import MessageSegment
 messages.__dict__.update(
     ThreadMessage=thread.ThreadMessage,
     ThreadCommand=thread.ThreadCommand,
-    ThreadMcpAppInvocation=thread.ThreadMcpAppInvocation,
+    ThreadArtifact=thread.ThreadArtifact,
 )
 thread.__dict__.update(
     ModelRequest=messages.ModelRequest, ModelResponse=messages.ModelResponse
 )
 thread.ThreadMessage.model_rebuild()
 thread.ThreadCommand.model_rebuild()
-thread.ThreadMcpAppInvocation.model_rebuild()
+thread.ThreadArtifact.model_rebuild()
 messages.ModelMessage.model_rebuild()
 rebuild_dataclass(messages.ModelRequest)
 rebuild_dataclass(messages.ModelResponse)

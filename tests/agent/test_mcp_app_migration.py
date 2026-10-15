@@ -1,4 +1,4 @@
-"""Adding app invocation storage preserves the ledger and its search triggers."""
+"""Artifact storage preserves history, references, and search triggers."""
 
 import sqlite3
 from pathlib import Path
@@ -11,17 +11,19 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from octomate.config.database import database_settings
-from octomate.schemas.thread import ThreadMcpAppInvocation
+from octomate.schemas.artifacts import McpAppArtifact
+from octomate.schemas.thread import ThreadArtifact
+from tests.agent.test_mcp_app_ledger import app_artifact as app_artifact
 from tests.agent.test_mcp_app_ledger import app_entry as app_entry
 
 PREVIOUS = "741f7a1817c2"
-REVISION = "4321bb383143"
+REVISION = "642099f8b906"
 
 
 @pytest.fixture
 def migration_copy(
     in_memory_engine: AsyncEngine,
-    app_entry: ThreadMcpAppInvocation,
+    app_entry: ThreadArtifact,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[Config, Path]:
@@ -33,7 +35,6 @@ def migration_copy(
         sqlite3.connect(target) as copied,
     ):
         original.backup(copied)
-        copied.execute("ALTER TABLE thread_messages DROP COLUMN app_invocation")
     monkeypatch.setattr(database_settings, "db_url", f"sqlite+aiosqlite:///{target}")
     actual = Path(make_url(database_settings.db_url).database or "").resolve(
         strict=True
@@ -42,7 +43,8 @@ def migration_copy(
     assert actual != source
     config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
     monkeypatch.setattr("logging.config.fileConfig", Mock())
-    command.stamp(config, PREVIOUS)
+    command.stamp(config, REVISION)
+    command.downgrade(config, PREVIOUS)
     return config, target
 
 
@@ -64,9 +66,15 @@ def test_migration_preserves_history_and_triggers(
     command.upgrade(config, REVISION)
     with sqlite3.connect(target) as copied:
         assert copied.execute("PRAGMA foreign_key_check").fetchall() == []
-        assert copied.execute(
-            "SELECT app_invocation FROM thread_messages"
-        ).fetchall() == [(None,)]
+        assert (
+            copied.execute(
+                "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+            ).fetchall()
+            == triggers
+        )
+        assert copied.execute("SELECT artifact_id FROM thread_messages").fetchall() == [
+            (None,)
+        ]
         assert (
             copied.execute(
                 f"SELECT {names} FROM thread_messages ORDER BY id"
@@ -90,25 +98,40 @@ def test_migration_preserves_history_and_triggers(
         )
 
 
-def test_downgrade_refuses_to_discard_app_history(
+@pytest.mark.parametrize("referenced", [False, True])
+def test_downgrade_refuses_to_discard_artifacts(
     migration_copy: tuple[Config, Path],
-    app_entry: ThreadMcpAppInvocation,
+    app_artifact: McpAppArtifact,
+    referenced: bool,
 ) -> None:
     config, target = migration_copy
     command.upgrade(config, REVISION)
-    invocation = (app_entry.app_invocation.model_dump_json(),)
+    invocation = app_artifact.invocation.model_dump_json()
     with sqlite3.connect(target) as copied:
+        copied.execute("PRAGMA foreign_keys = ON")
         copied.execute(
-            "UPDATE thread_messages SET kind = 'mcp_app', app_invocation = ?",
-            invocation,
+            "INSERT INTO artifacts (id, owner_id, kind, title, created_at, invocation) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                app_artifact.id.hex,
+                app_artifact.owner_id.hex,
+                app_artifact.kind,
+                app_artifact.title,
+                app_artifact.created_at.isoformat(),
+                invocation,
+            ),
         )
-    with pytest.raises(RuntimeError, match="MCP app ledger entries exist"):
+        if referenced:
+            copied.execute(
+                "UPDATE thread_messages SET kind = 'artifact', artifact_id = ?",
+                (app_artifact.id.hex,),
+            )
+    with pytest.raises(RuntimeError, match="artifacts exist"):
         command.downgrade(config, PREVIOUS)
     with sqlite3.connect(target) as copied:
         assert copied.execute("SELECT version_num FROM alembic_version").fetchone() == (
             REVISION,
         )
-        assert (
-            copied.execute("SELECT app_invocation FROM thread_messages").fetchone()
-            == invocation
+        assert copied.execute("SELECT invocation FROM artifacts").fetchone() == (
+            invocation,
         )
+        assert copied.execute("PRAGMA foreign_key_check").fetchall() == []

@@ -44,6 +44,7 @@ from pydantic_settings import (
 )
 
 from octomate.config.agents import AgentConfig
+from octomate.config.artifacts import ArtifactConfig
 from octomate.config.auth import AuthConfig
 from octomate.config.channels import (
     ChannelConfig,
@@ -94,6 +95,11 @@ class OctomateConfig(BaseSettings):
 
     host: IPvAnyAddress = IPv4Address("127.0.0.1")
     port: Annotated[int, Field(ge=1, le=65535)] = 8000
+
+    artifacts: ArtifactConfig = Field(
+        default_factory=ArtifactConfig,
+        description="Shared artifact viewer path and isolated browser sandbox origin.",
+    )
 
     tentacles: dict[str, TentacleConfigVariant] = Field(
         default_factory=dict,

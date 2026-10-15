@@ -33,6 +33,7 @@ from octomate.types.threads import (
 )
 
 if TYPE_CHECKING:
+    from octomate.models.artifacts import Artifact
     from octomate.models.conversation import Conversation
     from octomate.models.messages import ModelMessage
     from octomate.models.project import Project
@@ -349,7 +350,7 @@ class ThreadMessage(Base, TransmuterProxiedMixin):
         String,
         nullable=False,
         server_default="message",
-        comment="Whether this ledger row is a chat message, explicit command, or MCP app.",
+        comment="Whether this ledger row is a chat message, explicit command, or artifact reference.",
     )
 
     thread_id: Mapped[UUID7] = mapped_column(
@@ -452,19 +453,19 @@ class ThreadCommand(ThreadMessage):
     )
 
 
-class ThreadMcpAppInvocation(ThreadMessage):
-    """A recorded app invocation in the shared ledger, separate from model input."""
+class ThreadArtifact(ThreadMessage):
+    """An artifact's appearance in a ledger, independent of the content's lifetime."""
 
-    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "mcp_app"}
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "artifact"}
 
-    app_invocation: Mapped[JsonValue] = mapped_column(
-        JSON,
+    artifact_id: Mapped[UUID7] = mapped_column(
+        Uuid,
+        ForeignKey("artifacts.id", name="fk_thread_artifact", ondelete="RESTRICT"),
         nullable=True,
-        comment=(
-            "MCP app invocation: original installation identity, tool declaration, "
-            "UI resource URI, arguments, and complete result. Retained after uninstall."
-        ),
+        index=True,
+        comment="Referenced artifact; its identity and ownership are independent of this ledger row.",
     )
+    artifact: Mapped[Artifact] = relationship("Artifact", lazy="raise_on_sql")
 
 
 class Handoff(Base, TransmuterProxiedMixin):

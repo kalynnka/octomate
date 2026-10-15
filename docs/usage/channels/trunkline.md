@@ -229,6 +229,25 @@ gets no extra chat message.
 The console's HTTP API, its request bodies and the events it streams are in the
 [API reference](../../api/tentacles/trunkline.md).
 
+## Artifacts
+
+When an installed MCP tool declares an app, calls made in a channel conversation
+retain the original input and complete result as an owned artifact alongside the
+ordinary tool output. Each call creates its own artifact, including calls made
+inside a code wrapper. Thread history references the artifact; deleting the thread
+does not delete its content. These artifacts keep the original installation
+identity after removal; reinstalling under the same name does not reconnect old
+app history to the new installation.
+
+MCP app support is shared across channels. Artifacts are recorded even when no
+sandbox origin is configured; browser hosting settings apply only to displaying them.
+
+Calls from native terminal sessions are not recorded as artifacts. Inline display,
+loading saved app views, and publishing generated HTML are not yet available.
+The recording and availability contracts are in the
+[MCP manager reference](../../api/managers/mcp.md) and
+[artifact schemas](../../api/schemas/resources.md#octomate.schemas.artifacts).
+
 ## The console surface
 
 One screen: a threads sidebar with a channel rail, the chat ledger in the middle, a

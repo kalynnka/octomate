@@ -21,10 +21,10 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
+from octomate.schemas.artifacts import Artifact
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.commands import CommandInvocation, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
-from octomate.schemas.mcp import McpAppInvocation, McpAppReference
 from octomate.schemas.project import Project
 from octomate.schemas.segments import MessageSegment
 from octomate.schemas.user import UserProfile
@@ -155,7 +155,7 @@ class ThreadMessage(BaseTransmuter):
     kind: Literal["message"] = Field(
         default="message",
         frozen=True,
-        description="Whether this ledger row is a chat message, explicit command, or MCP app.",
+        description="Whether this ledger row is a chat message, explicit command, or artifact reference.",
     )
     thread_id: UUID7
     platform_message_id: str | None = None
@@ -224,30 +224,26 @@ class ThreadCommand(ThreadMessage):
         return self
 
 
-@sqlalchemy_materia.bless(thread_models.ThreadMcpAppInvocation)
-class ThreadMcpAppInvocation(ThreadMessage):
-    """A durable app card whose invocation is read through an authorized loader.
+@sqlalchemy_materia.bless(thread_models.ThreadArtifact)
+class ThreadArtifact(ThreadMessage):
+    """A ledger card referencing separately owned artifact content.
 
-    Generic ledger serialization carries only `app`, the card's reference. The
-    full payload is persisted by Arcanus but excluded from that public shape.
+    Generic ledger responses contain `artifact_id` only. The row's own `id`
+    identifies this appearance for live/history deduplication and fork cuts.
+    Artifact data requires an independently authorized read.
     """
 
-    kind: Literal["mcp_app"] = Field(default="mcp_app", frozen=True)
-    app_invocation: McpAppInvocation = Field(
+    kind: Literal["artifact"] = Field(default="artifact", frozen=True)
+    artifact_id: UUID7 = Field(
+        frozen=True,
+        description="Referenced artifact UUID, distinct from this ledger row's UUID.",
+    )
+    artifact: Relation[Artifact] = Field(
+        default_factory=Relation,
         exclude=True,
         repr=False,
-        description="Recorded invocation, accessible only through the authorized app read.",
+        description="Content relation for persistence, never included in ledger serialization.",
     )
-
-    @computed_field
-    @property
-    def app(self) -> McpAppReference:
-        """The card reference shared by ledger readers and live availability events."""
-        return McpAppReference(
-            id=self.id,
-            provider_name=self.app_invocation.provider_name,
-            tool_name=self.app_invocation.tool.name,
-        )
 
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
@@ -358,9 +354,9 @@ class Thread(BaseTransmuter):
     )
     parent: Relation[Thread | None] = Field(default_factory=Relation, frozen=True)
 
-    messages: RelationCollection[
-        ThreadMessage | ThreadCommand | ThreadMcpAppInvocation
-    ] = Relationships()
+    messages: RelationCollection[ThreadMessage | ThreadCommand | ThreadArtifact] = (
+        Relationships()
+    )
     handoffs: RelationCollection[Handoff] = Relationships()
     conversations: RelationCollection[Conversation] = Relationships(exclude=True)
 

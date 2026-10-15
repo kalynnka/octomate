@@ -13,6 +13,7 @@ from octomate.config.agents import (
     DeepseekConfig,
     InklingConfig,
 )
+from octomate.config.artifacts import ArtifactConfig
 from octomate.config.auth import AuthConfig
 from octomate.config.base import (
     CONFIG_FILES,
@@ -73,6 +74,7 @@ from octomate.config.workspaces import WorkspacesConfig
 __all__ = [  # noqa: RUF022
     "OctomateConfig",
     "TentacleConfigVariant",
+    "ArtifactConfig",
     # agents
     "AgentConfig",
     "AgentRouteModelName",

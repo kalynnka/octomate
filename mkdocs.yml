@@ -133,6 +133,7 @@ nav:
       - Configuration:
           - api/config.md
           - The deployment: api/config/deployment.md
+          - Artifacts: api/config/artifacts.md
           - Agents: api/config/agents.md
           - Channels: api/config/channels.md
           - MCP connectors: api/config/mcp.md
