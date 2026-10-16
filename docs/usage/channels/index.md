@@ -83,7 +83,7 @@ your-channel-profiles).
 |---|---|---|---|---|---|
 | Streaming text | Native stream | Streaming card | Message edits | No; completed messages | Every event, live |
 | Thinking and tool cards | Folding plan | Cards that fold | No | No | Yes |
-| MCP app artifacts | No | No | No | No | Inline cards and standalone pages |
+| MCP app artifacts | Card with viewer button | Card with viewer button | Card with viewer button | Text overview and link | Inline cards and standalone pages |
 | Todo checklist | Plan tasks | Card | No | Text with the final reply | Yes |
 | Approval cards | Buttons, paged | One card each | Buttons, one each | Text only | Yes |
 | Question cards | One message | One card | Buttons and a modal | Text only | Yes |
@@ -103,3 +103,27 @@ marks them answered.
 
 The [threads page](../threads.md) explains what each platform's chats and threads
 become inside Octomate, and where a reply lands.
+
+## Artifact overviews
+
+Slack, Lark, Discord and NapCat can post a saved artifact's title, provider and
+viewer link in the conversation where it was created. Separate invocations get
+separate messages, including during a run. The overview contains no app HTML or
+tool arguments and does not rerun the tool.
+
+Set the existing Trunkline host in `octomate.yaml` to enable these overviews:
+
+```yaml
+artifacts:
+  viewer_origin: https://octomate-app.example.com
+```
+
+This uses your existing viewer deployment. The [artifact settings](../../api/config/artifacts.md)
+also let you choose its path. Without a viewer origin, IM channels keep their
+normal replies and do not post artifact overviews. Trunkline's inline cards still
+work independently of this setting.
+
+Opening a link requires access to that host and signing in as the artifact's owner.
+Posting a link in a group does not grant its members access. The interactive app
+still needs the [separate sandbox setup](trunkline.md#artifacts); the overview
+itself needs no connection to the app provider.

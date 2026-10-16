@@ -31,6 +31,7 @@ from octomate.tentacles.discord.feelers.approvals import (
     DiscordApprovalButton,
     DiscordApprovalFeeler,
 )
+from octomate.tentacles.discord.feelers.artifacts import DiscordArtifactFeeler
 from octomate.tentacles.discord.feelers.oauth import DiscordOAuthFeeler
 from octomate.tentacles.discord.feelers.output import DiscordTimelineFeeler
 from octomate.tentacles.discord.feelers.questions import (
@@ -97,6 +98,11 @@ class DiscordTentacle(ChannelTentacle[discord.Message, DiscordOutboundMessage]):
         oauth = DiscordOAuthFeeler(self.ink)
         self.feelers = Feelers(
             markdown=self.feelers.markdown,
+            artifacts=DiscordArtifactFeeler(
+                artifacts=self.octomate.artifacts,
+                users=self.octomate.users,
+                ink=self.ink,
+            ),
             segments=self.feelers.segments,
             approvals=approvals,
             ask_questions=ask_questions,

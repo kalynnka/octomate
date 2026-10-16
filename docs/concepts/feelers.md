@@ -14,7 +14,7 @@ ledger and the persisted actions; the feelers are the view; and the controller i
 the channel's siphon on the way out and the channel's `ingest` on the way in.
 The chromo is a codec, not a controller.
 
-## The six feelers
+## The seven feelers
 
 Every channel instance carries one of each:
 
@@ -23,18 +23,19 @@ Every channel instance carries one of each:
 | `timeline` | A streaming run: thinking, tool calls, answer text, todos, subagents, mid-run notices |
 | `markdown` | A finished reply, chunked and sent |
 | `segments` | A reply made of segments: text, mentions, images, files, cards |
+| `artifacts` | A saved artifact's title, provider and viewer link |
 | `approvals` | Approval cards for a batch |
 | `ask_questions` | Question cards for a batch |
 | `oauth` | Authorisation and profile-link messages, always to a private surface |
 
-A channel gets working defaults for all six out of its ink and chromo: a timeline
-that accumulates and sends one message at the end, plain-text approval and question
-cards, a plain-text OAuth message. Slack, Lark and Discord replace nearly all of
-them.
+A channel gets working defaults for all seven: a timeline that accumulates and
+sends one message at the end, plain-text approval and question cards, a plain-text
+OAuth message and an artifact overview. Slack, Lark and Discord replace nearly
+all of them.
 
 Feelers present events and build none. What a channel shows comes from what the
 graph publishes on the nerve: a run's stream, or what happens around a run — a
-move, a send, an authorization, a failed turn.
+move, a send, an authorization, an artifact, a failed turn.
 
 The OAuth feeler's `present` is concrete on the base class and resolves the private
 address itself, redirecting a request made on a shared surface to the person's DM
@@ -53,6 +54,8 @@ is taken in. The siphon hands each event to the feeler that draws it:
   as they come and its reply once, at the end.
 - A move's line, a send outside a run, an authorization and a failed turn go to
   their own feelers as they arrive.
+- Artifacts have their own feeler inside and outside runs. Their delivery is
+  recorded separately from the final reply.
 
 Each thread is drawn in order in a lane of its own, so a slow platform call on one
 thread holds up no other. A rendering that fails is logged and the lane carries
@@ -77,8 +80,9 @@ subscription of the one thread it watches, whichever channel that thread is on.
 4. **Dispatch.** `TimelineState.drive` is one `match` over the run stream, mapping
    each event to a hook: `thinking_start`, `thinking_delta`, `thinking_end`,
    `answer_*`, `tool_start`, `tool_end`, `todo`, `message_sent`,
-   `oauth_authorization`, `present_actions`. The base hooks draw nothing; a channel
-   overrides the ones it can draw. Draining the whole stream is mandatory, a render
+   `oauth_authorization`, `artifact_available`, `present_actions`. The base hooks
+   delegate shared presentation; a channel overrides the ones it can draw.
+   Draining the whole stream is mandatory, a render
    failure is logged and the loop keeps draining, and a final output that never
    streamed is rendered once as a fallback.
 5. **Notices.** A rule every override honours: a hook that renders reply text marks

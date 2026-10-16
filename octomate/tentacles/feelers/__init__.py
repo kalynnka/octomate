@@ -1,6 +1,7 @@
 """Feelers: the per-channel renderers a tentacle presents markdown, segments,
-timelines, deferred actions and authorizations through."""
+timelines, artifacts, deferred actions and authorizations through."""
 
+from octomate.tentacles.feelers.artifacts import ArtifactFeeler, PlainTextArtifactFeeler
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.deferred import (
     ApprovalFeeler,
@@ -20,12 +21,14 @@ from octomate.tentacles.feelers.output import (
 
 __all__ = [
     "ApprovalFeeler",
+    "ArtifactFeeler",
     "DefaultMarkdownFeeler",
     "Feelers",
     "IMMessageID",
     "MarkdownFeeler",
     "OAuthFeeler",
     "PlainTextApprovalFeeler",
+    "PlainTextArtifactFeeler",
     "PlainTextAskQuestionFeeler",
     "PlainTextOAuthFeeler",
     "QuestionFeeler",

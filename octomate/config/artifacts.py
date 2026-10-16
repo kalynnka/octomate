@@ -28,7 +28,8 @@ class ArtifactConfig(BaseModel):
             "Browser-reachable HTTP(S) origin hosting the artifact viewer, without "
             "credentials, path, query, or fragment. Combined with path and the "
             "artifact UUID for links in channel overview cards. Required to build "
-            "absolute viewer links; must differ from sandbox_origin."
+            "absolute viewer links; leaving it unset disables channel overviews. "
+            "Must differ from sandbox_origin."
         ),
     )
     sandbox_origin: AnyHttpUrl | None = Field(

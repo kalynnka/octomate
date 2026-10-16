@@ -94,6 +94,9 @@ chats. Images and files are sent as native attachments. Mid-run notices can arri
 There are no streamed edits, thinking cards or tool cards. Inbound images are
 downloaded, while other inbound attachment types are ignored.
 
+[Artifact overviews](index.md#artifact-overviews) arrive separately as text and a
+viewer link in the same chat.
+
 Approvals and questions appear as text only. There are no buttons or handlers to
 submit a decision by replying in this channel. Use the pending request in
 [Trunkline](trunkline.md) to respond.

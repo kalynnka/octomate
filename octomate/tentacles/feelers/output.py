@@ -55,6 +55,7 @@ from pydantic_core import to_json
 from octomate.capabilities.ask import ASK_QUESTIONS_TOOL_NAME
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
+    ArtifactAvailableEvent,
     MessageSentEvent,
     OAuthAuthorizationEvent,
     ResultSegmentEvent,
@@ -85,6 +86,7 @@ from octomate.types.todos import STATUS_MARKERS
 if TYPE_CHECKING:
     from octomate.managers.deferred import DeferredActionManager
     from octomate.tentacles.channel import ChannelOutput, Chromo, Ink
+    from octomate.tentacles.feelers.artifacts import ArtifactFeeler
     from octomate.tentacles.feelers.deferred import (
         ApprovalFeeler,
         QuestionFeeler,
@@ -622,6 +624,8 @@ class TimelineState:
     approvals: ApprovalFeeler
     oauth: OAuthFeeler
     deferred_actions: DeferredActionManager
+    # Bound by the siphon before driving a run, alongside its channel's timeline.
+    artifacts: ArtifactFeeler
     subagent_timelines: dict[str, OpenSubagentTimeline] | None = None
 
     @asynccontextmanager
@@ -750,6 +754,8 @@ class TimelineState:
                     case OAuthAuthorizationEvent():
                         answered = True
                         await self.oauth_authorization(event)
+                    case ArtifactAvailableEvent():
+                        await self.artifact_available(event)
                     case ActionBatchEvent():
                         answered = answered or bool(event.questions or event.approvals)
                         await self.present_actions(event)
@@ -901,6 +907,18 @@ class TimelineState:
         """
         await self.begin_entry()
         await self.oauth.present(self.address, event)
+
+    async def artifact_available(self, event: ArtifactAvailableEvent) -> None:
+        """Flush preceding output so the card separates it from the next entry.
+
+        The artifact has its own ledger row and never supplies ``message_id`` for
+        the final reply. It is not answer text and does not suppress that reply.
+        """
+        if not self.artifacts.enabled:
+            return
+        await self.rotate()
+        self.noticed = False
+        await self.artifacts.present(self.address, event)
 
 
 class TimelineFeeler(Protocol):

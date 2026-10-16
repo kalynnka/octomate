@@ -26,6 +26,7 @@ from pydantic import UUID7
 
 from octomate.capabilities.harness.events import (
     ActionBatchEvent,
+    ArtifactAvailableEvent,
     GatewayEvent,
     MessageSentEvent,
     OAuthAuthorizationEvent,
@@ -130,6 +131,8 @@ class Siphon:
                 await self.mark(event.thread_message_id, sent)
             case OAuthAuthorizationEvent() as event:
                 await feelers.oauth.present(address, event)
+            case ArtifactAvailableEvent() as event:
+                await feelers.artifacts.present(address, event)
             case _:
                 pass
 
@@ -152,6 +155,7 @@ class Siphon:
         try:
             if self.channel.config.stream.enabled:
                 async with self.channel.feelers.timeline.open(address) as timeline:
+                    timeline.artifacts = self.channel.feelers.artifacts
                     await timeline.drive(stream)
                 rendered = timeline.message_id
             else:
@@ -185,6 +189,8 @@ class Siphon:
                     )
                 case OAuthAuthorizationEvent():
                     await feelers.oauth.present(address, event)
+                case ArtifactAvailableEvent():
+                    await feelers.artifacts.present(address, event)
                 case RunResultEvent():
                     output = event.output
                 case _:
