@@ -37,6 +37,17 @@ passes are mounted. That is one server, Octomate's own, built in process for thi
 turn, whose tools Claude lists as `mcp__octomate__<tool>`. Octomate's routing and
 history instructions are appended to the system prompt.
 
+Driven commands use Claude's native sandbox and fail to start when it is
+unavailable. Requests for an unsandboxed retry do not bypass it. The normal
+approval flow still applies, including the selected permission mode.
+
+Claude's native read restriction limits file tools and sandboxed commands from
+reading user data outside the workspace and project extra roots. System paths and native temporary storage
+remain available; this is not a workspace-only filesystem. Octomate does not
+maintain a separate runtime path allowlist. See the
+[native sandbox matrix](../../contributing/agent-tentacle.md#native-sandbox-verification)
+for measured boundaries and remaining limits.
+
 The session id is settled before the CLI starts, and the same session is resumed
 on every later turn of the conversation. Claude files a session under the directory
 it ran in and resumes it only from there, so when a thread binds to a project
