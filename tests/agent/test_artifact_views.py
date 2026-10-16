@@ -15,7 +15,11 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.auth import current_user
 from octomate.database import async_session
-from octomate.managers.artifacts import ArtifactSandboxUnavailable
+from octomate.managers.artifacts import (
+    ArtifactSandboxUnavailable,
+    ArtifactUnavailable,
+    ArtifactViewerUnavailable,
+)
 from octomate.managers.auth import AuthManager
 from octomate.schemas.artifacts import McpAppArtifact, McpAppView
 from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
@@ -85,6 +89,61 @@ async def saved_app(
         return ResourceResult([content])
 
     return SavedApp(host, user, app_artifact, app_entry, upstream, content)
+
+
+@pytest.mark.parametrize("uninstalled", [False, True])
+@pytest.mark.parametrize(
+    ("origin", "path"),
+    [
+        ("https://console.example", "/artifacts"),
+        ("http://localhost:5173/", "/ui/artifacts"),
+        ("http://[::1]:5173", "/generated"),
+    ],
+)
+async def test_overview_uses_saved_metadata_without_upstream_requests(
+    saved_app: SavedApp, origin: str, path: str, uninstalled: bool
+) -> None:
+    case = saved_app
+    case.host.config.artifacts.viewer_origin = AnyHttpUrl(origin)
+    case.host.config.artifacts.path = path
+    case.host.config.artifacts.sandbox_origin = None
+    if uninstalled:
+        await case.host.mcp.uninstall(
+            case.user.id, case.artifact.invocation.installation_id
+        )
+    async with connected(case.host.mcp, case.upstream) as requests:
+        overview = await case.host.artifacts.overview(case.artifact.id, case.user)
+        assert overview.model_dump(mode="json") == {
+            "artifact_id": str(case.artifact.id),
+            "title": case.artifact.title,
+            "provider_name": case.artifact.invocation.provider_name,
+            "viewer_url": f"{origin.rstrip('/')}{path}/{case.artifact.id}",
+        }
+        assert requests.methods == []
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_overview_requires_artifact_ownership(
+    saved_app: SavedApp, missing: bool
+) -> None:
+    case = saved_app
+    case.host.config.artifacts.viewer_origin = AnyHttpUrl("https://console.example")
+    user = case.user if missing else await a_user("bob")
+    artifact_id = uuid7() if missing else case.artifact.id
+    async with connected(case.host.mcp, case.upstream) as requests:
+        with pytest.raises(ArtifactUnavailable, match="Artifact unavailable"):
+            await case.host.artifacts.overview(artifact_id, user)
+        assert requests.methods == []
+
+
+async def test_overview_requires_a_viewer_origin(saved_app: SavedApp) -> None:
+    case = saved_app
+    async with connected(case.host.mcp, case.upstream) as requests:
+        with pytest.raises(
+            ArtifactViewerUnavailable, match=r"artifacts\.viewer_origin"
+        ):
+            await case.host.artifacts.overview(case.artifact.id, case.user)
+        assert requests.methods == []
 
 
 @pytest.mark.parametrize("binary", [False, True])

@@ -867,21 +867,28 @@ def test_artifact_config_loads_from_yaml_and_environment(
 ) -> None:
     monkeypatch.setenv("OCTOMATE_HOME", str(tmp_path))
     assert OctomateConfig().artifacts.path == "/artifacts"
+    assert OctomateConfig().artifacts.viewer_origin is None
     assert OctomateConfig().artifacts.sandbox_origin is None
     (tmp_path / "octomate.yaml").write_text(
-        "artifacts:\n  path: /ui/artifacts\n  sandbox_origin: https://sandbox.example\n"
+        "artifacts:\n  path: /ui/artifacts\n"
+        "  viewer_origin: https://console.example\n"
+        "  sandbox_origin: https://sandbox.example\n"
     )
     config = OctomateConfig()
     assert config.artifacts.path == "/ui/artifacts"
+    assert str(config.artifacts.viewer_origin) == "https://console.example/"
     assert str(config.artifacts.sandbox_origin) == "https://sandbox.example/"
+    monkeypatch.setenv("OCTOMATE__ARTIFACTS__VIEWER_ORIGIN", "http://localhost:8000")
     monkeypatch.setenv("OCTOMATE__ARTIFACTS__SANDBOX_ORIGIN", "http://localhost:8001")
     config = OctomateConfig()
     assert config.artifacts.path == "/ui/artifacts"
+    assert str(config.artifacts.viewer_origin) == "http://localhost:8000/"
     assert str(config.artifacts.sandbox_origin) == "http://localhost:8001/"
     monkeypatch.setenv("OCTOMATE__ARTIFACTS__PATH", "/generated")
     assert OctomateConfig().artifacts.path == "/generated"
 
 
+@pytest.mark.parametrize("field", ["viewer_origin", "sandbox_origin"])
 @pytest.mark.parametrize(
     "origin",
     [
@@ -892,9 +899,24 @@ def test_artifact_config_loads_from_yaml_and_environment(
         "ftp://sandbox.example",
     ],
 )
-def test_artifact_sandbox_origin_rejects_non_origins(origin: str) -> None:
-    with pytest.raises(ValidationError, match="sandbox_origin"):
-        OctomateConfig.model_validate({"artifacts": {"sandbox_origin": origin}})
+def test_artifact_origins_reject_non_origins(field: str, origin: str) -> None:
+    with pytest.raises(ValidationError, match=field):
+        OctomateConfig.model_validate({"artifacts": {field: origin}})
+
+
+@pytest.mark.parametrize(
+    "sandbox", ["https://console.example", "https://console.example:443/"]
+)
+def test_artifact_viewer_cannot_use_the_sandbox_origin(sandbox: str) -> None:
+    with pytest.raises(ValidationError, match="viewer_origin must differ"):
+        OctomateConfig.model_validate(
+            {
+                "artifacts": {
+                    "viewer_origin": "https://console.example",
+                    "sandbox_origin": sandbox,
+                }
+            }
+        )
 
 
 @pytest.mark.parametrize(

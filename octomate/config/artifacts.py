@@ -1,6 +1,13 @@
 """Shared artifact viewer paths and the browser sandbox origin."""
 
-from pydantic import AnyHttpUrl, BaseModel, Field, field_validator
+from pydantic import (
+    AnyHttpUrl,
+    BaseModel,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 
 class ArtifactConfig(BaseModel):
@@ -15,6 +22,15 @@ class ArtifactConfig(BaseModel):
             "without a trailing slash. Each viewer appends the artifact UUID."
         ),
     )
+    viewer_origin: AnyHttpUrl | None = Field(
+        default=None,
+        description=(
+            "Browser-reachable HTTP(S) origin hosting the artifact viewer, without "
+            "credentials, path, query, or fragment. Combined with path and the "
+            "artifact UUID for links in channel overview cards. Required to build "
+            "absolute viewer links; must differ from sandbox_origin."
+        ),
+    )
     sandbox_origin: AnyHttpUrl | None = Field(
         default=None,
         description=(
@@ -25,9 +41,11 @@ class ArtifactConfig(BaseModel):
         ),
     )
 
-    @field_validator("sandbox_origin")
+    @field_validator("viewer_origin", "sandbox_origin")
     @classmethod
-    def validate_sandbox_origin(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+    def validate_origin(
+        cls, value: AnyHttpUrl | None, info: ValidationInfo
+    ) -> AnyHttpUrl | None:
         if value is not None and (
             value.username is not None
             or value.password is not None
@@ -36,6 +54,12 @@ class ArtifactConfig(BaseModel):
             or value.fragment is not None
         ):
             raise ValueError(
-                "sandbox_origin must be an origin without credentials, path, query, or fragment"
+                f"{info.field_name} must be an origin without credentials, path, query, or fragment"
             )
         return value
+
+    @model_validator(mode="after")
+    def separate_viewer_and_sandbox(self) -> "ArtifactConfig":
+        if self.viewer_origin is not None and self.viewer_origin == self.sandbox_origin:
+            raise ValueError("viewer_origin must differ from sandbox_origin")
+        return self
