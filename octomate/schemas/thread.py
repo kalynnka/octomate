@@ -21,6 +21,7 @@ from uuid_utils.compat import uuid7
 
 from octomate.config.agents import AgentRouteModelName
 from octomate.models import thread as thread_models
+from octomate.schemas.artifacts import Artifact
 from octomate.schemas.base import sqlalchemy_materia
 from octomate.schemas.commands import CommandInvocation, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -154,7 +155,7 @@ class ThreadMessage(BaseTransmuter):
     kind: Literal["message"] = Field(
         default="message",
         frozen=True,
-        description="Whether this ledger row is a chat message or an explicit command.",
+        description="Whether this ledger row is a chat message, explicit command, or artifact reference.",
     )
     thread_id: UUID7
     platform_message_id: str | None = None
@@ -221,6 +222,28 @@ class ThreadCommand(ThreadMessage):
         if not self.platform_message_id:
             raise ValueError("command deliveries require a platform_message_id")
         return self
+
+
+@sqlalchemy_materia.bless(thread_models.ThreadArtifact)
+class ThreadArtifact(ThreadMessage):
+    """A ledger card referencing separately owned artifact content.
+
+    Generic ledger responses contain `artifact_id` only. The row's own `id`
+    identifies this appearance for live/history deduplication and fork cuts.
+    Artifact data requires an independently authorized read.
+    """
+
+    kind: Literal["artifact"] = Field(default="artifact", frozen=True)
+    artifact_id: UUID7 = Field(
+        frozen=True,
+        description="Referenced artifact UUID, distinct from this ledger row's UUID.",
+    )
+    artifact: Relation[Artifact] = Field(
+        default_factory=Relation,
+        exclude=True,
+        repr=False,
+        description="Content relation for persistence, never included in ledger serialization.",
+    )
 
 
 @sqlalchemy_materia.bless(thread_models.MessageBinding)
@@ -331,7 +354,9 @@ class Thread(BaseTransmuter):
     )
     parent: Relation[Thread | None] = Field(default_factory=Relation, frozen=True)
 
-    messages: RelationCollection[ThreadMessage | ThreadCommand] = Relationships()
+    messages: RelationCollection[ThreadMessage | ThreadCommand | ThreadArtifact] = (
+        Relationships()
+    )
     handoffs: RelationCollection[Handoff] = Relationships()
     conversations: RelationCollection[Conversation] = Relationships(exclude=True)
 

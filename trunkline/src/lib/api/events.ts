@@ -413,7 +413,22 @@ export interface GatewayEvent {
   announcement: string | null
 }
 
+export interface ArtifactAvailableEvent {
+  event_kind: 'artifact_available'
+  message_id: string
+  artifact_id: string
+}
+
+export type ThreadEvent =
+  | { event_kind: 'thread_title_changed'; thread_id: string; title: string | null; updated_at: string }
+  | { event_kind: 'thread_project_bound'; thread_id: string; project_id: string; updated_at: string }
+  | { event_kind: 'thread_handoff_recorded'; thread_id: string; handoff: ApiHandoff }
+  | { event_kind: 'thread_message_recorded'; thread_id: string; message_id: string; updated_at: string }
+  | { event_kind: 'thread_command_outcome_recorded'; thread_id: string; receipt_id: string; outcome: CommandOutcome; updated_at: string }
+
 export type WireEvent =
+  | ArtifactAvailableEvent
+  | ThreadEvent
   | PartStartEvent
   | PartDeltaEvent
   | PartEndEvent
@@ -652,6 +667,7 @@ export type ApiThreadMessage = {
 } & (
   | { kind: 'message' }
   | { kind: 'command'; outcome: CommandOutcome | null }
+  | { kind: 'artifact'; artifact_id: string }
 )
 
 /** One recorded run. `kind` tells an Octomate-driven run from one rebuilt out

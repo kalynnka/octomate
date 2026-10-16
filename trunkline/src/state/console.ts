@@ -32,9 +32,10 @@ import type {
 } from '@/lib/api/events'
 import { queryClient } from '@/lib/queryClient'
 import { TurnFold } from '@/lib/api/fold'
-import { channelMeta, groupLiveThreads, holdingBack, withOlderPage } from '@/lib/api/live'
+import { channelMeta, holdingBack, withOlderPage } from '@/lib/api/live'
 import { useAuth } from '@/state/auth'
 import { COMMAND_CONTROLS } from '@/features/chat/commands'
+import { withArtifact } from '@/features/artifacts/ledger'
 
 export type ControlSection = '' | 'agents' | 'mcp' | 'profile' | 'keys' | 'dash' | 'settings'
 export type ThemeMode = 'light' | 'dark' | 'auto'
@@ -437,10 +438,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const docsOf = (s: ConsoleState) => s.docs ?? s.detail?.docs ?? {}
   const cmtsOf = (s: ConsoleState) => s.cmts ?? s.detail?.comments ?? []
 
-  const refreshThreads = () => {
-    void queryClient.invalidateQueries({ queryKey: ['threads'] })
-  }
-
   // Threads with a ledger page in flight; one page at a time for each.
   const paging = new Set<string>()
 
@@ -517,7 +514,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
   const landedThread = async (from: string, address: ChannelAddress) => {
     await queryClient.invalidateQueries({ queryKey: ['thread-detail', from] })
     const threads = await fetchThreads()
-    queryClient.setQueryData(['threads'], groupLiveThreads(threads))
     const landed = threads.find((thread) =>
       thread.channel_tentacle_id === address.channel_tentacle_id
       && thread.chat_type === address.chat_type
@@ -569,9 +565,8 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       retry: false,
     })
     if (get().selThreadId !== thId || streamingOn.has(thId)) return
-    if (settled()) set({ detail, live: [], running: false })
+    if (settled()) set((s) => ({ detail, live: s.live.filter((item) => item.kind === 'artifact' && !detail.ledger.some((saved) => saved.uid === item.uid)), running: false }))
     else showDetail(detail)
-    refreshThreads()
   }
 
   /** Keep observed native turns in place when they settle. Driven turns also
@@ -593,7 +588,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const shown = () => viewing === watching && get().selThreadId === thId && !streamingOn.has(thId)
     const onEvent = (event: WireEvent) => {
       if (!shown()) return
-      if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
+      if (event.event_kind === 'artifact_available') {
+        set((s) => ({ live: withArtifact(s.live, event, s.detail?.ledger) }))
+      } else if (event.event_kind === 'reflex_awake' || (event.event_kind === 'run_started' && !reflex)) {
         // A replay replaces only the unfinished turn, keeping earlier turns mounted.
         if (fold) set(s => ({ live: s.live.filter(item => !turnItems.has(item.uid)) }))
         turnItems.clear()
@@ -620,7 +617,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         if (fold && !reflex) {
           fold.feed(event)
           set({ running: false })
-          refreshThreads()
         } else void reloadSettled(thId, () => fold === undefined)
         fold = undefined
         reflex = false
@@ -718,6 +714,11 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     let fold = turnFold()
     const feed = (event: CommandStreamEvent) => {
       received++
+      if (event.event_kind === 'artifact_available') {
+        clearDots()
+        edit((live) => withArtifact(live, event, here() ? get().detail?.ledger : undefined))
+        return
+      }
       if (event.event_kind === 'run_result' || event.event_kind === 'run_error' || event.event_kind === 'command_outcome') {
         terminal = true
       }
@@ -772,6 +773,10 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     // sees wake: anything before it ends a reflex that woke before the socket.
     let woke = joinsAwake
     const onEvent = (event: WireEvent) => {
+      if (event.event_kind === 'artifact_available' && !following) {
+        feed(event)
+        return
+      }
       if (event.event_kind === 'reflex_awake') {
         woke = true
         return
@@ -843,7 +848,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
         } else parked.delete(selId)
       }
       void queryClient.invalidateQueries({ queryKey: ['thread-operations', selId] })
-      refreshThreads()
     }
   }
 
@@ -1172,7 +1176,6 @@ export const useConsole = create<ConsoleState>()((set, get) => {
       } finally {
         set({ gatewayPending: null })
         void queryClient.invalidateQueries({ queryKey: ['thread-operations', threadId] })
-        refreshThreads()
       }
     },
     /**

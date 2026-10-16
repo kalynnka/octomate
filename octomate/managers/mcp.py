@@ -5,18 +5,24 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from base64 import b64decode
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager, nullcontext, suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, NamedTuple
 
+from cachetools import LRUCache
 from fastmcp import Client
+from fastmcp.apps.config import UI_EXTENSION_ID, UI_MIME_TYPE
 from fastmcp.client.transports import StreamableHttpTransport
+from mcp.client.extension import advertise
 from mcp.shared._httpx_utils import McpHttpClientFactory
-from pydantic import UUID7
+from mcp.types import CallToolResult, TextResourceContents
+from pydantic import UUID7, JsonValue
 from sqlalchemy.exc import IntegrityError
 from uuid_utils.compat import uuid7
 
+from octomate.capabilities.harness.events import ArtifactAvailableEvent
 from octomate.config.mcp.pool import McpPoolConfig
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
@@ -26,10 +32,14 @@ from octomate.managers.user import UserManager
 from octomate.mcp.transport import mcp_http_client
 from octomate.oauth.base import McpBearerAuth
 from octomate.oauth.flows import DeviceAuthorizationFlow
+from octomate.schemas.artifacts import McpAppArtifact
 from octomate.schemas.mcp import (
     BearerAuth,
     BearerMcp,
     Mcp,
+    McpAppInvocation,
+    McpAppResource,
+    McpAppToolMeta,
     McpAuthorizationResult,
     McpAuthorizationStatus,
     McpBrowserAuthorizationPending,
@@ -70,7 +80,7 @@ class McpUnavailable(LookupError):
 
 
 class McpClientKey(NamedTuple):
-    """The (user, mcp) pair a pooled client is cached under."""
+    """The owner and installation a pooled client is cached under."""
 
     user_id: UUID7
     mcp_id: UUID7
@@ -78,7 +88,11 @@ class McpClientKey(NamedTuple):
 
 class McpManager(Manager, Locks[UUID7]):
     """A user's MCP installations: install, enable, authorize and remove them, and
-    pool their clients."""
+    pool their clients.
+
+    All connections advertise MCP Apps support. Client acquisition and capability
+    negotiation are independent of channel rendering and sandbox configuration.
+    """
 
     def __init__(
         self,
@@ -98,6 +112,10 @@ class McpManager(Manager, Locks[UUID7]):
         self.tentacles: dict[str, McpTentacle] = {}
         self.oauth = oauth
         self.clients: dict[McpClientKey, Client] = {}
+        # Latest discovery per pooled connection, bounded by least-recent use.
+        self.tool_catalogs: LRUCache[McpClientKey, McpToolCatalog] = LRUCache(
+            maxsize=256
+        )
         self.sweaps: dict[McpClientKey, asyncio.Task[None]] = {}
 
     def available(self) -> list[McpTentacleInfo]:
@@ -450,50 +468,176 @@ class McpManager(Manager, Locks[UUID7]):
                 return McpBrowserAuthorizationPending()
         return McpAuthorizationStatus(status=status)
 
-    async def catalog(self, scope: OctomateSession, namespace: str) -> McpToolCatalog:
-        async with self.acquire(scope, namespace) as client:
-            assert scope.user_profile is not None
-            user = await self.users.owner(scope.user_profile)
-            if user is None:
-                raise McpUnavailable
-            async with async_session() as session:
-                instance = await session.one_or_none(
-                    Mcp,
-                    expressions=[
-                        Mcp["user_id"] == user.id,
-                        Mcp["namespace"] == namespace,
-                    ],
-                )
-            if instance is None:
-                raise McpUnavailable
-            instructions = "\n".join(
-                part for part in (instance.instructions, client.instructions) if part
-            )
-            return McpToolCatalog(
-                instructions=instructions, tools=await client.list_tools()
-            )
+    async def resolve(
+        self,
+        scope: OctomateSession | User,
+        namespace: str | None = None,
+        *,
+        mcp_id: UUID7 | None = None,
+    ) -> tuple[User, Mcp]:
+        """Resolve one enabled installation owned by the caller, by namespace or UUID.
 
-    @asynccontextmanager
-    async def acquire(
-        self, scope: OctomateSession, namespace: str
-    ) -> AsyncGenerator[Client]:
-        if scope.user_profile is None:
-            raise McpUnavailable
-        user = await self.users.owner(scope.user_profile)
+        Historical invocations supply only their saved UUID. A reused namespace
+        therefore cannot substitute a different installation.
+        """
+        if (namespace is None) == (mcp_id is None):
+            raise ValueError("Supply exactly one MCP namespace or installation ID")
+        if isinstance(scope, User):
+            user = scope
+        else:
+            user = (
+                scope.user_profile.user.value
+                if scope.user_profile is not None
+                and scope.user_profile.user_id is not None
+                else None
+            )
         if user is None:
             raise McpUnavailable
-        user_id = user.id
         async with async_session() as session:
             instance = await session.one_or_none(
                 Mcp,
                 expressions=[
-                    Mcp["user_id"] == user_id,
-                    Mcp["namespace"] == namespace,
+                    Mcp["user_id"] == user.id,
+                    Mcp["id"] == mcp_id
+                    if mcp_id is not None
+                    else Mcp["namespace"] == namespace,
                     Mcp["enabled"].is_(True),
                 ],
             )
         if instance is None:
             raise McpUnavailable
+        return user, instance
+
+    async def catalog(
+        self,
+        scope: OctomateSession | User,
+        namespace: str | None = None,
+        *,
+        mcp_id: UUID7 | None = None,
+        refresh: bool = False,
+    ) -> McpToolCatalog:
+        """Read cached discovery, loading it when absent or explicitly refreshed.
+
+        Ownership, enabled state, and authorization are checked even on cache hits.
+        The bounded catalog follows its pooled connection's lifetime.
+        """
+        user, instance = await self.resolve(scope, namespace, mcp_id=mcp_id)
+        async with (
+            self.acquire(user, mcp_id=instance.id) as client,
+            self.lock(instance.id),
+        ):
+            key = McpClientKey(user.id, instance.id)
+            catalog = self.tool_catalogs.get(key)
+            if catalog is not None and not refresh:
+                return catalog
+            instructions = "\n".join(
+                part for part in (instance.instructions, client.instructions) if part
+            )
+            catalog = McpToolCatalog(
+                instructions=instructions, tools=await client.list_tools()
+            )
+            self.tool_catalogs[key] = catalog
+            return catalog
+
+    async def call_tool(
+        self,
+        scope: OctomateSession,
+        namespace: str,
+        name: str,
+        arguments: dict[str, JsonValue],
+    ) -> CallToolResult:
+        """Execute one upstream call and retain its declared app before publishing.
+
+        This boundary sees each call independently, including calls a runtime
+        nests inside a code wrapper. Sessions without thread attribution return
+        the upstream result without producing an artifact or ledger reference.
+        App declarations reuse the connection's latest discovery, loading once
+        when absent. Explicit discovery refreshes them; client eviction clears them.
+        """
+        user, instance = await self.resolve(scope, namespace)
+        address = scope.conversation_address
+        channel = scope.channels.get(address.channel_tentacle_id) if address else None
+        async with self.acquire(user, mcp_id=instance.id) as client:
+            if (
+                scope.native
+                or scope.thread_id is None
+                or scope.threads is None
+                or channel is None
+                or address is None
+            ):
+                return await client.call_tool_mcp(name, arguments)
+            catalog = await self.catalog(user, mcp_id=instance.id)
+            tool = catalog.tools_by_name.get(name)
+            ui = McpAppToolMeta.model_validate(tool.meta or {}) if tool else None
+            result = await client.call_tool_mcp(name, arguments)
+        if tool is None or ui is None or ui.resource_uri is None:
+            return result
+        message = await scope.threads.record_artifact(
+            scope.thread_id,
+            McpAppArtifact(
+                owner_id=user.id,
+                title=tool.title or tool.name,
+                invocation=McpAppInvocation(
+                    installation_id=instance.id,
+                    namespace=instance.namespace,
+                    provider_name=instance.name,
+                    tool=tool,
+                    resource_uri=ui.resource_uri,
+                    arguments=arguments,
+                    result=result,
+                ),
+            ),
+            sender=channel.self_profile,
+            agent_tentacle_id=scope.current_agent_id,
+        )
+        await scope.publish(
+            address,
+            ArtifactAvailableEvent(
+                message_id=message.id, artifact_id=message.artifact_id
+            ),
+        )
+        return result
+
+    async def app_resource(
+        self, user: User, invocation: McpAppInvocation
+    ) -> McpAppResource:
+        """Read only the saved UI URI from its still-authorized installation UUID.
+
+        This performs one resource read, never discovery or tool execution. The
+        response must contain one matching MCP Apps HTML resource, as text or
+        base64-encoded UTF-8. UI metadata is validated before reaching a browser.
+        """
+        async with self.acquire(user, mcp_id=invocation.installation_id) as client:
+            contents = await client.read_resource(invocation.resource_uri)
+        if len(contents) != 1:
+            raise ValueError("An MCP app must return exactly one UI resource")
+        resource = contents[0]
+        if (
+            resource.uri != str(invocation.resource_uri)
+            or resource.mime_type != UI_MIME_TYPE
+        ):
+            raise ValueError("MCP app resource URI or MIME type does not match")
+        html = (
+            resource.text
+            if isinstance(resource, TextResourceContents)
+            else b64decode(resource.blob, validate=True).decode("utf-8")
+        )
+        return McpAppResource(
+            uri=invocation.resource_uri,
+            html=html,
+            ui=(resource.meta or {}).get("ui", {}),
+        )
+
+    @asynccontextmanager
+    async def acquire(
+        self,
+        scope: OctomateSession | User,
+        namespace: str | None = None,
+        *,
+        mcp_id: UUID7 | None = None,
+    ) -> AsyncGenerator[Client]:
+        user, instance = await self.resolve(scope, namespace, mcp_id=mcp_id)
+        user_id = user.id
         async with self.lock(instance.id):
             # The first lookup finds the lock; reload under it so disabling or
             # deleting an instance wins before another call is dispatched.
@@ -556,6 +700,12 @@ class McpManager(Manager, Locks[UUID7]):
                     ),
                     mode="auto",
                     cache=False,
+                    extensions=[
+                        advertise(
+                            UI_EXTENSION_ID,
+                            {"mimeTypes": [UI_MIME_TYPE]},
+                        )
+                    ],
                 )
                 await client.__aenter__()
                 self.clients[key] = client
@@ -590,6 +740,7 @@ class McpManager(Manager, Locks[UUID7]):
 
     async def evict(self, key: McpClientKey) -> None:
         """Close a cached client while the caller holds its MCP lock."""
+        self.tool_catalogs.pop(key, None)
         if cleanup := self.sweaps.pop(key, None):
             if cleanup is not asyncio.current_task():
                 cleanup.cancel()

@@ -23,6 +23,7 @@ from octomate.config import (
 )
 from octomate.config.channels import ChatRecapConfig
 from octomate.database import async_session
+from octomate.nerve import ThreadTopic
 from octomate.prompts import untagged
 from octomate.reflex.state import RECAP_HEADER
 from octomate.schemas.awakes import StillAwake, UserMessageSignal
@@ -326,7 +327,7 @@ async def test_a_second_kick_on_an_awake_thread_is_refused() -> None:
     signal = UserMessageSignal([_event(text="hello", thread_id="t1")])
 
     reflex = await octomate.kick(signal)
-    with octomate.nerve.subscribe(thread) as live:
+    with octomate.nerve.subscribe(ThreadTopic(thread)) as live:
         with pytest.raises(StillAwake):
             await octomate.kick(signal)
         assert held(live) == []

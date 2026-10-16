@@ -80,6 +80,7 @@ from octomate.managers.project import ProjectManager
 from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.managers.workspaces import WorkspaceManager
+from octomate.nerve import ThreadTopic, UserTopic
 from octomate.schemas.agent import AgentInfo
 from octomate.schemas.awakes import DeferredActionBatchResponse, StillAwake
 from octomate.schemas.conversation import ChannelAddress, Conversation
@@ -87,7 +88,13 @@ from octomate.schemas.deferred import DeferredActionBatch, QuestionAnswer
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.operations import ThreadOperations
 from octomate.schemas.project import Project
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadKey, ThreadMessage
+from octomate.schemas.thread import (
+    Thread,
+    ThreadArtifact,
+    ThreadCommand,
+    ThreadKey,
+    ThreadMessage,
+)
 from octomate.schemas.user import ProfileInfo, User, UserProfile
 from octomate.tentacles.trunkline.base import (
     ROUTE_SEP,
@@ -432,7 +439,7 @@ def build_trunkline_router(
     @router.get(
         "/threads/{thread_id}/messages",
         summary="The thread's chat ledger, newest first, a page at a time",
-        response_model=Page[ThreadMessage | ThreadCommand],
+        response_model=Page[ThreadMessage | ThreadCommand | ThreadArtifact],
         response_model_exclude={"items": {"__all__": {"model_messages"}}},
     )
     async def thread_messages(
@@ -442,8 +449,8 @@ def build_trunkline_router(
         unbound: bool = False,
         limit: Annotated[int, Query(ge=1, le=500)] = 100,
     ) -> Page[ThreadMessage]:
-        """Every row the thread shows, its commands among them. `cursor` is a
-        page's `next_cursor`, read further back. `unbound` keeps to the rows no
+        """Every row the thread shows, including command receipts and artifact references.
+        `cursor` is a page's `next_cursor`, read further back. `unbound` keeps to the rows no
         model message of the thread carries — notices, commands, a chat room's
         talk — since the rest arrive bound to the model messages they prompted or
         delivered."""
@@ -711,6 +718,18 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
     handshake has no method for that guard to read."""
     router = APIRouter(prefix="/api/trunkline", tags=["trunkline"])
 
+    @router.websocket("/live/user")
+    async def watch_user(
+        websocket: WebSocket,
+        user: Annotated[User, Depends(current_user)],
+    ) -> None:
+        """Subscribe to the authenticated user's topic, without replay.
+
+        The subscription precedes acceptance. Read the thread list after the
+        handshake, then apply the events received while that read was pending.
+        """
+        await channel.siphon.watch(websocket, UserTopic(user.id))
+
     @router.websocket("/live")
     async def watch_thread(
         websocket: WebSocket,
@@ -749,6 +768,6 @@ def build_trunkline_live_router(channel: TrunklineTentacle) -> APIRouter:
                 code=1008, reason="Name the thread by its id or by its key, not both"
             )
             return
-        await channel.siphon.watch(websocket, key)
+        await channel.siphon.watch(websocket, ThreadTopic(key))
 
     return router

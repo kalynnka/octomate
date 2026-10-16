@@ -9,6 +9,7 @@ from typing import Literal
 
 import httpx2
 import pytest
+from arcanus import Relation
 from cryptography.exceptions import InvalidTag
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
@@ -256,7 +257,8 @@ async def test_oauth_instance_roundtrips_without_unauthenticated_upstream_reques
     async with connected(manager, upstream) as requests:
         with pytest.raises(McpUnavailable):
             async with manager.acquire(
-                a_turn(UserProfile(user_id=user.id)), instance.namespace
+                a_turn(UserProfile(user_id=user.id, user=Relation(user))),
+                instance.namespace,
             ):
                 pytest.fail("OAuth instance reached upstream without OAuth support")
         assert requests.methods == []
@@ -301,7 +303,7 @@ async def test_catalog_preserves_upstream_instructions(
     async with async_session() as session:
         session.add(instance)
         await session.commit()
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     server = tentacles_mcp(fixed_session(scope), manager=manager)
     upstream, _ = an_upstream("answer")
     upstream.instructions = upstream_instructions
@@ -361,13 +363,17 @@ async def test_client_is_reused_across_turns_and_closed_at_shutdown(
     upstream, calls = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         assert manager.clients == {}
-        first_scope = a_turn(UserProfile(user_id=user.id))
+        first_scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
         async with manager.acquire(first_scope, instance.namespace) as first:
             assert manager.clients == {
                 McpClientKey(user_id=user.id, mcp_id=instance.id): first
             }
         for channel in ("slack", "claude"):
-            scope = a_turn(UserProfile(user_id=user.id, channel_tentacle_id=channel))
+            scope = a_turn(
+                UserProfile(
+                    user_id=user.id, user=Relation(user), channel_tentacle_id=channel
+                )
+            )
             async with manager.acquire(scope, instance.namespace) as reused:
                 assert reused is first
             server = tentacles_mcp(fixed_session(scope), manager=manager)
@@ -397,7 +403,8 @@ async def test_private_discovery_and_cached_calls_recheck_access(
 ) -> None:
     alice, bob = await a_user("alice"), await a_user("bob")
     alice_scope, bob_scope = [
-        a_turn(UserProfile(user_id=user.id)) for user in (alice, bob)
+        a_turn(UserProfile(user_id=user.id, user=Relation(user)))
+        for user in (alice, bob)
     ]
     alice_server, bob_server, visitor_server = [
         tentacles_mcp(fixed_session(scope), manager=manager)
@@ -450,7 +457,8 @@ async def test_concurrent_users_never_share_credentials(manager: McpManager) -> 
     upstream, calls = an_upstream("answer")
     servers = [
         tentacles_mcp(
-            fixed_session(a_turn(UserProfile(user_id=user.id))), manager=manager
+            fixed_session(a_turn(UserProfile(user_id=user.id, user=Relation(user)))),
+            manager=manager,
         )
         for user in (alice, bob)
     ]
@@ -482,7 +490,7 @@ async def test_removal_cuts_off_dispatched_calls_and_rejects_new_calls(
 ) -> None:
     user = await a_user()
     instance = await manager.install(user.id, install_request())
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     started, finish = asyncio.Event(), asyncio.Event()
     upstream = FastMCP("slow")
 
@@ -520,9 +528,8 @@ async def test_catalog_changes_are_visible_on_retained_connection(
 ) -> None:
     user = await a_user()
     instance = await manager.install(user.id, install_request())
-    server = tentacles_mcp(
-        fixed_session(a_turn(UserProfile(user_id=user.id))), manager=manager
-    )
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
+    server = tentacles_mcp(fixed_session(scope), manager=manager)
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         assert [
@@ -533,6 +540,12 @@ async def test_catalog_changes_are_visible_on_retained_connection(
         def another() -> str:
             return "new tool"
 
+        for _ in range(2):
+            cached = await manager.catalog(scope, instance.namespace)
+            assert [tool.name for tool in cached.tools] == ["answer"]
+            assert cached.tools_by_name.get("another") is None
+            assert cached.model_dump().keys() == {"instructions", "tools"}
+        assert requests.methods.count("tools/list") == 1
         assert {
             tool.name for tool in (await discover(server, instance.namespace)).tools
         } == {"answer", "another"}
@@ -543,7 +556,9 @@ async def test_catalog_changes_are_visible_on_retained_connection(
 async def test_overlapping_turns_share_the_same_client(manager: McpManager) -> None:
     user = await a_user()
     instance = await manager.install(user.id, install_request())
-    scopes = [a_turn(UserProfile(user_id=user.id)) for _ in range(2)]
+    scopes = [
+        a_turn(UserProfile(user_id=user.id, user=Relation(user))) for _ in range(2)
+    ]
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         async with manager.acquire(scopes[0], instance.namespace) as first:
@@ -560,7 +575,7 @@ async def test_cancelling_a_borrower_releases_its_reference(
 ) -> None:
     user = await a_user()
     instance = await manager.install(user.id, install_request())
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     ready = asyncio.Event()
 
@@ -589,7 +604,7 @@ async def test_same_owner_mcps_and_reinstalls_have_separate_clients(
     second = await manager.install(
         user.id, install_request().model_copy(update={"namespace": "other"})
     )
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         async with manager.acquire(scope, first.namespace) as first_client:
@@ -622,7 +637,7 @@ async def test_idle_client_expires_and_next_acquisition_creates_a_new_one(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         async with manager.acquire(scope, instance.namespace) as first:
@@ -650,7 +665,7 @@ async def test_each_acquisition_refreshes_cleanup(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         async with manager.acquire(scope, instance.namespace) as first:
@@ -682,7 +697,7 @@ async def test_removal_cancels_pending_idle_cleanup(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         async with manager.acquire(scope, instance.namespace) as client:
@@ -706,7 +721,7 @@ async def test_removed_borrower_cannot_schedule_cleanup_for_replacement(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     started, finish = asyncio.Event(), asyncio.Event()
 
@@ -752,7 +767,7 @@ async def test_fatal_network_failure_evicts_without_replaying_tool_call(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, calls = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         transport = requests.upstream
@@ -793,7 +808,7 @@ async def test_http_error_preserves_usable_client(
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         transport = requests.upstream
@@ -819,7 +834,7 @@ async def test_http_error_preserves_usable_client(
 async def test_acquire_replaces_disconnected_client(manager: McpManager) -> None:
     user = await a_user()
     instance = await manager.install(user.id, install_request())
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     async with connected(manager, upstream) as requests:
         async with manager.acquire(scope, instance.namespace) as client:
@@ -835,7 +850,7 @@ async def test_old_failure_cannot_evict_replacement(manager: McpManager) -> None
     user = await a_user()
     instance = await manager.install(user.id, install_request())
     key = McpClientKey(user_id=user.id, mcp_id=instance.id)
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
     started, finish = asyncio.Event(), asyncio.Event()
 
@@ -874,7 +889,7 @@ async def test_cleanup_failure_does_not_hide_original_error(
 ) -> None:
     user = await a_user()
     instance = await manager.install(user.id, install_request())
-    scope = a_turn(UserProfile(user_id=user.id))
+    scope = a_turn(UserProfile(user_id=user.id, user=Relation(user)))
     upstream, _ = an_upstream("answer")
 
     async def failed_close() -> None:

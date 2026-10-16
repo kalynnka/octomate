@@ -254,7 +254,8 @@ async def test_an_installed_bare_tentacle_uses_its_operator_credential() -> None
         LINK_PROFILE_TOOL,
     }
     assert [tool.name for tool in catalog.tools] == ["list_issues"]
-    assert result.data == {"result": "answered"}
+    assert result.structured_content == {"result": "answered"}
+    assert result.data == "answered"
     assert seen == ["Bearer lin_x"]
 
 
@@ -295,7 +296,8 @@ async def test_a_linked_person_speaks_with_their_own_token() -> None:
     ]
     assert [tool.name for tool in catalog.tools] == ["list_repos"]
     assert catalog.instructions == tentacle.instructions
-    assert result.data == {"result": "answered"}
+    assert result.structured_content == {"result": "answered"}
+    assert result.data == "answered"
     assert seen == ["Bearer github-user-token"]
 
 

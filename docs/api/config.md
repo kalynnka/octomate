@@ -7,6 +7,7 @@ found and layered.
 ## Reference pages
 
 - [The deployment](config/deployment.md)
+- [Artifacts](config/artifacts.md)
 - [Agents](config/agents.md)
 - [Channels](config/channels.md)
 - [MCP connectors](config/mcp.md)

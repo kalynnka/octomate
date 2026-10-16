@@ -44,7 +44,7 @@ from octomate.reflex.suspender import ReflexSuspender
 from octomate.schemas.commands import CommandError, CommandOutcome
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment, MessageSegment, TextSegment
-from octomate.schemas.thread import Thread, ThreadCommand, ThreadMessage
+from octomate.schemas.thread import Thread, ThreadMessage
 from octomate.schemas.triage import (
     AgentRoute,
     AgentRouteKey,
@@ -351,7 +351,7 @@ class ReflexDeps:
         """
         parts: list[str] = []
         for message in messages:
-            if isinstance(message, ThreadCommand):
+            if message.kind != "message":
                 continue
             text = "\n".join(str(segment) for segment in message.segments)
             if not text:

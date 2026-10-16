@@ -5,7 +5,8 @@ import { createElement } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { createServer, type ViteDevServer } from 'vite'
-import type { ChannelMeta, ThreadSummary } from '../src/lib/api/types.ts'
+import type { ApiThread } from '../src/lib/api/events.ts'
+import type { ChannelMeta } from '../src/lib/api/types.ts'
 
 let server: ViteDevServer
 let queryClient: typeof import('../src/lib/queryClient.ts').queryClient
@@ -16,10 +17,13 @@ const channels: ChannelMeta[] = [
   { id: 'discord', label: 'Discord', sub: 'gateway', brand: '#5865f2' },
   { id: 'trunkline', label: 'Trunkline', sub: 'web', brand: '#d4621a' },
 ]
-const threads: Record<string, ThreadSummary[]> = {
-  discord: [{ id: 'discord-thread', key: 'discord-key', channelId: 'discord', title: 'Discord conversation', tone: 'idle', agentLabel: 'Codex' }],
-  trunkline: [{ id: 'web-thread', key: 'web-key', channelId: 'trunkline', title: 'Web conversation', tone: 'idle', agentLabel: 'Codex' }],
-}
+const threads: ApiThread[] = [
+  { id: 'discord-thread', channel_tentacle_id: 'discord', title: 'Discord conversation', channel_thread_id: 'discord-key' },
+  { id: 'web-thread', channel_tentacle_id: 'trunkline', title: 'Web conversation', channel_thread_id: 'web-key' },
+].map(thread => ({
+  ...thread, kind: 'thread', chat_type: 'thread', chat_id: 'owner', project_id: null,
+  status: 'active', created_at: '2026-10-16T00:00:00Z', updated_at: '2026-10-16T00:00:00Z', handoffs: [],
+}))
 
 before(async () => {
   server = await createServer({
@@ -66,9 +70,9 @@ test('switching focus keeps expanded threads available and highlights only the n
     Object.assign(useConsole.getInitialState(), { chFold: useConsole.getState().chFold, channelFocusHistory: useConsole.getState().channelFocusHistory })
     const html = renderToStaticMarkup(createElement(QueryClientProvider, { client: queryClient }, createElement(ThreadsSidebar)))
     const active = channels.find((channel) => channel.id === id)!
-    assert.ok(html.includes(threads[id][0].title))
+    assert.ok(html.includes(threads.find(thread => thread.channel_tentacle_id === id)!.title!))
     const previous = id === 'discord' ? 'trunkline' : 'discord'
-    assert.ok(html.includes(threads[previous][0].title))
+    assert.ok(html.includes(threads.find(thread => thread.channel_tentacle_id === previous)!.title!))
     assert.ok(!html.includes(`data-channel-threads="${previous}" aria-hidden="true"`))
     assert.ok(!html.includes(`data-channel-threads="${id}" aria-hidden="true"`))
     assert.ok(html.includes(`aria-label="Focus ${active.label}" aria-pressed="true"`))

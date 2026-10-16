@@ -152,6 +152,8 @@ async def test_native_profile_reloads_updates_and_deletion_from_the_database() -
     manager = UserManager()
     first = await manager.native_profile(CLAUDE_NATIVE_ID, "original")
     assert first is not None
+    assert first.user.value is not None
+    assert first.user.value.id == user.id
 
     async with async_session() as session:
         stored = await session.get(User, user.id)
@@ -163,6 +165,8 @@ async def test_native_profile_reloads_updates_and_deletion_from_the_database() -
     assert fresh is not None
     assert fresh.user_id == user.id
     assert fresh.name == "Updated"
+    assert fresh.user.value is not None
+    assert fresh.user.value.name == "Updated"
 
     async with async_session() as session:
         stored = await session.get(User, user.id)

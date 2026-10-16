@@ -1,6 +1,7 @@
 """The ORM models: SQLAlchemy declarations of every table, one module per
 concern."""
 
+from octomate.models.artifacts import Artifact, McpAppArtifact
 from octomate.models.auth import (
     LinkProfileSession,
     UserApiKey,
@@ -46,6 +47,7 @@ from octomate.models.thread import (
     Handoff,
     MessageBinding,
     Thread,
+    ThreadArtifact,
     ThreadCommand,
     ThreadLedger,
     ThreadMessage,
@@ -55,6 +57,7 @@ from octomate.models.user import User, UserProfile
 
 __all__ = [
     "AgentRun",
+    "Artifact",
     "Base",
     "BearerMcp",
     "Binary",
@@ -75,6 +78,7 @@ __all__ = [
     "LinkProfileSession",
     "Markdown",
     "Mcp",
+    "McpAppArtifact",
     "MessageBinding",
     "ModelMessage",
     "ModelRequest",
@@ -87,6 +91,7 @@ __all__ = [
     "Project",
     "Text",
     "Thread",
+    "ThreadArtifact",
     "ThreadCommand",
     "ThreadLedger",
     "ThreadMessage",

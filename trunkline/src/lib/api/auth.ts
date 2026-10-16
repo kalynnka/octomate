@@ -154,6 +154,8 @@ function refreshSession(): Promise<boolean> {
 export interface ApiRequest {
   method?: string
   json?: unknown
+  signal?: AbortSignal
+  cache?: RequestCache
   /** whether a 401 is a session that lapsed, worth one refresh and a retry.
    *  False on the credential endpoints, whose 401 is the answer itself. */
   retry?: boolean
@@ -172,6 +174,8 @@ export async function apiFetch(path: string, request: ApiRequest = {}): Promise<
   const init: RequestInit = {
     method,
     headers,
+    signal: request.signal,
+    cache: request.cache,
     body: request.json === undefined ? undefined : JSON.stringify(request.json),
   }
   let res = await fetch(path, init)

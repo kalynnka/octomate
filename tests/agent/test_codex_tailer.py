@@ -30,6 +30,7 @@ from octomate.capabilities.harness.events import (
     RunStartedEvent,
     StreamEvents,
 )
+from octomate.nerve import ThreadTopic
 from octomate.schemas.thread import ThreadKey
 from octomate.tentacles.codex.adapter import CodexRunAccumulator
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, OpenTurn
@@ -245,7 +246,7 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
     octomate = Octomate()
     tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
     key = ThreadKey.from_address(SESSION_ADDRESS)
-    with octomate.nerve.subscribe(key) as live:
+    with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         for finished in (False, True, True):
             async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
                 state, _ = await tailer.attach_remote(
@@ -297,7 +298,9 @@ async def test_failed_commit_never_publishes_run_ended(
     monkeypatch.setattr(
         owner, method, AsyncMock(side_effect=RuntimeError("commit failed"))
     )
-    with octomate.nerve.subscribe(ThreadKey.from_address(SESSION_ADDRESS)) as live:
+    with octomate.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
                 SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher
@@ -332,7 +335,9 @@ async def test_failed_commit_never_publishes_run_ended(
 async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
     octomate = Octomate()
     tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
-    with octomate.nerve.subscribe(ThreadKey.from_address(SESSION_ADDRESS)) as live:
+    with octomate.nerve.subscribe(
+        ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+    ) as live:
         async with octomate.nerve.publish(SESSION_ADDRESS) as publisher:
             state, _ = await tailer.attach_remote(
                 SESSION_ID, ROLLOUT_LABEL, SENDER, SESSION_ADDRESS, publisher

@@ -1,7 +1,8 @@
 import { useEffect } from 'react'
 import { QueryClientProvider } from '@tanstack/react-query'
 import { AuthGate } from '@/features/auth/AuthGate'
-import { ConsoleShell } from '@/features/shell/ConsoleShell'
+import { ArtifactRoute } from '@/features/artifacts/ArtifactRoute'
+import '@/features/artifacts/artifacts.css'
 import { queryClient } from '@/lib/queryClient'
 import { applyThemeAttr, useConsole } from '@/state/console'
 
@@ -27,7 +28,7 @@ export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
       <AuthGate>
-        <ConsoleShell />
+        <ArtifactRoute />
       </AuthGate>
     </QueryClientProvider>
   )

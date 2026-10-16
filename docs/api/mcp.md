@@ -7,4 +7,5 @@ the connectors it proxies. See [Octomate MCP](../usage/mcp/octomate.md) and
 ## Reference pages
 
 - [The served server](mcp/server.md)
+- [Artifact loading](mcp/artifacts.md)
 - [OAuth](mcp/oauth.md)

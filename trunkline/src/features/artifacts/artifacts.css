@@ -1,0 +1,28 @@
+.trk-artifact { --motion-base: var(--motion-entry); position: relative; width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid transparent; background: var(--surface-sunken); color: var(--fg-1); }
+/* Paint the frame above the embedded document, including at fractional UI scales. */
+.trk-artifact::after { content: ''; position: absolute; inset: 0; outline: 1px solid var(--line-divider); pointer-events: none; }
+.trk-artifact-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 40px; padding: 4px 12px; box-sizing: border-box; border-bottom: 1px solid var(--line-divider); background: var(--card-bg); }
+.trk-artifact-header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--label); letter-spacing: var(--track-wide); text-transform: uppercase; }
+.trk-artifact-controls { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; align-items: center; gap: 4px; flex-shrink: 0; }
+.trk-artifact-header :is(a, button) { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 0 8px; border: 0; background: transparent; color: var(--fg-2); font: var(--label-xs); letter-spacing: var(--track-wide); text-transform: uppercase; text-decoration: none; cursor: pointer; }
+.trk-artifact-icon { display: inline-flex; align-items: center; justify-content: center; width: 16px; flex-shrink: 0; font-size: 16px; line-height: 1; letter-spacing: normal; transform: translateY(-1px); }
+.trk-artifact-header :is(a, button):hover { background: var(--card-bg-hover); color: var(--fg-1); }
+.trk-artifact-header :is(a, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+.trk-artifact p { margin: 0; padding: 18px 14px; color: var(--fg-2); font: var(--ui); }
+.trk-artifact [role="alert"] { color: var(--color-terra); }
+.trk-artifact-frame { position: static; width: 100%; max-width: none; max-height: none; box-sizing: border-box; padding: 0; margin: 0; border: 0; background: var(--card-bg); color: var(--fg-1); }
+.trk-artifact-frame:not([data-display-mode="fullscreen"]) { height: var(--artifact-height); overflow: hidden; transition: height var(--motion-entry) var(--ease-in-out); }
+.trk-artifact-frame[data-display-mode="fullscreen"] { position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; overflow: hidden; }
+.trk-artifact-frame .trk-artifact-header[hidden] { display: none; }
+.trk-artifact-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-divider); background: var(--surface-raised); }
+.trk-artifact-actions :is(a, button) { min-height: 32px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--line-divider); background: var(--card-bg); color: var(--fg-1); font: var(--ui); text-decoration: none; overflow-wrap: anywhere; cursor: pointer; }
+.trk-artifact-actions :is(a, button):hover { background: var(--card-bg-hover); }
+.trk-artifact-actions :is(a, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
+.trk-artifact-page { max-width: 1280px; padding: 24px; margin: auto; }
+.trk-artifact-page > a { display: inline-block; margin-bottom: 16px; color: var(--fg-1); }
+@media (pointer: coarse) {
+  .trk-artifact-header :is(a, button) { min-height: 44px; min-width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .trk-artifact-frame:not([data-display-mode="fullscreen"]) { transition: none; }
+}

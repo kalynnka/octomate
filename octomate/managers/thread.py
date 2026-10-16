@@ -6,17 +6,27 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, datetime
 
-from arcanus import Cursor, Page
+from arcanus import Cursor, Page, Relation
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
 from sqlalchemy import ColumnElement, and_, or_, select
 
+from octomate.capabilities.harness.events import (
+    ThreadCommandOutcomeRecordedEvent,
+    ThreadEvent,
+    ThreadHandoffRecordedEvent,
+    ThreadMessageRecordedEvent,
+    ThreadProjectBoundEvent,
+    ThreadTitleChangedEvent,
+)
 from octomate.config.agents import AgentRouteModelName
 from octomate.database import async_session
 from octomate.managers.base import Locks, Manager
 from octomate.managers.conversation import own_runs
 from octomate.managers.user import UserManager
+from octomate.nerve import Impulse, Nerve, UserTopic
+from octomate.schemas.artifacts import Artifact
 from octomate.schemas.commands import CommandOutcome
 from octomate.schemas.conversation import ChannelAddress, Conversation
 from octomate.schemas.events import MessageEvent
@@ -31,6 +41,7 @@ from octomate.schemas.thread import (
     MessageBinding,
     MessageBindingKind,
     Thread,
+    ThreadArtifact,
     ThreadCommand,
     ThreadKey,
     ThreadLedger,
@@ -138,10 +149,14 @@ def thread_title(text: str | None) -> str | None:
 class ThreadManager(Manager, Locks[ThreadKey]):
     """Owns durable thread chat ledger persistence."""
 
-    def __init__(self, *, users: UserManager) -> None:
+    users: UserManager
+    nerve: Nerve
+
+    def __init__(self, *, users: UserManager, nerve: Nerve) -> None:
         # Every ledger row references its sender's registry profile — the host
         # constructs this manager around its one identity registry.
         self.users = users
+        self.nerve = nerve
 
     async def ensure(
         self,
@@ -194,12 +209,23 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                     project_id=project.id if project is not None else None,
                 )
                 session.add(thread)
-            if title is not None:
+            title_changed = title is not None and thread.title != title
+            if title_changed:
                 thread.title = title
+                thread.updated_at = datetime.now(UTC)
             await session.flush()
             await thread.handoffs
             await thread.project
             await session.commit()
+        if title_changed:
+            await self.publish(
+                thread,
+                ThreadTitleChangedEvent(
+                    thread_id=thread.id,
+                    title=thread.title,
+                    updated_at=thread.updated_at,
+                ),
+            )
         return thread
 
     async def open_sub_thread(self, parent: Thread) -> Thread:
@@ -312,8 +338,17 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             if stored is None:
                 raise ValueError(f"unknown thread {thread.id}")
             stored.title = named
+            stored.updated_at = datetime.now(UTC)
             await session.commit()
         thread.title = named
+        await self.publish(
+            thread,
+            ThreadTitleChangedEvent(
+                thread_id=thread.id,
+                title=named,
+                updated_at=stored.updated_at,
+            ),
+        )
         return thread
 
     async def bind(self, thread_id: UUID7, project: Project) -> Thread:
@@ -360,6 +395,14 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         bound = await self.get(thread_id)
         if bound is None:
             raise ValueError(f"thread {thread_id} vanished while binding")
+        await self.publish(
+            bound,
+            ThreadProjectBoundEvent(
+                thread_id=bound.id,
+                project_id=project.id,
+                updated_at=bound.updated_at,
+            ),
+        )
         return bound
 
     async def get(
@@ -449,6 +492,33 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             )
         return list(rows)
 
+    async def publish(self, thread: Thread, *events: ThreadEvent) -> None:
+        """Publish committed thread events to each eligible user's topic.
+
+        Resolve registered participants once for the supplied events, without a cache,
+        matching listing and access checks. Inherited history grants no access.
+        Sub-threads are not listed. Token events never call this method.
+        """
+        if thread.parent_thread_id is not None:
+            return
+        async with async_session() as session:
+            user_ids = await session.scalars(
+                select(UserProfile["user_id"])
+                .where(
+                    UserProfile["user_id"].is_not(None),
+                    UserProfile["id"].in_(
+                        select(ThreadMessage["sender_id"]).where(
+                            ThreadMessage["thread_id"] == thread.id
+                        )
+                    ),
+                )
+                .distinct()
+            )
+        impulses = [Impulse(event) for event in events]
+        for user_id in user_ids:
+            for impulse in impulses:
+                self.nerve.deliver(UserTopic(user_id), impulse)
+
     async def store_message(self, message: ThreadMessage, thread: Thread) -> None:
         """Persist a ledger row.
 
@@ -464,19 +534,59 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         async with async_session() as session:
             session.add(message)
             row = await session.get(Thread, thread.id)
-            if row is not None:
-                row.updated_at = datetime.now(UTC)
-                if (
-                    row.title is None
-                    and (
-                        row.kind not in {"group", "dm"}
-                        or row.parent_thread_id is not None
-                    )
-                    and message.direction == "inbound"
-                    and message.actor_kind == "human"
-                ):
-                    row.title = thread_title(message.message_text)
+            if row is None:
+                raise ValueError(f"unknown thread {thread.id}")
+            previous_title = row.title
+            row.updated_at = datetime.now(UTC)
+            if (
+                row.title is None
+                and (
+                    row.kind not in {"group", "dm"} or row.parent_thread_id is not None
+                )
+                and message.direction == "inbound"
+                and message.actor_kind == "human"
+            ):
+                row.title = thread_title(message.message_text)
             await session.commit()
+        events: list[ThreadEvent] = [
+            ThreadMessageRecordedEvent(
+                thread_id=thread.id,
+                message_id=message.id,
+                updated_at=row.updated_at,
+            )
+        ]
+        if row.title != previous_title:
+            events.append(
+                ThreadTitleChangedEvent(
+                    thread_id=thread.id, title=row.title, updated_at=row.updated_at
+                )
+            )
+        await self.publish(thread, *events)
+
+    async def record_artifact(
+        self,
+        thread_id: UUID7,
+        artifact: Artifact,
+        *,
+        sender: UserProfile,
+        agent_tentacle_id: str,
+    ) -> ThreadArtifact:
+        """Commit an artifact and its ledger reference together before publication."""
+        thread = await self.get(thread_id, with_messages=False)
+        if thread is None:
+            raise ValueError(f"unknown thread {thread_id}")
+        sender = await self.users.ensure_profile(thread.channel_tentacle_id, sender)
+        message = ThreadArtifact(
+            thread_id=thread.id,
+            direction="outbound",
+            actor_kind="agent",
+            sender_id=sender.id,
+            agent_tentacle_id=agent_tentacle_id,
+            artifact_id=artifact.id,
+            artifact=Relation(artifact),
+        )
+        await self.store_message(message, thread)
+        return message
 
     async def record_command_outcome(
         self, receipt_id: uuid.UUID, outcome: CommandOutcome
@@ -496,6 +606,15 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 receipt.outcome = outcome
                 thread.updated_at = datetime.now(UTC)
                 await session.commit()
+        await self.publish(
+            thread,
+            ThreadCommandOutcomeRecordedEvent(
+                thread_id=thread.id,
+                receipt_id=receipt.id,
+                outcome=outcome,
+                updated_at=thread.updated_at,
+            ),
+        )
 
     async def record_inbound(
         self,
@@ -738,10 +857,25 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 message_text=text,
             )
             session.add(notice)
+            previous_title = thread.title
             thread.title = title
             thread.updated_at = notice.happened_at
             await thread.handoffs
             await session.commit()
+        events: list[ThreadEvent] = [
+            ThreadMessageRecordedEvent(
+                thread_id=thread.id,
+                message_id=notice.id,
+                updated_at=thread.updated_at,
+            )
+        ]
+        if title != previous_title:
+            events.append(
+                ThreadTitleChangedEvent(
+                    thread_id=thread.id, title=title, updated_at=thread.updated_at
+                )
+            )
+        await self.publish(thread, *events)
         return thread
 
     async def record_handoff(
@@ -780,6 +914,10 @@ class ThreadManager(Manager, Locks[ThreadKey]):
             session.add(handoff)
             await session.commit()
         thread.handoffs.append(handoff)
+        await self.publish(
+            thread,
+            ThreadHandoffRecordedEvent(thread_id=thread.id, handoff=handoff),
+        )
         return handoff
 
     async def chat_message(self, profile: UserProfile, handle: str) -> ThreadMessage:

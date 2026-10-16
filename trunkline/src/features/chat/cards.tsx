@@ -7,6 +7,7 @@ import { Fragment, useLayoutEffect, useRef, useState, type CSSProperties, type R
 import { answerText } from '@/lib/api/fold'
 import type { AgentBlock, AskAnswer, LedgerItem, MessageReply, QueueChip, ToolDetail } from '@/lib/api/types'
 import { useAuth } from '@/state/auth'
+import { ArtifactViewer } from '@/features/artifacts/ArtifactViewer'
 import { useConsole } from '@/state/console'
 import { Brackets } from '@/components/Brackets'
 import { Icon, type IconName } from '@/components/Icon'
@@ -1156,7 +1157,12 @@ function StreamRow({ item, cardMax }: { item: Extract<LedgerItem, { kind: 'strea
 
 /** Dispatch a ledger item to its card. `i` staggers entry animations. */
 export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: string; i?: number }) {
+  const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
+    case 'artifact':
+      return <div id={`pm-${item.uid}`} className="lt-entry" style={{ width: '100%', maxWidth: cardMax, minWidth: 0 }}>
+        <ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} />
+      </div>
     case 'divider':
       return (
         <Rule>

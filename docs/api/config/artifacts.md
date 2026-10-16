@@ -1,0 +1,3 @@
+# Artifacts
+
+::: octomate.config.artifacts
