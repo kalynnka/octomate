@@ -95,12 +95,21 @@ class DeepseekProcess:
     ready: bool = field(default=False, init=False)
     stderr_reported: bool = field(default=False, init=False)
 
+    def child_environment(self) -> dict[str, str]:
+        """Keep provider/tool configuration, without exporting Octomate server settings."""
+        return {
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith("OCTOMATE_")
+        }
+
     async def check_version(self) -> None:
         probe = await asyncio.create_subprocess_exec(
             self.executable,
             "--version",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
+            env=self.child_environment(),
         )
         try:
             output, _ = await asyncio.wait_for(probe.communicate(), 10)
@@ -216,7 +225,7 @@ class DeepseekProcess:
             *([NO_OPEN] if suppress_browser else []),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env={**os.environ, "DSH_HOME": self.runtime_home.name},
+            env={**self.child_environment(), "DSH_HOME": self.runtime_home.name},
         )
         self.process = process
         stdout, stderr = process.stdout, process.stderr
