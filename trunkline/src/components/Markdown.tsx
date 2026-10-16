@@ -1,4 +1,5 @@
 import MarkdownIt from 'markdown-it'
+import { memo } from 'react'
 
 // html stays off (the default): agent output is prose, not trusted markup —
 // any raw HTML in it renders as text. linkify turns bare URLs into links.
@@ -16,7 +17,7 @@ md.renderer.rules.link_open = (tokens, idx, options, env, self) => {
 
 /** Agent prose rendered as markdown — element rhythm comes from `.trk-md`
  * in console.css; the font voice inherits from the ledger card. */
-export function Markdown({ text, cursor = false }: { text: string; cursor?: boolean }) {
+export const Markdown = memo(function Markdown({ text, cursor = false }: { text: string; cursor?: boolean }) {
   const tokens = md.parse(text, {})
   if (cursor) {
     const caret = new MarkdownIt.Token('html_inline', '', 0)
@@ -33,4 +34,4 @@ export function Markdown({ text, cursor = false }: { text: string; cursor?: bool
     }
   }
   return <div className="trk-md" dangerouslySetInnerHTML={{ __html: md.renderer.render(tokens, md.options, {}) }} />
-}
+})

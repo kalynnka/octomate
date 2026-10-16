@@ -41,6 +41,34 @@ Live model calls and chat replays sit under `tests/trigger/` behind the `trigger
 marker and run only when named. They use the deployment's configuration; chat
 replays also need a gitignored `trigger.yaml` naming their destination.
 
+To preview artifact cards in Slack, Lark, Discord, and NapCat, configure a saved
+artifact in the same file alongside the channel destinations:
+
+```yaml
+trigger:
+  napcat:
+    chat_id: "123456789"
+    user_id: "123456789"
+  artifact:
+    artifact_id: "019a0000-0000-7000-8000-000000000001"
+    title: "Library diagram"
+    provider_name: "Diagrams"
+    viewer_url: "https://console.example.com/artifacts/019a0000-0000-7000-8000-000000000001"
+```
+
+Replace the sample metadata and URL with an existing artifact from your deployment.
+The NapCat example targets a private chat; for a group, add `chat_type: group`, set
+`chat_id` to the group number, and keep `user_id` as your QQ number. The channel must
+also be enabled and reachable through its configuration in `tentacles.yaml`.
+
+From the repository root, `uv run pytest tests/trigger -k artifact` posts a run
+notice and artifact preview in each configured channel. Missing channel or artifact
+configuration skips that preview. These checks send saved overview metadata only;
+they do not create artifacts or run MCP tools. Open the card's button, or NapCat's
+text link, while signed in as the artifact owner to inspect the viewer. The shared
+browser window and Trunkline embed have separate automated coverage: from
+`trunkline/`, run `pnpm test:browser` for the isolated Firefox suite.
+
 Run `uv run pytest tests/trigger/test_inkling.py` to check that the configured
 DeepSeek model returns structured replies and mentions. It uses fictional QQ
 identifiers and sends nothing to a chat platform.
