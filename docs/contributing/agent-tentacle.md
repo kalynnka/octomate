@@ -72,6 +72,86 @@ The base class provides claims and routes, model discovery hooks, session
 counters, the project lookup for the run's workspace, `resumed_prompt` for a
 runtime that takes no tool result back, and `subagent_run`.
 
+## Native sandbox verification
+
+Enable the harness's native sandbox and test the boundaries it actually enforces.
+A working directory alone does not restrict file access. Test direct file tools
+and child processes, including a workspace CLI following instructions from a
+skill. A skill grants no additional filesystem authority.
+
+The macOS audit below compares the original driven configuration with the native
+settings checked on 16 October 2026. Counts are **passed / failed**, not command
+exit codes. A denied outside operation passes; a denied workspace operation fails.
+The expectations deliberately test workspace-only access, which is stricter than
+these native presets. No container, outer Seatbelt profile or microVM was used.
+Inkling's results are retained from the earlier audit; its settings were unchanged.
+
+| Harness | Original shell checks | Current shell checks | Current file-tool checks | What is still lacking |
+|---|---:|---:|---:|---|
+| Codex | 6 / 10 | 6 / 10 | Covered through native command execution | Native workspace-write allows outside reads, programs, shared temp and `cd`. Full access and approved escalations expand authority. |
+| Claude Code | 4 / 12 | 14 / 2 | 4 / 0 | `cd` and shared-temp reads remain available. Native system/runtime and temporary-storage exceptions remain; this does not isolate the controller process. |
+| DeepSeek Harness | 6 / 10 | 6 / 10 | 1 / 3 | Outside reads, outside programs, child processes, shared temp and `cd` remain available. The native policy has no read allowlist or shared-temp exclusion setting. |
+| Inkling | 4 / 12 | 4 / 12 | 4 / 0 | File-tool checks do not constrain Shell or its descendants. No native shell sandbox was added. |
+
+Each shell column uses the same 16 checks. Outside-file fixtures are sibling
+paths under the host user's home, outside both the workspace and system temporary
+directories. Shared-temp checks have separate fixtures. These results do not
+establish denial of every possible outside path. Codex and DeepSeek allow writes
+to native temporary roots even when they are outside the workspace.
+
+| Check and expected result | Codex | Claude | DeepSeek | Inkling |
+|---|---|---|---|---|
+| Read workspace file: allow | Pass | Pass | Pass | Pass |
+| Write workspace file: allow | Pass | Pass | Pass | Pass |
+| Read workspace skill: allow | Pass | Pass | Pass | Pass |
+| Run skill's workspace CLI: allow | Pass | Pass | Pass | Pass |
+| Read outside absolute path: deny | Fail | Pass | Fail | Fail |
+| Read outside relative path: deny | Fail | Pass | Fail | Fail |
+| Read through outside symlink: deny | Fail | Pass | Fail | Fail |
+| Write outside workspace: deny | Pass | Pass | Pass | Fail |
+| Write through outside symlink: deny | Pass | Pass | Pass | Fail |
+| Execute outside program: deny | Fail | Pass | Fail | Fail |
+| Interpret outside script: deny | Fail | Pass | Fail | Fail |
+| Change directory outside: deny | Fail | Fail | Fail | Fail |
+| Give skill CLI an outside file: deny | Fail | Pass | Fail | Fail |
+| Read outside through a child shell: deny | Fail | Pass | Fail | Fail |
+| Read shared temp file: deny | Fail | Fail | Fail | Fail |
+| Write shared temp file: deny | Fail | Pass | Fail | Fail |
+
+The `cd` check only changes directory and prints a marker; it does not show that
+data can be read there. System binaries remain executable. The file-tool checks
+separately allow one workspace read and deny outside absolute, traversal and
+symlink reads. Claude's original file-tool test was 1 / 1.
+
+Codex uses its SDK's workspace-write preset. Claude enables its native Bash
+sandbox, refuses startup without it, disables unsandboxed retries and enables its
+[native read restriction](https://code.claude.com/docs/en/sandboxing#filesystem-isolation).
+The harness owns its runtime and temporary-directory exceptions. DeepSeek uses
+its native workspace-write permission preset. Octomate adds no outer sandbox,
+custom runtime path list, or named permission profile.
+
+Codex was checked with SDK and bundled CLI 0.162.1 through the actual `CodexInk`
+thread and turn operations with a scripted local Responses provider. Restricted
+→ full access → restricted turns confirmed that a warm thread regains its write
+restrictions; resume also accepted the native preset. Claude was checked with SDK
+0.2.165 and bundled CLI 2.1.294 through `ClaudeInk` with a scripted local Anthropic
+provider. Its Bash probe requested sandbox bypass; outside writes and reads in
+the user-data fixture remained denied. DeepSeek used its actual local sandbox
+and filesystem providers from source version 0.2.1-alpha.2. Inkling used harness
+0.34.0. No sandbox escalation was approved for the restricted runs.
+
+Additional Codex and Claude controls passed for native temporary-file creation
+and removal of Octomate server environment values. These are separate from the
+16-check totals. The probes exercise skill-file reads and CLI effects, not
+automatic skill discovery or a model's ability to follow arbitrary instructions.
+
+The unit tests check policy wiring and mode changes using test doubles; the
+native probes above are separate runtime evidence. Linux and Windows, unavailable
+sandbox startup, resource quotas, controller-process isolation and remote
+computer/browser authorization were not verified in this pass. MCP servers and
+remote-device tools need their own user-bound authorization; the shell sandbox
+does not confine them. Stronger isolation remains a separate deployment decision.
+
 ## Runtime commands
 
 Permission changes belong to the agent tentacle. Channels use its permission

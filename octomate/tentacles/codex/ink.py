@@ -80,6 +80,8 @@ DRIVEN_CONFIG_OVERRIDES = (
     "features.plugins=false",
     "features.apps=false",
     "notify=[]",
+    'shell_environment_policy.inherit="core"',
+    'shell_environment_policy.exclude=["OCTOMATE_*"]',
 )
 
 

@@ -350,8 +350,19 @@ async def test_sdk_ingest_claim_brackets_client_lifetime(
         assert options.resume == external_id
         assert (options.session_id is None) == (external_id is not None)
         assert tentacle.driven_sessions == {session_id: 1}
-        assert options.settings is None
-        assert options.setting_sources is None
+        assert options.settings is not None
+        assert json.loads(options.settings) == {
+            "permissions": {"blockReadsOutsideWorkingDirectories": True},
+            "sandbox": {
+                "enabled": True,
+                "failIfUnavailable": True,
+                "autoAllowBashIfSandboxed": False,
+                "allowUnsandboxedCommands": False,
+                "excludedCommands": [],
+                "enableWeakerNestedSandbox": False,
+            },
+        }
+        assert options.setting_sources == []
         assert options.extra_args == {
             "safe-mode": None,
             "thinking-display": "summarized",
@@ -629,14 +640,16 @@ async def test_run_tags_sdk_session_as_cli_entrypoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(claude_ink, "ClaudeSDKClient", FakeClaudeClient)
+    monkeypatch.setenv("OCTOMATE_AUDIT_CANARY", "server-only")
     tentacle = _tentacle(FakeConversationManager())
 
     await tentacle.run("hi", conversation_address=KEY, thread_id=_THREAD)
 
-    assert getattr(FakeClaudeClient.last_options, "env", None) == {
-        "CLAUDE_CODE_ENTRYPOINT": "cli",
-        "CLAUDE_CODE_DISABLE_BACKGROUND_TASKS": "1",
-    }
+    options = FakeClaudeClient.last_options
+    assert isinstance(options, ClaudeAgentOptions)
+    assert options.env["CLAUDE_CODE_ENTRYPOINT"] == "cli"
+    assert options.env["CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"] == "1"
+    assert options.env["OCTOMATE_AUDIT_CANARY"] == ""
 
 
 async def test_models_are_discovered_on_connect(
