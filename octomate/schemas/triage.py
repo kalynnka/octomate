@@ -77,8 +77,7 @@ DIRECT_TARGET = DirectTarget()
 
 
 class SummonDecision(BaseModel):
-    """A handoff decision: continue this turn with another agent, from a brief, in the
-    conversation where it already is."""
+    """The selected agent and self-contained brief for a run or handoff."""
 
     action: Literal["summon"] = "summon"
     reason: str
