@@ -266,8 +266,11 @@ def mount_gateway(
         reason: str,
         brief: Annotated[str, Field(max_length=8_000)],
         effort: str | None = None,
+        destination: ChannelAddress | None = None,
+        project: str | None = None,
+        ref: str | None = None,
         session: OctomateSession = octomate_session,
-    ) -> str:
+    ) -> str | ChannelAddress:
         return await session.summon(
             agent_id=agent_id,
             model=model,
@@ -275,6 +278,9 @@ def mount_gateway(
             reason=reason,
             brief=brief,
             effort=effort,
+            destination=destination,
+            project=project,
+            ref=ref,
         )
 
     @mcp.tool(

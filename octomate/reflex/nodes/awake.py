@@ -8,6 +8,9 @@ from dataclasses import dataclass
 
 from pydantic_graph import BaseNode, End, GraphRunContext
 
+from octomate.capabilities.harness.events import GatewayEvent
+from octomate.nerve import Impulse
+from octomate.reflex.nodes.react import React
 from octomate.reflex.nodes.resume_deferred import ResumeDeferred
 from octomate.reflex.nodes.route import Route
 from octomate.reflex.state import (
@@ -25,8 +28,10 @@ from octomate.schemas.awakes import (
     DeferredActionBatchResponse,
     DrivenGatewaySignal,
     NativeGatewaySignal,
+    SummonSignal,
 )
 from octomate.schemas.conversation import ChannelAddress
+from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadKey
 from octomate.schemas.triage import SummonDecision, TeleportDecision
 from octomate.schemas.user import UserProfile
@@ -36,7 +41,8 @@ from octomate.telemetry import reflex_logfire
 @dataclass
 class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """The entry node: explicit commands dispatch, batch replies resume, native
-    handoffs land, and user messages resolve their thread and go to `Route`."""
+    handoffs land, independent work initializes and enters `React`, and user
+    messages resolve their thread and go to `Route`."""
 
     signal: AwakeSignal
 
@@ -47,6 +53,7 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     ) -> (
         Command
         | Route
+        | React
         | ResumeDeferred
         | Summon
         | Teleport
@@ -58,6 +65,50 @@ class Awake(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
 
         if isinstance(self.signal, DeferredActionBatchResponse):
             return ResumeDeferred(awake=self.signal)
+
+        if isinstance(self.signal, SummonSignal):
+            signal = self.signal
+            destination = signal.destination
+            target = ResponseTarget(
+                channel_id=destination.channel_tentacle_id,
+                address=destination,
+                mode="sub",
+            )
+            ctx.state.source_target = target
+            ctx.state.target = target
+            ctx.state.user_profile = signal.user_profile
+            ctx.state.decision = signal.decision
+            ctx.state.run_name = "summon"
+            ctx.state.handoff = PendingHandoff(
+                source_agent_tentacle_id=signal.agent_id,
+                source_conversation_id=signal.source_conversation_id,
+            )
+            ctx.state.thread = await ctx.deps.thread_manager.ensure(destination)
+            await ctx.deps.thread_manager.record_outbound(
+                ctx.state.thread,
+                agent_tentacle_id=signal.agent_id,
+                sender=signal.user_profile,
+                actor_kind="system",
+                segments=[MarkdownSegment(data={"text": signal.decision.hint})],
+            )
+            if signal.project is not None:
+                project = ctx.deps.workspaces.projects.get(signal.project)
+                if project is None:
+                    raise RuntimeError(
+                        f"project {signal.project!r} vanished before summon"
+                    )
+                ctx.state.thread = await ctx.deps.thread_manager.bind(
+                    ctx.state.thread.id, project
+                )
+                await ctx.deps.workspaces.open(ctx.state.thread.id, project).prepare(
+                    signal.ref
+                )
+            await ctx.deps.impulses.send(
+                Impulse(
+                    GatewayEvent(action="summon", destination=destination), destination
+                )
+            )
+            return React()
 
         if isinstance(self.signal, DrivenGatewaySignal):
             signal = self.signal
