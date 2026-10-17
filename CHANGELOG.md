@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-v0.0.4...octomate-v0.0.5) (2026-10-17)
+
+
+### Features
+
+* **artifacts:** add native channel overview cards ([#138](https://github.com/kalynnka/octomate/issues/138)) ([013c3af](https://github.com/kalynnka/octomate/commit/013c3af67f19987af18f780b398c13324a40b1b2))
+* **artifacts:** render MCP apps inline in trunkline ([#137](https://github.com/kalynnka/octomate/issues/137)) ([8f932f4](https://github.com/kalynnka/octomate/commit/8f932f41fba221809fd2f056febeb85730f5e82a))
+* **nerve:** publish every kick on the nerve and let channels draw it ([#130](https://github.com/kalynnka/octomate/issues/130)) ([1a2e92b](https://github.com/kalynnka/octomate/commit/1a2e92b429e60ff7e9affb79f1e29fadab6b8d03))
+* publish native session turns on the nerve ([#135](https://github.com/kalynnka/octomate/issues/135)) ([e21c104](https://github.com/kalynnka/octomate/commit/e21c104f42ab98708a16a99bf1d38651b8669a72))
+* **trunkline:** stream thread lists from user topics ([#136](https://github.com/kalynnka/octomate/issues/136)) ([69de0b2](https://github.com/kalynnka/octomate/commit/69de0b2bd72883f45db3481400456c04cccc63c8))
+
+
+### Bug Fixes
+
+* **agents:** harden native sandboxes and update lark sdk ([#139](https://github.com/kalynnka/octomate/issues/139)) ([5f41dab](https://github.com/kalynnka/octomate/commit/5f41dab6e55e7345ba9f01b05ba29544a254b9cf))
+* **napcat:** preserve native segments in agent replies ([#134](https://github.com/kalynnka/octomate/issues/134)) ([20e9fff](https://github.com/kalynnka/octomate/commit/20e9fff3c646e59bb2b109475a7d3c4161915270))
+* **reflex:** hold one reflex per thread at a time ([#133](https://github.com/kalynnka/octomate/issues/133)) ([12c4eb4](https://github.com/kalynnka/octomate/commit/12c4eb43e2975ac32923c5fb02b08021a37059b2))
+
+
+### Performance Improvements
+
+* **tests:** reuse SQLite schemas and reduce subprocess overhead ([#132](https://github.com/kalynnka/octomate/issues/132)) ([21f208c](https://github.com/kalynnka/octomate/commit/21f208c8f71010ca418e8b99efb752a342f434ae))
+
 ## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-v0.0.3...octomate-v0.0.4) (2026-10-12)
 
 
