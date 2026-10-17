@@ -482,15 +482,17 @@ class SlackInk(Ink[SlackOutboundMessage]):
         thread_ts: str,
         status: str,
     ) -> None:
+        """Update the thread status; an empty string clears its running indicator."""
         try:
-            await self.client.api_call(
-                "assistant.threads.setStatus",
-                params={
-                    "channel_id": channel,
-                    "thread_ts": thread_ts,
-                    "status": status,
-                },
-            )
+            with slack_logfire.span(
+                "slack.set_assistant_status",
+                channel=channel,
+                thread_ts=thread_ts,
+                status=status,
+            ):
+                await self.client.assistant_threads_setStatus(
+                    channel_id=channel, thread_ts=thread_ts, status=status
+                )
         except Exception:
             # A clear that fails leaves the thread showing the app as still running.
             log = logger.warning if not status else logger.debug

@@ -89,7 +89,12 @@ refused: Discord has no default isolated thread destination.
 
 ## Rendering
 
-Discord has no cards. Streaming means editing one message as text arrives, rolling
+[Artifact overviews](index.md#artifact-overviews) appear as compact cards with a
+blue accent, a sparkle beside the title, and the provider below it. **Open artifact**
+opens the authenticated viewer. Cards stay in the same DM, channel or thread,
+separate from the agent's answer.
+
+Streaming means editing one message as text arrives, rolling
 onto a new message at the 2000-character limit. With streaming off, the default,
 the whole answer is sent once at the end. Thinking, tool calls and todos are not
 drawn. Images and files are real attachments. Mentions are allowed only for users

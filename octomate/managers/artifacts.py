@@ -10,7 +10,12 @@ from octomate.database import async_session
 from octomate.managers.base import Manager
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.thread import ThreadManager, in_ledger
-from octomate.schemas.artifacts import ArtifactSandboxPolicy, McpAppArtifact, McpAppView
+from octomate.schemas.artifacts import (
+    ArtifactSandboxPolicy,
+    McpAppArtifact,
+    McpAppOverview,
+    McpAppView,
+)
 from octomate.schemas.mcp import McpAppResourceCSP
 from octomate.schemas.thread import ThreadArtifact
 from octomate.schemas.user import User
@@ -24,6 +29,10 @@ class ArtifactSandboxUnavailable(ValueError):
     """Artifact loading requires a configured sandbox on a separate origin."""
 
 
+class ArtifactViewerUnavailable(ValueError):
+    """An absolute artifact link requires a configured viewer origin."""
+
+
 class ArtifactManager(Manager):
     """Authorize artifact ownership and hosting before fetching saved UI resources."""
 
@@ -33,6 +42,36 @@ class ArtifactManager(Manager):
         self.config: ArtifactConfig = config
         self.mcp: McpManager = mcp
         self.threads: ThreadManager = threads
+
+    async def overview(self, artifact_id: UUID7, user: User) -> McpAppOverview:
+        """Read an owned artifact's card metadata without contacting its provider.
+
+        Only the saved title, provider name, identity, and viewer URL leave this
+        method. An overview does not grant access to its recipients or guarantee
+        that the installation is still available; the viewer checks that on open.
+        Missing viewer configuration raises ArtifactViewerUnavailable.
+        """
+        async with async_session() as session:
+            artifact = await session.one_or_none(
+                McpAppArtifact,
+                expressions=[
+                    McpAppArtifact["id"] == artifact_id,
+                    McpAppArtifact["owner_id"] == user.id,
+                ],
+            )
+        if artifact is None:
+            raise ArtifactUnavailable("Artifact unavailable")
+        origin = self.config.viewer_origin
+        if origin is None:
+            raise ArtifactViewerUnavailable("Configure artifacts.viewer_origin")
+        return McpAppOverview(
+            artifact_id=artifact.id,
+            title=artifact.title,
+            provider_name=artifact.invocation.provider_name,
+            viewer_url=AnyHttpUrl(
+                f"{str(origin).rstrip('/')}{self.config.path}/{artifact.id}"
+            ),
+        )
 
     async def load(
         self, artifact_id: UUID7, user: User, *, console_origin: AnyHttpUrl

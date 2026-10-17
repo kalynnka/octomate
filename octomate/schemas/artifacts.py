@@ -104,6 +104,19 @@ class McpAppArtifact(Artifact):
     )
 
 
+class McpAppOverview(BaseModel):
+    """Saved display metadata for native channel cards, without invocation content."""
+
+    artifact_id: UUID7 = Field(description="The artifact's independent identity.")
+    title: str = Field(description="Display title saved when the artifact was created.")
+    provider_name: str = Field(
+        description="Installation display name saved at execution."
+    )
+    viewer_url: AnyHttpUrl = Field(
+        description="Absolute viewer link; opening it still requires the owner's login."
+    )
+
+
 class McpAppView(BaseModel):
     """An authorized artifact snapshot and freshly fetched resource for replay."""
 

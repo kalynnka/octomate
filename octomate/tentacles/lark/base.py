@@ -40,6 +40,7 @@ from octomate.tentacles.lark.feelers.approvals import (
     LarkApprovalFeeler,
     approval_resolution_card_data,
 )
+from octomate.tentacles.lark.feelers.artifacts import LarkArtifactFeeler
 from octomate.tentacles.lark.feelers.oauth import (
     LarkOAuthFeeler,
 )
@@ -147,6 +148,11 @@ class LarkTentacle(
         oauth = LarkOAuthFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
+            artifacts=LarkArtifactFeeler(
+                artifacts=self.octomate.artifacts,
+                users=self.octomate.users,
+                ink=self.ink,
+            ),
             timeline=LarkTimelineFeeler(
                 ink=self.ink,
                 chromo=self.chromo,
