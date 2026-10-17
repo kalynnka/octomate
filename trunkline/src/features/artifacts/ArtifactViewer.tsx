@@ -60,9 +60,11 @@ export function ArtifactViewer({ artifactId, threadId, messageId }: {
     </header>
     <div id={contentId} inert={folded} aria-hidden={folded || undefined}>
       <Fold open={!folded}>
-        {view.isPending && <p role="status">Loading artifact…</p>}
-        {view.error && <p role="alert">{view.error.message}</p>}
-        {view.data && <ArtifactFrame key={`${url}:${revision}`} view={view.data} />}
+        <div className="trk-artifact-sheet">
+          {view.isPending && <p role="status">Loading artifact…</p>}
+          {view.error && <p role="alert">{view.error.message}</p>}
+          {view.data && <ArtifactFrame key={`${url}:${revision}`} view={view.data} />}
+        </div>
       </Fold>
     </div>
   </section>

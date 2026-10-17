@@ -1,6 +1,6 @@
 [project]
 name = "octomate"
-version = "0.0.4"
+version = "0.0.5"
 description = "Server for collecting coding agent sessions and sharing their history and tools across chat channels."
 readme = "README.md"
 license = "AGPL-3.0-only"
@@ -18,7 +18,7 @@ dependencies = [
     "pydantic-settings>=2",
     "pyyaml>=6",
     "websockets>=15",
-    "lark-oapi>=1.4.8",
+    "lark-oapi>=1.7.5",
     "discord.py>=2.7.1",
     "pydantic-ai[bedrock]>=2.53.0,<3",
     "pydantic-graph>=2.20.0",

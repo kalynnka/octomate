@@ -58,6 +58,7 @@ messages. Agent work threads keep their own names.
 
 Each message you send at the top of the bot's DM, or that mentions it at the top
 of a channel, starts a new conversation. To continue one, reply in its thread.
+Opening the app's Home or Messages tab is silent and does not start an agent turn.
 
 Slack's streaming API takes a thread and nothing else, so the bot never streams
 into a channel root. When it opens a sub-thread it posts the hint as a message and
@@ -76,6 +77,11 @@ is refused with the scope Slack names, and the DM still works.
 Text over Slack's limit is uploaded as a Markdown file with a one-line note.
 
 ## Rendering
+
+[Artifact overviews](index.md#artifact-overviews) appear as compact native cards
+with a sparkle icon, the saved title, a provider subtitle and an **Open** button,
+between the surrounding tool or answer messages. The button opens the authenticated
+web viewer, where the app runs.
 
 A run alternates between a **plan** stream and answer text. Thinking blocks and tool
 calls become tasks in the plan, expanded while they run and folded when done, with

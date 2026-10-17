@@ -38,6 +38,7 @@ from octomate.tentacles.slack.feelers.approvals import (
     approval_submitted_blocks,
     approval_title,
 )
+from octomate.tentacles.slack.feelers.artifacts import SlackArtifactFeeler
 from octomate.tentacles.slack.feelers.oauth import (
     SlackOAuthFeeler,
 )
@@ -134,6 +135,7 @@ class SlackTentacle(
         self.app_id = config.app_id
         self.app = AsyncApp(token=config.bot_token.get_secret_value())
         self.app.event("message")(self.on_message)
+        self.app.event("app_home_opened")(self.on_app_home_opened)
         self.app.action(SlackBlockAction.APPROVAL_APPROVE.value)(
             self.on_approval_action
         )
@@ -144,6 +146,7 @@ class SlackTentacle(
         # A url button still posts an interaction; ack it so Slack does not mark the
         # message as failed.
         self.app.action(SlackBlockAction.OAUTH_OPEN.value)(self.on_link_action)
+        self.app.action(SlackBlockAction.ARTIFACT_OPEN.value)(self.on_link_action)
         self.app_token = config.app_token
         self.handler: AsyncSocketModeHandler | None = None
         # In-flight inbound turns. `on_message` runs the turn off the socket
@@ -156,6 +159,11 @@ class SlackTentacle(
         oauth = SlackOAuthFeeler(self.ink)
         self.feelers = Feelers(
             markdown=markdown_feeler,
+            artifacts=SlackArtifactFeeler(
+                artifacts=self.octomate.artifacts,
+                users=self.octomate.users,
+                ink=self.ink,
+            ),
             timeline=SlackTimelineFeeler(
                 ink=self.ink,
                 chromo=self.chromo,
@@ -238,6 +246,9 @@ class SlackTentacle(
     @property
     def serving(self) -> bool:
         return self.config.mcp
+
+    async def on_app_home_opened(self) -> None:
+        """Accept navigation without starting a turn; Bolt auto-acks event listeners."""
 
     async def on_message(self, event: SlackMessageEvent, say: AsyncSay) -> None:
         subtype = event.get("subtype")

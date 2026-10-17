@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.4...octomate-cli-v0.0.5) (2026-10-17)
+
+
+### Features
+
+* publish native session turns on the nerve ([#135](https://github.com/kalynnka/octomate/issues/135)) ([e21c104](https://github.com/kalynnka/octomate/commit/e21c104f42ab98708a16a99bf1d38651b8669a72))
+
 ## [0.0.4](https://github.com/kalynnka/octomate/compare/octomate-cli-v0.0.3...octomate-cli-v0.0.4) (2026-10-12)
 
 

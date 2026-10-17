@@ -77,6 +77,7 @@ async def drive(
     """A run as a streaming channel draws it: carried onto the nerve, and driven
     onto the timeline the siphon opens for the run."""
     async with channel.feelers.timeline.open(address) as state:
+        state.artifacts = channel.feelers.artifacts
         await state.drive(carried(stream))
     return state.message_id
 
@@ -102,6 +103,7 @@ def bound(
     state.address = address
     state.ask_questions = channel.feelers.ask_questions
     state.approvals = channel.feelers.approvals
+    state.artifacts = channel.feelers.artifacts
     state.deferred_actions = channel.octomate.deferred_actions
     return state
 
@@ -357,6 +359,7 @@ class FakeChannelTentacle(ChannelTentacle[RawMessage, NativeMessage]):
         self.self_profile = self.recording_ink.self_profile
         self.feelers = RecordingFeelers(
             markdown=self.feelers.markdown,
+            artifacts=self.feelers.artifacts,
             timeline=RecordingTimelineFeeler(self.feelers.timeline, self.consumed),
             segments=self.feelers.segments,
             approvals=self.feelers.approvals,

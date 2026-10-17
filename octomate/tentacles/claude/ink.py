@@ -2,6 +2,8 @@
 
 import asyncio
 import contextlib
+import json
+import os
 import uuid
 import weakref
 from collections.abc import AsyncGenerator, Callable
@@ -70,6 +72,27 @@ class ClaudeInk:
         command: ClaudeCommandDescriptor | None = None,
     ) -> AsyncGenerator[Message]:
         """Stream a turn, superseding the prior client for this conversation."""
+        if options.cwd is None:
+            raise ValueError("Driven Claude runs require a workspace")
+        # failIfUnavailable and the file-tool read setting are not in SDK types yet.
+        options.settings = json.dumps(
+            {
+                "permissions": {"blockReadsOutsideWorkingDirectories": True},
+                "sandbox": {
+                    "enabled": True,
+                    "failIfUnavailable": True,
+                    "autoAllowBashIfSandboxed": False,
+                    "allowUnsandboxedCommands": False,
+                    "excludedCommands": [],
+                    "enableWeakerNestedSandbox": False,
+                },
+            }
+        )
+        options.setting_sources = []
+        # The SDK merges env into the parent environment; empty values scrub it.
+        options.env.update(
+            {key: "" for key in os.environ if key.upper().startswith("OCTOMATE_")}
+        )
         async with contextlib.AsyncExitStack() as resources:
             client = await resources.enter_async_context(
                 ClaudeSDKClient(options=options)

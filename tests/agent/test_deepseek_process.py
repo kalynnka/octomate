@@ -107,6 +107,29 @@ async def test_launches_with_patch_before_web_app_options(
     ]
 
 
+async def test_child_does_not_inherit_server_settings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOMATE_DB_URL", "server-only-canary")
+    monkeypatch.setenv("OCTOMATE__AUTH__SECRET", "server-only-canary")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "provider-canary")
+    binary, _ = fake_dsh(tmp_path)
+    binary.write_text(
+        binary.read_text().replace(
+            "#!/bin/sh\n",
+            "#!/bin/sh\n"
+            '[ -z "${OCTOMATE_DB_URL+x}" ] || exit 2\n'
+            '[ -z "${OCTOMATE__AUTH__SECRET+x}" ] || exit 3\n'
+            '[ "$DEEPSEEK_API_KEY" = "provider-canary" ] || exit 4\n',
+        )
+    )
+    dsh = process(binary, tmp_path, [])
+    try:
+        assert await dsh.start() == BASE_URL
+    finally:
+        await dsh.stop()
+
+
 async def test_a_dsh_refusing_no_open_is_started_again_without_it(
     tmp_path: Path,
 ) -> None:

@@ -405,8 +405,9 @@ export const useConsole = create<ConsoleState>()((set, get) => {
     const withUid = { ...item, uid: item.uid ?? nextUid() } as LedgerItem
     if (withUid.kind === 'user' && withUid.userId === undefined) withUid.userId = useAuth.getState().user?.id
     if (get().detail?.ledger.some(item => item.uid === withUid.uid)) return withUid.uid
+    const follow = nearChatBottom()
     set((s) => ({ live: [...s.live, withUid] }))
-    scrollChatBottom(true)
+    if (follow) scrollChatBottom(true)
     return withUid.uid
   }
 

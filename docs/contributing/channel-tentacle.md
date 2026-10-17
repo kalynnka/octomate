@@ -228,6 +228,9 @@ after `super().__init__`, keeping the defaults you do not replace.
   Refuse a press on a batch that is no longer pending.
 - **OAuth.** Subclass `OAuthFeeler` and implement `send`; the base decides the
   private address.
+- **Artifacts.** Keep the text overview or subclass `ArtifactFeeler` and implement
+  `send` for the platform's own layout. Ownership checks and delivery bookkeeping
+  stay in the base; see the [artifact feeler contract](../api/tentacles/feelers.md#octomate.tentacles.feelers.artifacts.ArtifactFeeler).
 - **Graph reports.** Present the events you are handed and never build one.
   Override `Feelers.present` only to draw a move or a failed turn as something
   other than a message.

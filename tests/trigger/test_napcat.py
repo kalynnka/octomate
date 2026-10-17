@@ -22,6 +22,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import NapcatChannelConfig, OctomateConfig
+from octomate.schemas.artifacts import McpAppOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import (
     AtData,
@@ -92,6 +93,32 @@ def napcat_channel(
     in_memory_engine: AsyncEngine,
 ) -> tuple[NapcatTentacle, ChannelAddress]:
     return napcat_run
+
+
+async def test_napcat_renders_artifact_overview(
+    artifact_overview: McpAppOverview,
+    napcat_channel: tuple[NapcatTentacle, ChannelAddress],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel, address = napcat_channel
+
+    with caplog.at_level("WARNING"):
+        message_id = await channel.feelers.artifacts.send(address, artifact_overview)
+
+    assert message_id is not None
+    assert not [r for r in caplog.records if r.name.startswith("octomate")]
+    message = await channel.ink.call_api(
+        "/get_msg", {"message_id": message_id}, ActionResponse[JsonObject]
+    )
+    received = TypeAdapter(list[NapcatMessageSegment]).validate_python(
+        message["message"]
+    )
+    assert "".join(
+        str(segment) for segment in received if isinstance(segment, TextSegment)
+    ) == (
+        f"{artifact_overview.title}\nMCP app · {artifact_overview.provider_name}"
+        f"\n{artifact_overview.viewer_url}"
+    )
 
 
 async def test_napcat_renders_streamed_str_output(

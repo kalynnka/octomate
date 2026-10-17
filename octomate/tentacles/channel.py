@@ -42,6 +42,7 @@ from octomate.schemas.segments import ImageSegment, MessageSegment
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import channel_logfire
 from octomate.tentacles.base import Tentacle
+from octomate.tentacles.feelers.artifacts import PlainTextArtifactFeeler
 from octomate.tentacles.feelers.base import Feelers
 from octomate.tentacles.feelers.deferred import (
     PlainTextApprovalFeeler,
@@ -267,6 +268,9 @@ class ChannelTentacle(
         approvals_feeler = PlainTextApprovalFeeler(markdown_feeler)
         questions_feeler = PlainTextAskQuestionFeeler(markdown_feeler)
         oauth_feeler = PlainTextOAuthFeeler(self.ink, markdown_feeler)
+        segments_feeler = DefaultSegmentsFeeler[RawT, MessageT](
+            ink=self.ink, chromo=self.chromo
+        )
 
         self.feelers = Feelers(
             markdown=markdown_feeler,
@@ -278,12 +282,15 @@ class ChannelTentacle(
                 oauth=oauth_feeler,
                 deferred_actions=self.octomate.deferred_actions,
             ),
-            segments=DefaultSegmentsFeeler[RawT, MessageT](
-                ink=self.ink, chromo=self.chromo
-            ),
+            segments=segments_feeler,
             approvals=approvals_feeler,
             ask_questions=questions_feeler,
             oauth=oauth_feeler,
+            artifacts=PlainTextArtifactFeeler(
+                artifacts=self.octomate.artifacts,
+                users=self.octomate.users,
+                segments=segments_feeler,
+            ),
         )
         self.siphon = Siphon(self)
 
