@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.6](https://github.com/kalynnka/octomate/compare/octomate-v0.0.5...octomate-v0.0.6) (2026-10-17)
+
+
+### Features
+
+* **gateway:** summon independent work in a new thread ([#140](https://github.com/kalynnka/octomate/issues/140)) ([7789a19](https://github.com/kalynnka/octomate/commit/7789a19d0580ec231ad8c5924bb93bf2498ff5db))
+
 ## [0.0.5](https://github.com/kalynnka/octomate/compare/octomate-v0.0.4...octomate-v0.0.5) (2026-10-17)
 
 
