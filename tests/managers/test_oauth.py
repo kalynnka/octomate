@@ -21,8 +21,9 @@ from octomate.capabilities.harness.events import (
     OAuthAuthorizationEvent,
     OAuthDeviceAuthorizationEvent,
 )
-from octomate.config import OAuthConfig, OctomateConfig
+from octomate.config import ArtifactConfig, OAuthConfig, OctomateConfig
 from octomate.database import async_session
+from octomate.managers.artifacts import ArtifactManager
 from octomate.managers.deferred import DeferredActionManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
@@ -33,6 +34,7 @@ from octomate.managers.oauth import (
     OAuthManager,
     UnusableOAuthOperation,
 )
+from octomate.managers.thread import ThreadManager
 from octomate.managers.user import UserManager
 from octomate.mcp.oauth import CONFIRM_TOOL, CONNECT_TOOL
 from octomate.mcp.server import tentacles_mcp
@@ -904,6 +906,10 @@ def provider(manager: OAuthManager, connector_id: str) -> Provider:
     host.mcp = McpManager(users=manager.users, cipher=manager.cipher, oauth=manager)
     host.deferred_actions = DeferredActionManager()
     host.nerve = Nerve()
+    host.threads = ThreadManager(users=host.users, nerve=host.nerve)
+    host.artifacts = ArtifactManager(
+        config=ArtifactConfig(), mcp=host.mcp, threads=host.threads
+    )
     return Provider(connector_id, host)
 
 
