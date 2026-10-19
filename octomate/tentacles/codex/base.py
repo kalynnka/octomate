@@ -121,7 +121,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.files import Jsonl
-from octomate.schemas.messages import ModelRequest
+from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
 from octomate.schemas.thread import CODEX_NATIVE_ID, ThreadKey
@@ -1679,6 +1679,7 @@ class CodexTentacle(AgentTentacle[str, None]):
             # resolution of the deferral is this turn's prompt, ledgered as one.
             user_prompt = self.resumed_prompt(deferred_tool_results)
         accumulator = CodexRunAccumulator()
+        artifact_messages: dict[str, list[UUID7]] = {}
         accumulator.begin(user_prompt)
 
         if output_type is not None:
@@ -1850,6 +1851,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                     address=conversation_address,
                     thread_id=conversation.thread_id,
                 )
+                if artifacts:
+                    payload = notification.payload
+                    assert isinstance(payload, ItemCompletedNotification)
+                    artifact_messages[payload.item.root.id] = [
+                        event.message_id for event in artifacts
+                    ]
                 for event in chain(accumulator.consume(notification), artifacts):
                     yield event
                 if (
@@ -1875,6 +1882,20 @@ class CodexTentacle(AgentTentacle[str, None]):
             native_id=CODEX_NATIVE_ID,
             native_turn_id=accumulator.turn_id,
         )
+        if artifact_messages:
+            assert recorded_run is not None
+            responses = {
+                message.provider_response_id: message
+                for message in recorded_run.messages
+                if isinstance(message, ModelResponse)
+            }
+            for item_id, message_ids in artifact_messages.items():
+                await self.threads.bind_messages(
+                    message_ids,
+                    responses[item_id].id,
+                    kind="assistant_reply",
+                    run_id=recorded_run.id,
+                )
         if source_thread_message_ids:
             if recorded_run is None:
                 raise RuntimeError(

@@ -114,6 +114,28 @@ test('standalone captured HTML remains isolated from the console and network', a
   await expect(page.getByRole('alert')).toHaveCount(0)
 })
 
+for (const surface of ['html', 'body']) {
+  test(`captured HTML preserves authored ${surface} colors when the host theme changes`, async ({ page }) => {
+    await mockViews(page, { htmlArtifact: true, html: `<style>
+      ${surface} { background: #f3f5fa; color: #17213b; }
+      main { background: white; padding: 16px; }
+      #themed { color: var(--color-text-primary); }
+    </style><main><h1>Counter</h1><output>0</output></main><p id="themed">Theme-aware text</p>` })
+    await page.goto('/tests/browser/harness.html')
+    const content = page.locator('#pm-row-a').frameLocator('iframe').frameLocator('iframe')
+    await expect(content.locator('main')).toHaveCSS('color', 'rgb(23, 33, 59)')
+    await expect(content.locator(surface)).toHaveCSS('background-color', 'rgb(243, 245, 250)')
+    await expect(content.locator('#themed')).toHaveCSS('color', 'rgb(75, 73, 66)')
+    await page.getByRole('button', { name: 'Dark', exact: true }).click()
+    await expect(content.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(content.locator('main')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+    await expect(content.locator('main')).toHaveCSS('color', 'rgb(23, 33, 59)')
+    await expect(content.locator(surface)).toHaveCSS('background-color', 'rgb(243, 245, 250)')
+    await expect(content.locator('#themed')).toHaveCSS('color', 'rgb(236, 228, 212)')
+    await page.locator('#pm-row-a').screenshot({ path: test.info().outputPath('html-authored-colors.png') })
+  })
+}
+
 test('folding preserves app state and hides only that card until it is unfolded', async ({ page }) => {
   const reads = await mockViews(page, { html: appHtml.replace('<body>', '<body><input aria-label="Diagram note">') })
   await page.goto('/tests/browser/harness.html')

@@ -5,7 +5,7 @@ const reserved = 'ui/notifications/sandbox-'
 let frame
 
 /** Runs inside the opaque child, applying host context without changing app APIs or sizing. */
-function applyHostTheme(sandboxOrigin) {
+function applyHostTheme(sandboxOrigin, contentKind) {
   window.addEventListener('message', (event) => {
     if (event.source !== window.parent || event.origin !== sandboxOrigin) return
     const message = event.data
@@ -21,6 +21,7 @@ function applyHostTheme(sandboxOrigin) {
     for (const [name, value] of Object.entries(context.styles?.variables ?? {})) {
       if (name.startsWith('--') && typeof value === 'string') root.style.setProperty(name, value)
     }
+    if (contentKind === 'html') return
     for (const element of [root, document.body]) {
       element.style.backgroundColor = 'var(--color-background-primary)'
       element.style.color = 'var(--color-text-primary)'
@@ -30,6 +31,9 @@ function applyHostTheme(sandboxOrigin) {
 
 /** Give plain HTML the lifecycle and size reporting normally supplied by an MCP app. */
 function initializeHtml(sandboxOrigin) {
+  const defaults = document.createElement('style')
+  defaults.textContent = ':where(html) { background-color: var(--color-background-primary); color: var(--color-text-primary); }'
+  document.head.append(defaults)
   const send = (method, params, id) => window.parent.postMessage({ jsonrpc: '2.0', method, params, ...(id ? { id } : {}) }, sandboxOrigin)
   window.addEventListener('message', (event) => {
     if (event.source !== window.parent || event.origin !== sandboxOrigin) return
@@ -64,7 +68,7 @@ window.addEventListener('message', (event) => {
       meta.httpEquiv = 'Content-Security-Policy'
       meta.content = policy
       const theme = document.createElement('script')
-      theme.textContent = `(${applyHostTheme.toString()})(${JSON.stringify(window.location.origin)})`
+      theme.textContent = `(${applyHostTheme.toString()})(${JSON.stringify(window.location.origin)}, ${JSON.stringify(document.documentElement.dataset.contentKind)})`
       if (document.documentElement.dataset.contentKind === 'html') {
         theme.textContent += `;(${initializeHtml.toString()})(${JSON.stringify(window.location.origin)})`
       }

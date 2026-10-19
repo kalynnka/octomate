@@ -462,7 +462,7 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
     const agent = conversation?.agent_tentacle_id ?? 'agent'
     const runtime = channelMeta(agent)
     const deliveries = new Map(messages.flatMap((message) => {
-      const outbound = message.thread_messages.find((row) => row.direction === 'outbound')
+      const outbound = message.thread_messages.find((row) => row.direction === 'outbound' && row.kind !== 'artifact')
       return outbound ? [[message.id, { label: senderOf(outbound), reply: replyOf(outbound) }] as const] : []
     }))
     for (const card of replayRun(messages, runtime.native ? runtime.label : agent, children, runtime.native === true)) {
@@ -475,6 +475,17 @@ export function liveThreadDetail(reads: ThreadReads): ThreadDetail {
         deliveries.set(card.message, { label: delivery.label, reply: undefined })
       }
       keyed.push({ key: card.message, item: { ...card.item, uid: card.id } as LedgerItem, session: conversation?.id })
+    }
+  }
+
+  for (const message of modelMessages) {
+    for (const artifact of message.thread_messages) {
+      if (artifact.kind !== 'artifact') continue
+      keyed.push({
+        key: message.id,
+        session: ranIn.get(message.run_id)?.id,
+        item: { kind: 'artifact', uid: artifact.id, artifactId: artifact.artifact_id },
+      })
     }
   }
 

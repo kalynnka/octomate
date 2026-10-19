@@ -22,7 +22,8 @@ from octomate.database import async_session
 from octomate.managers.gateway import OctomateSession
 from octomate.schemas.artifacts import Artifact, HtmlArtifact, HtmlView
 from octomate.schemas.files import Html
-from octomate.schemas.thread import ThreadArtifact
+from octomate.schemas.messages import ModelResponse
+from octomate.schemas.thread import MessageBinding, ThreadArtifact
 from octomate.schemas.user import UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex import ink as codex_ink
@@ -121,10 +122,12 @@ def test_capture_refuses_invalid_files(tmp_path: Path, invalid: str) -> None:
 
 
 @pytest.mark.parametrize("chunk_size", [1, 17, 1000])
+@pytest.mark.parametrize("caption", ["Here is the chart.\n", ""])
 async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
     chunk_size: int,
+    caption: str,
 ) -> None:
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex([])
@@ -174,7 +177,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
             + json.dumps({"path": str(source), "title": "Chart", "mode": "wide"})
             + ""
         )
-        answer = f"Here is the chart.\n{reference}\n{reference}"
+        answer = f"{caption}{reference}\n{reference}"
         script = text_script(answer, thread_id=_thread_id)
         FakeCodex.script = [
             notification(
@@ -201,13 +204,13 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         event for event in events if isinstance(event, ArtifactAvailableEvent)
     ]
     assert isinstance(events[-1], AgentRunResultEvent)
-    assert events[-1].result.output == "Here is the chart.\n\n"
+    assert events[-1].result.output == f"{caption}\n"
     deltas = "".join(
         event.delta.content_delta
         for event in events
         if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta)
     )
-    assert deltas == "Here is the chart.\n\n"
+    assert deltas == f"{caption}\n"
     assert FakeCodex.thread_calls[0].developer_instructions is None
     assert not source.exists()  # The run has already released its temporary workspace.
     async with async_session() as session:
@@ -215,6 +218,15 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
             Artifact, expressions=[Artifact["id"] == available.artifact_id]
         )
         entry = await session.get(ThreadArtifact, available.message_id)
+        binding = await session.one_or_none(
+            MessageBinding,
+            expressions=[MessageBinding["thread_message_id"] == available.message_id],
+        )
+        assert binding is not None
+        assert binding.kind == "assistant_reply"
+        response = await session.get(ModelResponse, binding.model_message_id)
+        assert response is not None
+        assert response.provider_response_id == "msg-1"
     assert isinstance(artifact, HtmlArtifact)
     assert "html" not in artifact.model_dump()
     stored = await host.files.get(artifact.file_id, owner_id=owner.id)
