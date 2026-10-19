@@ -68,6 +68,10 @@ that presents it. The account API behind the panel:
 These use the browser session cookie and need `X-Octomate-Request: 1` on writes.
 The full schema is at the server's `/docs`.
 
+The account API also accepts an `acp` scope for the native ACP broker. Existing
+`hooks` and `mcp` keys do not grant it. The ACP connection endpoint is not yet
+available; issuing this key does not enable ACP connections.
+
 ## Link your channel profiles
 
 The first time you speak to the bot on Slack, Lark or Discord, Octomate records

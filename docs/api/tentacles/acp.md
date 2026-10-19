@@ -1,4 +1,6 @@
 # ACP
+::: octomate.tentacles.acp.auth
+
 ::: octomate.tentacles.acp.client
 
 ::: octomate.tentacles.acp.broker
