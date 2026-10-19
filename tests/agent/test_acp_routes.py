@@ -164,7 +164,11 @@ async def test_prompt_updates_permissions_cancellation_and_native_registration(
         assert thread.chat_id == session_id
         assert conversation.thread_id == thread.id
         assert conversation.external_id == session_id
-        assert not await session.list(ThreadMessage)
+        messages = await session.list(ThreadMessage, order_bys=[ThreadMessage["id"]])
+        assert [message.direction for message in messages] == ["inbound", "outbound"]
+        assert messages[0].message_text == "hello"
+        assert messages[1].message_text is not None
+        assert len(messages[1].message_text) == 100_000
 
 
 def test_unauthorized_connection_starts_no_process(

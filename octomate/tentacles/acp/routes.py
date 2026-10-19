@@ -16,8 +16,9 @@ uses the nerve. Session loading and listing are not exposed.
 The adapter must already be installed and logged in as the service account.
 Provider authentication is not exposed through ACP. Workspace paths and stdio MCP
 commands run on the adapter's host; forwarding client capabilities does not mount
-the caller's directory there. The broker registers native identities, but this
-route does not ingest transcripts or project stream events into the ledger.
+the caller's directory there. The broker records each prompt as a driven run in
+its native thread's conversation, binds ledger entries to its messages, and
+publishes the ACP conversation through the nerve without requiring hooks.
 
 Disconnecting closes the adapter and loses this connection's drive authority.
 Provider sessions and Octomate's registered identities are not deleted. API-key

@@ -9,4 +9,6 @@
 
 ::: octomate.tentacles.acp.broker
 
+::: octomate.tentacles.acp.history
+
 ::: octomate.tentacles.acp.adapter

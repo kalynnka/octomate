@@ -41,11 +41,19 @@ and creates no managed checkout. Client-supplied stdio MCP commands also run on
 the server. File and terminal callbacks reach your client when the adapter
 uses its advertised capabilities; these callbacks do not mount a remote directory.
 
-## Current limits
+## History
 
 Creating a session writes its native thread and conversation identity to Octomate.
-The connection does not yet record prompts or responses in Octomate's history.
-It therefore does not make the session visible in Trunkline's history by itself.
+Your first prompt makes it visible in your Trunkline history. Octomate records
+each prompt and the replies, thinking and tool activity received through ACP,
+and publishes live updates for viewers of that thread. No hook setup is needed.
+Cancelled or failed prompts retain the input and any output already received.
+
+This history contains what the provider shares through ACP. It does not include
+hidden model messages or infer model usage. Media remains in the recorded
+conversation; the thread ledger shows a media label.
+
+## Current limits
 
 Disconnecting shuts down the adapter. You cannot reconnect to drive that session
 through this API yet; its provider session and registered identity are retained.
@@ -54,8 +62,6 @@ API-key revocation and expiry are checked when connecting.
 
 ## Coming soon
 
-- Record prompts and responses in Octomate's history and show sessions and live
-  updates in Trunkline.
 - Reconnect to existing sessions, resume work, and load or list sessions.
 - Run Inkling through ACP using Pydantic AI.
 
