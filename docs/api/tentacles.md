@@ -11,6 +11,7 @@ The base classes every tentacle extends, and the pieces a channel is built from.
 - [Feelers](tentacles/feelers.md)
 - [Nerve and siphon](tentacles/nerve.md)
 - [Trunkline](tentacles/trunkline.md)
+- [ACP](tentacles/acp.md)
 
 ## NapCat
 

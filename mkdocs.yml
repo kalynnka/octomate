@@ -148,6 +148,7 @@ nav:
           - Feelers: api/tentacles/feelers.md
           - Nerve and siphon: api/tentacles/nerve.md
           - Trunkline: api/tentacles/trunkline.md
+          - ACP: api/tentacles/acp.md
       - Reflex graph:
           - api/reflex.md
           - Graph, state and dependencies: api/reflex/graph.md
