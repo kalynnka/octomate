@@ -14,13 +14,14 @@ validates that every node is reachable from the entry.
 
 ```mermaid
 flowchart TD
-  START([kick]) -->|message, command or resume batch| Awake
+  START([kick]) -->|message, command, gateway or resume batch| Awake
   START -->|live batch| Live[Deliver to the owning request]
   Awake -->|user message| Route
   Awake -->|explicit command| Command
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native scheme| Scheme
   Awake -->|thread summon API| Summon
+  Awake -->|independent summon| React
   Awake -->|thread teleport API| Teleport
   Route --> React
   React -->|summon| Summon
@@ -44,16 +45,20 @@ flowchart TD
 
 ## The nodes
 
-**Awake** resolves the signal once and writes the source context into state. Five
+**Awake** resolves the signal once and writes the source context into state. Six
 signals enter here: a user message from a channel, a resolved action batch coming
 back from a card, a spell a native session cast over MCP, and an authenticated
-thread operation the console asked for, validated by the gateway, and an explicit command on a resolved conversation. A thread
+thread operation the console asked for, validated by the gateway, an explicit command
+on a resolved conversation, and independent work summoned into a newly opened thread. A thread
 operation, and a native session's teleport of its own thread, enter at the thread
 they act on and go to `Summon` or `Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
 nodes do not retain the signal. A UI teleport opens a fresh turn with an address notice; it
 does not fabricate a deferred tool result. A message
 enters the thread its address names, or a fresh sub-thread when the address is a
-chat room. See [Threads and chat rooms](../usage/threads.md).
+chat room. Independent work gets its own ledger, opener and optional project
+workspace in `Awake`, then enters `React` with the selected agent and pending
+handoff. Its source conversation keeps running.
+See [Threads and chat rooms](../usage/threads.md).
 
 **Route** decides who runs this turn, in order: the agent a handoff already pinned
 on the chat; the channel's default agent when the message is already in a flat
@@ -105,8 +110,9 @@ Explicit command receipts stay in the visible ledger but are omitted from pendin
 chat input and automatic room recaps. Their arguments are not another chat turn.
 
 **Summon** hands the current conversation to the agent the decision names, where
-it is, then re-enters `React` with the brief as the new agent's prompt. Moving a
-conversation elsewhere is `Teleport`'s.
+it is, then re-enters `React` with the brief as the receiving agent's prompt.
+`React` records the pending handoff for both in-place transfers and independent
+work. Carrying existing history elsewhere is `Teleport`'s.
 
 **Scheme** opens the asking user's direct messages with the hint, finds who already
 owns that DM or falls back to that channel's default agent, and re-enters `React`

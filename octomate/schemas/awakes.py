@@ -85,12 +85,30 @@ class DrivenGatewaySignal:
     source: ChannelAddress
 
 
+@dataclass(frozen=True)
+class SummonSignal:
+    """Start independent work at a newly opened destination.
+
+    Awake initializes the thread and enters React with the selected agent.
+    React records the handoff from this requester before running the agent.
+    """
+
+    decision: SummonDecision
+    destination: ChannelAddress  # The newly opened thread to initialize.
+    agent_id: str  # The requesting agent, kept as the handoff's source.
+    user_profile: UserProfile
+    source_conversation_id: UUID7 | None = None
+    project: str | None = None  # The validated project to bind the new thread to.
+    ref: str | None = None  # The validated starting ref for that project's workspace.
+
+
 type AwakeSignal = (
     UserMessageSignal
     | DeferredActionBatchResponse
     | CommandSignal
     | NativeGatewaySignal
     | DrivenGatewaySignal
+    | SummonSignal
 )
 
 

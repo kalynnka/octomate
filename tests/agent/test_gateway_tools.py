@@ -136,7 +136,7 @@ async def a_native_call(
     return server, session, channel, threads, kicks
 
 
-async def test_the_server_offers_exactly_the_six_shared_spells() -> None:
+async def test_the_server_offers_the_shared_spells() -> None:
     # The accomplice spells are deliberately absent: external runtimes bring
     # their own subagent systems.
     server, session, _channel, _threads = a_turn()
@@ -201,7 +201,14 @@ def test_gateway_instructions_render_one_contract_under_each_naming() -> None:
     assert "### Writing a brief" in inkling
 
     mcp = gateway_instructions(gateway_tool)
-    for name in ("inspect", "summon", "teleport", "scheme", "send", "dismiss"):
+    for name in (
+        "inspect",
+        "summon",
+        "teleport",
+        "scheme",
+        "send",
+        "dismiss",
+    ):
         assert f"`gateway_{name}`" in mcp
     assert "{" not in mcp
     assert "commission" not in mcp

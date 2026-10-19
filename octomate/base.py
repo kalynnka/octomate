@@ -54,6 +54,7 @@ from octomate.schemas.awakes import (
     DrivenGatewaySignal,
     NativeGatewaySignal,
     StillAwake,
+    SummonSignal,
     UserMessageSignal,
 )
 from octomate.schemas.base import sqlalchemy_materia
@@ -329,6 +330,8 @@ class Octomate(FastAPI):
                     origin = signal.context.address
                 case DrivenGatewaySignal():
                     origin = signal.source
+                case SummonSignal():
+                    origin = signal.destination
                 case NativeGatewaySignal():
                     origin = signal.source
                     span.set_attribute("agent_id", signal.agent_id)

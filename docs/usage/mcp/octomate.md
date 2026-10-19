@@ -40,6 +40,11 @@ where it is, and local files are not transferred. See
 [Moving a conversation](../gateway.md#from-a-native-session) for the available
 ways to continue elsewhere.
 
+Ask your native agent to use **gateway_summon** with a destination to
+[start independent work in a new thread](../gateway.md#independent-work). Name a
+destination on a connected channel and supply a self-contained brief; your local
+session keeps running, and the receiving agent reports in the new thread.
+
 ## Use connected services
 
 > Which services have I connected? Check whether the project tracker is ready,
@@ -54,6 +59,10 @@ and access controls.
 Driven Claude Code and Codex sessions receive Octomate's tools automatically;
 Inkling has the same capabilities built in. You do not install a separate client
 entry for those runs. Driven DeepSeek Harness does not yet have these tools.
+
+The driven gateway also supports **gateway_summon** with a destination. It can open work under the
+current chat or at another selected destination while keeping the current
+conversation.
 
 ## If your connection stops working
 
