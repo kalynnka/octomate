@@ -17,6 +17,13 @@
 
 # tentacles:
 
+  # Native Claude and Codex sessions through the ACP API. Adapters start only when
+  # a client initializes a connection. Declare this once, under any unused key.
+  #
+  # acp:
+  #   type: acp
+  #   enabled: true
+
   # The in-process pydantic-ai agent. Takes any pydantic-ai model id and reaches each
   # provider through `providers.yaml`, or that provider's own environment variable.
   #

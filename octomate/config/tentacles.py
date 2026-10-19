@@ -4,6 +4,7 @@ from typing import Annotated
 
 from pydantic import Field
 
+from octomate.config.acp import AcpConfig
 from octomate.config.agents import (
     ClaudeCodeConfig,
     CodexConfig,
@@ -14,7 +15,8 @@ from octomate.config.channels import ChannelConfigVariant
 from octomate.config.mcp import McpConfigVariant
 
 type TentacleConfigVariant = Annotated[
-    ClaudeCodeConfig
+    AcpConfig
+    | ClaudeCodeConfig
     | CodexConfig
     | DeepseekConfig
     | InklingConfig

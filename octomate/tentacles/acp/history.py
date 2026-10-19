@@ -14,6 +14,7 @@ from dataclasses import dataclass, field, replace
 
 from acp import schema
 from pydantic_ai.messages import (
+    AgentStreamEvent,
     BinaryContent,
     FilePart,
     FunctionToolCallEvent,
@@ -36,7 +37,6 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 
-from octomate.capabilities.harness.events import WireEvent
 from octomate.tentacles.acp.adapter import json_value_adapter
 from octomate.types.json import JsonValue
 
@@ -126,13 +126,13 @@ class AcpHistory:
             if isinstance(part, TextPart | FilePart)
         )
 
-    def end_part(self) -> list[WireEvent]:
+    def end_part(self) -> list[AgentStreamEvent]:
         if self.streaming is None:
             return []
         index, self.streaming = self.streaming, None
         return [PartEndEvent(index=index, part=replace(self.parts[index]))]
 
-    def feed(self, notification: schema.SessionNotification) -> list[WireEvent]:
+    def feed(self, notification: schema.SessionNotification) -> list[AgentStreamEvent]:
         """Fold a validated update and return its live events in arrival order."""
         update = notification.update
         self.updates.append(
@@ -187,7 +187,7 @@ class AcpHistory:
 
     def tool(
         self, update: schema.ToolCallStart | schema.ToolCallProgress
-    ) -> list[WireEvent]:
+    ) -> list[AgentStreamEvent]:
         """Merge a tool's partial updates and retain its native call/result pair."""
         key = update.tool_call_id
         previous = self.tools.get(key)
@@ -202,7 +202,7 @@ class AcpHistory:
             if isinstance(raw_input, dict | str) or raw_input is None
             else json.dumps(raw_input)
         )
-        events: list[WireEvent] = []
+        events: list[AgentStreamEvent] = []
         if key not in self.calls:
             call = NativeToolCallPart(
                 tool_name=tool.title, args=args, tool_call_id=key, provider_name="acp"

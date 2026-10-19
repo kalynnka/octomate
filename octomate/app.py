@@ -9,6 +9,7 @@ import logfire
 
 from octomate import Octomate
 from octomate.config import (
+    AcpConfig,
     BareMcpConfig,
     ClaudeCodeConfig,
     CodexConfig,
@@ -29,6 +30,7 @@ from octomate.database import engine as db_engine
 from octomate.managers.project import ProjectManager
 from octomate.managers.workspaces import MirrorManager, WorkspaceManager
 from octomate.providers import ProviderHttpLogFilter, ProviderRegistry
+from octomate.tentacles.acp.base import AcpTentacle
 from octomate.tentacles.base import TentacleLogFormatter, TentacleLogHandler
 from octomate.tentacles.channel import build_channel
 from octomate.tentacles.claude import ClaudeCodeTentacle
@@ -149,6 +151,8 @@ def create_app() -> Octomate:
         if not tentacle_config.enabled:
             continue
         match tentacle_config:
+            case AcpConfig():
+                tentacle = AcpTentacle(id=id, octomate=octomate)
             case InklingConfig():
                 tentacle = build_inkling(
                     id, tentacle_config, octomate, registry=registry

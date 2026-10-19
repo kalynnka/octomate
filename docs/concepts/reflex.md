@@ -16,7 +16,7 @@ validates that every node is reachable from the entry.
 flowchart TD
   START([kick]) -->|message, command, gateway or resume batch| Awake
   START -->|live batch| Live[Deliver to the owning request]
-  Awake -->|user message| Route
+  Awake -->|user message, including ACP| Route
   Awake -->|explicit command| Command
   Awake -->|resolved batch| ResumeDeferred
   Awake -->|native scheme| Scheme
@@ -46,13 +46,12 @@ flowchart TD
 ## The nodes
 
 **Awake** resolves the signal once and writes the source context into state. Six
-signals enter here: a user message from a channel, a resolved action batch coming
+signals enter here: a user message from a channel or addressed to a selected agent, a resolved action batch coming
 back from a card, a spell a native session cast over MCP, and an authenticated
 thread operation the console asked for, validated by the gateway, an explicit command
 on a resolved conversation, and independent work summoned into a newly opened thread. A thread
 operation, and a native session's teleport of its own thread, enter at the thread
-they act on and go to `Summon` or `Teleport` directly. `Awake` consumes its signal into resolved run context; downstream
-nodes do not retain the signal. A UI teleport opens a fresh turn with an address notice; it
+they act on and go to `Summon` or `Teleport` directly. `Awake` establishes the source context before handing work to the selected node. A UI teleport opens a fresh turn with an address notice; it
 does not fabricate a deferred tool result. A message
 enters the thread its address names, or a fresh sub-thread when the address is a
 chat room. Independent work gets its own ledger, opener and optional project
@@ -60,14 +59,16 @@ workspace in `Awake`, then enters `React` with the selected agent and pending
 handoff. Its source conversation keeps running.
 See [Threads and chat rooms](../usage/threads.md).
 
-**Route** decides who runs this turn, in order: the agent a handoff already pinned
+**Route** decides who runs, in order: the agent explicitly selected by the caller;
+the agent a handoff already pinned
 on the chat; the channel's default agent when the message is already in a flat
 thread; otherwise the channel's default agent, in the same conversation, with no
 handoff recorded, because a group's main surface is never pinned. There is no
 separate triage pass: the entry agent self-routes with the gateway if it wants to.
 
-**React** starts ordinary agent runs. It resolves the agent against the
-channel the run will happen on, records the handoff if one is pending, mounts the
+**React** starts ordinary agent runs. It resolves the selected agent and checks
+the channel's routes when there is a channel, records any pending handoff, asks
+the agent to resolve its conversation, and mounts the
 gateway and the user's capabilities, registers the session at the gateway so a
 second concurrent turn is refused, then runs the agent. The run always streams,
 whatever the channel: what it does goes out on the nerve as it happens, and the
@@ -75,6 +76,17 @@ channel decides whether to draw it live or only its reply. After the run it read
 gateway recorded: a summon becomes `Summon`, a scheme becomes `Scheme`, a teleport
 deferral becomes `Teleport`, any other deferral ends the graph suspended, and a
 plain result ends it. Whatever happened, the turn's workspace is saved.
+
+ACP prompts follow this same `Awake` → `Route` → `React` path, selecting the ACP
+tentacle, which resolves the existing native conversation from its attachment.
+Provider identities belong
+to the session and its history; they do not select the executing tentacle.
+The ACP tentacle owns session attachments; the reflex owns the
+active turn and its conversation guard. The provider keeps the selected session
+and working directory, without creating a managed checkout. Permissions, files
+and terminals use direct ACP callbacks. An idle attachment holds no awake task.
+Cancellation keeps the turn awake until the provider settles and history is
+recorded.
 
 **Command** executes the selected runtime command directly, bypassing `Route` and
 chat prompt construction. The node enters the manager's `validate` scope, prepares

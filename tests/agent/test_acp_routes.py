@@ -17,7 +17,9 @@ from octomate import Octomate
 from octomate.config import OctomateConfig
 from octomate.database import async_session
 from octomate.schemas.conversation import Conversation
-from octomate.schemas.thread import Thread, ThreadMessage
+from octomate.schemas.runs import AgentRun
+from octomate.schemas.thread import Thread, ThreadKey, ThreadMessage
+from octomate.tentacles.acp.base import AcpTentacle
 from octomate.tentacles.acp.client import AcpProvider
 from tests.agent.test_acp_client import adapter_environment as adapter_environment
 from tests.support.users import a_user, auth_config
@@ -36,6 +38,7 @@ async def client(
         [*acp.transports.DEFAULT_INHERITED_ENV_VARS, "ACP_TEST_LOG"],
     )
     app = Octomate(config=OctomateConfig(auth=auth_config()))
+    app.connect(AcpTentacle(id="bridge", octomate=app))
     user = await a_user("alice")
     assert app.auth is not None
     key = await app.auth.create_api_key(user.id, name="ACP client", scopes=["acp"])
@@ -44,7 +47,7 @@ async def client(
     )
 
 
-def open_session(socket: WebSocketTestSession, *, boolean_options: bool = False) -> str:
+def initialize(socket: WebSocketTestSession, *, boolean_options: bool = False) -> None:
     socket.send_json(
         {
             "jsonrpc": "2.0",
@@ -68,14 +71,21 @@ def open_session(socket: WebSocketTestSession, *, boolean_options: bool = False)
     initialized = socket.receive_json()
     assert initialized["id"] == "init"
     assert initialized["result"]["protocolVersion"] == 1
-    assert initialized["result"]["agentCapabilities"]["loadSession"] is False
-    assert initialized["result"]["agentCapabilities"]["sessionCapabilities"] == {}
+    assert initialized["result"]["agentCapabilities"]["loadSession"] is True
+    assert initialized["result"]["agentCapabilities"]["sessionCapabilities"] == {
+        "list": {},
+        "resume": {},
+    }
     assert (
         initialized["result"]["agentCapabilities"]["promptCapabilities"]["image"]
         is True
     )
     assert initialized["result"]["authMethods"] == []
     assert initialized["result"]["_meta"] == {"peer": "retained"}
+
+
+def open_session(socket: WebSocketTestSession, *, boolean_options: bool = False) -> str:
+    initialize(socket, boolean_options=boolean_options)
     socket.send_json(
         {
             "jsonrpc": "2.0",
@@ -216,7 +226,7 @@ def test_initialize_is_required_and_cannot_be_repeated(client: TestClient) -> No
 
 
 @pytest.mark.parametrize(
-    "method", ["session/load", "session/list", "authenticate", "_fail"]
+    "method", ["session/delete", "session/fork", "authenticate", "_fail"]
 )
 def test_unsupported_methods_never_reach_the_provider(
     client: TestClient, adapter_environment: dict[str, str], method: str
@@ -507,8 +517,12 @@ def test_provider_errors_reach_the_caller(client: TestClient) -> None:
 def test_disconnect_while_permission_is_pending_reaps_adapter(
     client: TestClient, adapter_environment: dict[str, str]
 ) -> None:
+    app = client.app
+    assert isinstance(app, Octomate)
     with client.websocket_connect("/api/acp/claude") as socket:
         session_id = open_session(socket)
+        key = ThreadKey("claude-native", "thread", session_id)
+        assert key not in app.awakes
         socket.send_json(
             {
                 "jsonrpc": "2.0",
@@ -522,8 +536,150 @@ def test_disconnect_while_permission_is_pending_reaps_adapter(
         )
         socket.receive_json()
         assert socket.receive_json()["method"] == "session/request_permission"
+        assert key in app.awakes
+        assert app.gateway.sessions
+    assert not app.awakes
+    assert not app.gateway.sessions
+    tentacle = app.tentacles["bridge"]
+    assert isinstance(tentacle, AcpTentacle)
+    assert not tentacle.attachments
     record = json.loads(
         Path(adapter_environment["ACP_TEST_LOG"]).read_text().splitlines()[0]
     )
     with pytest.raises(ProcessLookupError):
         os.kill(record["pid"], 0)
+
+
+@pytest.mark.parametrize("provider", list(AcpProvider))
+@pytest.mark.parametrize("method", ["session/load", "session/resume"])
+async def test_reopen_after_disconnect_continues_the_existing_conversation(
+    client: TestClient,
+    provider: AcpProvider,
+    method: str,
+    adapter_environment: dict[str, str],
+) -> None:
+    app = client.app
+    assert isinstance(app, Octomate)
+    session_id = ""
+    for reopening in (False, True):
+        with client.websocket_connect(f"/api/acp/{provider}") as socket:
+            if reopening:
+                initialize(socket)
+                socket.send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "list",
+                        "method": "session/list",
+                        "params": {"cwd": "/project"},
+                    }
+                )
+                listed = socket.receive_json()
+                assert [item["sessionId"] for item in listed["result"]["sessions"]] == [
+                    session_id
+                ]
+                socket.send_json(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": "open",
+                        "method": method,
+                        "params": {
+                            "sessionId": session_id,
+                            "cwd": "/project",
+                            "mcpServers": [],
+                            "_meta": {"retained": True},
+                        },
+                    }
+                )
+                replies = [
+                    socket.receive_json()
+                    for _ in range(2 if method == "session/load" else 1)
+                ]
+                opened = next(item for item in replies if item.get("id") == "open")
+                assert opened["result"]["_meta"] == {"providerOpen": True}
+                replayed = [
+                    item for item in replies if item.get("method") == "session/update"
+                ]
+                assert len(replayed) == (1 if method == "session/load" else 0)
+            else:
+                session_id = open_session(socket)
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "prompt",
+                    "method": "session/prompt",
+                    "params": {
+                        "sessionId": session_id,
+                        "prompt": [
+                            {"type": "text", "text": "next" if reopening else "first"}
+                        ],
+                    },
+                }
+            )
+            update, permission = socket.receive_json(), socket.receive_json()
+            assert update["method"] == "session/update"
+            assert permission["method"] == "session/request_permission"
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": permission["id"],
+                    "result": {"outcome": {"outcome": "selected", "optionId": "yes"}},
+                }
+            )
+            assert socket.receive_json()["result"]["stopReason"] == "end_turn"
+    tentacle = app.tentacles["bridge"]
+    assert isinstance(tentacle, AcpTentacle)
+    assert not tentacle.attachments
+    async with async_session() as session:
+        [thread] = await session.list(Thread)
+        [conversation] = await session.list(Conversation)
+        runs = await session.list(AgentRun)
+        ledger = await session.list(ThreadMessage, order_bys=[ThreadMessage["id"]])
+    assert conversation.thread_id == thread.id
+    assert conversation.external_id == session_id
+    assert len(runs) == 2
+    assert {run.conversation_id for run in runs} == {conversation.id}
+    assert len(ledger) == 4
+    assert [
+        message.message_text for message in ledger if message.direction == "inbound"
+    ] == ["first", "next"]
+    log = await AsyncPath(adapter_environment["ACP_TEST_LOG"]).read_text()
+    records = [json.loads(line) for line in log.splitlines()]
+    opened_request = next(
+        record["message"]
+        for record in records
+        if record["message"].get("method") == method
+    )
+    assert opened_request["params"]["_meta"] == {"retained": True}
+
+
+def test_unadvertised_session_operations_are_rejected_before_forwarding(
+    client: TestClient,
+    adapter_environment: dict[str, str],
+) -> None:
+    with client.websocket_connect("/api/acp/claude") as socket:
+        socket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "init",
+                "method": "initialize",
+                "params": {"protocolVersion": 1, "_meta": {"disableSessions": True}},
+            }
+        )
+        capabilities = socket.receive_json()["result"]["agentCapabilities"]
+        assert capabilities["loadSession"] is False
+        assert capabilities["sessionCapabilities"] == {}
+        for method in ("session/load", "session/resume", "session/list"):
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "refused",
+                    "method": method,
+                    "params": {
+                        "sessionId": "unknown",
+                        "cwd": "/project",
+                        "mcpServers": [],
+                    },
+                }
+            )
+            assert socket.receive_json()["error"]["code"] == -32601
+    assert len(Path(adapter_environment["ACP_TEST_LOG"]).read_text().splitlines()) == 1

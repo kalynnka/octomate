@@ -10,6 +10,20 @@ requests. Work runs as the Octomate service account.
 
 ## Connect
 
+Add ACP to your existing `tentacles:` map in `config/tentacles.yaml`, then restart
+Octomate:
+
+```yaml
+tentacles:
+  acp:
+    type: acp
+```
+
+The registry key can be any unused tentacle id. Declare ACP once per deployment.
+Omitting the block or setting `enabled: false` leaves the ACP API unavailable.
+ACP registers one agent under that key. Claude and Codex are provider choices
+within ACP; their separate SDK tentacles can be enabled independently.
+
 1. Install the [Claude](https://github.com/agentclientprotocol/claude-agent-acp)
    or [Codex](https://github.com/agentclientprotocol/codex-acp) adapter for the
    service account. Its executable must be on the service's PATH. Complete the
@@ -24,15 +38,19 @@ requests. Work runs as the Octomate service account.
 4. Send a prompt. Respond to permission requests in your client, or cancel
    the prompt. Keep the connection open for subsequent turns.
 
-No agent or channel tentacle block is needed for this API. Each connection starts
-its own adapter when it initializes.
+Separate Claude or Codex tentacle blocks are not needed for this API. Each
+connection starts its own adapter when it initializes.
+
+Each prompt runs through the [reflex graph](../../concepts/reflex.md). A session
+accepts one turn at a time and becomes idle again when the turn and its history
+recording finish. Keeping a session connected does not keep it busy.
 
 ## Session settings
 
 Your client receives the modes and configuration options the provider offers.
-Change them on a session created through the current connection, including while
-a prompt is running. Available choices depend on the provider; it may reject a
-change or update the available options as work proceeds.
+Change them on a session created or reopened through the current connection,
+including while a prompt is running. Available choices depend on the provider;
+it may reject a change or update the available options as work proceeds.
 
 ## Where work happens
 
@@ -53,16 +71,28 @@ This history contains what the provider shares through ACP. It does not include
 hidden model messages or infer model usage. Media remains in the recorded
 conversation; the thread ledger shows a media label.
 
+## Reopen a session
+
+Disconnecting shuts down the adapter and keeps the session's history. Connect
+again as the same Octomate user, initialize, and list your available sessions.
+Load a session to replay its history into your client, or resume it without
+replay. Then continue prompting. Availability depends on the provider's
+advertised capabilities; see the [API contract](../../api/tentacles/acp.md#octomate.tentacles.acp.routes).
+
+You can reopen native sessions whose history you can access in Octomate.
+An empty session disconnected before its first prompt has no recorded
+participant and cannot be reopened through this API. A session can attach to
+only one ACP connection on this Octomate instance at a time; disconnect the
+previous client before reopening it elsewhere.
+
+Replaying history does not create duplicate messages or runs in Octomate.
+
 ## Current limits
 
-Disconnecting shuts down the adapter. You cannot reconnect to drive that session
-through this API yet; its provider session and registered identity are retained.
-Session loading and listing are not available.
 API-key revocation and expiry are checked when connecting.
 
 ## Coming soon
 
-- Reconnect to existing sessions, resume work, and load or list sessions.
 - Run Inkling through ACP using Pydantic AI.
 
 DeepSeek Harness support is planned after Claude, Codex and Inkling.

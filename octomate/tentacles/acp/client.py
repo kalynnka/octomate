@@ -50,8 +50,22 @@ class AcpProvider(StrEnum):
         return CLAUDE_NATIVE_ID if self is AcpProvider.CLAUDE else CODEX_NATIVE_ID
 
 
+def validate_workspace(
+    cwd: str, additional_directories: list[str] | None = None
+) -> None:
+    """Reject relative workspace roots before starting or reopening a session."""
+    if any(
+        not Path(path).is_absolute() for path in [cwd, *(additional_directories or [])]
+    ):
+        raise ValueError("ACP workspace paths must be absolute")
+
+
 @dataclass(frozen=True)
-class NativeAcpSession:
+class NativeAcpSession[
+    ResponseT: schema.NewSessionResponse
+    | schema.LoadSessionResponse
+    | schema.ResumeSessionResponse
+]:
     """A provider-owned session, retaining its ACP response and workspace.
 
     Claude's adapter uses its SDK session ID; Codex's uses its App Server thread
@@ -61,12 +75,13 @@ class NativeAcpSession:
 
     provider: AcpProvider
     cwd: str  # Absolute path on the adapter's host, preserved without resolution.
-    response: schema.NewSessionResponse  # Includes provider modes and extensions.
+    session_id: str  # Native identity supplied by creation or an authorized reopen.
+    response: ResponseT  # Includes provider modes and extensions.
 
     @property
     def key(self) -> ThreadKey:
         """The existing native thread identity, with the provider's session ID."""
-        return ThreadKey(self.provider.native_id, "thread", self.response.session_id)
+        return ThreadKey(self.provider.native_id, "thread", self.session_id)
 
 
 @dataclass(frozen=True)
@@ -125,20 +140,22 @@ class NativeAcpClient:
                 )
             yield cls(provider, connection, response)
 
-    async def new_session(self, request: schema.NewSessionRequest) -> NativeAcpSession:
+    async def new_session(
+        self, request: schema.NewSessionRequest
+    ) -> NativeAcpSession[schema.NewSessionResponse]:
         """Create a native session using the supplied workspace and MCP settings.
 
         Paths are checked for absoluteness, not resolved or replaced by a managed
         checkout. The adapter validates access on its host. The complete ACP
         request and response, including extensions, cross the SDK boundary intact.
         """
-        for path in [request.cwd, *(request.additional_directories or [])]:
-            if not Path(path).is_absolute():
-                raise ValueError("ACP workspace paths must be absolute")
+        validate_workspace(request.cwd, request.additional_directories)
         response = await request_model(
             self.connection,
             acp.AGENT_METHODS["session_new"],
             request,
             schema.NewSessionResponse,
         )
-        return NativeAcpSession(self.provider, request.cwd, response)
+        return NativeAcpSession(
+            self.provider, request.cwd, response.session_id, response
+        )

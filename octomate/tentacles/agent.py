@@ -317,6 +317,36 @@ class AgentTentacle(Tentacle[AgentOutputT, AgentDepsT], ABC):
                 f"{'/'.join(efforts) or 'none'}"
             )
 
+    async def resolve_conversation(
+        self,
+        thread_id: UUID7,
+        *,
+        conversation_address: ChannelAddress,
+        conversation_id: UUID7 | None = None,
+    ) -> Conversation:
+        """Resolve this invocation's context before preparing or running it.
+
+        By default, use this agent's conversation in the thread. An explicit
+        id may select a child context, but must belong to the same thread and
+        agent. Runs and messages remain unloaded. An agent driving an attached
+        external session overrides this method to resolve and validate that
+        attachment instead. The caller authorizes access before invoking it.
+        """
+        if conversation_id is None:
+            return await self.conversations.ensure(
+                thread_id, agent_tentacle_id=self.id, with_history=False
+            )
+        conversation = await self.conversations.get(conversation_id, with_history=False)
+        if (
+            conversation.agent_tentacle_id != self.id
+            or conversation.thread_id != thread_id
+        ):
+            raise ValueError(
+                f"conversation {conversation_id} does not belong to "
+                f"({self.id!r}, {thread_id})"
+            )
+        return conversation
+
     async def resolve_effort(
         self,
         conversation: Conversation,

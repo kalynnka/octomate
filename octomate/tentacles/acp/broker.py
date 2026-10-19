@@ -1,8 +1,7 @@
 """Register and control native ACP sessions for one authenticated connection.
 
-Only sessions created through this broker can be prompted, configured or cancelled
-through it. Their thread and conversation are durable; the authority to drive them lasts
-for this connection. Session loading and reconnects are not provided here.
+Only sessions created or authorized for loading through this broker can be driven.
+Their thread and conversation are durable; attachment lasts for this connection.
 Creating a session invents no ledger message
 and therefore grants no history access before a real prompt is recorded.
 """
@@ -12,42 +11,51 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import acp
 from acp import schema
 from acp.connection import StreamDirection, StreamEvent
 from acp.utils import notify_model, request_model
-from anyio import CancelScope
-from anyio.abc import ObjectSendStream
-from opentelemetry import trace
-from pydantic_ai.messages import EnqueuedMessagesEvent
 from uuid_utils.compat import uuid7
 
-from octomate.capabilities.harness.events import (
-    RunEndedEvent,
-    RunErrorEvent,
-    RunStartedEvent,
-)
-from octomate.managers.conversation import ConversationManager
-from octomate.managers.project import ProjectManager
-from octomate.managers.thread import ThreadManager
-from octomate.nerve import Impulse
+from octomate.schemas.awakes import StillAwake, UserMessageSignal
 from octomate.schemas.conversation import Conversation
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.segments import TextSegment
-from octomate.schemas.thread import ThreadMessage
+from octomate.schemas.thread import ThreadKey
 from octomate.schemas.user import UserProfile
-from octomate.tentacles.acp.client import NativeAcpClient, NativeAcpSession
-from octomate.tentacles.acp.history import AcpHistory, content_value
+from octomate.tentacles.acp.base import AcpTentacle
+from octomate.tentacles.acp.client import (
+    NativeAcpClient,
+    NativeAcpSession,
+    validate_workspace,
+)
+from octomate.tentacles.acp.history import content_value
+
+if TYPE_CHECKING:
+    from octomate.base import Octomate
+
+
+@dataclass
+class AcpTurn:
+    """The wire request and response retained while its ordinary reflex turn runs."""
+
+    request: schema.PromptRequest
+    message: MessageEvent
+    response: schema.PromptResponse | None = None
 
 
 @dataclass
 class RegisteredAcpSession:
-    """A native session's durable home and its live prompt admission state."""
+    """A native session's durable home and the active prompt's wire updates."""
 
-    native: NativeAcpSession
+    native: (
+        NativeAcpSession[schema.NewSessionResponse]
+        | NativeAcpSession[schema.LoadSessionResponse | schema.ResumeSessionResponse]
+    )
     conversation: Conversation
-    prompting: bool = False  # Held until the provider's prompt response settles.
+    turn: AcpTurn | None = None  # Protocol data only; admission belongs to awakes.
     updates: asyncio.Queue[StreamEvent | None] | None = (
         None  # Wire-ordered input for the active run.
     )
@@ -59,28 +67,151 @@ class NativeAcpBroker:
 
     The caller resolves `sender` through `UserManager.native_profile` after
     authentication and keeps this broker inside `NativeAcpClient.connect`.
-    Passing another connection's session ID never attaches that session, even
-    when both connections belong to the same user.
+    Reopening requires participation in the native thread's own ledger and an
+    existing root conversation with the same native identity. A session attaches
+    to only one ACP connection in this application at a time.
 
     Each prompt records one driven run from the ACP conversation. Ledger entries
     grant the caller history access and bind to that run's messages. Stream events
     go through the nerve; provider callbacks still go directly to the ACP caller.
-    No hook or transcript reader is involved, and no reflex run is dispatched.
+    Each prompt enters the reflex graph; no hook or transcript reader is involved.
     """
 
     client: NativeAcpClient
     sender: UserProfile  # The verified user's native profile, never request data.
-    threads: ThreadManager
-    conversations: ConversationManager
-    projects: ProjectManager
+    tentacle: AcpTentacle  # Owns attachment reservations across connections.
+    app: Octomate = field(init=False, repr=False)
     sessions: dict[str, RegisteredAcpSession] = field(default_factory=dict, init=False)
+    reservations: set[ThreadKey] = field(default_factory=set, init=False)
 
     def __post_init__(self) -> None:
+        self.app = self.tentacle.octomate
         if self.sender.user_id is None:
             raise ValueError("An ACP broker requires a registered session owner")
         if self.sender.channel_tentacle_id != self.client.provider.native_id:
             raise ValueError("The ACP session owner belongs to another native runtime")
         self.client.connection.add_observer(self.observe)
+
+    def reserve(self, key: ThreadKey) -> None:
+        """Reserve a native session without yielding to another connection."""
+        if key in self.tentacle.attachments:
+            raise acp.RequestError.invalid_request(
+                {"reason": "Session is already attached to an ACP connection"}
+            )
+        self.tentacle.attachments[key] = self
+        self.reservations.add(key)
+
+    def close(self) -> None:
+        """Release reservations after the connection and its adapter have stopped."""
+        for key in self.reservations:
+            del self.tentacle.attachments[key]
+        self.reservations.clear()
+        self.sessions.clear()
+
+    async def authorized_conversation(self, session_id: str) -> Conversation | None:
+        """Resolve an accessible native identity without creating or claiming history.
+
+        The ledger is the existing authorization boundary. Empty sessions with no
+        recorded participant cannot be reopened after disconnecting.
+        """
+        thread = await self.app.threads.get(
+            ThreadKey(self.client.provider.native_id, "thread", session_id),
+            with_messages=False,
+            user_id=self.sender.user_id,
+        )
+        if thread is None:
+            return None
+        return next(
+            (
+                conversation
+                for conversation in thread.conversations
+                if conversation.agent_tentacle_id == self.client.provider.native_id
+                and not conversation.subagent_id
+                and conversation.external_id == session_id
+            ),
+            None,
+        )
+
+    async def list_sessions(
+        self, request: schema.ListSessionsRequest
+    ) -> schema.ListSessionsResponse:
+        """Filter the provider's page to sessions the caller can access.
+
+        Cursors and directory filters are delegated to the provider. A filtered
+        page can be empty and still carry a next cursor. Listing grants no drive
+        authority; a session must be loaded or resumed on this connection first.
+        """
+        capabilities = self.client.initialization.agent_capabilities
+        if (
+            capabilities is None
+            or capabilities.session_capabilities is None
+            or capabilities.session_capabilities.list is None
+        ):
+            raise acp.RequestError.method_not_found("session/list")
+        if request.cwd is not None:
+            validate_workspace(request.cwd)
+        response = await request_model(
+            self.client.connection,
+            acp.AGENT_METHODS["session_list"],
+            request,
+            schema.ListSessionsResponse,
+        )
+        visible: list[schema.SessionInfo] = []
+        for item in response.sessions:
+            if (
+                item.session_id in self.sessions
+                or await self.authorized_conversation(item.session_id) is not None
+            ):
+                visible.append(item)
+        return response.model_copy(update={"sessions": visible})
+
+    async def reopen_session(
+        self, request: schema.LoadSessionRequest | schema.ResumeSessionRequest
+    ) -> schema.LoadSessionResponse | schema.ResumeSessionResponse:
+        """Attach an authorized session; loading replays, resuming does not.
+
+        Authorization and reservation precede provider execution. Replay callbacks
+        go to the ACP caller, but no prompt recorder is active: loading creates no
+        run, ledger message or duplicate nerve event. A failed open releases its
+        reservation and never grants prompt authority.
+        """
+        load = isinstance(request, schema.LoadSessionRequest)
+        method = acp.AGENT_METHODS["session_load" if load else "session_resume"]
+        capabilities = self.client.initialization.agent_capabilities
+        supported = capabilities is not None and (
+            capabilities.load_session
+            if load
+            else capabilities.session_capabilities is not None
+            and capabilities.session_capabilities.resume is not None
+        )
+        if not supported:
+            raise acp.RequestError.method_not_found(method)
+        validate_workspace(request.cwd, request.additional_directories)
+        conversation = await self.authorized_conversation(request.session_id)
+        if conversation is None:
+            raise acp.RequestError.invalid_params({"reason": "Session is unavailable"})
+        key = ThreadKey(self.client.provider.native_id, "thread", request.session_id)
+        self.reserve(key)
+        try:
+            response = await request_model(
+                self.client.connection,
+                method,
+                request,
+                schema.LoadSessionResponse if load else schema.ResumeSessionResponse,
+            )
+            if response is None:
+                raise ValueError("ACP session open returned no response")
+            native = NativeAcpSession(
+                self.client.provider, request.cwd, request.session_id, response
+            )
+            self.sessions[request.session_id] = RegisteredAcpSession(
+                native, conversation
+            )
+            return response
+        except BaseException:
+            del self.tentacle.attachments[key]
+            self.reservations.remove(key)
+            raise
 
     def observe(self, event: StreamEvent) -> None:
         """Capture updates before the SDK resolves a later prompt response.
@@ -112,14 +243,17 @@ class NativeAcpBroker:
         connection. No resume permission is inferred from a provider response.
         """
         native = await self.client.new_session(request)
-        session_id = native.response.session_id
-        project_name = self.projects.resolve(Path(native.cwd))
-        project = self.projects.get(project_name) if project_name is not None else None
-        thread = await self.threads.ensure(native.key, project=project, new=True)
-        conversation = await self.conversations.ensure(
+        session_id = native.session_id
+        project_name = self.app.projects.resolve(Path(native.cwd))
+        project = (
+            self.app.projects.get(project_name) if project_name is not None else None
+        )
+        thread = await self.app.threads.ensure(native.key, project=project, new=True)
+        conversation = await self.app.conversations.ensure(
             thread.id, agent_tentacle_id=native.provider.native_id, with_history=False
         )
-        await self.conversations.set_external_id(conversation, session_id)
+        await self.app.conversations.set_external_id(conversation, session_id)
+        self.reserve(native.key)
         self.sessions[session_id] = RegisteredAcpSession(native, conversation)
         return native.response
 
@@ -163,47 +297,26 @@ class NativeAcpBroker:
         )
 
     async def prompt(self, request: schema.PromptRequest) -> schema.PromptResponse:
-        """Forward a prompt only to an idle session owned by this connection.
+        """Kick the reflex on an attached session and await its settled response.
 
-        Content and metadata cross ACP unchanged, including images and embedded
-        context that the selected provider supports. Permissions and updates use
-        the client's callback handler while this request remains in flight.
-
-        Cancellation of this coroutine sends ACP cancellation and waits for the
-        outstanding response before releasing the session for another prompt.
+        The thread's awake task owns prompt admission, including cancellation and
+        history settlement. Idle attachments do not hold a reflex awake.
         """
         session = self.sessions.get(request.session_id)
         if session is None:
             raise acp.RequestError.invalid_params(
                 {"reason": "Session is unavailable on this connection"}
             )
-        if session.prompting:
-            raise acp.RequestError.invalid_request(
-                {"reason": "The session already has a prompt in progress"}
-            )
-        session.prompting = True
-        try:
-            return await self.run_prompt(session, request)
-        finally:
-            session.updates = None
-            session.prompting = False
-
-    async def run_prompt(
-        self, session: RegisteredAcpSession, request: schema.PromptRequest
-    ) -> schema.PromptResponse:
-        """Record input before execution and drain wire updates before settlement."""
-        history = AcpHistory(request)
-        run_id = str(uuid7())
         address = session.native.key.address(self.sender.channel_user_id)
-        updates: asyncio.Queue[StreamEvent | None] = asyncio.Queue()
-        inbound = await self.threads.record_inbound(
+        turn = AcpTurn(
+            request,
             MessageEvent(
                 tentacle_id=address.channel_tentacle_id,
-                chat_id=address.chat_id,
                 chat_type=address.chat_type,
-                message_id=run_id,
+                chat_id=address.chat_id,
                 user_id=address.user_id,
                 sender=self.sender,
+                message_id=str(uuid7()),
                 segments=[
                     TextSegment(
                         data={
@@ -216,137 +329,25 @@ class NativeAcpBroker:
                 ],
                 raw=request.model_dump_json(by_alias=True, exclude_none=True),
             ),
-            happened_at=history.request.timestamp,
         )
-        async with self.threads.nerve.publish(address) as impulses:
-            await impulses.send(
-                Impulse(RunStartedEvent(address=address, sender=self.sender), address)
-            )
-            await impulses.send(
-                Impulse(
-                    EnqueuedMessagesEvent(
-                        enqueue_id=str(inbound.id), messages=(history.request,)
-                    ),
-                    address,
+        try:
+            task = await self.app.kick(
+                UserMessageSignal(
+                    [turn.message],
+                    agent_id=self.tentacle.id,
                 )
             )
-
-            async def record_updates() -> None:
-                while (event := await updates.get()) is not None:
-                    notification = schema.SessionNotification.model_validate(
-                        event.message["params"]
-                    )
-                    for wire in history.feed(notification):
-                        await impulses.send(Impulse(wire, address))
-
-            session.updates = updates
-            recording = asyncio.create_task(record_updates())
-            prompt = asyncio.create_task(
-                request_model(
-                    self.client.connection,
-                    acp.AGENT_METHODS["session_prompt"],
-                    request,
-                    schema.PromptResponse,
-                )
-            )
-            error: Exception | None = None
-            try:
-                done, _ = await asyncio.wait(
-                    (prompt, recording), return_when=asyncio.FIRST_COMPLETED
-                )
-                if recording in done:
-                    await recording
-                response = await asyncio.shield(prompt)
-                if response is None:
-                    raise ValueError("ACP prompt returned no response")
-                assert history.request.metadata is not None
-                history.request.metadata["stop_reason"] = response.stop_reason
-                return response
-            except asyncio.CancelledError:
-                with CancelScope(shield=True):
-                    await self.cancel(
-                        schema.CancelNotification(session_id=request.session_id)
-                    )
-                    response = await prompt
-                assert history.request.metadata is not None
-                history.request.metadata["stop_reason"] = (
-                    response.stop_reason if response is not None else "cancelled"
-                )
-                raise
-            except Exception as failure:
-                error = failure
-                if not prompt.done():
-                    await self.cancel(
-                        schema.CancelNotification(session_id=request.session_id)
-                    )
-                    await prompt
-                raise
-            finally:
-                session.updates = None
-                updates.put_nowait(None)
-                with CancelScope(shield=True):
-                    await recording
-                    await self.record_history(
-                        session, history, run_id, inbound, impulses, error
-                    )
-
-    async def record_history(
-        self,
-        session: RegisteredAcpSession,
-        history: AcpHistory,
-        run_id: str,
-        inbound: ThreadMessage,
-        impulses: ObjectSendStream[Impulse],
-        error: Exception | None,
-    ) -> None:
-        """Commit and bind history before publishing the closing bracket.
-
-        Provider failures retain their input and partial output. A persistence or
-        binding failure propagates without publishing a run-ended event.
-        """
-        address = session.native.key.address(self.sender.channel_user_id)
-        for wire in history.end_part():
-            await impulses.send(Impulse(wire, address))
-        if error is not None:
-            if history.request.metadata is not None:
-                history.request.metadata["error"] = str(error)
-            trace_id = format(
-                trace.get_current_span().get_span_context().trace_id, "032x"
-            )
-            await impulses.send(
-                Impulse(
-                    RunErrorEvent(message=str(error), trace_id=trace_id),
-                    address,
-                )
-            )
-        run = await self.conversations.record_agent_run(
-            session.conversation,
-            run_id,
-            history.messages,
-            cwd=Path(session.native.cwd),
-            external_id=session.native.response.session_id,
-            native_id=session.native.provider.native_id,
-        )
-        assert run is not None
-        await self.threads.bind_messages(
-            [inbound.id],
-            run.messages[0].id,
-            kind="request_source",
-            run_id=run.id,
-        )
-        reply_id = None
-        if history.answer:
-            reply = await self.threads.record_outbound(
-                address,
-                agent_tentacle_id=session.native.provider.native_id,
-                segments=[TextSegment(data={"text": history.answer})],
-                sender=self.sender,
-            )
-            await self.threads.bind_messages(
-                [reply.id], run.messages[1].id, kind="assistant_reply", run_id=run.id
-            )
-            reply_id = reply.id
-        await impulses.send(Impulse(RunEndedEvent(thread_message_id=reply_id), address))
+        except StillAwake as error:
+            raise acp.RequestError.invalid_request({"reason": str(error)}) from error
+        assert task is not None
+        session.turn = turn
+        try:
+            await task
+            if turn.response is None:
+                raise RuntimeError("The ACP turn ended without its provider response")
+            return turn.response
+        finally:
+            session.turn = None
 
     async def cancel(self, notification: schema.CancelNotification) -> None:
         """Cancel an owned session without waiting on its prompt admission guard.

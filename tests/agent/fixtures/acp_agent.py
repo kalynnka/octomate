@@ -14,7 +14,9 @@ def send(message: dict[str, JsonValue]) -> None:
 
 def main() -> None:
     pending: str | int | None = None
-    session_count = 0
+    stored = Path(os.environ["ACP_TEST_LOG"]).with_suffix(".sessions.json")
+    sessions: dict[str, str] = json.loads(stored.read_text()) if stored.exists() else {}
+    session_count = len(sessions)
     boolean_options = False
     configurations: dict[str, list[dict[str, JsonValue]]] = {}
     with Path(os.environ["ACP_TEST_LOG"]).open("w") as log:
@@ -24,6 +26,9 @@ def main() -> None:
             log.flush()
             match message.get("method"):
                 case "initialize":
+                    disabled = (
+                        message["params"].get("_meta", {}).get("disableSessions", False)
+                    )
                     boolean_options = (
                         message["params"]
                         .get("clientCapabilities", {})
@@ -39,8 +44,10 @@ def main() -> None:
                                     os.getenv("ACP_TEST_VERSION", "1")
                                 ),
                                 "agentCapabilities": {
-                                    "loadSession": True,
-                                    "sessionCapabilities": {"list": {}, "resume": {}},
+                                    "loadSession": not disabled,
+                                    "sessionCapabilities": {}
+                                    if disabled
+                                    else {"list": {}, "resume": {}},
                                     "promptCapabilities": {"image": True},
                                     "mcpCapabilities": {"http": True},
                                 },
@@ -52,6 +59,8 @@ def main() -> None:
                 case "session/new":
                     session_count += 1
                     session_id = f"native-{session_count}"
+                    sessions[session_id] = message["params"]["cwd"]
+                    stored.write_text(json.dumps(sessions))
                     configurations[session_id] = [
                         {
                             "id": "mode",
@@ -96,7 +105,11 @@ def main() -> None:
                         }
                     )
                 case (
-                    "session/prompt" | "session/set_mode" | "session/set_config_option"
+                    "session/prompt"
+                    | "session/set_mode"
+                    | "session/set_config_option"
+                    | "session/load"
+                    | "session/resume"
                 ) if message["params"].get("_meta", {}).get("fail"):
                     send(
                         {
@@ -105,6 +118,59 @@ def main() -> None:
                                 "code": -32602,
                                 "message": "scripted refusal",
                                 "data": {"retry": False},
+                            },
+                        }
+                    )
+                case "session/list":
+                    send(
+                        {
+                            "id": message["id"],
+                            "result": {
+                                "sessions": [
+                                    {"sessionId": key, "cwd": cwd, "title": key}
+                                    for key, cwd in {
+                                        "private-session": "/private",
+                                        **sessions,
+                                    }.items()
+                                    if message["params"].get("cwd") in (None, cwd)
+                                ],
+                                "_meta": {"providerList": True},
+                            },
+                        }
+                    )
+                case "session/load" | "session/resume":
+                    session_id = message["params"]["sessionId"]
+                    if session_id not in sessions:
+                        send(
+                            {
+                                "id": message["id"],
+                                "error": {"code": -32602, "message": "Unknown session"},
+                            }
+                        )
+                        continue
+                    configurations[session_id] = []
+                    if message["method"] == "session/load":
+                        send(
+                            {
+                                "method": "session/update",
+                                "params": {
+                                    "sessionId": session_id,
+                                    "update": {
+                                        "sessionUpdate": "agent_message_chunk",
+                                        "content": {
+                                            "type": "text",
+                                            "text": "replayed history",
+                                        },
+                                    },
+                                },
+                            }
+                        )
+                    send(
+                        {
+                            "id": message["id"],
+                            "result": {
+                                "configOptions": [],
+                                "_meta": {"providerOpen": True},
                             },
                         }
                     )

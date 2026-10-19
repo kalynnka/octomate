@@ -379,7 +379,13 @@ class Octomate(FastAPI):
                         # falling asleep, so whoever hears it can kick there again.
                         del self.awakes[thread]
 
+            def release(task: asyncio.Task[ReflexGraphResult]) -> None:
+                # Cancellation before the coroutine starts never enters its finally.
+                if self.awakes.get(thread) is task:
+                    del self.awakes[thread]
+
             self.awakes[thread] = asyncio.create_task(reflex())
+            self.awakes[thread].add_done_callback(release)
             return self.awakes[thread]
 
     async def deliver_live_response(
@@ -510,14 +516,12 @@ class Octomate(FastAPI):
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
-        from octomate.tentacles.acp.routes import acp_router
         from octomate.tentacles.trunkline.base import ConsoleFiles, TrunklineTentacle
 
         self.include_router(artifact_router)
         self.include_router(auth_router)
         self.include_router(command_router)
         self.include_router(mcp_router)
-        self.include_router(acp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted
         # only when a registered connector actually points a browser at it — the two

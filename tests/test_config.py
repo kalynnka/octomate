@@ -8,11 +8,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fastapi.routing import APIWebSocketRoute
 from openai_codex import CodexConfig as CodexSdkConfig
 from openai_codex.generated.v2_all import ReasoningEffort
 from pydantic import ValidationError
 
 from octomate.config import (
+    AcpConfig,
     AgentModelConfig,
     BareMcpConfig,
     ChannelConfig,
@@ -37,6 +39,7 @@ from octomate.config.database import DatabaseSettings, database_settings
 from octomate.config.observability import LogfireConfig
 from octomate.schemas.project import DirectoryUpstream, Project
 from octomate.schemas.triage import Claim
+from octomate.tentacles.acp.base import AcpTentacle
 from tests.support.config import ISOLATED_HOME
 from tests.support.mcp import configured_mcp
 
@@ -140,10 +143,11 @@ def test_tentacles_preserve_types_ids_and_serialization() -> None:
             "coding": CodexConfig(),
             "review": ClaudeCodeConfig(enabled=False),
             "assistant": InklingConfig(models=[ModelConfig(name="openai:gpt-4o")]),
+            "bridge": AcpConfig(),
         }
     )
     serialized = config.model_dump(mode="json")
-    assert list(serialized["tentacles"]) == ["coding", "review", "assistant"]
+    assert list(serialized["tentacles"]) == ["coding", "review", "assistant", "bridge"]
     assert serialized["tentacles"]["review"]["type"] == "claude"
     assert serialized["tentacles"]["review"]["enabled"] is False
     assert not {"agents", "channels", "mcp"} & serialized.keys()
@@ -152,13 +156,16 @@ def test_tentacles_preserve_types_ids_and_serialization() -> None:
 
 
 @pytest.mark.parametrize("enabled", [True, False])
-def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool) -> None:
-    with pytest.raises(ValidationError, match="duplicate agent runtime 'codex'"):
+@pytest.mark.parametrize("runtime", ["codex", "acp"])
+def test_tentacles_reject_duplicate_agent_runtimes(enabled: bool, runtime: str) -> None:
+    with pytest.raises(
+        ValidationError, match=f"duplicate tentacle runtime '{runtime}'"
+    ):
         OctomateConfig.model_validate(
             {
                 "tentacles": {
-                    "coding": {"type": "codex"},
-                    "review": {"type": "codex", "enabled": enabled},
+                    "coding": {"type": runtime},
+                    "review": {"type": runtime, "enabled": enabled},
                 }
             }
         )
@@ -1217,6 +1224,35 @@ def test_authorization_code_mcp_requires_callback_configuration() -> None:
         )
 
 
+@pytest.mark.parametrize("enabled", [None, False, True])
+def test_acp_connects_only_when_configured_and_enabled(
+    monkeypatch: pytest.MonkeyPatch, enabled: bool | None
+) -> None:
+    application = importlib.import_module("octomate.app")
+    config = OctomateConfig.model_validate(
+        {
+            "tentacles": {}
+            if enabled is None
+            else {"bridge": {"type": "acp", "enabled": enabled}}
+        }
+    )
+    monkeypatch.setattr(application, "config", config)
+    with patch("logfire.configure"), patch("logging.basicConfig"):
+        host = application.create_app()
+    host.build_middleware_stack()
+    routes = [
+        route.path for route in host.routes if isinstance(route, APIWebSocketRoute)
+    ]
+    if enabled:
+        assert isinstance(host.tentacles["bridge"], AcpTentacle)
+        assert list(host.tentacles) == ["bridge"]
+        assert list(host.agents) == ["bridge"]
+        assert routes.count("/api/acp/{provider}") == 1
+    else:
+        assert host.tentacles == {}
+        assert "/api/acp/{provider}" not in routes
+
+
 def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1226,6 +1262,8 @@ def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
             "tentacles": {
                 "web": {"type": "trunkline", "agents": ["coding"]},
                 "coding": {"type": "codex"},
+                "review": {"type": "claude"},
+                "bridge": {"type": "acp"},
                 "tools": {"type": "bare", "url": "https://mcp.example/mcp"},
                 "linear": {
                     "type": "oauth_discovery",
@@ -1246,11 +1284,18 @@ def test_startup_builds_tentacles_by_type_and_keeps_their_ids(
     monkeypatch.setattr(application, "config", config)
     with patch("logfire.configure"), patch("logging.basicConfig"):
         host = application.create_app()
-    assert list(host.tentacles) == ["web", "coding", "tools", "linear"]
-    assert list(host.agents) == ["coding"]
+    assert list(host.tentacles) == [
+        "web",
+        "coding",
+        "review",
+        "bridge",
+        "tools",
+        "linear",
+    ]
+    assert list(host.agents) == ["coding", "review", "bridge"]
     assert list(host.channels) == ["web"]
     assert list(host.mcp.tentacles) == ["tools", "linear"]
-    assert host.channels["web"].agent_ids == ["coding"]
+    assert host.channels["web"].agent_ids == ["coding", "review", "bridge"]
     assert isinstance(config.tentacles["linear"], DiscoveredOAuthMcpConfig)
     assert host.mcp.tentacles["linear"].info.auth_kind == "oauth"
 

@@ -1,5 +1,7 @@
 # Agents
 
+::: octomate.config.acp
+
 ::: octomate.config.agents.common
 
 ::: octomate.config.agents.claude

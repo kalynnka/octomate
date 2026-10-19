@@ -10,6 +10,7 @@ from arcanus import Cursor, Page, Relation
 from arcanus.expression import Expression
 from arcanus.materia.sqlalchemy import aliased, noload, selectinload
 from pydantic import UUID7
+from pydantic_ai.messages import FilePart
 from sqlalchemy import ColumnElement, and_, or_, select
 
 from octomate.capabilities.harness.events import (
@@ -1108,11 +1109,14 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 expressions=[
                     ModelResponse["run_id"] == run_id,
                     ModelResponse["role"] == "assistant",
-                    ModelResponse["message_text"].is_not(None),
-                    ModelResponse["message_text"] != "",
                 ],
             )
-        assistant_replies = list(responses)
+        assistant_replies = [
+            response
+            for response in responses
+            if response.message_text
+            or any(isinstance(part, FilePart) for part in response.parts)
+        ]
         if not assistant_replies:
             return []
         if len(assistant_replies) == len(thread_message_ids):
