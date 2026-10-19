@@ -8,12 +8,16 @@ from pydantic import UUID7, AnyHttpUrl
 from octomate.config.artifacts import ArtifactConfig
 from octomate.database import async_session
 from octomate.managers.base import Manager
+from octomate.managers.files import FileManager
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.thread import ThreadManager, in_ledger
 from octomate.schemas.artifacts import (
+    Artifact,
+    ArtifactOverview,
     ArtifactSandboxPolicy,
+    HtmlArtifact,
+    HtmlView,
     McpAppArtifact,
-    McpAppOverview,
     McpAppView,
 )
 from octomate.schemas.mcp import McpAppResourceCSP
@@ -37,13 +41,19 @@ class ArtifactManager(Manager):
     """Authorize artifact ownership and hosting before fetching saved UI resources."""
 
     def __init__(
-        self, *, config: ArtifactConfig, mcp: McpManager, threads: ThreadManager
+        self,
+        *,
+        config: ArtifactConfig,
+        mcp: McpManager,
+        threads: ThreadManager,
+        files: FileManager,
     ) -> None:
         self.config: ArtifactConfig = config
         self.mcp: McpManager = mcp
         self.threads: ThreadManager = threads
+        self.files: FileManager = files
 
-    async def overview(self, artifact_id: UUID7, user: User) -> McpAppOverview:
+    async def overview(self, artifact_id: UUID7, user: User) -> ArtifactOverview:
         """Read an owned artifact's card metadata without contacting its provider.
 
         Only the saved title, provider name, identity, and viewer URL leave this
@@ -53,21 +63,23 @@ class ArtifactManager(Manager):
         """
         async with async_session() as session:
             artifact = await session.one_or_none(
-                McpAppArtifact,
+                Artifact,
                 expressions=[
-                    McpAppArtifact["id"] == artifact_id,
-                    McpAppArtifact["owner_id"] == user.id,
+                    Artifact["id"] == artifact_id,
+                    Artifact["owner_id"] == user.id,
                 ],
             )
-        if artifact is None:
+        if not isinstance(artifact, McpAppArtifact | HtmlArtifact):
             raise ArtifactUnavailable("Artifact unavailable")
         origin = self.config.viewer_origin
         if origin is None:
             raise ArtifactViewerUnavailable("Configure artifacts.viewer_origin")
-        return McpAppOverview(
+        return ArtifactOverview(
             artifact_id=artifact.id,
             title=artifact.title,
-            provider_name=artifact.invocation.provider_name,
+            provider_name=artifact.invocation.provider_name
+            if isinstance(artifact, McpAppArtifact)
+            else "Generated HTML",
             viewer_url=AnyHttpUrl(
                 f"{str(origin).rstrip('/')}{self.config.path}/{artifact.id}"
             ),
@@ -75,21 +87,21 @@ class ArtifactManager(Manager):
 
     async def load(
         self, artifact_id: UUID7, user: User, *, console_origin: AnyHttpUrl
-    ) -> McpAppView:
+    ) -> McpAppView | HtmlView:
         """Read owned content independently of its thread, without executing tools.
 
-        The saved installation must still be owned, enabled, and authorized. A
-        separate sandbox origin is required before any UI resource is fetched.
+        HTML is read from the owner's stored file. An MCP installation must still
+        be owned, enabled, and authorized. Both require a separate sandbox origin.
         """
         async with async_session() as session:
             artifact = await session.one_or_none(
-                McpAppArtifact,
+                Artifact,
                 expressions=[
-                    McpAppArtifact["id"] == artifact_id,
-                    McpAppArtifact["owner_id"] == user.id,
+                    Artifact["id"] == artifact_id,
+                    Artifact["owner_id"] == user.id,
                 ],
             )
-        if artifact is None:
+        if not isinstance(artifact, McpAppArtifact | HtmlArtifact):
             raise ArtifactUnavailable("Artifact unavailable")
         sandbox = self.config.sandbox_origin
         if sandbox is None or (sandbox.scheme, sandbox.host, sandbox.port) == (
@@ -100,15 +112,33 @@ class ArtifactManager(Manager):
             raise ArtifactSandboxUnavailable(
                 "Configure a separate artifact sandbox origin"
             )
-        try:
-            resource = await self.mcp.app_resource(user, artifact.invocation)
-        except McpUnavailable as error:
-            raise ArtifactUnavailable("Artifact installation unavailable") from error
+        resource = None
+        if isinstance(artifact, McpAppArtifact):
+            try:
+                resource = await self.mcp.app_resource(user, artifact.invocation)
+            except McpUnavailable as error:
+                raise ArtifactUnavailable(
+                    "Artifact installation unavailable"
+                ) from error
         policy = ArtifactSandboxPolicy(
             parent_origin=console_origin,
-            csp=resource.ui.csp or McpAppResourceCSP(),
+            content_kind=artifact.kind,
+            csp=(resource.ui.csp if resource else None) or McpAppResourceCSP(),
         )
         query = urlencode({"policy": policy.model_dump_json(by_alias=True)})
+        if isinstance(artifact, HtmlArtifact):
+            try:
+                data = await self.files.read(artifact.file_id, owner_id=user.id)
+            except FileNotFoundError as error:
+                raise ArtifactUnavailable("Artifact file unavailable") from error
+            return HtmlView(
+                artifact=artifact,
+                html=data.decode("utf-8"),
+                sandbox_origin=sandbox,
+                sandbox_url=AnyHttpUrl(f"{sandbox}artifacts/sandbox?{query}"),
+                viewer_path=f"{self.config.path}/{artifact.id}",
+            )
+        assert resource is not None
         return McpAppView(
             artifact=artifact,
             resource=resource,
@@ -124,7 +154,7 @@ class ArtifactManager(Manager):
         user: User,
         *,
         console_origin: AnyHttpUrl,
-    ) -> McpAppView:
+    ) -> McpAppView | HtmlView:
         """Read an owned artifact through an accessible thread and visible reference.
 
         Inherited references obey the fork's cutoff. Thread participation does not

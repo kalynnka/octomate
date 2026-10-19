@@ -17,7 +17,7 @@ from uuid_utils.compat import uuid7
 
 from octomate import Octomate
 from octomate.config import LarkChannelConfig, OctomateConfig
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.tentacles.lark import LarkTentacle
 from tests.support.channels import drive
@@ -80,7 +80,7 @@ def lark_channel(
 
 
 async def test_lark_renders_artifact_card(
-    artifact_overview: McpAppOverview,
+    artifact_overview: ArtifactOverview,
     lark_channel: tuple[LarkTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:

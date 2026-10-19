@@ -85,6 +85,7 @@ class File(Base, TransmuterProxiedMixin):
                                 "application/octet-stream",
                                 "text/plain",
                                 "text/markdown",
+                                "text/html",
                                 "application/json",
                                 "application/jsonl",
                                 "image/gif",
@@ -120,6 +121,12 @@ class Markdown(File):
     """A Markdown document."""
 
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "text/markdown"}
+
+
+class Html(File):
+    """An HTML document."""
+
+    __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "text/html"}
 
 
 class Json(File):

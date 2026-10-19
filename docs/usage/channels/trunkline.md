@@ -246,6 +246,11 @@ app history to the new installation.
 MCP app support is shared across channels. Artifacts are recorded even when no
 sandbox origin is configured; browser hosting settings apply only to displaying them.
 
+[Driven Codex conversations](../agents/codex.md#html-visualizations) can also produce
+self-contained HTML visualizations. These use the same inline cards and standalone
+viewer. Reload restores the saved HTML, even after the run's workspace is removed;
+local interaction state is not saved. Other channels receive a card or viewer link.
+
 Trunkline displays these artifacts in separate inline cards alongside tool output.
 **Open** opens the artifact's own page; the default address is
 `/artifacts/<artifact UUID>`. Signing in is required, and thread access alone does
@@ -293,7 +298,7 @@ high and can request up to 1,000 pixels. Browser permissions, fullscreen, downlo
 app-initiated tool calls, resource reads, messages, and model-context updates are
 unsupported. Apps whose declared resource policy includes the console hostname
 cannot load. Calls from native terminal sessions are not recorded as artifacts;
-publishing generated HTML and saving edits are not yet available.
+capturing generated HTML from those sessions and saving edits are not yet available.
 The recording and availability contracts are in the
 [MCP manager reference](../../api/managers/mcp.md) and
 [artifact schemas](../../api/schemas/resources.md#octomate.schemas.artifacts).

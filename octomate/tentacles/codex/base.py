@@ -18,6 +18,8 @@ from contextvars import Context, copy_context
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from functools import cached_property, partial
+from io import BytesIO
+from itertools import chain
 from pathlib import Path
 from types import TracebackType
 from typing import (
@@ -31,7 +33,7 @@ from typing import (
 
 import anyio
 from anyio.abc import ObjectSendStream
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 from httpx import URL
 from octomate_protocol.stream import (
@@ -47,8 +49,10 @@ from openai_codex import AsyncThread, AsyncTurnHandle, InputItem, SkillInput, Te
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import MethodNotFoundError
 from openai_codex.generated.v2_all import (
+    AgentMessageThreadItem,
     BaseBranchReviewTarget,
     GuardianApprovalReviewStatus,
+    ItemCompletedNotification,
     ItemGuardianApprovalReviewCompletedNotification,
     Personality,
     ReasoningEffort,
@@ -83,18 +87,21 @@ from pydantic_ai.output import OutputSpec
 from pydantic_ai.tools import DeferredToolRequests, DeferredToolResults
 from pydantic_ai.toolsets import AbstractToolset
 from rich.style import Style
+from starlette.datastructures import Headers
 from uuid_utils.compat import uuid7
 
 from octomate.capabilities.harness.deferred import DeferredSuspender, Interjections
 from octomate.capabilities.harness.events import (
     ActionBatchAnsweredEvent,
     ActionBatchEvent,
+    ArtifactAvailableEvent,
 )
 from octomate.capabilities.harness.react import ReactEventStream, ReactStreamEvent
 from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
+from octomate.schemas.artifacts import HtmlArtifact
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -135,6 +142,10 @@ from octomate.tentacles.codex.adapter import (
 )
 from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.codex.hooks import CodexHookInput
+from octomate.tentacles.codex.html import (
+    VISUALIZATION_REFERENCE,
+    HtmlReference,
+)
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
@@ -153,7 +164,7 @@ if TYPE_CHECKING:
     from octomate.managers.conversation import ConversationManager
     from octomate.managers.deferred import DeferredActionManager
     from octomate.managers.files import FileManager
-    from octomate.managers.gateway import GatewayManager
+    from octomate.managers.gateway import GatewayManager, OctomateSession
     from octomate.managers.project import ProjectManager
     from octomate.managers.thread import ThreadManager
     from octomate.managers.user import UserManager
@@ -1832,7 +1843,14 @@ class CodexTentacle(AgentTentacle[str, None]):
                     # A batch the turn paused on, or its answer, for whoever draws the run.
                     yield notification
                     continue
-                for event in accumulator.consume(notification):
+                artifacts = await self.capture_html(
+                    notification,
+                    workspace=workspace.path,
+                    session=session,
+                    address=conversation_address,
+                    thread_id=conversation.thread_id,
+                )
+                for event in chain(accumulator.consume(notification), artifacts):
                     yield event
                 if (
                     not interrupted
@@ -1922,6 +1940,72 @@ class CodexTentacle(AgentTentacle[str, None]):
                     conversation_id=str(conversation.id),
                 )
             )
+
+    async def capture_html(
+        self,
+        notification: Notification,
+        *,
+        workspace: Path,
+        session: OctomateSession | None,
+        address: ChannelAddress,
+        thread_id: UUID7,
+    ) -> list[ArtifactAvailableEvent]:
+        """Snapshot explicitly referenced HTML before the driven workspace closes.
+
+        Ownership comes from the run's authenticated session, never the reference.
+        Invalid references fail the run; raw paths are not fetched by the browser.
+        """
+        payload = notification.payload
+        if not isinstance(payload, ItemCompletedNotification):
+            return []
+        item = payload.item.root
+        if not isinstance(item, AgentMessageThreadItem):
+            return []
+        references = list(VISUALIZATION_REFERENCE.finditer(item.text))
+        if not references:
+            return []
+        if (
+            session is None
+            or session.user_profile is None
+            or session.user_profile.user_id is None
+        ):
+            raise ValueError("HTML capture requires a registered artifact owner")
+        channel = session.channels.get(address.channel_tentacle_id)
+        if channel is None:
+            raise ValueError("HTML capture requires the run's channel")
+        events = []
+        captured: set[Path] = set()
+        for match in references:
+            reference = HtmlReference.model_validate_json(match[1])
+            if reference.path in captured:
+                continue
+            html = await asyncio.to_thread(reference.read, workspace)
+            with BytesIO(html.encode("utf-8")) as source:
+                uploaded = UploadFile(
+                    source,
+                    filename=reference.path.name,
+                    headers=Headers({"content-type": "text/html; charset=utf-8"}),
+                )
+                stored = await self.files.write(
+                    uploaded, owner_id=session.user_profile.user_id
+                )
+            message = await self.threads.record_artifact(
+                thread_id,
+                HtmlArtifact(
+                    owner_id=session.user_profile.user_id,
+                    title=reference.title or reference.path.stem,
+                    file_id=stored.id,
+                ),
+                sender=channel.self_profile,
+                agent_tentacle_id=self.id,
+            )
+            captured.add(reference.path)
+            events.append(
+                ArtifactAvailableEvent(
+                    message_id=message.id, artifact_id=message.artifact_id
+                )
+            )
+        return events
 
     @overload
     async def run(

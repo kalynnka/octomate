@@ -216,6 +216,7 @@ class Octomate(FastAPI):
             config=self.config.artifacts,
             mcp=self.mcp,
             threads=self.threads,
+            files=self.files,
         )
 
         @self.exception_handler(RequestValidationError)

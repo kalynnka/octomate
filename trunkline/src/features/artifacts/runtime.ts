@@ -83,6 +83,13 @@ export function mountArtifact(
   onClosed: () => void,
 ): () => void {
   const origin = new URL(view.sandbox_origin).origin
+  const artifact = view.artifact
+  const resource = 'resource' in view ? view.resource : undefined
+  const html = 'html' in view ? view.html : resource?.html
+  if (html == null) {
+    onError('The artifact has no HTML content.')
+    return () => {}
+  }
   if (origin === window.location.origin || new URL(view.sandbox_url).origin !== origin) {
     onError('The artifact sandbox must use a separate origin.')
     return () => {}
@@ -130,10 +137,10 @@ export function mountArtifact(
   let hostContext: McpUiHostContext = {
     ...artifactAppearance(), displayMode, availableDisplayModes: ['inline', 'fullscreen'],
     containerDimensions: dimensions(), platform: 'web', locale: navigator.language,
-    toolInfo: { tool: view.artifact.invocation.tool },
+    ...(artifact.kind === 'mcp_app' ? { toolInfo: { tool: artifact.invocation.tool } } : {}),
   }
   const bridge = new AppBridge(null, { name: 'Octomate', version: '1' }, {
-    sandbox: { csp: view.resource.ui.csp ?? {}, permissions: {} },
+    sandbox: { csp: resource?.ui.csp ?? {}, permissions: {} },
     openLinks: {}, downloadFile: {}, logging: {},
   }, { hostContext })
   let disposed = false
@@ -175,16 +182,18 @@ export function mountArtifact(
   bridge.addEventListener('sandboxready', () => {
     if (resourceSent || disposed) return
     resourceSent = true
-    void bridge.sendSandboxResourceReady({ html: view.resource.html }).catch(() => fail('The artifact could not be sent to its sandbox.'))
+    void bridge.sendSandboxResourceReady({ html }).catch(() => fail('The artifact could not be sent to its sandbox.'))
   })
   bridge.addEventListener('initialized', () => {
     if (initialized || disposed) return
     initialized = true
     updateAppearance()
     void (async () => {
-      await bridge.sendToolInput({ arguments: view.artifact.invocation.arguments })
-      if (disposed) return
-      await bridge.sendToolResult(view.artifact.invocation.result)
+      if (artifact.kind === 'mcp_app') {
+        await bridge.sendToolInput({ arguments: artifact.invocation.arguments })
+        if (disposed) return
+        await bridge.sendToolResult(artifact.invocation.result)
+      }
       if (disposed) return
       window.clearTimeout(timeout)
       onReady()

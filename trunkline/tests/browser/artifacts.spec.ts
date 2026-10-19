@@ -25,7 +25,7 @@ window.addEventListener('message', ({ data }) => {
 send('ui/initialize', { protocolVersion: '2026-01-26', appInfo: { name: 'Test', version: '1' }, appCapabilities: {} }, 'init');
 </script></body></html>`
 
-async function mockViews(page: Page, options: { html?: string; fail?: boolean; csp?: Record<string, string[]>; path?: string } = {}) {
+async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; fail?: boolean; csp?: Record<string, string[]>; path?: string } = {}) {
   const reads: string[] = []
   // Unmocked API calls must never reach a developer's running Octomate server.
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 404, json: { detail: 'Unmocked test API' } }))
@@ -36,14 +36,14 @@ async function mockViews(page: Page, options: { html?: string; fail?: boolean; c
     const label = route.request().url().split('/').at(-1)!
     const csp = options.csp ?? {}
     await route.fulfill({ json: {
-      artifact: { id: label, kind: 'mcp_app', title: label, invocation: {
+      artifact: options.htmlArtifact ? { id: label, kind: 'html', title: label, file_id: 'stored-html' } : { id: label, kind: 'mcp_app', title: label, invocation: {
         tool: { name: 'create_diagram', inputSchema: { type: 'object' } },
         arguments: { diagram: large, label },
         result: { content: [{ type: 'text', text: large }], structuredContent: { label }, isError: false, _meta: { saved: large } },
       } },
-      resource: { html: options.html ?? appHtml, ui: { csp } },
+      ...(!options.htmlArtifact ? { resource: { html: options.html ?? appHtml, ui: { csp } } } : { html: options.html }),
       sandbox_origin: sandboxOrigin,
-      sandbox_url: `${sandboxOrigin}/artifacts/sandbox?${new URLSearchParams({ policy: JSON.stringify({ parent_origin: parentOrigin, csp }) })}`,
+      sandbox_url: `${sandboxOrigin}/artifacts/sandbox?${new URLSearchParams({ policy: JSON.stringify({ parent_origin: parentOrigin, csp, content_kind: options.htmlArtifact ? 'html' : 'mcp_app' }) })}`,
       viewer_path: `${options.path ?? '/work/artifacts'}/${label}`,
     } })
   })
@@ -74,6 +74,44 @@ test('two ledger cards initialize independently and receive complete input befor
   expect(messages[1].params.isError).toBe(false)
   expect(await b.evaluate("window.received.find(m => m.method === 'ui/notifications/tool-input').params.arguments.label")).toBe('row-b')
   expect(reads).toHaveLength(2)
+})
+
+test('captured HTML interacts, resizes and reloads without an MCP app implementation', async ({ page }) => {
+  const html = `<style>body { margin: 0; font: 14px sans-serif; } #result { height: 120px; }</style>
+    <div id="result">Saved chart</div><button onclick="document.querySelector('#result').textContent = 'Changed'; document.querySelector('#result').style.height = '420px'">Update chart</button>`
+  const reads = await mockViews(page, { htmlArtifact: true, html })
+  await page.goto('/tests/browser/harness.html')
+  const card = page.locator('#pm-row-a')
+  const frame = card.frameLocator('iframe').frameLocator('iframe')
+  await expect(frame.locator('#result')).toHaveText('Saved chart')
+  await expect(card.getByRole('status')).toHaveCount(0)
+  await frame.getByRole('button', { name: 'Update chart' }).click()
+  await expect(frame.locator('#result')).toHaveText('Changed')
+  await expect.poll(() => card.locator('iframe').evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(420)
+  await card.getByRole('button', { name: 'Fold', exact: true }).click()
+  await card.getByRole('button', { name: 'Unfold', exact: true }).click()
+  await expect(frame.locator('#result')).toHaveText('Changed')
+  await page.getByRole('button', { name: 'Dark', exact: true }).click()
+  await expect(frame.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await card.getByRole('button', { name: 'Reload', exact: true }).click()
+  await expect(frame.locator('#result')).toHaveText('Saved chart')
+  expect(reads).toHaveLength(3)
+})
+
+test('standalone captured HTML remains isolated from the console and network', async ({ page }) => {
+  await mockViews(page, { htmlArtifact: true, html: '<div id="result">Saved chart</div>' })
+  await page.goto('/work/artifacts/html-one')
+  const content = page.frameLocator('iframe').frameLocator('iframe')
+  await expect(content.locator('#result')).toHaveText('Saved chart')
+  const sandboxed = await content.locator('body').evaluate(async () => {
+    let parentBlocked = false
+    try { void window.parent.document } catch { parentBlocked = true }
+    let networkBlocked = false
+    try { await fetch('https://console.example/private') } catch { networkBlocked = true }
+    return { parentBlocked, networkBlocked }
+  })
+  expect(sandboxed).toEqual({ parentBlocked: true, networkBlocked: true })
+  await expect(page.getByRole('alert')).toHaveCount(0)
 })
 
 test('folding preserves app state and hides only that card until it is unfolded', async ({ page }) => {

@@ -18,7 +18,7 @@ from octomate.capabilities.harness.events import (
 from octomate.config import DiscordChannelConfig
 from octomate.database import async_session
 from octomate.nerve import ChannelTopic, Impulse
-from octomate.schemas.artifacts import McpAppArtifact, McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview, McpAppArtifact
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadArtifact, ThreadMessage
@@ -168,7 +168,7 @@ async def test_metadata_cannot_replace_the_card_layout_or_mention_people() -> No
     feeler = DiscordArtifactFeeler(artifacts=host.artifacts, users=host.users, ink=ink)
     await feeler.send(
         ChannelAddress("discord", "dm", "300", "100"),
-        McpAppOverview(
+        ArtifactOverview(
             artifact_id=uuid7(),
             title="**Diagram**\n@everyone " + "x" * 5000,
             provider_name="[Provider](https://example.com)\n@here",

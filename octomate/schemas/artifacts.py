@@ -31,6 +31,10 @@ class ArtifactSandboxPolicy(BaseModel):
     """
 
     parent_origin: AnyHttpUrl = Field(description="The embedding console's origin.")
+    content_kind: Literal["mcp_app", "html"] = Field(
+        default="mcp_app",
+        description="Whether the sandbox supplies a plain HTML lifecycle.",
+    )
     csp: McpAppResourceCSP = Field(
         default_factory=McpAppResourceCSP, description="Validated resource allowances."
     )
@@ -104,28 +108,30 @@ class McpAppArtifact(Artifact):
     )
 
 
-class McpAppOverview(BaseModel):
+@sqlalchemy_materia.bless(artifact_models.HtmlArtifact)
+class HtmlArtifact(Artifact):
+    """A self-contained HTML file captured independently of its source workspace."""
+
+    kind: Literal["html"] = Field(default="html", frozen=True)
+    file_id: UUID7 = Field(description="Owned HTML file in the storage provider.")
+
+
+class ArtifactOverview(BaseModel):
     """Saved display metadata for native channel cards, without invocation content."""
 
     artifact_id: UUID7 = Field(description="The artifact's independent identity.")
     title: str = Field(description="Display title saved when the artifact was created.")
     provider_name: str = Field(
-        description="Installation display name saved at execution."
+        description="Saved installation display name or generated content label."
     )
     viewer_url: AnyHttpUrl = Field(
         description="Absolute viewer link; opening it still requires the owner's login."
     )
 
 
-class McpAppView(BaseModel):
-    """An authorized artifact snapshot and freshly fetched resource for replay."""
+class ArtifactView(BaseModel):
+    """Authorized rendering locations shared by artifact content variants."""
 
-    artifact: McpAppArtifact = Field(
-        description="The artifact and complete saved invocation."
-    )
-    resource: McpAppResource = Field(
-        description="Untrusted HTML and resource UI metadata."
-    )
     sandbox_origin: AnyHttpUrl = Field(
         description="Configured origin for the isolated sandbox."
     )
@@ -134,4 +140,26 @@ class McpAppView(BaseModel):
     )
     viewer_path: str = Field(
         description="Root-relative standalone artifact viewer URL."
+    )
+
+
+class McpAppView(ArtifactView):
+    """An authorized artifact snapshot and freshly fetched resource for replay."""
+
+    artifact: McpAppArtifact = Field(description="The complete saved invocation.")
+    resource: McpAppResource = Field(
+        description="Untrusted HTML and resource UI metadata."
+    )
+
+
+class HtmlView(ArtifactView):
+    """An owned document loaded from file storage for isolated rendering."""
+
+    artifact: HtmlArtifact = Field(
+        description="The saved HTML visualization reference."
+    )
+    html: str = Field(
+        repr=False,
+        min_length=1,
+        description="Untrusted UTF-8 HTML/CSS/JavaScript read from the owned file, at most 1 MB.",
     )

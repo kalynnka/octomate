@@ -20,7 +20,7 @@ from uuid_utils.compat import uuid7
 from octomate import Octomate
 from octomate.capabilities.harness.events import OAuthDeviceAuthorizationEvent
 from octomate.config import DiscordChannelConfig, OctomateConfig
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.deferred import (
     ApprovalRequest,
@@ -88,7 +88,7 @@ async def discord_run_thread(
 
 
 async def test_discord_renders_artifact_card(
-    artifact_overview: McpAppOverview,
+    artifact_overview: ArtifactOverview,
     discord_run_thread: tuple[DiscordTentacle, ChannelAddress],
     caplog: pytest.LogCaptureFixture,
 ) -> None:

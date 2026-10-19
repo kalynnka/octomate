@@ -4,8 +4,8 @@ GET `/api/artifacts/{artifact_id}` reads an owned artifact without requiring a
 thread. GET `/api/trunkline/threads/{thread_id}/artifacts/{message_id}` additionally
 requires thread access and a visible ledger reference, including fork cutoffs.
 
-Both return the saved invocation, a freshly fetched UI resource, and the configured
-sandbox origin with Cache-Control: no-store. No provider credentials are returned;
+Both return captured HTML or a saved invocation with its freshly fetched UI resource,
+and the configured sandbox origin with Cache-Control: no-store. No provider credentials are returned;
 there is no caller-selected resource URI or tool execution endpoint. HTML stays
 untrusted JSON data here. The SPA viewer uses the configured artifact prefix;
 GET `/api/artifacts/config` supplies that public routing configuration. The
@@ -43,7 +43,7 @@ from octomate.managers.artifacts import (
     ArtifactSandboxUnavailable,
     ArtifactUnavailable,
 )
-from octomate.schemas.artifacts import ArtifactSandboxPolicy, McpAppView
+from octomate.schemas.artifacts import ArtifactSandboxPolicy, HtmlView, McpAppView
 from octomate.schemas.user import User
 
 logger = logging.getLogger(__name__)
@@ -90,7 +90,7 @@ async def artifact_config(
 
 @artifact_router.get(
     "/api/artifacts/{artifact_id}",
-    response_model=McpAppView,
+    response_model=McpAppView | HtmlView,
     response_model_exclude_none=True,
 )
 async def read_artifact(
@@ -98,7 +98,7 @@ async def read_artifact(
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[ArtifactManager, Depends(artifact_manager)],
     request: Request,
-) -> McpAppView:
+) -> McpAppView | HtmlView:
     """Read owned content independently of whether any thread still references it."""
     with artifact_errors():
         return await manager.load(
@@ -108,7 +108,7 @@ async def read_artifact(
 
 @artifact_router.get(
     "/api/trunkline/threads/{thread_id}/artifacts/{message_id}",
-    response_model=McpAppView,
+    response_model=McpAppView | HtmlView,
     response_model_exclude_none=True,
 )
 async def read_thread_artifact(
@@ -117,7 +117,7 @@ async def read_thread_artifact(
     user: Annotated[User, Depends(current_user)],
     manager: Annotated[ArtifactManager, Depends(artifact_manager)],
     request: Request,
-) -> McpAppView:
+) -> McpAppView | HtmlView:
     """Read an owned artifact only through a reference visible in this thread."""
     with artifact_errors():
         return await manager.load_from_message(
@@ -165,10 +165,14 @@ async def sandbox_proxy(request: Request) -> Response:
         return Response(status_code=422)
     if policy.parent_origin == AnyHttpUrl(str(request.base_url)):
         return Response(status_code=422)
-    html = PROXY_HTML.replace(
-        "{{parent_origin}}",
-        escape(str(policy.parent_origin).removesuffix("/"), quote=True),
-    ).replace("{{csp}}", escape(sandbox_csp(policy, proxy=False), quote=True))
+    html = (
+        PROXY_HTML.replace(
+            "{{parent_origin}}",
+            escape(str(policy.parent_origin).removesuffix("/"), quote=True),
+        )
+        .replace("{{csp}}", escape(sandbox_csp(policy, proxy=False), quote=True))
+        .replace("{{content_kind}}", policy.content_kind)
+    )
     return HTMLResponse(
         html,
         headers={

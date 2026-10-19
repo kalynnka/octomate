@@ -1,6 +1,7 @@
 """The shared SDK transport must keep reading while a human is deciding."""
 
 import asyncio
+from base64 import b64encode
 from collections.abc import AsyncGenerator
 from queue import Queue
 from typing import NamedTuple
@@ -13,7 +14,11 @@ from openai_codex._message_router import _TurnSubscription
 from openai_codex.async_client import AsyncCodexClient
 from openai_codex.client import CodexClient
 from openai_codex.errors import TransportClosedError
-from openai_codex.generated.v2_all import ReviewTarget, UncommittedChangesReviewTarget
+from openai_codex.generated.v2_all import (
+    McpToolCallThreadItem,
+    ReviewTarget,
+    UncommittedChangesReviewTarget,
+)
 from openai_codex.models import InitializeResponse
 
 from octomate.config.agents import CodexConfig as AgentCodexConfig
@@ -66,6 +71,209 @@ async def command_transport(
         finally:
             incoming.put(None)
             await reader
+
+
+@pytest.fixture
+def mcp_app_call() -> JsonObject:
+    return {
+        "type": "mcpToolCall",
+        "id": "call-a",
+        "server": "apps",
+        "tool": "show_chart",
+        "arguments": {"city": "上海"},
+        "status": "completed",
+        "result": {"content": [], "structuredContent": {"temperature": 20}},
+        "mcpAppUi": {
+            "resourceUri": "ui://chart/current.html",
+            "preferredModelDisplayMode": "inline",
+        },
+        "appContext": {
+            "connectorId": "weather",
+            "linkId": "account-a",
+            "resourceUri": "ui://chart/context.html",
+        },
+        "mcpAppResourceUri": "ui://chart/legacy.html",
+    }
+
+
+@pytest.mark.parametrize("source", ["current", "context", "legacy"])
+@pytest.mark.parametrize("encoded", [False, True])
+async def test_app_resource_reads_advertised_ui_with_original_scope(
+    command_transport: CommandTransport,
+    mcp_app_call: JsonObject,
+    source: str,
+    encoded: bool,
+) -> None:
+    ink, incoming, outgoing = command_transport
+    item = McpToolCallThreadItem.model_validate(mcp_app_call)
+    if source != "current":
+        item.mcp_app_ui = None
+    if source == "legacy":
+        assert item.app_context is not None
+        item.app_context.resource_uri = None
+    uri = f"ui://chart/{source}.html"
+    reading = asyncio.create_task(ink.app_resource("thread-a", item))
+    request = await asyncio.to_thread(outgoing.get, True, 1)
+    assert request["method"] == "mcpServer/resource/read"
+    assert request["params"] == {
+        "threadId": "thread-a",
+        "server": "apps",
+        "uri": uri,
+        "originCallId": "call-a",
+        "target": {"connectorId": "weather", "linkId": "account-a"},
+    }
+    html = "<html><body>上海</body></html>"
+    content: JsonObject = {
+        "uri": uri,
+        "mimeType": "text/html;profile=mcp-app",
+        "_meta": {"ui": {"csp": {"connectDomains": ["https://api.example.com"]}}},
+    }
+    content.update(
+        {"blob": b64encode(html.encode()).decode()} if encoded else {"text": html}
+    )
+    incoming.put(
+        {
+            "id": request["id"],
+            "result": {"originCallId": "call-a", "contents": [content]},
+        }
+    )
+    resource = await asyncio.wait_for(reading, 1)
+    assert resource is not None
+    assert str(resource.uri) == uri
+    assert resource.html == html
+    assert resource.ui.csp is not None
+    assert resource.ui.csp.connect_domains == ["https://api.example.com"]
+    assert outgoing.empty()
+
+
+@pytest.mark.parametrize("context", [None, {"connectorId": "weather", "linkId": None}])
+async def test_app_resource_distinguishes_local_server_and_no_auth_target(
+    command_transport: CommandTransport,
+    mcp_app_call: JsonObject,
+    context: JsonObject | None,
+) -> None:
+    ink, incoming, outgoing = command_transport
+    item = McpToolCallThreadItem.model_validate({**mcp_app_call, "appContext": context})
+    reading = asyncio.create_task(ink.app_resource("thread-a", item))
+    request = await asyncio.to_thread(outgoing.get, True, 1)
+    expected: JsonObject = {
+        "threadId": "thread-a",
+        "server": "apps",
+        "uri": "ui://chart/current.html",
+        "originCallId": "call-a",
+    }
+    if context is not None:
+        expected["target"] = context
+    assert request["params"] == expected
+    incoming.put(
+        {
+            "id": request["id"],
+            "result": {
+                "contents": [
+                    {
+                        "uri": "ui://chart/current.html",
+                        "mimeType": "text/html;profile=mcp-app",
+                        "text": "<html>chart</html>",
+                    }
+                ]
+            },
+        }
+    )
+    assert await asyncio.wait_for(reading, 1) is not None
+
+
+@pytest.mark.parametrize(
+    "update",
+    [
+        {"status": "inProgress"},
+        {"status": "failed"},
+        {"result": None},
+        {"mcpAppUi": None, "appContext": None, "mcpAppResourceUri": None},
+    ],
+)
+async def test_app_resource_skips_calls_without_a_completed_ui(
+    command_transport: CommandTransport, mcp_app_call: JsonObject, update: JsonObject
+) -> None:
+    ink, _, outgoing = command_transport
+    item = McpToolCallThreadItem.model_validate({**mcp_app_call, **update})
+    assert await ink.app_resource("thread-a", item) is None
+    assert outgoing.empty()
+
+
+async def test_app_resource_rejects_non_ui_uri_before_reading(
+    command_transport: CommandTransport, mcp_app_call: JsonObject
+) -> None:
+    ink, _, outgoing = command_transport
+    item = McpToolCallThreadItem.model_validate(mcp_app_call)
+    assert item.mcp_app_ui is not None
+    item.mcp_app_ui.resource_uri = "file:///private/report.html"
+    with pytest.raises(ValueError, match="must use the ui scheme"):
+        await ink.app_resource("thread-a", item)
+    assert outgoing.empty()
+
+
+@pytest.mark.parametrize(
+    ("update", "message"),
+    [
+        ({"uri": "ui://another/chart.html"}, "URI or MIME type does not match"),
+        ({"mimeType": "text/html"}, "URI or MIME type does not match"),
+        ({"text": " "}, "HTML must not be empty"),
+        ({"blob": "not base64!"}, "Only base64 data is allowed"),
+        ({"blob": "/w=="}, "invalid start byte"),
+        ({"_meta": []}, "Input should be a valid dictionary"),
+        (
+            {"_meta": {"ui": {"csp": {"connectDomains": ["'unsafe-inline'"]}}}},
+            "CSP sources must be HTTP",
+        ),
+    ],
+)
+async def test_app_resource_rejects_invalid_content(
+    command_transport: CommandTransport,
+    mcp_app_call: JsonObject,
+    update: JsonObject,
+    message: str,
+) -> None:
+    ink, incoming, outgoing = command_transport
+    item = McpToolCallThreadItem.model_validate(mcp_app_call)
+    reading = asyncio.create_task(ink.app_resource("thread-a", item))
+    request = await asyncio.to_thread(outgoing.get, True, 1)
+    content: JsonObject = {
+        "uri": "ui://chart/current.html",
+        "mimeType": "text/html;profile=mcp-app",
+        "text": "<html>chart</html>",
+        **update,
+    }
+    if "blob" in update:
+        del content["text"]
+    incoming.put({"id": request["id"], "result": {"contents": [content]}})
+    with pytest.raises(ValueError, match=message):
+        await asyncio.wait_for(reading, 1)
+
+
+@pytest.mark.parametrize(
+    ("result", "message"),
+    [
+        ({"originCallId": "another-call", "contents": []}, "another call"),
+        ({"contents": []}, "exactly one"),
+        (
+            {"contents": [{"uri": "ui://a", "text": "a"}] * 2},
+            "exactly one",
+        ),
+    ],
+)
+async def test_app_resource_rejects_mismatched_response(
+    command_transport: CommandTransport,
+    mcp_app_call: JsonObject,
+    result: JsonObject,
+    message: str,
+) -> None:
+    ink, incoming, outgoing = command_transport
+    item = McpToolCallThreadItem.model_validate(mcp_app_call)
+    reading = asyncio.create_task(ink.app_resource("thread-a", item))
+    request = await asyncio.to_thread(outgoing.get, True, 1)
+    incoming.put({"id": request["id"], "result": result})
+    with pytest.raises(ValueError, match=message):
+        await asyncio.wait_for(reading, 1)
 
 
 @pytest.mark.parametrize("review", [False, True])

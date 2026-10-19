@@ -28,6 +28,26 @@ function applyHostTheme(sandboxOrigin) {
   })
 }
 
+/** Give plain HTML the lifecycle and size reporting normally supplied by an MCP app. */
+function initializeHtml(sandboxOrigin) {
+  const send = (method, params, id) => window.parent.postMessage({ jsonrpc: '2.0', method, params, ...(id ? { id } : {}) }, sandboxOrigin)
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent || event.origin !== sandboxOrigin) return
+    const message = event.data
+    if (message?.jsonrpc !== '2.0') return
+    if (message.id === 'html-init' && message.result) {
+      send('ui/notifications/initialized', {})
+      const resize = new ResizeObserver(() => send('ui/notifications/size-changed', { height: document.body.scrollHeight }))
+      resize.observe(document.body)
+    } else if (message.method === 'ui/resource-teardown') {
+      window.parent.postMessage({ jsonrpc: '2.0', id: message.id, result: {} }, sandboxOrigin)
+    }
+  })
+  window.addEventListener('load', () => send('ui/initialize', {
+    protocolVersion: '2026-01-26', appInfo: { name: 'HTML visualization', version: '1' }, appCapabilities: {},
+  }, 'html-init'), { once: true })
+}
+
 window.addEventListener('message', (event) => {
   const message = event.data
   if (!message || message.jsonrpc !== '2.0') return
@@ -45,6 +65,9 @@ window.addEventListener('message', (event) => {
       meta.content = policy
       const theme = document.createElement('script')
       theme.textContent = `(${applyHostTheme.toString()})(${JSON.stringify(window.location.origin)})`
+      if (document.documentElement.dataset.contentKind === 'html') {
+        theme.textContent += `;(${initializeHtml.toString()})(${JSON.stringify(window.location.origin)})`
+      }
       frame.srcdoc = `<!doctype html><html><head>${meta.outerHTML}${theme.outerHTML}</head><body>${message.params.html}</body></html>`
       document.body.append(frame)
     } else if (!sandboxMessage) {

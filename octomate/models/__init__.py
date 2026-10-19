@@ -1,7 +1,7 @@
 """The ORM models: SQLAlchemy declarations of every table, one module per
 concern."""
 
-from octomate.models.artifacts import Artifact, McpAppArtifact
+from octomate.models.artifacts import Artifact, HtmlArtifact, McpAppArtifact
 from octomate.models.auth import (
     LinkProfileSession,
     UserApiKey,
@@ -20,6 +20,7 @@ from octomate.models.files import (
     Binary,
     File,
     Gif,
+    Html,
     Image,
     Jpeg,
     Json,
@@ -71,6 +72,8 @@ __all__ = [
     "File",
     "Gif",
     "Handoff",
+    "Html",
+    "HtmlArtifact",
     "Image",
     "Jpeg",
     "Json",

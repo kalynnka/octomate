@@ -160,6 +160,23 @@ runs through the same streaming, approval and history path as a driven turn.
 Arguments may be empty; attachments are not supported. A skill's path comes from
 discovery, never from a separate client-supplied path.
 
+## HTML visualizations
+
+When a driven Codex conversation includes an HTML visualization, Octomate saves
+the referenced file when Codex finishes its response.
+Trunkline displays it in the chat panel; other channels show an artifact card or
+link to the authenticated viewer. The saved visualization remains available after
+the run's workspace is removed. Opening it requires the owner's account and the
+existing [artifact hosting configuration](../../api/config/artifacts.md).
+
+This first version supports self-contained HTML with local browser interactions.
+External assets, network requests and ChatGPT-specific widget controls are not
+available. Ordinary HTML code blocks and file links remain text. Visualizations
+from synced native sessions are not captured yet.
+
+The [capture reference](../../api/mcp/artifacts.md) describes the supported output
+contract and file limits.
+
 ## Approvals and questions
 
 Codex's own approval requests, command execution and file changes, and its

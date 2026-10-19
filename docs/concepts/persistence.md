@@ -35,7 +35,8 @@ Thread                           a chat room, or a piece of work
            └─ ModelMessage       the transcript
 
 Artifact                         an owned deliverable, independent of any thread
- └─ McpAppArtifact               saved MCP invocation for an app viewer
+ ├─ McpAppArtifact               saved MCP invocation for an app viewer
+ └─ HtmlArtifact ──▶ Html         captured visualization in file storage
 ```
 
 Around it: users and their channel profiles, invitations, sessions and API keys;

@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from octomate.capabilities.harness.events import ArtifactAvailableEvent
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.segments import TextSegment
 from octomate.tentacles.feelers.output import IMMessageID, SegmentsFeeler
@@ -55,7 +55,7 @@ class ArtifactFeeler(ABC):
 
     @abstractmethod
     async def send(
-        self, address: ChannelAddress, overview: McpAppOverview
+        self, address: ChannelAddress, overview: ArtifactOverview
     ) -> IMMessageID | None:
         """Present already-authorized metadata without reading app content."""
 
@@ -74,14 +74,14 @@ class PlainTextArtifactFeeler(ArtifactFeeler):
         self.segments: SegmentsFeeler = segments
 
     async def send(
-        self, address: ChannelAddress, overview: McpAppOverview
+        self, address: ChannelAddress, overview: ArtifactOverview
     ) -> IMMessageID | None:
         return await self.segments.present(
             address,
             [
                 TextSegment(
                     data={
-                        "text": f"{overview.title}\nMCP app · {overview.provider_name}"
+                        "text": f"{overview.title}\n{overview.provider_name} · Interactive artifact"
                         f"\n{overview.viewer_url}"
                     }
                 )

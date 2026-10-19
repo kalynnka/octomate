@@ -18,7 +18,7 @@ from octomate.capabilities.harness.events import (
 from octomate.config import SlackChannelConfig
 from octomate.database import async_session
 from octomate.nerve import ChannelTopic, Impulse
-from octomate.schemas.artifacts import McpAppArtifact, McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview, McpAppArtifact
 from octomate.schemas.segments import MarkdownSegment
 from octomate.schemas.thread import ThreadArtifact, ThreadMessage
 from octomate.schemas.user import UserProfile
@@ -139,7 +139,7 @@ async def test_card_metadata_is_literal_and_fits_slack_limits(
     feeler = SlackArtifactFeeler(artifacts=host.artifacts, users=host.users, ink=ink)
     message_id = await feeler.send(
         slack_key(),
-        McpAppOverview(
+        ArtifactOverview(
             artifact_id=app_artifact.id,
             title="<!channel> & " + "T" * 200,
             provider_name="<@U1> " + "P" * 4000,
