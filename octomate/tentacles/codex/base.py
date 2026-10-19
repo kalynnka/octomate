@@ -45,6 +45,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     client_message_adapter,
 )
+from octomate_protocol.visualizations import VISUALIZATION_REFERENCE, HtmlReference
 from openai_codex import AsyncThread, AsyncTurnHandle, InputItem, SkillInput, TextInput
 from openai_codex.api import ApprovalMode, Sandbox
 from openai_codex.errors import MethodNotFoundError
@@ -148,10 +149,6 @@ from octomate.tentacles.codex.adapter import (
 )
 from octomate.tentacles.codex.catalog import APP_COMMANDS
 from octomate.tentacles.codex.hooks import CodexHookInput
-from octomate.tentacles.codex.html import (
-    VISUALIZATION_REFERENCE,
-    HtmlReference,
-)
 from octomate.tentacles.codex.ingest import CodexHookIngest
 from octomate.tentacles.codex.ink import CodexInk
 from octomate.tentacles.codex.schemas import CodexCommandDescriptor
@@ -368,6 +365,7 @@ class CodexTentacle(AgentTentacle[str, None]):
         self.session_tailer = CodexTranscriptTailer(
             self.conversations,
             self.threads,
+            self.files,
             self.session_locks,
         )
         self.session_ingest = CodexHookIngest(
@@ -598,7 +596,12 @@ class CodexTentacle(AgentTentacle[str, None]):
                     return
                 expected_offsets[key] = message.end
                 await self.session_tailer.feed_remote(
-                    state, message.agent_id, message.line, message.start, message.end
+                    state,
+                    message.agent_id,
+                    message.line,
+                    message.start,
+                    message.end,
+                    visualizations=message.visualizations,
                 )
         except WebSocketDisconnect:
             pass

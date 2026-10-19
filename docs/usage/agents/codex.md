@@ -162,19 +162,21 @@ discovery, never from a separate client-supplied path.
 
 ## HTML visualizations
 
-Driven Codex conversations can produce interactive visualizations. Trunkline shows
-them directly in chat; other channels show a card or viewer link. Saved
+Driven and native Codex conversations can produce interactive visualizations.
+Trunkline shows them directly in chat; other channels show a card or viewer link. Saved
 visualizations remain available after the run ends and require the owner's account
 to open.
 
 Only self-contained visualizations are supported. External content and
 ChatGPT-specific controls are unavailable. Ordinary HTML code blocks and file links
-remain text, and visualizations from native sessions are not captured yet.
+remain text. Native capture requires the updated Octomate CLI on the machine
+running Codex; restart the native session after updating it. New visualizations
+are captured as their turns finish. Previously imported turns are not backfilled.
 
 Standard MCP apps supplied through driven Codex connections also appear as
 artifacts. Their saved interface and result remain available after the session
 ends. App controls that need additional tool calls or ChatGPT-specific features
-are unavailable.
+are unavailable. Native MCP app capture is not supported yet.
 
 See [Trunkline artifacts](../channels/trunkline.md#artifacts) for viewer controls
 and [artifact settings](../../api/config/artifacts.md) for hosting setup.

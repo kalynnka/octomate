@@ -237,7 +237,7 @@ The console's HTTP API, its request bodies and the events it streams are in the
 ## Artifacts
 
 MCP apps appear as interactive cards alongside tool output.
-[Driven Codex conversations](../agents/codex.md#html-visualizations) can also show
+[Codex conversations](../agents/codex.md#html-visualizations) can also show
 HTML visualizations directly in chat. Widgets fit the chat panel, with wider
 layouts available for visualizations. A loading placeholder appears while a widget
 opens and respects reduced-motion settings.
@@ -255,7 +255,8 @@ Dropdown menus follow the theme where the browser supports it.
 Sign in as the artifact's owner to open it. Apps from Octomate MCP connections
 require their original connection to remain enabled and authorized. Apps captured
 from driven Codex sessions and saved HTML visualizations remain available after
-the run ends. Artifacts from native sessions are not captured yet.
+the run ends. Native Codex HTML visualizations are captured with the updated
+Octomate CLI; native MCP apps are not captured yet.
 
 See [artifact settings](../../api/config/artifacts.md) for hosting setup and the
 [artifact reference](../../api/mcp/artifacts.md) for integration details.

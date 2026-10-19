@@ -17,6 +17,7 @@ from octomate_cli.config import (
 )
 from octomate_cli.main import app
 from octomate_cli.streaming import deepseek, files
+from octomate_cli.streaming.codex import CodexSessionTail
 from octomate_cli.streaming.files import tail_path
 from typer.testing import CliRunner
 
@@ -107,6 +108,10 @@ def test_workspace_tail_does_not_share_user_lock_or_spool(
         result = runner.invoke(app, command)
         assert result.exit_code == 0, result.output
         streamed.assert_awaited_once()
+        if agent != "deepseek":
+            assert streamed.call_args.kwargs["tail_type"] is (
+                CodexSessionTail if agent == "codex" else files.SessionTail
+            )
         assert user_spool.read_text() == "user-child.jsonl\n"
         if agent == "codex":
             assert project.with_suffix(".paths").read_text() == f"{child}\n"
@@ -142,7 +147,12 @@ def test_running_tail_reconnects_with_its_loaded_config_after_toml_switch(
         cwd: str,
         token: str,
         source: Path | str | None,
+        *,
+        tail_type: type[files.SessionTail] = files.SessionTail,
     ) -> bool:
+        assert tail_type is (
+            CodexSessionTail if agent == "codex" else files.SessionTail
+        )
         connections.append((url, token, source))
         if len(connections) == 1:
             await asyncio.to_thread(client_config.write_text, DEBUG_CONFIG)

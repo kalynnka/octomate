@@ -244,7 +244,9 @@ async def test_live_turn_restarts_then_settles_and_committed_replay_is_silent(
     write_rollout(path)
     records = path.read_text().splitlines()
     octomate = Octomate()
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
     key = ThreadKey.from_address(SESSION_ADDRESS)
     with octomate.nerve.subscribe(ThreadTopic(key)) as live:
         for finished in (False, True, True):
@@ -289,7 +291,9 @@ async def test_failed_commit_never_publishes_run_ended(
     monkeypatch: pytest.MonkeyPatch, fail_at: str
 ) -> None:
     octomate = Octomate()
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
     owner, method = (
         (octomate.conversations, "record_external_run")
         if fail_at == "run"
@@ -334,7 +338,9 @@ async def test_failed_commit_never_publishes_run_ended(
 @pytest.mark.usefixtures("db")
 async def test_empty_reserved_turn_commits_its_checkpoint_and_settles() -> None:
     octomate = Octomate()
-    tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    tailer = CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
     with octomate.nerve.subscribe(
         ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
     ) as live:
