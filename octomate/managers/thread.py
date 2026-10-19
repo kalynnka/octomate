@@ -164,6 +164,7 @@ class ThreadManager(Manager, Locks[ThreadKey]):
         *,
         project: Project | None = None,
         title: str | None = None,
+        new: bool = False,
     ) -> Thread:
         """The thread this key names, created if it is new.
 
@@ -181,6 +182,9 @@ class ThreadManager(Manager, Locks[ThreadKey]):
 
         Only a thread and a native thread can take one; naming a project for a DM or a
         group chat raises rather than dropping it silently.
+
+        `new=True` refuses an existing surface under the creation lock. A native
+        provider claiming a fresh session cannot thereby attach an existing one.
         """
         if isinstance(address_or_key, ChannelAddress):
             key = ThreadKey.from_address(address_or_key)
@@ -199,6 +203,8 @@ class ThreadManager(Manager, Locks[ThreadKey]):
                 options=[selectinload(Thread["conversations"]).noload("*")],
                 expressions=keyed(key),
             )
+            if new and thread is not None:
+                raise ValueError("The thread already exists")
             if thread is None:
                 thread = Thread(
                     channel_tentacle_id=key.channel_tentacle_id,
