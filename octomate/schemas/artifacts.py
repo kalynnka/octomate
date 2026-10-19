@@ -113,6 +113,10 @@ class HtmlArtifact(Artifact):
     """A self-contained HTML file captured independently of its source workspace."""
 
     kind: Literal["html"] = Field(default="html", frozen=True)
+    mode: Literal["wide"] | None = Field(
+        default=None,
+        description="Captured visualization layout hint; wide requests more inline space, null uses the default width.",
+    )
     file_id: UUID7 = Field(description="Owned HTML file in the storage provider.")
 
 

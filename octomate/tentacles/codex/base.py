@@ -2015,6 +2015,7 @@ class CodexTentacle(AgentTentacle[str, None]):
                 HtmlArtifact(
                     owner_id=session.user_profile.user_id,
                     title=reference.title or reference.path.stem,
+                    mode=reference.mode,
                     file_id=stored.id,
                 ),
                 sender=channel.self_profile,

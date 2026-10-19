@@ -41,8 +41,14 @@ function initializeHtml(sandboxOrigin) {
     if (message?.jsonrpc !== '2.0') return
     if (message.id === 'html-init' && message.result) {
       send('ui/notifications/initialized', {})
-      const resize = new ResizeObserver(() => send('ui/notifications/size-changed', { height: document.body.scrollHeight }))
-      resize.observe(document.body)
+      const resize = new ResizeObserver(() => {
+        const body = document.body
+        const bounds = body.getBoundingClientRect()
+        const border = body.offsetHeight - body.clientHeight
+        const height = bounds.top + Math.max(bounds.height, body.scrollHeight + border) + parseFloat(getComputedStyle(body).marginBottom)
+        send('ui/notifications/size-changed', { height })
+      })
+      resize.observe(document.body, { box: 'border-box' })
     } else if (message.method === 'ui/resource-teardown') {
       window.parent.postMessage({ jsonrpc: '2.0', id: message.id, result: {} }, sandboxOrigin)
     }

@@ -17,7 +17,7 @@ export type ArtifactView = {
   }
   resource: { html: string; ui: { csp?: McpUiResourceCsp | null } }
 } | {
-  artifact: { id: string; title: string; kind: 'html'; file_id: string }
+  artifact: { id: string; title: string; kind: 'html'; file_id: string; mode: 'wide' | null }
   html: string
 })
 

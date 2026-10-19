@@ -162,20 +162,17 @@ discovery, never from a separate client-supplied path.
 
 ## HTML visualizations
 
-When a driven Codex conversation includes an HTML visualization, Octomate saves
-the referenced file when Codex finishes its response.
-Trunkline displays it in the chat panel; other channels show an artifact card or
-link to the authenticated viewer. The saved visualization remains available after
-the run's workspace is removed. Opening it requires the owner's account and the
-existing [artifact hosting configuration](../../api/config/artifacts.md).
+Driven Codex conversations can produce interactive visualizations. Trunkline shows
+them directly in chat; other channels show a card or viewer link. Saved
+visualizations remain available after the run ends and require the owner's account
+to open.
 
-This first version supports self-contained HTML with local browser interactions.
-External assets, network requests and ChatGPT-specific widget controls are not
-available. Ordinary HTML code blocks and file links remain text. Visualizations
-from synced native sessions are not captured yet.
+Only self-contained visualizations are supported. External content and
+ChatGPT-specific controls are unavailable. Ordinary HTML code blocks and file links
+remain text, and visualizations from native sessions are not captured yet.
 
-The [capture reference](../../api/mcp/artifacts.md) describes the supported output
-contract and file limits.
+See [Trunkline artifacts](../channels/trunkline.md#artifacts) for viewer controls
+and [artifact settings](../../api/config/artifacts.md) for hosting setup.
 
 ## Approvals and questions
 

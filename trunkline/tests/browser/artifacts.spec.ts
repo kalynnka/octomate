@@ -25,18 +25,19 @@ window.addEventListener('message', ({ data }) => {
 send('ui/initialize', { protocolVersion: '2026-01-26', appInfo: { name: 'Test', version: '1' }, appCapabilities: {} }, 'init');
 </script></body></html>`
 
-async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; fail?: boolean; csp?: Record<string, string[]>; path?: string } = {}) {
+async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; modes?: Record<string, 'wide'>; fail?: boolean; csp?: Record<string, string[]>; path?: string; beforeRead?: () => Promise<void> } = {}) {
   const reads: string[] = []
   // Unmocked API calls must never reach a developer's running Octomate server.
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 404, json: { detail: 'Unmocked test API' } }))
   await page.route('**/api/auth/me', (route) => route.fulfill({ json: { id: 'owner', username: 'owner', name: 'Owner', nickname: null } }))
   await page.route(/\/api\/(artifacts\/[^/]+|trunkline\/threads\/thread\/artifacts\/row-[ab])$/, async (route) => {
     reads.push(route.request().url())
+    await options.beforeRead?.()
     if (options.fail) return route.fulfill({ status: 404, json: { detail: 'Artifact installation unavailable' } })
     const label = route.request().url().split('/').at(-1)!
     const csp = options.csp ?? {}
     await route.fulfill({ json: {
-      artifact: options.htmlArtifact ? { id: label, kind: 'html', title: label, file_id: 'stored-html' } : { id: label, kind: 'mcp_app', title: label, invocation: {
+      artifact: options.htmlArtifact ? { id: label, kind: 'html', title: label, file_id: 'stored-html', mode: options.modes?.[label] ?? null } : { id: label, kind: 'mcp_app', title: label, invocation: {
         tool: { name: 'create_diagram', inputSchema: { type: 'object' } },
         arguments: { diagram: large, label },
         result: { content: [{ type: 'text', text: large }], structuredContent: { label }, isError: false, _meta: { saved: large } },
@@ -76,6 +77,94 @@ test('two ledger cards initialize independently and receive complete input befor
   expect(reads).toHaveLength(2)
 })
 
+for (const htmlArtifact of [false, true]) {
+  test(`${htmlArtifact ? 'HTML' : 'MCP app'} skeleton covers fetching, sandbox startup and reload`, async ({ page }) => {
+    let releaseRead!: () => void
+    let readGate = new Promise<void>(resolve => { releaseRead = resolve })
+    let releaseSandbox!: () => void
+    const sandboxGate = new Promise<void>(resolve => { releaseSandbox = resolve })
+    await mockViews(page, {
+      htmlArtifact, html: htmlArtifact ? '<div id="result">Saved chart</div>' : appHtml,
+      beforeRead: () => readGate,
+    })
+    await page.route(`${sandboxOrigin}/artifacts/sandbox.js`, async route => {
+      await sandboxGate
+      await route.continue()
+    })
+    await page.goto('/tests/browser/harness.html')
+    const card = page.locator('#pm-row-a')
+    const skeleton = card.getByRole('status', { name: 'Loading artifact' })
+    try {
+      await expect(skeleton).toBeVisible()
+      await expect(skeleton).toHaveCSS('height', '240px')
+      await expect(card).toHaveCSS('width', '640px')
+      await expect(card.locator('iframe')).toHaveCount(0)
+      expect(await skeleton.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('lt-sheen')
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      expect(await skeleton.evaluate(el => getComputedStyle(el, '::after').animationName)).toBe('none')
+      await page.emulateMedia({ reducedMotion: 'no-preference' })
+      releaseRead()
+      await expect(card.locator('iframe')).toHaveCount(1)
+      await expect(skeleton).toBeVisible()
+      await expect(card.locator('.trk-artifact-stage')).toHaveAttribute('aria-busy', 'true')
+      await expect(card.locator('.trk-artifact-frame')).toHaveAttribute('inert', '')
+      await expect(card.locator('.trk-artifact-frame')).toHaveCSS('visibility', 'hidden')
+      await card.screenshot({ path: test.info().outputPath('artifact-loading.png') })
+      releaseSandbox()
+      await expect(skeleton).toHaveCount(0)
+      await expect(card.locator('.trk-artifact-stage')).toHaveAttribute('aria-busy', 'false')
+      await expect(card.locator('.trk-artifact-frame')).not.toHaveAttribute('inert')
+      await expect(card.locator('.trk-artifact-frame')).toBeVisible()
+      await expect(card).toHaveCSS('width', '640px')
+      const content = card.frameLocator('iframe').frameLocator('iframe')
+      await expect(content.locator('#result')).toHaveText(htmlArtifact ? 'Saved chart' : 'row-a')
+      readGate = new Promise<void>(resolve => { releaseRead = resolve })
+      await card.hover()
+      await card.getByRole('button', { name: 'Reload', exact: true }).click()
+      await expect(skeleton).toBeVisible()
+      releaseRead()
+      await expect(skeleton).toHaveCount(0)
+      await expect(content.locator('#result')).toHaveText(htmlArtifact ? 'Saved chart' : 'row-a')
+    } finally {
+      releaseRead()
+      releaseSandbox()
+    }
+  })
+}
+
+test('wide HTML uses the chat width independently and stays responsive after reload', async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await mockViews(page, {
+    htmlArtifact: true, modes: { 'row-a': 'wide' },
+    html: '<style>body { margin: 0; } #result { height: 120px; }</style><div id="result">Saved chart</div>',
+  })
+  await page.goto('/tests/browser/harness.html')
+  const wide = page.locator('#pm-row-a')
+  const normal = page.locator('#pm-row-b')
+  const frame = wide.frameLocator('iframe').frameLocator('iframe')
+  await expect(frame.locator('#result')).toHaveText('Saved chart')
+  await expect(normal.getByRole('status')).toHaveCount(0)
+  const availableWidth = await page.locator('#trk-chatlog').evaluate(el => el.clientWidth)
+  expect(availableWidth).toBeGreaterThan(640)
+  await expect(wide).toHaveCSS('width', `${availableWidth}px`)
+  await expect(normal).toHaveCSS('width', '640px')
+  await expect(frame.locator('body')).toHaveCSS('width', `${availableWidth}px`)
+  await wide.hover()
+  await wide.getByRole('button', { name: 'Reload', exact: true }).click()
+  await expect(frame.locator('#result')).toHaveText('Saved chart')
+  await expect(wide).toHaveCSS('width', `${availableWidth}px`)
+  await page.setViewportSize({ width: 390, height: 600 })
+  const narrowWidth = await page.locator('#trk-chatlog').evaluate(el => el.clientWidth)
+  expect(narrowWidth).toBeLessThanOrEqual(390)
+  await expect(wide).toHaveCSS('width', `${narrowWidth}px`)
+  await expect(normal).toHaveCSS('width', `${narrowWidth}px`)
+  await expect(frame.locator('body')).toHaveCSS('width', `${narrowWidth}px`)
+  expect(await page.locator('html').evaluate(el => el.scrollWidth)).toBe(390)
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await expect(wide).toHaveCSS('width', `${availableWidth}px`)
+  await expect(normal).toHaveCSS('width', '640px')
+})
+
 test('captured HTML interacts, resizes and reloads without an MCP app implementation', async ({ page }) => {
   const html = `<style>body { margin: 0; font: 14px sans-serif; } #result { height: 120px; }</style>
     <div id="result">Saved chart</div><button onclick="document.querySelector('#result').textContent = 'Changed'; document.querySelector('#result').style.height = '420px'">Update chart</button>`
@@ -85,6 +174,7 @@ test('captured HTML interacts, resizes and reloads without an MCP app implementa
   const frame = card.frameLocator('iframe').frameLocator('iframe')
   await expect(frame.locator('#result')).toHaveText('Saved chart')
   await expect(card.getByRole('status')).toHaveCount(0)
+  await expect(frame.locator('html')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
   await frame.getByRole('button', { name: 'Update chart' }).click()
   await expect(frame.locator('#result')).toHaveText('Changed')
   await expect.poll(() => card.locator('iframe').evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThan(420)
@@ -93,9 +183,80 @@ test('captured HTML interacts, resizes and reloads without an MCP app implementa
   await expect(frame.locator('#result')).toHaveText('Changed')
   await page.getByRole('button', { name: 'Dark', exact: true }).click()
   await expect(frame.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await expect(frame.locator('html')).toHaveCSS('background-color', 'rgb(52, 49, 44)')
+  await card.hover()
   await card.getByRole('button', { name: 'Reload', exact: true }).click()
   await expect(frame.locator('#result')).toHaveText('Saved chart')
   expect(reads).toHaveLength(3)
+})
+
+test('chat HTML is frameless with controls on hover, keyboard focus and when folded', async ({ page }) => {
+  await mockViews(page, { htmlArtifact: true, html: '<div style="height: 180px">Saved chart</div>' })
+  await page.goto('/tests/browser/harness.html')
+  const card = page.locator('#pm-row-a .trk-artifact')
+  const header = card.locator(':scope > header')
+  await expect(card.getByRole('status')).toHaveCount(0)
+  await page.mouse.move(0, 0)
+  await expect(card).toHaveCSS('box-shadow', 'none')
+  await expect(card).toHaveCSS('border-top-width', '0px')
+  expect(await card.evaluate(el => getComputedStyle(el, '::after').content)).toBe('none')
+  await expect(card.locator('.trk-artifact-sheet')).toHaveCSS('padding', '0px')
+  await expect(card).toHaveCSS('width', '640px')
+  await expect(header).toHaveCSS('opacity', '0')
+  await card.hover()
+  await expect(header).toHaveCSS('opacity', '1')
+  await card.screenshot({ path: test.info().outputPath('html-toolbar-light.png') })
+  await page.mouse.move(0, 0)
+  await page.getByRole('button', { name: 'Dark', exact: true }).focus()
+  await page.keyboard.press('Tab')
+  await expect(card.getByRole('link', { name: 'Open', exact: true })).toBeFocused()
+  await expect(header).toHaveCSS('opacity', '1')
+  await card.getByRole('button', { name: 'Fold', exact: true }).click()
+  await page.getByRole('button', { name: 'Dark', exact: true }).focus()
+  await page.mouse.move(0, 0)
+  await expect(header).toHaveCSS('opacity', '1')
+  await expect(header.locator('strong')).toBeVisible()
+  await card.getByRole('button', { name: 'Unfold', exact: true }).click()
+  await page.setViewportSize({ width: 390, height: 600 })
+  expect(await header.evaluate(el => el.getBoundingClientRect().right)).toBeLessThanOrEqual(390)
+  await page.getByRole('button', { name: 'Dark', exact: true }).focus()
+  await page.mouse.move(0, 0)
+  await expect(header).toHaveCSS('opacity', '0')
+  await card.screenshot({ path: test.info().outputPath('html-inline.png') })
+})
+
+test.describe('touch HTML controls', () => {
+  test.use({ hasTouch: true })
+  test('remain visible without hover and leave the content unobstructed', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 600 })
+    await mockViews(page, { htmlArtifact: true, html: '<button>Chart control</button>' })
+    await page.goto('/tests/browser/harness.html')
+    const card = page.locator('#pm-row-a')
+    const header = card.locator('.trk-artifact > header')
+    await expect(card.getByRole('status')).toHaveCount(0)
+    await expect(header).toHaveCSS('opacity', '1')
+    const clearance = await card.evaluate(el => el.querySelector('iframe')!.getBoundingClientRect().top - el.querySelector('.trk-artifact > header')!.getBoundingClientRect().bottom)
+    expect(clearance).toBeGreaterThanOrEqual(0)
+    await card.getByRole('button', { name: 'Fold', exact: true }).tap()
+    await card.getByRole('button', { name: 'Unfold', exact: true }).tap()
+    await card.frameLocator('iframe').frameLocator('iframe').getByRole('button', { name: 'Chart control' }).tap()
+  })
+})
+
+test('HTML height includes authored spacing and shrinks with its content', async ({ page }) => {
+  await mockViews(page, { htmlArtifact: true, html: '<style>body { margin: 12px; padding: 10px; border: 2px solid; } #result { height: 40px; }</style><div id="result">Chart</div>' })
+  await page.goto('/tests/browser/harness.html')
+  const card = page.locator('#pm-row-a')
+  const content = card.frameLocator('iframe').frameLocator('iframe')
+  await expect(content.locator('#result')).toHaveText('Chart')
+  await expect(card.locator('iframe')).toHaveCSS('height', '88px')
+  await content.locator('#result').evaluate(el => { el.style.height = '400px' })
+  await expect(card.locator('iframe')).toHaveCSS('height', '448px')
+  await content.locator('#result').evaluate(el => { el.style.height = '1400px' })
+  await expect(card.locator('iframe')).toHaveCSS('height', '1000px')
+  expect(await content.locator('html').evaluate(el => el.scrollHeight)).toBeGreaterThan(1000)
+  await content.locator('#result').evaluate(el => { el.style.height = '40px' })
+  await expect(card.locator('iframe')).toHaveCSS('height', '88px')
 })
 
 test('standalone captured HTML remains isolated from the console and network', async ({ page }) => {
@@ -103,6 +264,7 @@ test('standalone captured HTML remains isolated from the console and network', a
   await page.goto('/work/artifacts/html-one')
   const content = page.frameLocator('iframe').frameLocator('iframe')
   await expect(content.locator('#result')).toHaveText('Saved chart')
+  expect(await page.locator('iframe').evaluate(el => el.clientWidth)).toBeGreaterThan(640)
   const sandboxed = await content.locator('body').evaluate(async () => {
     let parentBlocked = false
     try { void window.parent.document } catch { parentBlocked = true }
@@ -132,6 +294,7 @@ for (const surface of ['html', 'body']) {
     await expect(content.locator('main')).toHaveCSS('color', 'rgb(23, 33, 59)')
     await expect(content.locator(surface)).toHaveCSS('background-color', 'rgb(243, 245, 250)')
     await expect(content.locator('#themed')).toHaveCSS('color', 'rgb(236, 228, 212)')
+    await page.locator('#pm-row-a').hover()
     await page.locator('#pm-row-a').screenshot({ path: test.info().outputPath('html-authored-colors.png') })
   })
 }
@@ -201,11 +364,13 @@ test('resize is bounded, theme is updated, and removing cards tears down frames'
   await expect(frame).toHaveCSS('height', '480px')
   await app.evaluate("window.send('ui/notifications/size-changed', { height: 5000 })")
   await expect(frame).toHaveCSS('height', '1000px')
-  await expect(page.locator('#pm-row-a')).toHaveCSS('max-width', '100%')
+  await expect(page.locator('#pm-row-a')).toHaveCSS('width', '640px')
+  expect(await app.evaluate('window.host.hostContext.containerDimensions.width')).toBe(await frame.evaluate(el => el.clientWidth))
   expect(await app.evaluate('window.host.hostContext.containerDimensions.maxHeight')).toBe(1000)
   await page.setViewportSize({ width: 390, height: 600 })
   await expect(frame).toHaveCSS('height', '1000px')
   expect(await frame.evaluate(el => el.getBoundingClientRect().right)).toBeLessThanOrEqual(390)
+  await expect.poll(() => app.evaluate("window.received.filter(m => m.method === 'ui/notifications/host-context-changed').at(-1).params.containerDimensions.width")).toBe(await frame.evaluate(el => el.clientWidth))
   await expect.poll(() => app.evaluate("window.received.filter(m => m.method === 'ui/notifications/host-context-changed').at(-1).params.containerDimensions.maxHeight")).toBe(1000)
   await page.setViewportSize({ width: 1440, height: 1000 })
   await expect(frame).toHaveCSS('height', '1000px')
@@ -545,7 +710,7 @@ test('an official SDK app receives design tokens at initialization and on theme 
   await expect(app.locator('body')).toHaveAttribute('data-input', large)
   await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
   await expect(app.locator('body')).toHaveCSS('color', 'rgb(75, 73, 66)')
-  await expect(app.locator('#result')).toHaveCSS('border-radius', '0px')
+  await expect(app.locator('#result')).toHaveCSS('border-radius', '14px')
   await page.getByRole('button', { name: 'Dark', exact: true }).click()
   await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(52, 49, 44)')
   await expect(app.locator('body')).toHaveCSS('color', 'rgb(236, 228, 212)')
@@ -621,17 +786,17 @@ test('the card frame stays above the iframe at each interface scale after resizi
     await app.evaluate("window.send('ui/notifications/size-changed', { height: 256 })")
     await expect(page.locator('iframe[title="row-a"]')).toHaveCSS('height', '256px')
     const frame = await card.evaluate(el => {
-      const outline = getComputedStyle(el, '::after')
+      const border = getComputedStyle(el, '::after')
       const rect = el.getBoundingClientRect()
       const content = el.querySelector('iframe')!.getBoundingClientRect()
       return {
-        outline: outline.outlineStyle, color: outline.outlineColor,
-        pointerEvents: outline.pointerEvents,
+        border: border.borderTopStyle, color: border.borderTopColor,
+        pointerEvents: border.pointerEvents,
         bottomGap: rect.bottom - content.bottom,
         edge: document.elementFromPoint(rect.x + rect.width / 2, rect.bottom - 0.5) === el,
       }
     })
-    expect(frame.outline).toBe('solid')
+    expect(frame.border).toBe('solid')
     expect(frame.color).toBe('rgba(83, 78, 69, 0.8)')
     expect(frame.pointerEvents).toBe('none')
     expect(frame.bottomGap).toBeGreaterThanOrEqual(0.9)
@@ -647,8 +812,10 @@ test('a missing handshake becomes a visible loading error', async ({ page }) => 
   await mockViews(page, { html: '<p>No app handshake</p>' })
   await page.goto('/tests/browser/harness.html')
   await expect(page.locator('iframe')).toHaveCount(2)
+  await expect(page.getByRole('status', { name: 'Loading artifact' })).toHaveCount(2)
   await page.clock.fastForward(16000)
   await expect(page.getByRole('alert')).toHaveCount(2)
   await expect(page.getByRole('alert').first()).toHaveText('The artifact did not finish loading.')
   await expect(page.locator('iframe')).toHaveCount(0)
+  await expect(page.getByRole('status', { name: 'Loading artifact' })).toHaveCount(0)
 })

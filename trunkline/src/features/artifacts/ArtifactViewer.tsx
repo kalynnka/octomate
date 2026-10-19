@@ -3,10 +3,14 @@ import { useQuery } from '@tanstack/react-query'
 import { Disclose, Fold } from '@/components/Fold'
 import { fetchArtifact, type ArtifactView } from './api'
 
+function ArtifactSkeleton() {
+  return <div className="trk-artifact-loading lt-skeleton" role="status" aria-label="Loading artifact" />
+}
+
 function ArtifactFrame({ view }: { view: ArtifactView }) {
   const container = useRef<HTMLDialogElement>(null)
-  const [status, setStatus] = useState('Loading artifact…')
-  const [error, setError] = useState(false)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'error' | 'closed'>('loading')
+  const [error, setError] = useState('')
   useEffect(() => {
     const element = container.current
     if (!element) return
@@ -15,17 +19,20 @@ function ArtifactFrame({ view }: { view: ArtifactView }) {
     // Load the host SDK only when an artifact is displayed.
     void import('./runtime').then(({ mountArtifact }) => {
       if (cancelled) return
-      dispose = mountArtifact(element, view, () => setStatus(''), (message) => {
-        setError(true)
-        setStatus(message)
-      }, () => setStatus('Artifact closed. Reload to reopen.'))
-    }).catch(() => { if (!cancelled) { setError(true); setStatus('The artifact viewer could not be loaded.') } })
+      dispose = mountArtifact(element, view, () => setStatus('ready'), (message) => {
+        setError(message)
+        setStatus('error')
+      }, () => setStatus('closed'))
+    }).catch(() => { if (!cancelled) { setError('The artifact viewer could not be loaded.'); setStatus('error') } })
     return () => { cancelled = true; dispose?.() }
   }, [view])
-  return <>
-    {status && <p role={error ? 'alert' : 'status'}>{status}</p>}
-    <dialog ref={container} open className="trk-artifact-frame" aria-label={view.artifact.title} />
-  </>
+  const loading = status === 'loading'
+  return <div className="trk-artifact-stage" data-loading={loading ? '' : undefined} aria-busy={loading}>
+    {loading && <ArtifactSkeleton />}
+    {status === 'error' && <p role="alert">{error}</p>}
+    {status === 'closed' && <p role="status">Artifact closed. Reload to reopen.</p>}
+    <dialog ref={container} open className="trk-artifact-frame" aria-label={view.artifact.title} inert={loading} aria-hidden={loading || undefined} />
+  </div>
 }
 
 /** Shared by standalone pages and ledger references; reload never executes a tool. */
@@ -44,7 +51,9 @@ export function ArtifactViewer({ artifactId, threadId, messageId }: {
     queryKey: ['artifact-view', url, revision], queryFn: ({ signal }) => fetchArtifact(url, signal),
     retry: false, gcTime: 0, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false,
   })
-  return <section className="trk-artifact" aria-label="Artifact">
+  const inlineHtml = threadId && view.data?.artifact.kind === 'html'
+  const wide = view.data?.artifact.kind === 'html' && view.data.artifact.mode === 'wide'
+  return <section className={`trk-artifact${inlineHtml ? ' trk-artifact-inline-html' : ''}`} data-wide={wide ? '' : undefined} data-folded={folded ? '' : undefined} aria-label="Artifact">
     <header className="trk-artifact-header">
       <strong>{view.data?.artifact.title ?? 'Artifact'}</strong>
       <span className="trk-artifact-controls">
@@ -61,7 +70,7 @@ export function ArtifactViewer({ artifactId, threadId, messageId }: {
     <div id={contentId} inert={folded} aria-hidden={folded || undefined}>
       <Fold open={!folded}>
         <div className="trk-artifact-sheet">
-          {view.isPending && <p role="status">Loading artifact…</p>}
+          {view.isPending && <ArtifactSkeleton />}
           {view.error && <p role="alert">{view.error.message}</p>}
           {view.data && <ArtifactFrame key={`${url}:${revision}`} view={view.data} />}
         </div>

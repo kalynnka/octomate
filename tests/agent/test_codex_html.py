@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+from typing import Literal
 from unittest.mock import AsyncMock
 
 import httpx
@@ -123,11 +124,13 @@ def test_capture_refuses_invalid_files(tmp_path: Path, invalid: str) -> None:
 
 @pytest.mark.parametrize("chunk_size", [1, 17, 1000])
 @pytest.mark.parametrize("caption", ["Here is the chart.\n", ""])
+@pytest.mark.parametrize("mode", [None, "wide"])
 async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
     monkeypatch: pytest.MonkeyPatch,
     in_memory_engine: AsyncEngine,
     chunk_size: int,
     caption: str,
+    mode: Literal["wide"] | None,
 ) -> None:
     monkeypatch.setattr(codex_ink, "SharedCodex", FakeCodex)
     reset_fake_codex([])
@@ -174,7 +177,13 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         source.write_text(html)
         reference = (
             "visualize"
-            + json.dumps({"path": str(source), "title": "Chart", "mode": "wide"})
+            + json.dumps(
+                {
+                    "path": str(source),
+                    "title": "Chart",
+                    **({"mode": mode} if mode else {}),
+                }
+            )
             + ""
         )
         answer = f"{caption}{reference}\n{reference}"
@@ -228,6 +237,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         assert response is not None
         assert response.provider_response_id == "msg-1"
     assert isinstance(artifact, HtmlArtifact)
+    assert artifact.mode == mode
     assert "html" not in artifact.model_dump()
     stored = await host.files.get(artifact.file_id, owner_id=owner.id)
     assert isinstance(stored, Html)
@@ -257,6 +267,7 @@ async def test_driven_html_reaches_the_owned_viewer_and_channel_card(
         view = HtmlView.model_validate(response.json())
         assert view.html == html
         assert view.artifact.file_id == stored.id
+        assert view.artifact.mode == mode
         assert "resource" not in response.json()
         assert response.headers["cache-control"] == "no-store"
         assert "html" in str(view.sandbox_url)

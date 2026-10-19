@@ -20,11 +20,14 @@ VISUALIZATION_REFERENCE = re.compile(r"\ue200visualize\ue202([^\ue201]*)\ue201")
 
 
 class HtmlReference(BaseModel):
-    """An explicit file reference; optional wide mode uses the existing full-width card."""
+    """An explicit file reference with an optional layout hint retained on capture."""
 
     path: Path = Field(description="Absolute HTML path in this run's workspace.")
     title: str | None = Field(default=None, min_length=1, max_length=200)
-    mode: Literal["wide"] | None = None
+    mode: Literal["wide"] | None = Field(
+        default=None,
+        description="Native layout hint requesting a wider inline visualization.",
+    )
 
     def read(self, workspace: Path) -> str:
         """Read a bounded snapshot through directory descriptors without following links."""

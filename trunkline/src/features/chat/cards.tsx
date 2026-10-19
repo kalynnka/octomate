@@ -1160,7 +1160,7 @@ export function LedgerRow({ item, cardMax, i }: { item: LedgerItem; cardMax: str
   const threadId = useConsole((s) => s.selThreadId)
   switch (item.kind) {
     case 'artifact':
-      return <div id={`pm-${item.uid}`} className="lt-entry" style={{ width: '100%', maxWidth: cardMax, minWidth: 0 }}>
+      return <div id={`pm-${item.uid}`} className="lt-entry trk-artifact-row">
         <ArtifactViewer artifactId={item.artifactId} messageId={item.uid} threadId={threadId} />
       </div>
     case 'divider':

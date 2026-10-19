@@ -1,10 +1,12 @@
-.trk-artifact { --motion-base: var(--motion-entry); position: relative; container-type: inline-size; width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid transparent; background-color: var(--card-bg); color: var(--fg-1); box-shadow: 3px 3px 0 var(--card-bg), 3px 3px 0 1px var(--line-divider); }
+.trk-artifact { --motion-base: var(--motion-entry); position: relative; container-type: inline-size; width: 100%; min-width: 0; box-sizing: border-box; border: 1px solid transparent; border-radius: var(--radius-soft-lg); overflow: hidden; background-color: var(--card-bg); color: var(--fg-1); box-shadow: var(--shadow-soft); }
+.trk-artifact-row { width: 100%; max-width: 640px; min-width: 0; }
+.trk-artifact-row:has(> .trk-artifact[data-wide]) { max-width: 100%; }
 /* Paint the frame above the embedded document, including at fractional UI scales. */
-.trk-artifact::after { content: ''; position: absolute; inset: 0; outline: 1px solid var(--line-divider); pointer-events: none; }
-.trk-artifact-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 6px 14px; box-sizing: border-box; border-bottom: 1px solid var(--line-color); background-color: var(--card-bg); }
+.trk-artifact::after { content: ''; position: absolute; inset: 0; border: 1px solid var(--line-divider); border-radius: inherit; pointer-events: none; }
+.trk-artifact-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 44px; padding: 6px 14px; box-sizing: border-box; border-bottom: 1px solid var(--line-color); background-color: var(--surface-raised); }
 .trk-artifact-header strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--label); letter-spacing: var(--track-wide); text-transform: uppercase; }
 .trk-artifact-controls { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; align-items: center; gap: 4px; flex-shrink: 0; }
-.trk-artifact-header :is(a, button) { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 0 8px; border: 0; background: transparent; color: var(--fg-2); font: var(--label-xs); letter-spacing: var(--track-wide); text-transform: uppercase; text-decoration: none; cursor: pointer; }
+.trk-artifact-header :is(a, button) { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: 30px; padding: 0 8px; border: 0; border-radius: var(--radius-soft-sm); background: transparent; color: var(--fg-2); font: var(--label-xs); letter-spacing: var(--track-wide); text-transform: uppercase; text-decoration: none; cursor: pointer; }
 .trk-artifact-controls > a { color: var(--color-accent); }
 .trk-artifact-controls > :not(:first-child) { position: relative; }
 .trk-artifact-controls > :not(:first-child)::before { content: ''; position: absolute; left: -2px; top: 8px; bottom: 8px; border-left: 1px solid var(--line-divider); pointer-events: none; }
@@ -14,9 +16,15 @@
 .trk-artifact-header :is(a, button):focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
 .trk-artifact p { margin: 0; padding: 18px 14px; color: var(--fg-2); font: var(--ui); }
 .trk-artifact [role="alert"] { color: var(--color-terra); }
-.trk-artifact-frame { position: static; width: 100%; max-width: none; max-height: none; box-sizing: border-box; padding: 0; margin: 0; border: 0; background: var(--card-bg); color: var(--fg-1); }
+.trk-artifact-loading { width: 100%; height: 240px; border-radius: var(--radius-soft-md); }
+.trk-artifact-stage { position: relative; }
+.trk-artifact-stage[data-loading] { height: 240px; overflow: hidden; }
+.trk-artifact-stage[data-loading] > .trk-artifact-loading { position: absolute; inset: 0; }
+.trk-artifact-stage[data-loading] > .trk-artifact-frame { visibility: hidden; }
+.trk-artifact [data-folded] .trk-artifact-loading::after { animation: none; }
+.trk-artifact-frame { position: static; width: 100%; max-width: none; max-height: none; box-sizing: border-box; padding: 0; margin: 0; border: 0; border-radius: var(--radius-soft-md); background: var(--card-bg); color: var(--fg-1); }
 .trk-artifact-frame:not([data-display-mode="fullscreen"]) { height: var(--artifact-height); overflow: hidden; transition: height var(--motion-entry) var(--ease-in-out); }
-.trk-artifact-frame[data-display-mode="fullscreen"] { position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; overflow: hidden; }
+.trk-artifact-frame[data-display-mode="fullscreen"] { position: fixed; inset: 0; width: 100%; height: 100%; margin: 0; border-radius: 0; overflow: hidden; }
 .trk-artifact-frame .trk-artifact-header[hidden] { display: none; }
 .trk-artifact-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line-divider); background: var(--surface-raised); }
 .trk-artifact-actions :is(a, button) { min-height: 32px; padding: 6px 10px; box-sizing: border-box; border: 1px solid var(--line-divider); background: var(--card-bg); color: var(--fg-1); font: var(--ui); text-decoration: none; overflow-wrap: anywhere; cursor: pointer; }
@@ -29,9 +37,23 @@
   .trk-artifact > .trk-artifact-header > strong { width: 100%; }
   .trk-artifact-controls { width: 100%; }
 }
+.trk-artifact-inline-html { border: 0; box-shadow: none; }
+.trk-artifact-inline-html::after { content: none; }
+.trk-artifact-inline-html > .trk-artifact-header { position: absolute; top: 8px; right: 8px; z-index: 1; flex-wrap: nowrap; max-width: calc(100% - 16px); min-height: 30px; padding: 4px; gap: 8px; border: 1px solid var(--line-divider); border-radius: var(--radius-soft-md); box-shadow: var(--shadow-soft); opacity: 0; pointer-events: none; transition: opacity var(--motion-fast) var(--ease-out); }
+.trk-artifact-inline-html > .trk-artifact-header > strong { display: none; width: auto; }
+.trk-artifact-inline-html .trk-artifact-controls { width: auto; }
+.trk-artifact-inline-html:is(:hover, :focus-within, [data-folded]) > .trk-artifact-header { opacity: 1; pointer-events: auto; }
+.trk-artifact-inline-html[data-folded] > .trk-artifact-header { position: static; max-width: none; padding: 8px; border: 0; border-radius: inherit; box-shadow: none; }
+.trk-artifact-inline-html[data-folded] > .trk-artifact-header > strong { display: block; }
+.trk-artifact-inline-html .trk-artifact-sheet { padding: 0; }
+.trk-artifact-inline-html .trk-artifact-frame:not([data-display-mode="fullscreen"]) { border-radius: var(--radius-soft-lg); }
 @media (pointer: coarse) {
   .trk-artifact-header :is(a, button) { min-height: 44px; min-width: 44px; }
 }
+@media (hover: none) {
+  .trk-artifact-inline-html > .trk-artifact-header { position: static; justify-content: flex-end; max-width: none; padding: 4px 8px; border: 0; border-bottom: 1px solid var(--line-divider); border-radius: 0; box-shadow: none; opacity: 1; pointer-events: auto; }
+}
 @media (prefers-reduced-motion: reduce) {
   .trk-artifact-frame:not([data-display-mode="fullscreen"]) { transition: none; }
+  .trk-artifact-inline-html > .trk-artifact-header { transition: none; }
 }

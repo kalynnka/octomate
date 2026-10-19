@@ -35,10 +35,10 @@ function artifactAppearance() {
       '--font-sans': token('--font-sans'),
       '--font-mono': token('--font-mono'),
       '--border-radius-xs': token('--radius-small'),
-      '--border-radius-sm': token('--radius-small'),
-      '--border-radius-md': token('--radius-medium'),
-      '--border-radius-lg': token('--radius-large'),
-      '--border-radius-xl': token('--radius-large'),
+      '--border-radius-sm': token('--radius-soft-sm'),
+      '--border-radius-md': token('--radius-soft-md'),
+      '--border-radius-lg': token('--radius-soft-lg'),
+      '--border-radius-xl': token('--radius-soft-lg'),
       '--border-radius-full': token('--radius-dot'),
       '--shadow-sm': token('--shadow-soft'),
       '--shadow-md': token('--shadow-soft'),
@@ -119,7 +119,7 @@ export function mountArtifact(
   let actions: HTMLDivElement | undefined
   let cancelAction: (() => void) | undefined
   const lifetime = new AbortController()
-  let requestedHeight = 480
+  let requestedHeight = artifact.kind === 'html' ? 1 : 480
   const log = container.closest<HTMLElement>('#trk-chatlog')
   let scrollAnchor: { edge: 'top' | 'bottom'; position: number } | undefined
   for (const event of ['wheel', 'touchmove', 'pointerdown']) {
@@ -201,7 +201,7 @@ export function mountArtifact(
   })
   bridge.addEventListener('sizechange', ({ height }) => {
     if (!initialized || disposed || height == null || !Number.isFinite(height)) return
-    const nextHeight = Math.min(1000, Math.max(100, Math.ceil(height)))
+    const nextHeight = Math.min(1000, Math.max(artifact.kind === 'html' ? 1 : 100, Math.ceil(height)))
     if (nextHeight === requestedHeight) return
     if (log && displayMode === 'inline' && document.activeElement === iframe) {
       const bounds = container.getBoundingClientRect()

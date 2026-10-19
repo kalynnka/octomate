@@ -69,6 +69,11 @@ class HtmlArtifact(Artifact):
 
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "html"}
 
+    mode: Mapped[str | None] = mapped_column(
+        String,
+        nullable=True,
+        comment="Captured visualization layout hint; wide requests more inline space, null uses the default width.",
+    )
     file_id: Mapped[UUID7] = mapped_column(
         Uuid,
         ForeignKey("files.id", name="fk_artifacts_file_id_files", ondelete="RESTRICT"),
