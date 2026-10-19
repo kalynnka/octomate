@@ -29,7 +29,12 @@ def main() -> None:
                                 "protocolVersion": int(
                                     os.getenv("ACP_TEST_VERSION", "1")
                                 ),
-                                "agentCapabilities": {"loadSession": True},
+                                "agentCapabilities": {
+                                    "loadSession": True,
+                                    "sessionCapabilities": {"list": {}, "resume": {}},
+                                    "promptCapabilities": {"image": True},
+                                    "mcpCapabilities": {"http": True},
+                                },
                                 "agentInfo": {"name": "scripted", "version": "1"},
                                 "_meta": {"peer": "retained"},
                             },
@@ -42,13 +47,35 @@ def main() -> None:
                             "id": message["id"],
                             "result": {
                                 "sessionId": f"native-{session_count}",
+                                "modes": {
+                                    "currentModeId": "default",
+                                    "availableModes": [
+                                        {"id": "default", "name": "Default"}
+                                    ],
+                                },
                                 "_meta": {"providerSession": True},
+                            },
+                        }
+                    )
+                case "session/prompt" if message["params"].get("_meta", {}).get("fail"):
+                    send(
+                        {
+                            "id": message["id"],
+                            "error": {
+                                "code": -32602,
+                                "message": "scripted refusal",
+                                "data": {"retry": False},
                             },
                         }
                     )
                 case "session/prompt":
                     pending = message["id"]
                     session_id = message["params"]["sessionId"]
+                    callback_method = (
+                        message["params"]
+                        .get("_meta", {})
+                        .get("callbackMethod", "session/request_permission")
+                    )
                     send(
                         {
                             "method": "session/update",
@@ -64,18 +91,29 @@ def main() -> None:
                     send(
                         {
                             "id": "permission",
-                            "method": "session/request_permission",
+                            "method": callback_method,
                             "params": {
-                                "sessionId": session_id,
-                                "toolCall": {"toolCallId": "edit", "title": "Edit"},
-                                "options": [
-                                    {
-                                        "optionId": "yes",
-                                        "name": "Allow",
-                                        "kind": "allow_once",
-                                    }
-                                ],
-                            },
+                                "session/request_permission": {
+                                    "sessionId": session_id,
+                                    "toolCall": {"toolCallId": "edit", "title": "Edit"},
+                                    "options": [
+                                        {
+                                            "optionId": "yes",
+                                            "name": "Allow",
+                                            "kind": "allow_once",
+                                        }
+                                    ],
+                                },
+                                "fs/read_text_file": {
+                                    "sessionId": session_id,
+                                    "path": "/project/file.txt",
+                                },
+                                "terminal/create": {
+                                    "sessionId": session_id,
+                                    "command": "echo",
+                                    "args": ["hello"],
+                                },
+                            }[callback_method],
                         }
                     )
                 case "session/cancel":

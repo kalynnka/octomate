@@ -510,12 +510,14 @@ class Octomate(FastAPI):
         from octomate.commands import command_router
         from octomate.mcp.routes import mcp_router
         from octomate.oauth.routes import oauth_router
+        from octomate.tentacles.acp.routes import acp_router
         from octomate.tentacles.trunkline.base import ConsoleFiles, TrunklineTentacle
 
         self.include_router(artifact_router)
         self.include_router(auth_router)
         self.include_router(command_router)
         self.include_router(mcp_router)
+        self.include_router(acp_router)
         # FastAPI builds this on first serving, after tentacles have registered.
         # The OAuth router is the project's own, not a tentacle's, and it is mounted
         # only when a registered connector actually points a browser at it — the two

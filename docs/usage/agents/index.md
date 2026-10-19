@@ -19,6 +19,8 @@ The [Tentacles guide](../../tentacles/index.md#enable-a-tentacle) walks through
 the shared steps. To collect sessions from your own app, editor or terminal,
 also follow the [client setup](../../installation/clients/quickstart.md).
 
+Use [ACP](acp.md) to run Claude or Codex through Octomate.
+
 ## Configuration
 
 ```yaml

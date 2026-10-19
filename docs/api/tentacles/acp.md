@@ -1,4 +1,8 @@
 # ACP
+::: octomate.tentacles.acp.routes
+
+::: octomate.tentacles.acp.transport
+
 ::: octomate.tentacles.acp.auth
 
 ::: octomate.tentacles.acp.client

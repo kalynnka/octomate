@@ -8,7 +8,7 @@
 
 import type { ApiUserProfile } from './events'
 
-export type ApiKeyScope = 'hooks' | 'mcp'
+export type ApiKeyScope = 'hooks' | 'mcp' | 'acp'
 
 export interface ApiUser {
   id: string
