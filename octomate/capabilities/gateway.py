@@ -155,6 +155,7 @@ start: the thread you land in is bound to it and you resume in its workspace, wh
 work is kept. A thread about no project runs in a throwaway tree, so do this before
 you start work, not after. From inside a thread, use `destination=null`,
 `new_thread=false` and `project` to bind this one without opening another.
+Binding the current thread always resumes your work in its project workspace.
 Staying put requires a project; a thread binds once, and a different project is
 a different thread. Native sessions must move into a new thread.
 
@@ -573,6 +574,7 @@ class GatewayCapability(AbstractCapability[None]):
                 attached history that the agent can copy.
             new_thread: Create a thread before continuing. Set false only to bind
                 the current thread to a project without opening another one.
+                Binding the current thread always resumes your work.
                 For creation, the address must have no `channel_thread_id`.
             project: A project's name, copied exactly from `inspect`
                 (`reveal="projects"`), for a conversation about no project: the
@@ -581,9 +583,10 @@ class GatewayCapability(AbstractCapability[None]):
                 wherever it goes, so omit this there.
             ref: The branch, tag or commit that workspace starts from; omit it for
                 the project's default branch.
-            resume: Carry on working there at once, as after any tool call. Leave
-                it false when the move is all that was asked: you continue when
-                the user next writes there.
+            resume: Carry on working in a new thread at once, as after any tool
+                call. Leave it false when the move is all that was asked: you
+                continue when the user next writes there. Ignored when
+                new_thread is false: binding the current thread always resumes.
         """
         try:
             decision = await self.session.teleport(

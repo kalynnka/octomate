@@ -29,8 +29,8 @@ from octomate.telemetry import reflex_logfire
 class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
     """Create a thread at the prepared address, copy history and resume the agent.
 
-    An in-place move binds a project without creating a thread. A failed creation
-    refuses the move before any history is copied.
+    An in-place move binds a project without creating a thread and always resumes
+    the agent. A failed creation refuses the move before any history is copied.
     """
 
     request: TeleportRequest
@@ -204,7 +204,11 @@ class Teleport(BaseNode[ReflexState, ReflexDeps, ReflexGraphResult]):
                 hint,
                 self.agent_id,
             )
-        if self.request.prompt is None and not self.request.resume:
+        if (
+            self.request.new_thread
+            and self.request.prompt is None
+            and not self.request.resume
+        ):
             return await self.land(ctx)
         return await self.carry_on(ctx, sentence)
 

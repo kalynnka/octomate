@@ -85,9 +85,10 @@ own holding the work as it stood, uncommitted changes and ignored files such as
 an `.env` included, on a branch of its own, and the source keeps its own. A
 teleport never switches projects; asking for another one is refused.
 
-Teleport uses `new_thread=false` only to bind a current thread that is about no
-project. It never reuses an unrelated existing conversation, and a failed thread
-creation does not silently turn into an in-place move.
+You can also ask the agent to attach a project workspace to the current thread
+if it has no project yet. The agent automatically continues your task once the
+workspace is ready. Teleport never reuses an unrelated existing conversation,
+and a failed thread creation does not silently turn into an in-place move.
 
 Teleport requires independent history copying: driven Codex, Claude and Inkling
 support it; DeepSeek does not yet. An owned native Codex or Claude Code session

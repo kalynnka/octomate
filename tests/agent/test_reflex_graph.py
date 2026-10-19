@@ -2378,8 +2378,9 @@ async def test_a_dismiss_releases_the_workspace_once_the_turn_is_saved(
     )
 
 
+@pytest.mark.parametrize("resume", [True, False])
 async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
-    in_memory_engine: AsyncEngine, tmp_path: Path
+    in_memory_engine: AsyncEngine, tmp_path: Path, resume: bool
 ) -> None:
     # `here` with a project: the move is only into the workspace. The thread is
     # bound and its tree forked before the agent resumes, with the call answered.
@@ -2406,6 +2407,7 @@ async def test_a_teleport_with_a_project_binds_the_thread_it_lands_in(
         reception_teleport="into inky",
         reception_teleport_destination="here",
         reception_teleport_project="inky",
+        reception_teleport_resume=resume,
         reception_output="carried on",
     )
     deps = _deps(
