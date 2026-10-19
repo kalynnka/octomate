@@ -190,7 +190,7 @@ export function mountArtifact(
   let hostContext: McpUiHostContext = {
     ...artifactAppearance(), displayMode, availableDisplayModes: ['inline', 'fullscreen'],
     containerDimensions: dimensions(), platform: 'web', locale: navigator.language,
-    ...(artifact.kind === 'mcp_app' ? { toolInfo: { tool: artifact.invocation.tool } } : {}),
+    ...(artifact.kind === 'mcp_app' && artifact.invocation.tool ? { toolInfo: { tool: artifact.invocation.tool } } : {}),
   }
   const bridge = new AppBridge(null, { name: 'Octomate', version: '1' }, {
     sandbox: { csp: resource?.ui.csp ?? {}, permissions: {} },

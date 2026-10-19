@@ -54,6 +54,7 @@ from openai_codex.generated.v2_all import (
     GuardianApprovalReviewStatus,
     ItemCompletedNotification,
     ItemGuardianApprovalReviewCompletedNotification,
+    McpToolCallThreadItem,
     Personality,
     ReasoningEffort,
     ReasoningSummary,
@@ -101,7 +102,11 @@ from octomate.config.agents import Claim, CodexConfig
 from octomate.config.channels import TrunklineChannelConfig
 from octomate.mcp.server import OCTOMATE_MCP_PATH
 from octomate.nerve import Impulse
-from octomate.schemas.artifacts import HtmlArtifact
+from octomate.schemas.artifacts import (
+    CapturedMcpAppSource,
+    HtmlArtifact,
+    McpAppArtifact,
+)
 from octomate.schemas.auth import IssuedApiKey
 from octomate.schemas.awakes import DeferredActionBatchResponse
 from octomate.schemas.commands import (
@@ -121,6 +126,7 @@ from octomate.schemas.deferred import (
     QuestionRequest,
 )
 from octomate.schemas.files import Jsonl
+from octomate.schemas.mcp import McpAppInvocation
 from octomate.schemas.messages import ModelRequest, ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.segments import TextSegment
@@ -1851,6 +1857,18 @@ class CodexTentacle(AgentTentacle[str, None]):
                     address=conversation_address,
                     thread_id=conversation.thread_id,
                 )
+                if (
+                    isinstance(notification.payload, ItemCompletedNotification)
+                    and notification.payload.item.root.id not in artifact_messages
+                ):
+                    artifacts.extend(
+                        await self.capture_mcp_app(
+                            notification.payload,
+                            session=session,
+                            address=conversation_address,
+                            thread_id=conversation.thread_id,
+                        )
+                    )
                 if artifacts:
                     payload = notification.payload
                     assert isinstance(payload, ItemCompletedNotification)
@@ -1961,6 +1979,73 @@ class CodexTentacle(AgentTentacle[str, None]):
                     conversation_id=str(conversation.id),
                 )
             )
+
+    async def capture_mcp_app(
+        self,
+        payload: ItemCompletedNotification,
+        *,
+        session: OctomateSession | None,
+        address: ChannelAddress,
+        thread_id: UUID7,
+    ) -> list[ArtifactAvailableEvent]:
+        """Capture a Codex-owned app's UI and complete invocation for offline replay.
+
+        Octomate's MCP proxy already captures its own apps. Read other resources
+        through the originating Codex connection, retaining the UI policy while
+        keeping HTML in owned file storage. No tools are executed during capture.
+        """
+        item = payload.item.root
+        if (
+            not isinstance(item, McpToolCallThreadItem)
+            or item.server == "octomate_driven"
+        ):
+            return []
+        resource = await self.ink.app_resource(payload.thread_id, item)
+        if resource is None:
+            return []
+        if (
+            session is None
+            or session.user_profile is None
+            or session.user_profile.user_id is None
+        ):
+            raise ValueError("MCP app capture requires a registered artifact owner")
+        channel = session.channels.get(address.channel_tentacle_id)
+        if channel is None:
+            raise ValueError("MCP app capture requires the run's channel")
+        assert item.result is not None
+        invocation = McpAppInvocation.model_validate(
+            {
+                "provider_name": item.server,
+                "resource_uri": resource.uri,
+                "arguments": item.arguments,
+                "result": item.result.model_dump(mode="json", by_alias=True),
+            }
+        )
+        with BytesIO(resource.html.encode("utf-8")) as source:
+            stored = await self.files.write(
+                UploadFile(
+                    source,
+                    filename="widget.html",
+                    headers=Headers({"content-type": "text/html; charset=utf-8"}),
+                ),
+                owner_id=session.user_profile.user_id,
+            )
+        message = await self.threads.record_artifact(
+            thread_id,
+            McpAppArtifact(
+                owner_id=session.user_profile.user_id,
+                title=item.tool,
+                source=CapturedMcpAppSource(file_id=stored.id, ui=resource.ui),
+                invocation=invocation,
+            ),
+            sender=channel.self_profile,
+            agent_tentacle_id=self.id,
+        )
+        return [
+            ArtifactAvailableEvent(
+                message_id=message.id, artifact_id=message.artifact_id
+            )
+        ]
 
     async def capture_html(
         self,

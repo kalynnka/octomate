@@ -54,11 +54,17 @@ class McpAppArtifact(Artifact):
 
     __mapper_args__: ClassVar[MapperArgs] = {"polymorphic_identity": "mcp_app"}
 
+    source: Mapped[JsonValue] = mapped_column(
+        JSON,
+        nullable=True,
+        comment="MCP app content source: original installation identity and namespace, "
+        "or an owned captured HTML file and resource UI metadata.",
+    )
     invocation: Mapped[JsonValue] = mapped_column(
         JSON,
         nullable=True,
         comment=(
-            "MCP app invocation: original installation identity, tool declaration, "
+            "MCP app invocation: provider name, available tool declaration, "
             "UI resource URI, arguments, and complete result. Retained after uninstall."
         ),
     )

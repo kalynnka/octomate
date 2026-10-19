@@ -62,6 +62,7 @@ async def test_two_artifacts_and_the_reply_have_distinct_deliveries(
     second_artifact = McpAppArtifact(
         owner_id=app_artifact.owner_id,
         title="Second diagram",
+        source=app_artifact.source,
         invocation=app_artifact.invocation,
     )
     second = ThreadArtifact(

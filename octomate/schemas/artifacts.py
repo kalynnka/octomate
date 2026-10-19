@@ -19,7 +19,12 @@ from uuid_utils.compat import uuid7
 
 from octomate.models import artifacts as artifact_models
 from octomate.schemas.base import sqlalchemy_materia
-from octomate.schemas.mcp import McpAppInvocation, McpAppResource, McpAppResourceCSP
+from octomate.schemas.mcp import (
+    McpAppInvocation,
+    McpAppResource,
+    McpAppResourceCSP,
+    McpAppResourceUI,
+)
 
 
 class ArtifactSandboxPolicy(BaseModel):
@@ -92,16 +97,36 @@ class Artifact(BaseTransmuter):
     )
 
 
+class InstalledMcpAppSource(BaseModel):
+    """Load UI through the original installation, never a reused namespace."""
+
+    kind: Literal["installed"] = "installed"
+    installation_id: UUID7 = Field(description="Original installation identity.")
+    namespace: str = Field(description="The installation's namespace at execution.")
+
+
+class CapturedMcpAppSource(BaseModel):
+    """Replay a saved resource without reconnecting to the agent's MCP server."""
+
+    kind: Literal["captured"] = "captured"
+    file_id: UUID7 = Field(description="Owned HTML file in the storage provider.")
+    ui: McpAppResourceUI = Field(
+        description="Resource UI metadata captured with the HTML."
+    )
+
+
 @sqlalchemy_materia.bless(artifact_models.McpAppArtifact)
 class McpAppArtifact(Artifact):
     """An MCP invocation retained for an authorized artifact viewer.
 
-    The saved input and result support replay after an authorized UI resource
-    fetch. The invocation's installation UUID never follows namespace
-    reuse, and deleting a thread or uninstalling the provider does not delete it.
+    The saved input and result support replay after loading the UI from its typed
+    source. Deleting a thread or uninstalling the provider does not delete it.
     """
 
     kind: Literal["mcp_app"] = Field(default="mcp_app", frozen=True)
+    source: Annotated[
+        InstalledMcpAppSource | CapturedMcpAppSource, Field(discriminator="kind")
+    ] = Field(description="Authorized installation or captured file supplying the UI.")
     invocation: McpAppInvocation = Field(
         repr=False,
         description="Original call and complete result, kept outside generic ledger responses.",
@@ -148,7 +173,7 @@ class ArtifactView(BaseModel):
 
 
 class McpAppView(ArtifactView):
-    """An authorized artifact snapshot and freshly fetched resource for replay."""
+    """An authorized artifact and its installed or captured UI resource for replay."""
 
     artifact: McpAppArtifact = Field(description="The complete saved invocation.")
     resource: McpAppResource = Field(

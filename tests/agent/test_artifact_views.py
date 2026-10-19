@@ -21,7 +21,7 @@ from octomate.managers.artifacts import (
     ArtifactViewerUnavailable,
 )
 from octomate.managers.auth import AuthManager
-from octomate.schemas.artifacts import McpAppArtifact, McpAppView
+from octomate.schemas.artifacts import InstalledMcpAppSource, McpAppArtifact, McpAppView
 from octomate.schemas.mcp import NoAuthMcp, OAuthMcp
 from octomate.schemas.oauth import OAuthConnection
 from octomate.schemas.thread import Thread, ThreadArtifact, ThreadLedger, ThreadMessage
@@ -41,6 +41,11 @@ class SavedApp:
     entry: ThreadArtifact
     upstream: FastMCP
     content: ResourceContent
+
+    @property
+    def source(self) -> InstalledMcpAppSource:
+        assert isinstance(self.artifact.source, InstalledMcpAppSource)
+        return self.artifact.source
 
     @property
     def url(self) -> str:
@@ -108,9 +113,7 @@ async def test_overview_uses_saved_metadata_without_upstream_requests(
     case.host.config.artifacts.path = path
     case.host.config.artifacts.sandbox_origin = None
     if uninstalled:
-        await case.host.mcp.uninstall(
-            case.user.id, case.artifact.invocation.installation_id
-        )
+        await case.host.mcp.uninstall(case.user.id, case.source.installation_id)
     async with connected(case.host.mcp, case.upstream) as requests:
         overview = await case.host.artifacts.overview(case.artifact.id, case.user)
         assert overview.model_dump(mode="json") == {
@@ -233,19 +236,17 @@ async def test_unavailable_artifacts_do_not_fetch_resources(
         url = f"/api/artifacts/{uuid7()}"
     elif state == "disabled":
         await case.host.mcp.disable(
-            user_id=case.user.id, mcp_id=case.artifact.invocation.installation_id
+            user_id=case.user.id, mcp_id=case.source.installation_id
         )
     elif state in {"removed", "reinstalled"}:
-        await case.host.mcp.uninstall(
-            case.user.id, case.artifact.invocation.installation_id
-        )
+        await case.host.mcp.uninstall(case.user.id, case.source.installation_id)
         if state == "reinstalled":
             async with async_session() as session:
                 session.add(
                     NoAuthMcp(
                         user_id=case.user.id,
                         name="Replacement",
-                        namespace=case.artifact.invocation.namespace,
+                        namespace=case.source.namespace,
                         url="https://replacement.example/mcp",
                     )
                 )
@@ -256,13 +257,13 @@ async def test_unavailable_artifacts_do_not_fetch_resources(
             instance = NoAuthMcp(
                 user_id=other.id,
                 name="Other diagrams",
-                namespace=case.artifact.invocation.namespace,
+                namespace=case.source.namespace,
                 url="https://mcp.example/mcp",
             )
             session.add(instance)
             artifact = await session.get(McpAppArtifact, case.artifact.id)
             assert artifact is not None
-            artifact.invocation = artifact.invocation.model_copy(
+            artifact.source = case.source.model_copy(
                 update={"installation_id": instance.id}
             )
             await session.commit()
@@ -398,21 +399,19 @@ async def test_missing_or_revoked_oauth_grant_blocks_loading(
     saved_app: SavedApp, grant: bool
 ) -> None:
     case = saved_app
-    await case.host.mcp.uninstall(
-        case.user.id, case.artifact.invocation.installation_id
-    )
+    await case.host.mcp.uninstall(case.user.id, case.source.installation_id)
     async with async_session() as session:
         instance = OAuthMcp(
             user_id=case.user.id,
             name="OAuth diagrams",
-            namespace=case.artifact.invocation.namespace,
+            namespace=case.source.namespace,
             url="https://mcp.example/mcp",
         )
         session.add(instance)
         await session.flush()
         artifact = await session.get(McpAppArtifact, case.artifact.id)
         assert artifact is not None
-        artifact.invocation = artifact.invocation.model_copy(
+        artifact.source = case.source.model_copy(
             update={"installation_id": instance.id}
         )
         if grant:

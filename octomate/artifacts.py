@@ -4,7 +4,7 @@ GET `/api/artifacts/{artifact_id}` reads an owned artifact without requiring a
 thread. GET `/api/trunkline/threads/{thread_id}/artifacts/{message_id}` additionally
 requires thread access and a visible ledger reference, including fork cutoffs.
 
-Both return captured HTML or a saved invocation with its freshly fetched UI resource,
+Both return captured HTML or a saved invocation with its installed or captured UI resource,
 and the configured sandbox origin with Cache-Control: no-store. No provider credentials are returned;
 there is no caller-selected resource URI or tool execution endpoint. HTML stays
 untrusted JSON data here. The SPA viewer uses the configured artifact prefix;

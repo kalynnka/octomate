@@ -171,6 +171,11 @@ Only self-contained visualizations are supported. External content and
 ChatGPT-specific controls are unavailable. Ordinary HTML code blocks and file links
 remain text, and visualizations from native sessions are not captured yet.
 
+Standard MCP apps supplied through driven Codex connections also appear as
+artifacts. Their saved interface and result remain available after the session
+ends. App controls that need additional tool calls or ChatGPT-specific features
+are unavailable.
+
 See [Trunkline artifacts](../channels/trunkline.md#artifacts) for viewer controls
 and [artifact settings](../../api/config/artifacts.md) for hosting setup.
 

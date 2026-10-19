@@ -10,7 +10,7 @@ export type ArtifactView = {
   artifact: { id: string; title: string } & {
     kind: 'mcp_app'
     invocation: {
-      tool: Tool
+      tool?: Tool | null
       arguments: Record<string, unknown>
       result: CallToolResult
     }

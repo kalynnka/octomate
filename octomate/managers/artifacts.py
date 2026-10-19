@@ -15,12 +15,13 @@ from octomate.schemas.artifacts import (
     Artifact,
     ArtifactOverview,
     ArtifactSandboxPolicy,
+    CapturedMcpAppSource,
     HtmlArtifact,
     HtmlView,
     McpAppArtifact,
     McpAppView,
 )
-from octomate.schemas.mcp import McpAppResourceCSP
+from octomate.schemas.mcp import McpAppResource, McpAppResourceCSP
 from octomate.schemas.thread import ThreadArtifact
 from octomate.schemas.user import User
 
@@ -90,8 +91,8 @@ class ArtifactManager(Manager):
     ) -> McpAppView | HtmlView:
         """Read owned content independently of its thread, without executing tools.
 
-        HTML is read from the owner's stored file. An MCP installation must still
-        be owned, enabled, and authorized. Both require a separate sandbox origin.
+        Captured HTML is read from the owner's stored file. Installed MCP sources
+        must still be owned, enabled, and authorized. Both use a separate sandbox.
         """
         async with async_session() as session:
             artifact = await session.one_or_none(
@@ -114,12 +115,26 @@ class ArtifactManager(Manager):
             )
         resource = None
         if isinstance(artifact, McpAppArtifact):
-            try:
-                resource = await self.mcp.app_resource(user, artifact.invocation)
-            except McpUnavailable as error:
-                raise ArtifactUnavailable(
-                    "Artifact installation unavailable"
-                ) from error
+            source = artifact.source
+            if isinstance(source, CapturedMcpAppSource):
+                try:
+                    data = await self.files.read(source.file_id, owner_id=user.id)
+                except FileNotFoundError as error:
+                    raise ArtifactUnavailable("Artifact file unavailable") from error
+                resource = McpAppResource(
+                    uri=artifact.invocation.resource_uri,
+                    html=data.decode("utf-8"),
+                    ui=source.ui,
+                )
+            else:
+                try:
+                    resource = await self.mcp.app_resource(
+                        user, source.installation_id, artifact.invocation
+                    )
+                except McpUnavailable as error:
+                    raise ArtifactUnavailable(
+                        "Artifact installation unavailable"
+                    ) from error
         policy = ArtifactSandboxPolicy(
             parent_origin=console_origin,
             content_kind=artifact.kind,

@@ -28,7 +28,7 @@ window.addEventListener('message', ({ data }) => {
 send('ui/initialize', { protocolVersion: '2026-01-26', appInfo: { name: 'Test', version: '1' }, appCapabilities: {} }, 'init');
 </script></body></html>`
 
-async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; title?: string; modes?: Record<string, 'wide'>; fail?: boolean; csp?: Record<string, string[]>; path?: string; beforeRead?: () => Promise<void> } = {}) {
+async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; captured?: boolean; title?: string; modes?: Record<string, 'wide'>; fail?: boolean; csp?: Record<string, string[]>; path?: string; beforeRead?: () => Promise<void> } = {}) {
   const reads: string[] = []
   // Unmocked API calls must never reach a developer's running Octomate server.
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 404, json: { detail: 'Unmocked test API' } }))
@@ -41,7 +41,7 @@ async function mockViews(page: Page, options: { html?: string; htmlArtifact?: bo
     const csp = options.csp ?? {}
     await route.fulfill({ json: {
       artifact: options.htmlArtifact ? { id: label, kind: 'html', title: options.title ?? label, file_id: 'stored-html', mode: options.modes?.[label] ?? null } : { id: label, kind: 'mcp_app', title: options.title ?? label, invocation: {
-        tool: { name: 'create_diagram', inputSchema: { type: 'object' } },
+        ...(!options.captured ? { tool: { name: 'create_diagram', inputSchema: { type: 'object' } } } : {}),
         arguments: { diagram: large, label },
         result: { content: [{ type: 'text', text: large }], structuredContent: { label }, isError: false, _meta: { saved: large } },
       } },
@@ -78,6 +78,23 @@ test('two ledger cards initialize independently and receive complete input befor
   expect(messages[1].params.isError).toBe(false)
   expect(await b.evaluate("window.received.find(m => m.method === 'ui/notifications/tool-input').params.arguments.label")).toBe('row-b')
   expect(reads).toHaveLength(2)
+})
+
+test('captured apps replay without a tool descriptor and reopen in the same viewer', async ({ page }) => {
+  const reads = await mockViews(page, { captured: true })
+  await page.goto('/tests/browser/harness.html')
+  const app = await contentFrame(page)
+  expect(await app.evaluate('window.host.hostContext.toolInfo')).toBeUndefined()
+  expect(await app.evaluate("window.received.filter(m => m.method.startsWith('ui/notifications/tool-')).map(m => m.method)")).toEqual([
+    'ui/notifications/tool-input', 'ui/notifications/tool-result',
+  ])
+  expect(await app.evaluate("window.received.find(m => m.method === 'ui/notifications/tool-result').params._meta.saved")).toBe(large)
+  await app.evaluate("document.querySelector('#result').textContent = 'local change'")
+  await page.getByRole('button', { name: 'Reload' }).first().click()
+  await contentFrame(page)
+  await expect.poll(() => reads.length).toBe(3)
+  await page.goto('/work/artifacts/row-a')
+  await contentFrame(page)
 })
 
 for (const htmlArtifact of [false, true]) {

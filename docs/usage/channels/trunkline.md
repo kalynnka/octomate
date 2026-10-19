@@ -252,9 +252,10 @@ Dropdown menus follow the theme where the browser supports it.
   its current state. Expanding brings the header and widget into view.
   **Open** and **Reload** remain on the right.
 
-Sign in as the artifact's owner to open it. MCP apps also require their original
-connection to remain enabled and authorized. Saved HTML visualizations remain
-available after the run ends. Artifacts from native sessions are not captured yet.
+Sign in as the artifact's owner to open it. Apps from Octomate MCP connections
+require their original connection to remain enabled and authorized. Apps captured
+from driven Codex sessions and saved HTML visualizations remain available after
+the run ends. Artifacts from native sessions are not captured yet.
 
 See [artifact settings](../../api/config/artifacts.md) for hosting setup and the
 [artifact reference](../../api/mcp/artifacts.md) for integration details.
