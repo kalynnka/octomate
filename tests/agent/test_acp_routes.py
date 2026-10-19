@@ -430,12 +430,26 @@ def test_setting_refusals_reach_the_caller(
         }
 
 
-@pytest.mark.parametrize("callback_method", ["fs/read_text_file", "terminal/create"])
+@pytest.mark.parametrize(
+    ("callback_method", "callback_result"),
+    [
+        ("fs/read_text_file", {"content": "client file"}),
+        ("terminal/create", {"terminalId": "client-terminal"}),
+        (
+            "terminal/output",
+            {"output": "hello\n", "truncated": False, "exitStatus": {"exitCode": 0}},
+        ),
+        ("terminal/wait_for_exit", {"exitCode": 0}),
+        ("terminal/kill", {}),
+        ("terminal/release", {}),
+    ],
+)
 @pytest.mark.parametrize("error", [False, True])
 def test_client_requests_and_errors_are_relayed(
     client: TestClient,
     adapter_environment: dict[str, str],
     callback_method: str,
+    callback_result: dict[str, JsonValue],
     error: bool,
 ) -> None:
     with client.websocket_connect("/api/acp/claude") as socket:
@@ -455,6 +469,12 @@ def test_client_requests_and_errors_are_relayed(
         socket.receive_json()
         callback = socket.receive_json()
         assert callback["method"] == callback_method
+        assert callback["params"]["sessionId"] == session_id
+        if (
+            callback_method.startswith("terminal/")
+            and callback_method != "terminal/create"
+        ):
+            assert callback["params"]["terminalId"] == "client-terminal"
         reply = (
             {
                 "error": {
@@ -466,11 +486,7 @@ def test_client_requests_and_errors_are_relayed(
             if error
             else {
                 "result": {
-                    **(
-                        {"content": "client file"}
-                        if callback_method == "fs/read_text_file"
-                        else {"terminalId": "client-terminal"}
-                    ),
+                    **callback_result,
                     "_meta": {"client": True},
                 }
             }

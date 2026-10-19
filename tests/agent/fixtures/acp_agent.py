@@ -266,6 +266,22 @@ def main() -> None:
                                     "command": "echo",
                                     "args": ["hello"],
                                 },
+                                "terminal/output": {
+                                    "sessionId": session_id,
+                                    "terminalId": "client-terminal",
+                                },
+                                "terminal/wait_for_exit": {
+                                    "sessionId": session_id,
+                                    "terminalId": "client-terminal",
+                                },
+                                "terminal/kill": {
+                                    "sessionId": session_id,
+                                    "terminalId": "client-terminal",
+                                },
+                                "terminal/release": {
+                                    "sessionId": session_id,
+                                    "terminalId": "client-terminal",
+                                },
                             }[callback_method],
                         }
                     )
