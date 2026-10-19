@@ -27,7 +27,7 @@ from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpClientKey, McpUnavailable
 from octomate.mcp.server import CALL_MCP_TOOL, tentacles_mcp
 from octomate.nerve import ThreadTopic
-from octomate.schemas.artifacts import McpAppArtifact
+from octomate.schemas.artifacts import InstalledMcpAppSource, McpAppArtifact
 from octomate.schemas.conversation import ChannelAddress
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.mcp import Mcp, McpInstallRequest
@@ -206,8 +206,10 @@ async def test_app_call_is_durable_before_publication(
         assert isinstance(event, ArtifactAvailableEvent)
         assert len(committed) == 1
         saved = committed[0].invocation
-        assert saved.installation_id == turn.installation.id
+        assert isinstance(committed[0].source, InstalledMcpAppSource)
+        assert committed[0].source.installation_id == turn.installation.id
         assert saved.arguments == {"xml": xml, "fail": fail}
+        assert saved.tool is not None
         assert saved.tool.name == name
         declared = await turn.upstream.get_tool(name)
         assert declared is not None

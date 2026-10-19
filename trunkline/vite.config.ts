@@ -12,6 +12,10 @@ export default defineConfig({
   resolve: {
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
+  build: {
+    // Public font imports must stay embedded for the isolated artifact sandbox.
+    assetsInlineLimit: (path) => /\/(?:PlusJakartaSans|FiraCode-400-latin)\.woff2$/.test(path) ? true : undefined,
+  },
   server: {
     // Bind the IPv4 loopback explicitly: `localhost` resolves to `::1` first on
     // current Node, and a `tailscale serve` proxy to 127.0.0.1 then gets

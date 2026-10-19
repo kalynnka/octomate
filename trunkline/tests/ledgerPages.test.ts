@@ -277,6 +277,21 @@ test('artifact references survive pagination with their row identity and no text
   assert.equal(paged.ledger.filter((item) => item.kind === 'artifact').length, 1)
 })
 
+for (const text of ['Here is the chart.', '']) {
+  test(`captured HTML stays after its originating response on reload (${text ? 'caption' : 'reference only'})`, () => {
+    const artifact: ApiThreadMessage = { ...said('015', '', 'system'), direction: 'outbound', kind: 'artifact', artifact_id: 'saved-html' }
+    const response: ApiModelMessage = { ...answer, parts: [{ part_kind: 'text', content: text }], thread_messages: [artifact] }
+    const next: ApiModelMessage = { ...prompt, id: '060', thread_messages: [said('055', 'Next question', 'human')] }
+    const detail = liveThreadDetail(reads([prompt, response, next], [], { model: null, unbound: null }))
+    assert.deepEqual(detail.ledger.map(item => item.kind), text
+      ? ['session-open', 'user', 'agent', 'artifact', 'user']
+      : ['session-open', 'user', 'artifact', 'user'])
+    assert.equal(detail.ledger.find(item => item.kind === 'artifact')?.uid, artifact.id)
+    const paged = withOlderPage(detail, detail.reads!, { read: 'model', page: page([prompt, response]) })
+    assert.deepEqual(paged.ledger, detail.ledger)
+  })
+}
+
 for (const runtime of ['claude-native', 'codex-native', 'deepseek-native']) {
   test(`${runtime} preserves append order despite source clocks, including the pagination horizon`, () => {
     const native = { ...thread, kind: 'native_thread' as const, channel_tentacle_id: runtime, handoffs: [] }

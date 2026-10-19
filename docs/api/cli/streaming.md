@@ -6,4 +6,6 @@
 
 ::: octomate_cli.streaming.files
 
+::: octomate_cli.streaming.codex
+
 ::: octomate_cli.streaming.deepseek

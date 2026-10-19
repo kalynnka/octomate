@@ -32,7 +32,7 @@ from octomate.managers.user import UserManager
 from octomate.mcp.transport import mcp_http_client
 from octomate.oauth.base import McpBearerAuth
 from octomate.oauth.flows import DeviceAuthorizationFlow
-from octomate.schemas.artifacts import McpAppArtifact
+from octomate.schemas.artifacts import InstalledMcpAppSource, McpAppArtifact
 from octomate.schemas.mcp import (
     BearerAuth,
     BearerMcp,
@@ -577,9 +577,11 @@ class McpManager(Manager, Locks[UUID7]):
             McpAppArtifact(
                 owner_id=user.id,
                 title=tool.title or tool.name,
-                invocation=McpAppInvocation(
+                source=InstalledMcpAppSource(
                     installation_id=instance.id,
                     namespace=instance.namespace,
+                ),
+                invocation=McpAppInvocation(
                     provider_name=instance.name,
                     tool=tool,
                     resource_uri=ui.resource_uri,
@@ -599,7 +601,7 @@ class McpManager(Manager, Locks[UUID7]):
         return result
 
     async def app_resource(
-        self, user: User, invocation: McpAppInvocation
+        self, user: User, installation_id: UUID7, invocation: McpAppInvocation
     ) -> McpAppResource:
         """Read only the saved UI URI from its still-authorized installation UUID.
 
@@ -607,7 +609,7 @@ class McpManager(Manager, Locks[UUID7]):
         response must contain one matching MCP Apps HTML resource, as text or
         base64-encoded UTF-8. UI metadata is validated before reaching a browser.
         """
-        async with self.acquire(user, mcp_id=invocation.installation_id) as client:
+        async with self.acquire(user, mcp_id=installation_id) as client:
             contents = await client.read_resource(invocation.resource_uri)
         if len(contents) != 1:
             raise ValueError("An MCP app must return exactly one UI resource")

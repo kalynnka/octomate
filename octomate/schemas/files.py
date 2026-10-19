@@ -80,6 +80,13 @@ class Markdown(File):
     media_type: Literal["text/markdown"] = "text/markdown"
 
 
+@sqlalchemy_materia.bless(file_models.Html)
+class Html(File):
+    """Metadata for an HTML document whose contents live in the storage provider."""
+
+    media_type: Literal["text/html"] = "text/html"
+
+
 @sqlalchemy_materia.bless(file_models.Json)
 class Json(File):
     """Metadata for a JSON document."""
@@ -122,7 +129,7 @@ class Jpeg(Image):
 
 type FileVariant = Annotated[
     Annotated[
-        Binary | Text | Markdown | Json | Jsonl | Gif | Png | Jpeg,
+        Binary | Text | Markdown | Html | Json | Jsonl | Gif | Png | Jpeg,
         Field(discriminator="media_type"),
     ]
     | File,

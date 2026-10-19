@@ -132,6 +132,8 @@ def test_a_second_tail_for_the_same_session_is_a_no_op(
         cwd: str,
         secret: str,
         spool: Path | None = None,
+        *,
+        tail_type: type[SessionTail] = SessionTail,
     ) -> None:
         streamed.append(session_id)
 
@@ -178,6 +180,8 @@ def test_a_spawn_during_the_drain_waits_out_the_lock(
         cwd: str,
         secret: str,
         spool: Path | None = None,
+        *,
+        tail_type: type[SessionTail] = SessionTail,
     ) -> None:
         streamed.append(session_id)
 

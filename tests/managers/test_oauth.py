@@ -25,6 +25,7 @@ from octomate.config import ArtifactConfig, OAuthConfig, OctomateConfig
 from octomate.database import async_session
 from octomate.managers.artifacts import ArtifactManager
 from octomate.managers.deferred import DeferredActionManager
+from octomate.managers.files import FileManager
 from octomate.managers.gateway import OctomateSession
 from octomate.managers.mcp import McpManager, McpUnavailable
 from octomate.managers.oauth import (
@@ -907,8 +908,9 @@ def provider(manager: OAuthManager, connector_id: str) -> Provider:
     host.deferred_actions = DeferredActionManager()
     host.nerve = Nerve()
     host.threads = ThreadManager(users=host.users, nerve=host.nerve)
+    host.files = FileManager()
     host.artifacts = ArtifactManager(
-        config=ArtifactConfig(), mcp=host.mcp, threads=host.threads
+        config=ArtifactConfig(), mcp=host.mcp, threads=host.threads, files=host.files
     )
     return Provider(connector_id, host)
 

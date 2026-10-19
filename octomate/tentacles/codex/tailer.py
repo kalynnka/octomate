@@ -11,10 +11,13 @@ import logging
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 
 from anyio.abc import ObjectSendStream
+from fastapi import UploadFile
 from octomate_protocol.stream import SESSION_FILE
+from octomate_protocol.visualizations import HtmlSnapshot
 from pydantic import ValidationError
 from pydantic_ai.messages import (
     AgentStreamEvent,
@@ -34,12 +37,17 @@ from pydantic_ai.messages import (
     UserPromptPart,
 )
 from pydantic_ai.usage import RequestUsage
+from starlette.datastructures import Headers
 from uuid_utils import UUID
 
+from octomate.capabilities.harness.events import ArtifactAvailableEvent
 from octomate.managers.conversation import ConversationManager
+from octomate.managers.files import FileManager
 from octomate.managers.thread import ThreadManager
 from octomate.nerve import Impulse
+from octomate.schemas.artifacts import HtmlArtifact
 from octomate.schemas.conversation import ChannelAddress, Conversation
+from octomate.schemas.runs import ExternalAgentRun
 from octomate.schemas.thread import (
     CODEX_NATIVE_ID,
     ThreadKey,
@@ -47,6 +55,7 @@ from octomate.schemas.thread import (
 from octomate.schemas.user import UserProfile
 from octomate.telemetry import codex_logfire
 from octomate.tentacles.codex.adapter import CODEX_PROVIDER_NAME, codex_metadata
+from octomate.tentacles.codex.html import visualization_text
 from octomate.tentacles.codex.transcript import (
     RolloutLine,
     SessionMetadata,
@@ -85,6 +94,9 @@ class OpenTurn:
     usage: RequestUsage | None = None
     part_index: int = 0
     native: NativeTurn | None = None
+    visualizations: dict[int, list[HtmlSnapshot]] = field(
+        default_factory=dict
+    )  # Snapshots keyed by their model message position.
 
 
 @dataclass(frozen=True)
@@ -164,12 +176,14 @@ class CodexTranscriptTailer:
 
     def __init__(
         self,
-        conversation_manager: ConversationManager,
-        thread_manager: ThreadManager,
+        conversations: ConversationManager,
+        threads: ThreadManager,
+        files: FileManager,
         locks: SessionLocks | None = None,
     ) -> None:
-        self.conversation_manager = conversation_manager
-        self.thread_manager = thread_manager
+        self.conversation_manager = conversations
+        self.thread_manager = threads
+        self.files: FileManager = files
         self.locks = locks if locks is not None else SessionLocks()
         self.sessions: dict[str, TailState] = {}
 
@@ -226,7 +240,14 @@ class CodexTranscriptTailer:
         return state, {SESSION_FILE: 0}
 
     async def feed_remote(
-        self, state: TailState, key: str | None, raw: str, start: int, end: int
+        self,
+        state: TailState,
+        key: str | None,
+        raw: str,
+        start: int,
+        end: int,
+        *,
+        visualizations: list[HtmlSnapshot] | None = None,
     ) -> None:
         """Advance a remote session by one framed line — the pumps' per-line body,
         against offsets the client measured in its own file. Takes the state rather
@@ -240,7 +261,9 @@ class CodexTranscriptTailer:
             except ValidationError:
                 logger.debug("skipping unmodeled Codex rollout line")
                 return
-            await self.process_line(state, line, start, end)
+            await self.process_line(
+                state, line, start, end, visualizations=visualizations
+            )
             return
         tail = await self.remote_subagent(state, key, raw)
         if tail is None:
@@ -306,7 +329,13 @@ class CodexTranscriptTailer:
         )
 
     async def process_line(
-        self, state: TailState, line: RolloutLine, start: int, end: int
+        self,
+        state: TailState,
+        line: RolloutLine,
+        start: int,
+        end: int,
+        *,
+        visualizations: list[HtmlSnapshot] | None = None,
     ) -> None:
         kind = payload_type(line)
         if line.type == "session_meta":
@@ -354,7 +383,15 @@ class CodexTranscriptTailer:
             self.consume_turn_context(turn, line)
             return
         if line.type == "response_item" and turn.native is not None:
-            await turn.native.fold(self.consume_response_item(turn, line))
+            if visualizations:
+                if state.sender.user_id is None:
+                    raise ValueError(
+                        "HTML capture requires a registered artifact owner"
+                    )
+                turn.visualizations[len(turn.messages)] = visualizations
+            await turn.native.fold(
+                self.consume_response_item(turn, line, captured=bool(visualizations))
+            )
             return
         if line.type != "event_msg":
             return
@@ -394,7 +431,11 @@ class CodexTranscriptTailer:
                 # read is a no-op there.)
                 fallback = line.payload.get("last_agent_message")
                 if not turn.answer and isinstance(fallback, str):
-                    turn.answer = fallback
+                    turn.answer = (
+                        visualization_text(fallback, final=True)[0]
+                        if turn.visualizations
+                        else fallback
+                    )
                 await self.close_turn(state)
                 if ended_id == state.drain_turn:
                     state.stop_event.set()
@@ -612,6 +653,8 @@ class CodexTranscriptTailer:
                     end_offset=turn.end_offset,
                 )
                 span.set_attribute("committed", run is not None)
+                if run is not None:
+                    await self.capture_html(state, turn, run)
                 await turn.native.close(run, run_id=turn.turn_id, answer=turn.answer)
                 logger.info(
                     "session %s: turn %s synced — %d messages, bytes %d-%d",
@@ -620,6 +663,60 @@ class CodexTranscriptTailer:
                     len(turn.messages),
                     turn.start_offset,
                     turn.end_offset,
+                )
+
+    async def capture_html(
+        self, state: TailState, turn: OpenTurn, run: ExternalAgentRun
+    ) -> None:
+        """Persist client snapshots and bind them to the completed native response.
+
+        The bearer supplies ownership; client paths are labels only. Artifacts use
+        the existing file storage, ledger and event stream before the run closes.
+        """
+        if not turn.visualizations:
+            return
+        owner_id = state.sender.user_id
+        conversation = state.conversation
+        assert owner_id is not None
+        assert turn.native is not None
+        assert conversation is not None
+        for position, snapshots in turn.visualizations.items():
+            for snapshot in snapshots:
+                reference = snapshot.reference
+                with BytesIO(snapshot.html.encode("utf-8")) as source:
+                    stored = await self.files.write(
+                        UploadFile(
+                            source,
+                            filename=reference.path.name,
+                            headers=Headers(
+                                {"content-type": "text/html; charset=utf-8"}
+                            ),
+                        ),
+                        owner_id=owner_id,
+                    )
+                message = await self.thread_manager.record_artifact(
+                    conversation.thread_id,
+                    HtmlArtifact(
+                        owner_id=owner_id,
+                        title=reference.title or reference.path.stem,
+                        mode=reference.mode,
+                        file_id=stored.id,
+                    ),
+                    sender=state.sender,
+                    agent_tentacle_id=CODEX_NATIVE_ID,
+                )
+                await self.thread_manager.bind_messages(
+                    [message.id],
+                    run.messages[position].id,
+                    kind="assistant_reply",
+                    run_id=run.id,
+                )
+                await turn.native.fold(
+                    [
+                        ArtifactAvailableEvent(
+                            message_id=message.id, artifact_id=message.artifact_id
+                        )
+                    ]
                 )
 
     @staticmethod
@@ -675,9 +772,9 @@ class CodexTranscriptTailer:
 
     @staticmethod
     def consume_response_item(
-        turn: OpenTurn, line: RolloutLine
+        turn: OpenTurn, line: RolloutLine, *, captured: bool = False
     ) -> Iterator[AgentStreamEvent]:
-        """Yield whole-item events without changing the rollout's stored message shape."""
+        """Yield whole items, hiding captured references without editing the rollout."""
         payload = line.payload
         kind = payload_type(line)
         if kind == "message" and payload.get("role") == "assistant":
@@ -692,6 +789,7 @@ class CodexTranscriptTailer:
                     texts.append(part_text)
             text = "\n".join(texts)
             if text:
+                text = visualization_text(text, final=True)[0] if captured else text
                 response_id = payload.get("id")
                 part = TextPart(content=text)
                 turn.messages.append(

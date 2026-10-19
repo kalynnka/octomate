@@ -24,6 +24,7 @@ from anyio import Path as AsyncPath
 from anyio.abc import ObjectSendStream
 from fastapi import FastAPI, UploadFile
 from fastapi.testclient import TestClient
+from octomate_cli.streaming.codex import CodexSessionTail
 from octomate_cli.tentacles.codex import CODEX_HOOK_PATH, CODEX_STREAM_PATH
 from octomate_protocol.stream import (
     SESSION_FILE,
@@ -37,7 +38,7 @@ from octomate_protocol.stream import (
     StreamWelcome,
     server_message_adapter,
 )
-from pydantic import SecretStr
+from pydantic import AnyHttpUrl, SecretStr
 from pydantic_ai.messages import ModelRequest, PartEndEvent, TextPart, UserPromptPart
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
@@ -45,16 +46,26 @@ from starlette.websockets import WebSocketDisconnect
 from uuid_utils.compat import uuid7
 
 from octomate import Octomate
-from octomate.capabilities.harness.events import RunEndedEvent
+from octomate.auth import current_user
+from octomate.capabilities.harness.events import ArtifactAvailableEvent, RunEndedEvent
 from octomate.config import OctomateConfig
 from octomate.config.agents import CodexConfig
 from octomate.database import async_session
 from octomate.managers.files import FileManager
 from octomate.nerve import Impulse, ThreadTopic
+from octomate.schemas.artifacts import HtmlArtifact, HtmlView
 from octomate.schemas.conversation import Conversation
+from octomate.schemas.files import Html
+from octomate.schemas.messages import ModelResponse
 from octomate.schemas.runs import ExternalAgentRun
-from octomate.schemas.thread import CODEX_NATIVE_ID, Thread, ThreadKey
-from octomate.schemas.user import UserProfile
+from octomate.schemas.thread import (
+    CODEX_NATIVE_ID,
+    MessageBinding,
+    Thread,
+    ThreadArtifact,
+    ThreadKey,
+)
+from octomate.schemas.user import User, UserProfile
 from octomate.tentacles.codex import CodexTentacle
 from octomate.tentacles.codex.tailer import CodexTranscriptTailer, TailState
 from tests.agent.test_codex_native_ingest import (
@@ -134,7 +145,9 @@ async def feed(
 
 def remote_tailer() -> tuple[Octomate, CodexTranscriptTailer]:
     octomate = Octomate(config=OctomateConfig(auth=auth_config()))
-    return octomate, CodexTranscriptTailer(octomate.conversations, octomate.threads)
+    return octomate, CodexTranscriptTailer(
+        octomate.conversations, octomate.threads, octomate.files
+    )
 
 
 async def runs_of(octomate: Octomate) -> list[ExternalAgentRun]:
@@ -475,6 +488,118 @@ def upload_transcript(
     stored = server_message_adapter.validate_json(websocket.receive_text())
     assert isinstance(stored, StreamSnapshotStored)
     assert stored.transfer_id == request.transfer_id
+
+
+@pytest.mark.parametrize("caption", ["Here is the counter. ", ""])
+def test_native_html_crosses_the_client_stream_and_reuses_the_owned_viewer(
+    tmp_path: Path, caption: str
+) -> None:
+    source = tmp_path / "counter.html"
+    html = "<button onclick=\"this.textContent='Updated ✓'\">Counter</button>"
+    source.write_text(html)
+    marker = (
+        "visualize"
+        + json.dumps(
+            {
+                "path": str(source),
+                "title": "Native counter",
+                "mode": "wide",
+            }
+        )
+        + ""
+    )
+    turn_id = str(uuid7())
+    records = [
+        parent_metadata(),
+        event(0, "task_started", turn_id=turn_id),
+        event(1, "user_message", message="Draw a counter"),
+        answer_item(2, caption + marker + marker),
+        event(3, "task_complete", turn_id=turn_id, last_agent_message=caption + marker),
+    ]
+    data = b"".join(map(line_bytes, records))
+    transcript = tmp_path / "rollout.jsonl"
+    transcript.write_bytes(data)
+    tail = CodexSessionTail(SESSION_ID, transcript, cwd=str(tmp_path))
+    outgoing = [
+        asyncio.run(tail.frame(agent_id or SESSION_FILE, start, end, line.encode()))
+        for agent_id, start, end, line in frames(records)
+    ]
+    source.unlink()  # The server cannot open the client's file, even on this machine.
+    client, tentacle = stream_client(storage=tmp_path / "storage")
+    host = tentacle.octomate
+    host.config.artifacts.sandbox_origin = AnyHttpUrl("https://sandbox.example")
+    host.artifacts.files = host.files
+
+    async def inspect_capture() -> tuple[HtmlArtifact, ThreadArtifact]:
+        async with async_session() as session:
+            [artifact] = await session.list(HtmlArtifact, limit=None)
+            [entry] = await session.list(ThreadArtifact, limit=None)
+            [binding] = await session.list(
+                MessageBinding,
+                expressions=[
+                    MessageBinding["thread_message_id"] == entry.id,
+                ],
+            )
+            response = await session.get(ModelResponse, binding.model_message_id)
+            assert response is not None
+            assert response.message_text == (caption or None)
+            assert binding.run_id == turn_id
+            owner = await session.get(User, artifact.owner_id)
+        assert owner is not None
+        stored = await host.files.get(artifact.file_id, owner_id=owner.id)
+        assert isinstance(stored, Html)
+        assert await host.files.read(stored.id, owner_id=owner.id) == html.encode()
+        host.dependency_overrides[current_user] = lambda: owner
+        return artifact, entry
+
+    with (
+        host.nerve.subscribe(
+            ThreadTopic(ThreadKey.from_address(SESSION_ADDRESS))
+        ) as live,
+        client,
+    ):
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            websocket.receive_text()
+            for message in outgoing:
+                websocket.send_text(message.model_dump_json())
+            upload_transcript(websocket, data)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert client.portal is not None
+        artifact, entry = client.portal.call(inspect_capture)
+        events = [impulse.event for impulse in held(live)]
+        available = [
+            item for item in events if isinstance(item, ArtifactAvailableEvent)
+        ]
+        assert len(available) == 1
+        assert available[0].artifact_id == artifact.id
+        assert available[0].message_id == entry.id
+        assert isinstance(events[-1], RunEndedEvent)
+        assert artifact.title == "Native counter"
+        assert artifact.mode == "wide"
+        for url in (
+            f"/api/artifacts/{artifact.id}",
+            f"/api/trunkline/threads/{entry.thread_id}/artifacts/{entry.id}",
+        ):
+            response = client.get(url)
+            assert response.status_code == 200, response.text
+            assert HtmlView.model_validate(response.json()).html == html
+
+        # Replaying the committed transcript needs no source file and adds no artifacts.
+        with client.websocket_connect(CODEX_STREAM_PATH, headers=AUTH) as websocket:
+            websocket.send_text(hello_json())
+            welcome = server_message_adapter.validate_json(websocket.receive_text())
+            assert isinstance(welcome, StreamWelcome)
+            assert welcome.offsets[SESSION_FILE] == len(data)
+            websocket.send_text(StreamEof().model_dump_json())
+            with pytest.raises(WebSocketDisconnect):
+                websocket.receive_text()
+        assert client.portal.call(inspect_capture)[0].id == artifact.id
+        other = client.portal.call(a_user, "other")
+        host.dependency_overrides[current_user] = lambda: other
+        assert client.get(f"/api/artifacts/{artifact.id}").status_code == 404
 
 
 async def test_stale_upload_cannot_replace_a_newer_transcript(tmp_path: Path) -> None:

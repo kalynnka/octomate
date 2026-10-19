@@ -12,7 +12,7 @@ config home: the channel's credentials (the regular `tentacles.yaml`) and a
       discord: {chat_type: group, chat_id: "123", user_id: "456"}
       napcat: {chat_id: "123456789", user_id: "123456789"}
 
-Artifact previews additionally use `trigger.artifact`, a saved McpAppOverview
+Artifact previews additionally use `trigger.artifact`, a saved ArtifactOverview
 with a real viewer URL. They send only that overview through the platform feeler;
 they never create an artifact, read app HTML, or execute an MCP tool. Open its link
 while signed in as the artifact owner to inspect the browser window.
@@ -49,7 +49,7 @@ from pydantic_settings import (
 
 from octomate.config import OctomateConfig
 from octomate.config.base import OCTOMATE_HOME_ENV, config_home
-from octomate.schemas.artifacts import McpAppOverview
+from octomate.schemas.artifacts import ArtifactOverview
 
 # Real images for the showcase live in tests/src/images (see tests/src/README);
 # the generated 1x1 transparent PNG below is only the fallback when none is there.
@@ -101,7 +101,7 @@ class TriggerTargets(BaseSettings):
     lark: TriggerTarget | None = None
     discord: TriggerTarget | None = None
     napcat: TriggerTarget | None = None
-    artifact: McpAppOverview | None = None
+    artifact: ArtifactOverview | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -185,7 +185,7 @@ def trigger_targets() -> TriggerTargets:
 
 
 @pytest.fixture(scope="session")
-def artifact_overview(trigger_targets: TriggerTargets) -> McpAppOverview:
+def artifact_overview(trigger_targets: TriggerTargets) -> ArtifactOverview:
     if trigger_targets.artifact is None:
         pytest.skip("artifact overview not configured under trigger.artifact")
     return trigger_targets.artifact

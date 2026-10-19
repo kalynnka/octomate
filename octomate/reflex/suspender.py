@@ -42,7 +42,7 @@ class TeleportRequest:
     # from; None carries the conversation only.
     project: str | None = None
     ref: str | None = None
-    # Whether the agent carries on at once where it lands.
+    # Whether to resume in a new thread; in-place project binding always resumes.
     resume: bool = False
     # The user's next message where it lands, which the agent answers there.
     prompt: str | None = None

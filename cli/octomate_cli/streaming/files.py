@@ -3,10 +3,10 @@ stream.
 
 Runs on the machine a native session lives on: watches its transcript (and the
 subagent files beside it), frames complete lines, and ships them raw to Octomate's
-stream endpoint. No parsing happens here — the server's tailer assembles the turns —
-so a transcript format change never needs this client updated.
+stream endpoint. The server assembles the turns. Agent-specific tails can extend
+line framing while sharing the file and connection lifecycle.
 
-The agents differ only in where a subagent's file lives. Claude keeps them under
+Subagent file discovery differs between agents. Claude keeps them under
 `<session-id>/subagents/`, discoverable by glob and keyed by agent id. Codex writes a
 child rollout as a sibling file only its content identifies, so the launcher hook
 spools the exact path each `SubagentStop` names into a per-session file here, and the
@@ -159,6 +159,7 @@ class SessionTail:
         field(default_factory=asyncio.Queue)
     )
     spooled: dict[str, Path] = field(default_factory=dict)
+    cwd: str = ""  # Working directory reported by the native session.
 
     @property
     def subagents_dir(self) -> Path:
@@ -210,20 +211,23 @@ class SessionTail:
                 if line is None:
                     continue
                 start, end, raw = line
-                await websocket.send(
-                    StreamLine(
-                        agent_id=key or None,
-                        start=start,
-                        end=end,
-                        line=raw.decode("utf-8", errors="replace"),
-                    ).model_dump_json()
-                )
+                frame = await self.frame(key, start, end, raw)
+                await websocket.send(frame.model_dump_json())
                 sent = True
         if sent:
             self.last_active = monotonic()
         if self.stored_offset is not None:
             await self.upload_snapshot(websocket, start=self.stored_offset)
         return sent
+
+    async def frame(self, key: str, start: int, end: int, raw: bytes) -> StreamLine:
+        """Frame an unchanged transcript line; agent tails may attach local content."""
+        return StreamLine(
+            agent_id=key or None,
+            start=start,
+            end=end,
+            line=raw.decode("utf-8", errors="replace"),
+        )
 
     def snapshot(self, end: int, *, start: int = 0) -> Iterator[bytes]:
         """Read an already streamed range without resending the stored prefix."""
@@ -277,6 +281,8 @@ async def stream_session(
     cwd: str,
     token: str,
     spool: Path | None = None,
+    *,
+    tail_type: type[SessionTail] = SessionTail,
 ) -> bool:
     """One connection's life. True when the session is done (the server said finalize,
     or it went idle and drained out); False to reconnect and resume."""
@@ -295,8 +301,12 @@ async def stream_session(
         welcome = server_message_adapter.validate_json(await websocket.recv())
         if not isinstance(welcome, StreamWelcome):
             raise RuntimeError(f"expected a welcome message, got {welcome.type!r}")
-        tail = SessionTail(
-            session_id, transcript_path, offsets=dict(welcome.offsets), spool=spool
+        tail = tail_type(
+            session_id,
+            transcript_path,
+            offsets=dict(welcome.offsets),
+            spool=spool,
+            cwd=cwd,
         )
         checkpoint = welcome.transcript
         if checkpoint is not None:
@@ -368,6 +378,8 @@ async def run_tail(
     cwd: str,
     token: str,
     spool: Path | None = None,
+    *,
+    tail_type: type[SessionTail] = SessionTail,
 ) -> None:
     """The reconnect loop around `stream_session`: resume after drops, back off while
     the server is unreachable, and stop retrying once the session itself has gone
@@ -376,7 +388,13 @@ async def run_tail(
     while True:
         try:
             if await stream_session(
-                url, session_id, transcript_path, cwd, token, spool
+                url,
+                session_id,
+                transcript_path,
+                cwd,
+                token,
+                spool,
+                tail_type=tail_type,
             ):
                 return
             attempt = 0  # the connection worked; the drop was the network's
@@ -418,6 +436,7 @@ def main(
     url: str,
     cwd: str,
     agent_path: Path | None = None,
+    tail_type: type[SessionTail] = SessionTail,
 ) -> None:
     runtime_path = tail_path(agent, session_id)
     spool = runtime_path.with_suffix(".paths") if agent == "codex" else None
@@ -449,4 +468,14 @@ def main(
                 if monotonic() >= deadline:
                     return
                 time.sleep(LOCK_POLL)
-        asyncio.run(run_tail(url, session_id, transcript_path, cwd, token, spool))
+        asyncio.run(
+            run_tail(
+                url,
+                session_id,
+                transcript_path,
+                cwd,
+                token,
+                spool,
+                tail_type=tail_type,
+            )
+        )

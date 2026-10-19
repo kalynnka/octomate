@@ -78,7 +78,9 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             ),
         )
     elif runtime == "codex":
-        codex_tailer = CodexTranscriptTailer(octomate.conversations, octomate.threads)
+        codex_tailer = CodexTranscriptTailer(
+            octomate.conversations, octomate.threads, octomate.files
+        )
         codex_ingest = CodexHookIngest(
             codex_tailer,
             conversations=octomate.conversations,
@@ -131,7 +133,7 @@ async def test_replayed_driven_turn_is_skipped_and_new_native_turn_is_kept(
             await tailer.finish_remote(state)
         elif runtime == "codex":
             codex_tailer = CodexTranscriptTailer(
-                octomate.conversations, octomate.threads
+                octomate.conversations, octomate.threads, octomate.files
             )
             codex_state, offsets = await codex_tailer.attach_remote(
                 SESSION_ID,

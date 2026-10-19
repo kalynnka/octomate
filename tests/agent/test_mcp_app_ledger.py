@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from octomate.database import async_session
 from octomate.managers import ThreadManager, UserManager
 from octomate.nerve import Nerve
-from octomate.schemas.artifacts import Artifact, McpAppArtifact
+from octomate.schemas.artifacts import Artifact, InstalledMcpAppSource, McpAppArtifact
 from octomate.schemas.events import MessageEvent
 from octomate.schemas.mcp import McpAppInvocation, NoAuthMcp
 from octomate.schemas.segments import TextSegment
@@ -42,10 +42,11 @@ async def app_artifact(in_memory_engine: AsyncEngine) -> McpAppArtifact:
     return McpAppArtifact(
         owner_id=user.id,
         title="Create diagram",
+        source=InstalledMcpAppSource(
+            installation_id=installation.id, namespace=installation.namespace
+        ),
         invocation=McpAppInvocation.model_validate(
             {
-                "installation_id": installation.id,
-                "namespace": installation.namespace,
                 "provider_name": installation.name,
                 "resource_uri": "ui://diagrams/app.html",
                 "tool": {
@@ -115,6 +116,7 @@ async def test_complete_artifact_roundtrips_without_a_thread(
         assert isinstance(stored, McpAppArtifact)
         assert stored.owner_id == app_artifact.owner_id
         assert stored.title == app_artifact.title
+        assert stored.source == app_artifact.source
         assert stored.invocation == app_artifact.invocation
         assert stored.invocation.result.is_error is is_error
         assert await session.count(ThreadMessage) == 0
@@ -149,7 +151,8 @@ async def test_uninstall_and_namespace_reuse_do_not_rebind_artifacts(
     app_entry: ThreadArtifact,
     app_artifact: McpAppArtifact,
 ) -> None:
-    original_id = app_artifact.invocation.installation_id
+    assert isinstance(app_artifact.source, InstalledMcpAppSource)
+    original_id = app_artifact.source.installation_id
     async with async_session() as session:
         session.add(app_entry)
         installation = await session.get(NoAuthMcp, original_id)
@@ -159,7 +162,7 @@ async def test_uninstall_and_namespace_reuse_do_not_rebind_artifacts(
         replacement = NoAuthMcp(
             user_id=app_artifact.owner_id,
             name="Replacement",
-            namespace=app_artifact.invocation.namespace,
+            namespace=app_artifact.source.namespace,
             url="https://replacement.example/mcp",
         )
         session.add(replacement)
@@ -168,7 +171,8 @@ async def test_uninstall_and_namespace_reuse_do_not_rebind_artifacts(
         stored = await session.get(McpAppArtifact, app_artifact.id)
         assert stored is not None
         assert stored.invocation == app_artifact.invocation
-        assert stored.invocation.installation_id != replacement.id
+        assert isinstance(stored.source, InstalledMcpAppSource)
+        assert stored.source.installation_id != replacement.id
 
 
 async def test_artifact_survives_deleting_its_thread(
@@ -211,6 +215,7 @@ async def test_distinct_artifact_entries_follow_ledger_paging_and_fork_cuts(
     second_artifact = McpAppArtifact(
         owner_id=app_artifact.owner_id,
         title="Second diagram",
+        source=app_artifact.source,
         invocation=app_artifact.invocation.model_copy(
             update={"arguments": {"xml": "<second />"}}, deep=True
         ),

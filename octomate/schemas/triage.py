@@ -156,8 +156,9 @@ class TeleportDecision(BaseModel):
     )
     resume: bool = Field(
         default=False,
-        description="Whether the agent carries on at once where it lands; false "
-        "leaves the conversation there for the next message.",
+        description="Whether the agent carries on at once in a new thread; false "
+        "waits for the next message there. Binding the current thread to a project "
+        "always resumes the agent, regardless of this flag.",
     )
     prompt: str | None = Field(
         default=None,
