@@ -27,6 +27,13 @@ requests. Work runs as the Octomate service account.
 No agent or channel tentacle block is needed for this API. Each connection starts
 its own adapter when it initializes.
 
+## Session settings
+
+Your client receives the modes and configuration options the provider offers.
+Change them on a session created through the current connection, including while
+a prompt is running. Available choices depend on the provider; it may reject a
+change or update the available options as work proceeds.
+
 ## Where work happens
 
 Choose a directory accessible on the server. Octomate preserves that directory
@@ -42,7 +49,7 @@ It therefore does not make the session visible in Trunkline's history by itself.
 
 Disconnecting shuts down the adapter. You cannot reconnect to drive that session
 through this API yet; its provider session and registered identity are retained.
-Session loading, listing, mode and configuration changes are not available.
+Session loading and listing are not available.
 API-key revocation and expiry are checked when connecting.
 
 ## Coming soon
@@ -50,7 +57,6 @@ API-key revocation and expiry are checked when connecting.
 - Record prompts and responses in Octomate's history and show sessions and live
   updates in Trunkline.
 - Reconnect to existing sessions, resume work, and load or list sessions.
-- Change session modes and configuration where the provider supports them.
 - Run Inkling through ACP using Pydantic AI.
 
 DeepSeek Harness support is planned after Claude, Codex and Inkling.

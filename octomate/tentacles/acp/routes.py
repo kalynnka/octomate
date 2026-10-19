@@ -5,9 +5,13 @@ one adapter process and the sessions created through it. One JSON-RPC object is
 sent per text frame; this is Octomate's custom ACP transport, not Streamable HTTP.
 
 Initialize first, then use `session/new`, `session/prompt` and `session/cancel`.
+Session creation retains the provider's modes and configuration options. Use
+`session/set_mode` or `session/set_config_option` on sessions this connection owns,
+even during a prompt. The provider validates choices; settings, updates, errors
+and `_meta` pass through without an Octomate settings cache.
 Client capabilities and agent callbacks cross the connection directly, including
 permission requests, filesystem access and terminals. No request/reply traffic
-uses the nerve. Session loading, listing and configuration are not exposed.
+uses the nerve. Session loading and listing are not exposed.
 
 The adapter must already be installed and logged in as the service account.
 Provider authentication is not exposed through ACP. Workspace paths and stdio MCP
@@ -110,9 +114,21 @@ async def native_acp(
                 )
             except ValueError as error:
                 raise acp.RequestError.invalid_params({"reason": str(error)}) from error
-            response = response.model_copy(
-                update={"modes": None, "config_options": None}
+        elif method == "session/set_mode":
+            response = await broker.set_mode(
+                schema.SetSessionModeRequest.model_validate(params, strict=True)
             )
+        elif method == "session/set_config_option":
+            config_request = (
+                schema.SetSessionConfigOptionBooleanRequest.model_validate(
+                    params, strict=True
+                )
+                if isinstance(params, dict) and params.get("type") == "boolean"
+                else schema.SetSessionConfigOptionSelectRequest.model_validate(
+                    params, strict=True
+                )
+            )
+            response = await broker.set_config_option(config_request)
         elif method == "session/prompt":
             response = await broker.prompt(schema.PromptRequest.model_validate(params))
         else:

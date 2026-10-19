@@ -134,6 +134,16 @@ async def test_another_broker_cannot_drive_an_owned_session(
                 session_id=response.session_id, prompt=[acp.text_block("hello")]
             )
         )
+    with pytest.raises(acp.RequestError, match="Invalid params"):
+        await other.set_mode(
+            schema.SetSessionModeRequest(session_id=response.session_id, mode_id="plan")
+        )
+    with pytest.raises(acp.RequestError, match="Invalid params"):
+        await other.set_config_option(
+            schema.SetSessionConfigOptionSelectRequest(
+                session_id=response.session_id, config_id="mode", value="plan"
+            )
+        )
     await other.cancel(schema.CancelNotification(session_id=response.session_id))
     assert not other.sessions
 

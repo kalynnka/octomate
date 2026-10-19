@@ -1,7 +1,7 @@
 """Register and control native ACP sessions for one authenticated connection.
 
-Only sessions created through this broker can be prompted or cancelled through
-it. Their thread and conversation are durable; the authority to drive them lasts
+Only sessions created through this broker can be prompted, configured or cancelled
+through it. Their thread and conversation are durable; the authority to drive them lasts
 for this connection. Session loading, reconnects, API routes and transcript
 projection are not provided here. Creating a session invents no ledger message
 and therefore grants no history access before a real prompt is recorded.
@@ -82,6 +82,45 @@ class NativeAcpBroker:
         await self.conversations.set_external_id(conversation, session_id)
         self.sessions[session_id] = RegisteredAcpSession(native, conversation)
         return native.response
+
+    async def set_mode(
+        self, request: schema.SetSessionModeRequest
+    ) -> schema.SetSessionModeResponse:
+        """Change an owned session's mode, including while a prompt is running.
+
+        The provider validates available modes and publishes any mode updates.
+        """
+        if request.session_id not in self.sessions:
+            raise acp.RequestError.invalid_params(
+                {"reason": "Session is unavailable on this connection"}
+            )
+        return await request_model(
+            self.client.connection,
+            acp.AGENT_METHODS["session_set_mode"],
+            request,
+            schema.SetSessionModeResponse,
+        )
+
+    async def set_config_option(
+        self,
+        request: schema.SetSessionConfigOptionSelectRequest
+        | schema.SetSessionConfigOptionBooleanRequest,
+    ) -> schema.SetSessionConfigOptionResponse:
+        """Change an owned session's setting, including during a prompt.
+
+        The provider validates the choice and returns the complete configuration.
+        Its current options may differ from the initial session response.
+        """
+        if request.session_id not in self.sessions:
+            raise acp.RequestError.invalid_params(
+                {"reason": "Session is unavailable on this connection"}
+            )
+        return await request_model(
+            self.client.connection,
+            acp.AGENT_METHODS["session_set_config_option"],
+            request,
+            schema.SetSessionConfigOptionResponse,
+        )
 
     async def prompt(self, request: schema.PromptRequest) -> schema.PromptResponse:
         """Forward a prompt only to an idle session owned by this connection.

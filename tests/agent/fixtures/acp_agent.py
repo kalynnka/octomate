@@ -15,6 +15,8 @@ def send(message: dict[str, JsonValue]) -> None:
 def main() -> None:
     pending: str | int | None = None
     session_count = 0
+    boolean_options = False
+    configurations: dict[str, list[dict[str, JsonValue]]] = {}
     with Path(os.environ["ACP_TEST_LOG"]).open("w") as log:
         for line in sys.stdin:
             message = json.loads(line)
@@ -22,6 +24,13 @@ def main() -> None:
             log.flush()
             match message.get("method"):
                 case "initialize":
+                    boolean_options = (
+                        message["params"]
+                        .get("clientCapabilities", {})
+                        .get("session", {})
+                        .get("configOptions", {})
+                        .get("boolean")
+                    ) is not None
                     send(
                         {
                             "id": message["id"],
@@ -42,22 +51,53 @@ def main() -> None:
                     )
                 case "session/new":
                     session_count += 1
+                    session_id = f"native-{session_count}"
+                    configurations[session_id] = [
+                        {
+                            "id": "mode",
+                            "name": "Mode",
+                            "category": "mode",
+                            "type": "select",
+                            "currentValue": "default",
+                            "options": [
+                                {"value": "default", "name": "Default"},
+                                {"value": "plan", "name": "Plan"},
+                            ],
+                            "_meta": {"providerOption": True},
+                        },
+                        *(
+                            [
+                                {
+                                    "id": "verbose",
+                                    "name": "Verbose",
+                                    "type": "boolean",
+                                    "currentValue": False,
+                                }
+                            ]
+                            if boolean_options
+                            else []
+                        ),
+                    ]
                     send(
                         {
                             "id": message["id"],
                             "result": {
-                                "sessionId": f"native-{session_count}",
+                                "sessionId": session_id,
                                 "modes": {
                                     "currentModeId": "default",
                                     "availableModes": [
-                                        {"id": "default", "name": "Default"}
+                                        {"id": "default", "name": "Default"},
+                                        {"id": "plan", "name": "Plan"},
                                     ],
                                 },
+                                "configOptions": [*configurations[session_id]],
                                 "_meta": {"providerSession": True},
                             },
                         }
                     )
-                case "session/prompt" if message["params"].get("_meta", {}).get("fail"):
+                case (
+                    "session/prompt" | "session/set_mode" | "session/set_config_option"
+                ) if message["params"].get("_meta", {}).get("fail"):
                     send(
                         {
                             "id": message["id"],
@@ -65,6 +105,53 @@ def main() -> None:
                                 "code": -32602,
                                 "message": "scripted refusal",
                                 "data": {"retry": False},
+                            },
+                        }
+                    )
+                case "session/set_mode" | "session/set_config_option":
+                    params = message["params"]
+                    session_id = params["sessionId"]
+                    mode = message["method"] == "session/set_mode"
+                    config_id = "mode" if mode else params["configId"]
+                    value = params["modeId"] if mode else params["value"]
+                    configurations[session_id] = [
+                        {**option, "currentValue": value}
+                        if option["id"] == config_id
+                        else option
+                        for option in configurations[session_id]
+                    ]
+                    send(
+                        {
+                            "method": "session/update",
+                            "params": {
+                                "sessionId": session_id,
+                                "update": (
+                                    {
+                                        "sessionUpdate": "current_mode_update",
+                                        "currentModeId": value,
+                                    }
+                                    if mode
+                                    else {
+                                        "sessionUpdate": "config_option_update",
+                                        "configOptions": [*configurations[session_id]],
+                                    }
+                                ),
+                                "_meta": {"providerUpdate": True},
+                            },
+                        }
+                    )
+                    send(
+                        {
+                            "id": message["id"],
+                            "result": {
+                                **(
+                                    {}
+                                    if mode
+                                    else {
+                                        "configOptions": [*configurations[session_id]]
+                                    }
+                                ),
+                                "_meta": {"providerSetting": True},
                             },
                         }
                     )

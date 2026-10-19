@@ -8,6 +8,7 @@ import acp.transports
 import pytest
 from anyio import Path as AsyncPath
 from fastapi.testclient import TestClient
+from pydantic import JsonValue
 from sqlalchemy.ext.asyncio import AsyncEngine
 from starlette.testclient import WebSocketDenialResponse, WebSocketTestSession
 from starlette.websockets import WebSocketDisconnect
@@ -43,7 +44,7 @@ async def client(
     )
 
 
-def open_session(socket: WebSocketTestSession) -> str:
+def open_session(socket: WebSocketTestSession, *, boolean_options: bool = False) -> str:
     socket.send_json(
         {
             "jsonrpc": "2.0",
@@ -51,7 +52,15 @@ def open_session(socket: WebSocketTestSession) -> str:
             "method": "initialize",
             "params": {
                 "protocolVersion": 1,
-                "clientCapabilities": {"fs": {"readTextFile": True}, "terminal": True},
+                "clientCapabilities": {
+                    "fs": {"readTextFile": True},
+                    "terminal": True,
+                    **(
+                        {"session": {"configOptions": {"boolean": {}}}}
+                        if boolean_options
+                        else {}
+                    ),
+                },
                 "_meta": {"client": "retained"},
             },
         }
@@ -78,8 +87,17 @@ def open_session(socket: WebSocketTestSession) -> str:
     response = socket.receive_json()
     assert response["id"] == "new"
     assert response["result"]["_meta"] == {"providerSession": True}
-    assert "modes" not in response["result"]
-    assert "configOptions" not in response["result"]
+    assert response["result"]["modes"]["currentModeId"] == "default"
+    assert [mode["id"] for mode in response["result"]["modes"]["availableModes"]] == [
+        "default",
+        "plan",
+    ]
+    options = response["result"]["configOptions"]
+    assert options[0]["currentValue"] == "default"
+    assert options[0]["_meta"] == {"providerOption": True}
+    assert [option["id"] for option in options] == (
+        ["mode", "verbose"] if boolean_options else ["mode"]
+    )
     return response["result"]["sessionId"]
 
 
@@ -224,6 +242,178 @@ def test_unknown_session_and_invalid_prompt_are_rejected(client: TestClient) -> 
                 }
             )
             assert socket.receive_json()["error"]["code"] == -32602
+
+
+@pytest.mark.parametrize("provider", list(AcpProvider))
+@pytest.mark.parametrize("prompting", [False, True])
+@pytest.mark.parametrize(
+    ("method", "values"),
+    [
+        ("session/set_mode", {"modeId": "plan"}),
+        ("session/set_config_option", {"configId": "mode", "value": "plan"}),
+        (
+            "session/set_config_option",
+            {"configId": "verbose", "type": "boolean", "value": True},
+        ),
+    ],
+)
+def test_settings_and_updates_pass_through_even_during_a_prompt(
+    client: TestClient,
+    adapter_environment: dict[str, str],
+    provider: AcpProvider,
+    prompting: bool,
+    method: str,
+    values: dict[str, JsonValue],
+) -> None:
+    with client.websocket_connect(f"/api/acp/{provider}") as socket:
+        session_id = open_session(socket, boolean_options=True)
+        permission = None
+        if prompting:
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": "prompt",
+                    "method": "session/prompt",
+                    "params": {"sessionId": session_id, "prompt": []},
+                }
+            )
+            assert socket.receive_json()["method"] == "session/update"
+            permission = socket.receive_json()
+            assert permission["method"] == "session/request_permission"
+        params = {
+            "sessionId": session_id,
+            **values,
+            "_meta": {
+                "session_id": "extension, not the target",
+                "nested": {"flag": True},
+            },
+        }
+        socket.send_json(
+            {"jsonrpc": "2.0", "id": "setting", "method": method, "params": params}
+        )
+        received = [socket.receive_json(), socket.receive_json()]
+        [update] = [
+            message for message in received if message.get("method") == "session/update"
+        ]
+        [response] = [message for message in received if message.get("id") == "setting"]
+        assert update["params"]["sessionId"] == session_id
+        assert update["params"]["_meta"] == {"providerUpdate": True}
+        assert response["result"]["_meta"] == {"providerSetting": True}
+        if method == "session/set_mode":
+            assert update["params"]["update"] == {
+                "sessionUpdate": "current_mode_update",
+                "currentModeId": "plan",
+            }
+        else:
+            options = response["result"]["configOptions"]
+            assert [option["id"] for option in options] == ["mode", "verbose"]
+            assert options[0]["_meta"] == {"providerOption": True}
+            assert options[0]["currentValue"] == (
+                "plan" if values["configId"] == "mode" else "default"
+            )
+            assert options[1]["currentValue"] is (values["configId"] == "verbose")
+            assert update["params"]["update"] == {
+                "sessionUpdate": "config_option_update",
+                "configOptions": options,
+            }
+        if permission is not None:
+            socket.send_json(
+                {
+                    "jsonrpc": "2.0",
+                    "id": permission["id"],
+                    "result": {"outcome": {"outcome": "selected", "optionId": "yes"}},
+                }
+            )
+            assert socket.receive_json()["result"]["stopReason"] == "end_turn"
+    requests = [
+        json.loads(line)["message"]
+        for line in Path(adapter_environment["ACP_TEST_LOG"]).read_text().splitlines()
+    ]
+    [setting] = [request for request in requests if request.get("method") == method]
+    assert setting["params"] == params
+
+
+@pytest.mark.parametrize(
+    ("method", "values"),
+    [
+        ("session/set_mode", {"sessionId": "unowned", "modeId": "plan"}),
+        (
+            "session/set_config_option",
+            {"sessionId": "unowned", "configId": "mode", "value": "plan"},
+        ),
+        (
+            "session/set_config_option",
+            {
+                "sessionId": "unowned",
+                "configId": "verbose",
+                "type": "boolean",
+                "value": True,
+            },
+        ),
+        ("session/set_mode", {"modeId": 42}),
+        ("session/set_config_option", {"configId": "mode"}),
+        ("session/set_config_option", {"configId": "mode", "value": True}),
+        (
+            "session/set_config_option",
+            {"configId": "verbose", "type": "boolean", "value": "true"},
+        ),
+    ],
+)
+def test_unowned_sessions_and_invalid_settings_never_reach_provider(
+    client: TestClient,
+    adapter_environment: dict[str, str],
+    method: str,
+    values: dict[str, JsonValue],
+) -> None:
+    with client.websocket_connect("/api/acp/claude") as socket:
+        session_id = open_session(socket, boolean_options=True)
+        socket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "setting",
+                "method": method,
+                "params": {
+                    "sessionId": session_id,
+                    **values,
+                    "_meta": {"sessionId": session_id},
+                },
+            }
+        )
+        response = socket.receive_json()
+        assert response["id"] == "setting"
+        assert response["error"]["code"] == -32602
+    assert len(Path(adapter_environment["ACP_TEST_LOG"]).read_text().splitlines()) == 2
+
+
+@pytest.mark.parametrize(
+    ("method", "values"),
+    [
+        ("session/set_mode", {"modeId": "unavailable"}),
+        ("session/set_config_option", {"configId": "mode", "value": "unavailable"}),
+    ],
+)
+def test_setting_refusals_reach_the_caller(
+    client: TestClient, method: str, values: dict[str, JsonValue]
+) -> None:
+    with client.websocket_connect("/api/acp/codex") as socket:
+        session_id = open_session(socket)
+        socket.send_json(
+            {
+                "jsonrpc": "2.0",
+                "id": "setting",
+                "method": method,
+                "params": {"sessionId": session_id, **values, "_meta": {"fail": True}},
+            }
+        )
+        assert socket.receive_json() == {
+            "jsonrpc": "2.0",
+            "id": "setting",
+            "error": {
+                "code": -32602,
+                "message": "scripted refusal",
+                "data": {"retry": False},
+            },
+        }
 
 
 @pytest.mark.parametrize("callback_method", ["fs/read_text_file", "terminal/create"])
