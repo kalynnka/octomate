@@ -19,13 +19,16 @@ window.addEventListener('message', ({ data }) => {
   } else if (data.method) {
     window.received.push(data);
     if (data.method === 'ui/notifications/tool-result') document.querySelector('#result').textContent = data.params.structuredContent.label;
-    if (data.method === 'ui/notifications/host-context-changed') document.body.dataset.theme = data.params.theme;
+    if (data.method === 'ui/notifications/host-context-changed') {
+      Object.assign(window.host.hostContext, data.params);
+      document.body.dataset.theme = window.host.hostContext.theme;
+    }
   } else if (data.id) { window.replies[data.id] = data; }
 });
 send('ui/initialize', { protocolVersion: '2026-01-26', appInfo: { name: 'Test', version: '1' }, appCapabilities: {} }, 'init');
 </script></body></html>`
 
-async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; modes?: Record<string, 'wide'>; fail?: boolean; csp?: Record<string, string[]>; path?: string; beforeRead?: () => Promise<void> } = {}) {
+async function mockViews(page: Page, options: { html?: string; htmlArtifact?: boolean; title?: string; modes?: Record<string, 'wide'>; fail?: boolean; csp?: Record<string, string[]>; path?: string; beforeRead?: () => Promise<void> } = {}) {
   const reads: string[] = []
   // Unmocked API calls must never reach a developer's running Octomate server.
   await page.route((url) => url.pathname.startsWith('/api/'), (route) => route.fulfill({ status: 404, json: { detail: 'Unmocked test API' } }))
@@ -37,7 +40,7 @@ async function mockViews(page: Page, options: { html?: string; htmlArtifact?: bo
     const label = route.request().url().split('/').at(-1)!
     const csp = options.csp ?? {}
     await route.fulfill({ json: {
-      artifact: options.htmlArtifact ? { id: label, kind: 'html', title: label, file_id: 'stored-html', mode: options.modes?.[label] ?? null } : { id: label, kind: 'mcp_app', title: label, invocation: {
+      artifact: options.htmlArtifact ? { id: label, kind: 'html', title: options.title ?? label, file_id: 'stored-html', mode: options.modes?.[label] ?? null } : { id: label, kind: 'mcp_app', title: options.title ?? label, invocation: {
         tool: { name: 'create_diagram', inputSchema: { type: 'object' } },
         arguments: { diagram: large, label },
         result: { content: [{ type: 'text', text: large }], structuredContent: { label }, isError: false, _meta: { saved: large } },
@@ -148,7 +151,7 @@ test('wide HTML uses the chat width independently and stays responsive after rel
   expect(availableWidth).toBeGreaterThan(640)
   await expect(wide).toHaveCSS('width', `${availableWidth}px`)
   await expect(normal).toHaveCSS('width', '640px')
-  await expect(frame.locator('body')).toHaveCSS('width', `${availableWidth}px`)
+  await expect(frame.locator('body')).toHaveCSS('width', `${await wide.locator('iframe').evaluate(el => el.clientWidth)}px`)
   await wide.hover()
   await wide.getByRole('button', { name: 'Reload', exact: true }).click()
   await expect(frame.locator('#result')).toHaveText('Saved chart')
@@ -158,7 +161,7 @@ test('wide HTML uses the chat width independently and stays responsive after rel
   expect(narrowWidth).toBeLessThanOrEqual(390)
   await expect(wide).toHaveCSS('width', `${narrowWidth}px`)
   await expect(normal).toHaveCSS('width', `${narrowWidth}px`)
-  await expect(frame.locator('body')).toHaveCSS('width', `${narrowWidth}px`)
+  await expect(frame.locator('body')).toHaveCSS('width', `${await wide.locator('iframe').evaluate(el => el.clientWidth)}px`)
   expect(await page.locator('html').evaluate(el => el.scrollWidth)).toBe(390)
   await page.setViewportSize({ width: 1440, height: 900 })
   await expect(wide).toHaveCSS('width', `${availableWidth}px`)
@@ -190,38 +193,44 @@ test('captured HTML interacts, resizes and reloads without an MCP app implementa
   expect(reads).toHaveLength(3)
 })
 
-test('chat HTML is frameless with controls on hover, keyboard focus and when folded', async ({ page }) => {
-  await mockViews(page, { htmlArtifact: true, html: '<div style="height: 180px">Saved chart</div>' })
+test('chat HTML keeps its header above the widget when expanded and folded', async ({ page }) => {
+  await mockViews(page, { htmlArtifact: true, title: 'Compact layout test with a long artifact title', html: '<div style="height: 180px">Saved chart</div>' })
   await page.goto('/tests/browser/harness.html')
   const card = page.locator('#pm-row-a .trk-artifact')
   const header = card.locator(':scope > header')
   await expect(card.getByRole('status')).toHaveCount(0)
   await page.mouse.move(0, 0)
-  await expect(card).toHaveCSS('box-shadow', 'none')
-  await expect(card).toHaveCSS('border-top-width', '0px')
-  expect(await card.evaluate(el => getComputedStyle(el, '::after').content)).toBe('none')
-  await expect(card.locator('.trk-artifact-sheet')).toHaveCSS('padding', '0px')
   await expect(card).toHaveCSS('width', '640px')
-  await expect(header).toHaveCSS('opacity', '0')
-  await card.hover()
   await expect(header).toHaveCSS('opacity', '1')
+  await expect(header.locator('strong')).toBeVisible()
+  expect(await card.locator('iframe').evaluate(el => el.getBoundingClientRect().top)).toBeGreaterThanOrEqual(await header.evaluate(el => el.getBoundingClientRect().bottom))
   await card.screenshot({ path: test.info().outputPath('html-toolbar-light.png') })
-  await page.mouse.move(0, 0)
   await page.getByRole('button', { name: 'Dark', exact: true }).focus()
   await page.keyboard.press('Tab')
-  await expect(card.getByRole('link', { name: 'Open', exact: true })).toBeFocused()
-  await expect(header).toHaveCSS('opacity', '1')
+  await expect(card.getByRole('button', { name: 'Fold', exact: true })).toBeFocused()
+  await expect(card.getByRole('button', { name: 'Fold', exact: true })).toHaveCSS('outline-style', 'solid')
+  expect(await card.getByRole('button', { name: 'Fold', exact: true }).evaluate(el => el.getBoundingClientRect().width)).toBeLessThan(40)
   await card.getByRole('button', { name: 'Fold', exact: true }).click()
   await page.getByRole('button', { name: 'Dark', exact: true }).focus()
   await page.mouse.move(0, 0)
   await expect(header).toHaveCSS('opacity', '1')
   await expect(header.locator('strong')).toBeVisible()
-  await card.getByRole('button', { name: 'Unfold', exact: true }).click()
+  await expect(card).toHaveCSS('border-radius', '0px')
+  await page.getByRole('button', { name: 'Dark', exact: true }).click()
+  await card.screenshot({ path: test.info().outputPath('html-folded-dark.png') })
   await page.setViewportSize({ width: 390, height: 600 })
+  await expect(header.locator('.trk-artifact-heading')).toHaveAttribute('title', 'Compact layout test with a long artifact title')
+  expect(await header.locator('strong').evaluate(el => el.scrollWidth > el.clientWidth)).toBe(true)
+  expect(await page.locator('html').evaluate(el => el.scrollWidth)).toBe(390)
+  await expect(card.getByRole('link', { name: 'Open', exact: true })).toBeVisible()
+  await expect(card.getByRole('button', { name: 'Reload', exact: true })).toBeVisible()
+  await card.screenshot({ path: test.info().outputPath('html-folded-narrow.png') })
+  await card.getByRole('button', { name: 'Unfold', exact: true }).click()
   expect(await header.evaluate(el => el.getBoundingClientRect().right)).toBeLessThanOrEqual(390)
   await page.getByRole('button', { name: 'Dark', exact: true }).focus()
   await page.mouse.move(0, 0)
-  await expect(header).toHaveCSS('opacity', '0')
+  await expect(header).toHaveCSS('opacity', '1')
+  await expect(header.locator('strong')).toBeVisible()
   await card.screenshot({ path: test.info().outputPath('html-inline.png') })
 })
 
@@ -264,6 +273,10 @@ test('standalone captured HTML remains isolated from the console and network', a
   await page.goto('/work/artifacts/html-one')
   const content = page.frameLocator('iframe').frameLocator('iframe')
   await expect(content.locator('#result')).toHaveText('Saved chart')
+  await expect(page.getByRole('button', { name: /^(Fold|Unfold)$/ })).toHaveCount(0)
+  await expect(page.locator('.trk-artifact > header strong')).toHaveText('html-one')
+  await page.locator('.trk-artifact-heading').click()
+  await expect(content.locator('#result')).toBeVisible()
   expect(await page.locator('iframe').evaluate(el => el.clientWidth)).toBeGreaterThan(640)
   const sandboxed = await content.locator('body').evaluate(async () => {
     let parentBlocked = false
@@ -308,15 +321,17 @@ test('folding preserves app state and hides only that card until it is unfolded'
   const card = page.locator('#pm-row-a')
   const fold = card.getByRole('button', { name: 'Fold', exact: true })
   const contentId = await fold.getAttribute('aria-controls')
-  const buttonWidth = await fold.evaluate(el => el.getBoundingClientRect().width)
-  for (const control of [card.getByRole('link', { name: 'Open', exact: true }), card.getByRole('button', { name: 'Reload', exact: true })]) {
-    expect(await control.evaluate(el => el.getBoundingClientRect().width)).toBeCloseTo(buttonWidth, 1)
-  }
   await app.getByRole('textbox', { name: 'Diagram note' }).fill('Unsaved edit')
   await app.evaluate("window.send('ui/notifications/size-changed', { height: 300 })")
   await fold.press('Enter')
   await expect(card.getByRole('button', { name: 'Unfold', exact: true })).toHaveAttribute('aria-expanded', 'false')
-  expect(await card.getByRole('button', { name: 'Unfold', exact: true }).evaluate(el => el.getBoundingClientRect().width)).toBeCloseTo(buttonWidth, 1)
+  await expect(card.getByRole('button', { name: 'Unfold', exact: true })).toBeFocused()
+  const toggleRight = await card.getByRole('button', { name: 'Unfold', exact: true }).evaluate(el => el.getBoundingClientRect().right)
+  for (const control of [card.getByRole('link', { name: 'Open', exact: true }), card.getByRole('button', { name: 'Reload', exact: true })]) {
+    expect(await control.evaluate(el => el.getBoundingClientRect().left)).toBeGreaterThan(toggleRight)
+  }
+  await page.keyboard.press('Tab')
+  await expect(card.getByRole('link', { name: 'Open', exact: true })).toBeFocused()
   await expect(page.locator(`[id="${contentId}"]`)).toHaveAttribute('inert', '')
   await expect(page.locator(`[id="${contentId}"]`)).toHaveAttribute('aria-hidden', 'true')
   await expect.poll(() => card.evaluate(el => el.getBoundingClientRect().height)).toBeLessThan(60)
@@ -345,6 +360,9 @@ for (const path of ['/artifacts', '/work/artifacts']) {
     const reads = await mockViews(page, { path })
     await page.goto(`${path}/app-a`)
     await contentFrame(page, 'app-a')
+    await expect(page.getByRole('button', { name: /^(Fold|Unfold)$/ })).toHaveCount(0)
+    await page.locator('.trk-artifact-heading').click()
+    await expect(page.locator('.trk-artifact')).not.toHaveAttribute('data-folded')
     await page.getByRole('button', { name: 'Reload', exact: true }).click()
     await contentFrame(page, 'app-a')
     await page.reload()
@@ -365,13 +383,13 @@ test('resize is bounded, theme is updated, and removing cards tears down frames'
   await app.evaluate("window.send('ui/notifications/size-changed', { height: 5000 })")
   await expect(frame).toHaveCSS('height', '1000px')
   await expect(page.locator('#pm-row-a')).toHaveCSS('width', '640px')
-  expect(await app.evaluate('window.host.hostContext.containerDimensions.width')).toBe(await frame.evaluate(el => el.clientWidth))
+  await expect.poll(() => app.evaluate('window.host.hostContext.containerDimensions.width')).toBe(await frame.evaluate(el => el.clientWidth))
   expect(await app.evaluate('window.host.hostContext.containerDimensions.maxHeight')).toBe(1000)
   await page.setViewportSize({ width: 390, height: 600 })
   await expect(frame).toHaveCSS('height', '1000px')
   expect(await frame.evaluate(el => el.getBoundingClientRect().right)).toBeLessThanOrEqual(390)
-  await expect.poll(() => app.evaluate("window.received.filter(m => m.method === 'ui/notifications/host-context-changed').at(-1).params.containerDimensions.width")).toBe(await frame.evaluate(el => el.clientWidth))
-  await expect.poll(() => app.evaluate("window.received.filter(m => m.method === 'ui/notifications/host-context-changed').at(-1).params.containerDimensions.maxHeight")).toBe(1000)
+  await expect.poll(() => app.evaluate('window.host.hostContext.containerDimensions.width')).toBe(await frame.evaluate(el => el.clientWidth))
+  await expect.poll(() => app.evaluate('window.host.hostContext.containerDimensions.maxHeight')).toBe(1000)
   await page.setViewportSize({ width: 1440, height: 1000 })
   await expect(frame).toHaveCSS('height', '1000px')
   await app.evaluate("window.send('ui/notifications/size-changed', { height: 0 })")
@@ -419,12 +437,48 @@ test('artifact resize and folding keep the reader on the current card', async ({
   expect(await card.evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(top, 0)
   await card.getByRole('button', { name: 'Unfold', exact: true }).click()
   await expect.poll(() => card.evaluate(el => el.clientHeight)).toBeGreaterThan(850)
-  expect(await card.evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(top, 0)
+  expect(await card.locator('.trk-artifact > header').evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(await log.evaluate(el => el.getBoundingClientRect().top), 0)
   await app.getByRole('button', { name: 'Resize diagram' }).scrollIntoViewIfNeeded()
   await app.getByRole('button', { name: 'Resize diagram' }).click()
   await expect.poll(() => card.evaluate(el => el.clientHeight)).toBeLessThan(300)
   expect(await card.evaluate(el => el.getBoundingClientRect().bottom)).toBeGreaterThan(await log.evaluate(el => el.getBoundingClientRect().top + 40))
 })
+
+for (const htmlArtifact of [false, true]) {
+  test(`${htmlArtifact ? 'HTML' : 'MCP app'} expansion reveals its header from the bottom of a scaled chat`, async ({ page }) => {
+    await mockViews(page, { htmlArtifact, html: htmlArtifact
+      ? '<style>body { margin: 0; } #result { height: 850px; }</style><div id="result">row-a</div>' : appHtml })
+    await page.goto('/tests/browser/harness.html')
+    await page.addStyleTag({ content: `
+      #trk-chatlog { height: 480px; overflow-y: auto; zoom: 0.9; }
+      #trk-chatlog::before, #trk-chatlog::after { content: ''; display: block; height: 800px; }
+    ` })
+    const card = page.locator('#pm-row-a')
+    const header = card.locator('.trk-artifact > header')
+    const log = page.locator('#trk-chatlog')
+    const content = card.frameLocator('iframe').frameLocator('iframe')
+    await expect(content.locator('#result')).toHaveText('row-a')
+    if (!htmlArtifact) await content.locator('body').evaluate(() => {
+      parent.postMessage({ jsonrpc: '2.0', method: 'ui/notifications/size-changed', params: { height: 850 } }, '*')
+    })
+    await expect(card.locator('iframe')).toHaveCSS('height', '850px')
+    expect(await log.evaluate(el => el.scrollTop)).toBe(0)
+    for (const reducedMotion of ['no-preference', 'reduce'] as const) {
+      await page.emulateMedia({ reducedMotion })
+      await card.getByRole('button', { name: 'Fold', exact: true }).click()
+      await expect.poll(() => card.evaluate(el => el.clientHeight)).toBeLessThan(60)
+      await log.evaluate(el => {
+        const scale = el.getBoundingClientRect().height / el.clientHeight
+        el.scrollTop += (el.querySelector('#pm-row-a')!.getBoundingClientRect().top - el.getBoundingClientRect().bottom) / scale + 48
+      })
+      await card.getByRole('button', { name: 'Unfold', exact: true }).click()
+      await expect.poll(() => card.evaluate(el => el.clientHeight)).toBeGreaterThan(890)
+      await expect.poll(async () => await header.evaluate(el => el.getBoundingClientRect().top) - await log.evaluate(el => el.getBoundingClientRect().top)).toBeCloseTo(0, 0)
+      expect(await page.evaluate(() => window.scrollY)).toBe(0)
+      await expect(content.locator('#result')).toHaveText('row-a')
+    }
+  })
+}
 
 test('artifact motion animates the host frame and respects reduced motion', async ({ page }) => {
   await mockViews(page)
@@ -436,10 +490,17 @@ test('artifact motion animates the host frame and respects reduced motion', asyn
   await expect(frame).toHaveCSS('height', '300px')
   await app.evaluate("window.send('ui/notifications/size-changed', { height: 800 })")
   await expect(card.locator('iframe')).toHaveCSS('height', '800px')
-  const motion = await frame.evaluate(el => ({
-    height: el.getBoundingClientRect().height,
-    duration: el.getAnimations()[0]?.effect?.getComputedTiming().duration,
-  }))
+  const motion = await frame.evaluate(el => {
+    const animation = el.getAnimations()[0]
+    if (!animation?.effect) throw new Error('Expected a frame height transition')
+    const duration = animation.effect.getComputedTiming().duration
+    if (typeof duration !== 'number') throw new Error('Expected a finite transition duration')
+    animation.pause()
+    animation.currentTime = duration / 2
+    const height = el.getBoundingClientRect().height
+    animation.finish()
+    return { height, duration }
+  })
   expect(motion.height).toBeGreaterThan(300)
   expect(motion.height).toBeLessThan(800)
   expect(motion.duration).toBe(380)
@@ -722,22 +783,135 @@ test('an official SDK app receives design tokens at initialization and on theme 
   await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
 })
 
-test('shared document theming preserves app interiors and standard size reports', async ({ page }) => {
+for (const htmlArtifact of [false, true]) {
+  test(`${htmlArtifact ? 'HTML' : 'MCP app'} shares typography and controls while authored styles win`, async ({ page }) => {
+    const content = `<style>
+      main { padding: 16px; }
+      @layer widget { :where(#custom, #custom-select, #custom-cell) { background: #fff; color: #17213b; border-radius: 0; font: 12px serif; } }
+    </style><main><h2>Shared theme</h2><p id="result">Saved chart</p>
+      <label>Note <input aria-label="Note" placeholder="Write a note"></label>
+      <label><input type="checkbox" checked> Enabled</label>
+      <p><button id="increment" onclick="document.querySelector('output').textContent = Number(document.querySelector('output').textContent) + 1">Increment</button>
+      <output>0</output> <button disabled>Disabled</button></p>
+      <p><label>Step size <select aria-label="Step size" onchange="document.querySelector('output').textContent = this.value"><option>1</option><option>2</option><option>5</option><option>10</option></select></label>
+      <select id="custom-select" aria-label="Authored selector"><option>Custom</option></select></p>
+      <p><a href="#result">Details</a></p><pre><code>shared theme tokens</code></pre>
+      <button id="custom">Authored style</button>
+      <fieldset><legend>Preferences</legend>
+        <label>Email <input type="email" required aria-label="Email"></label>
+        <label>Reference <input readonly value="Saved reference" aria-label="Reference"></label>
+        <label>Attachment <input type="file" aria-label="Attachment"></label>
+      </fieldset>
+      <table aria-label="Usage"><caption>Usage overview</caption><thead><tr><th>Resource</th><th>Value</th></tr></thead>
+        <tbody><tr><td>Messages</td><td>12</td></tr><tr><td>Source</td><td id="custom-cell">${'saved-resource-'.repeat(6)}</td></tr></tbody></table>
+      <blockquote>Keep the widget's content and interactions.</blockquote>
+      <ul><li>First item</li><li>Second item</li></ul><dl><dt>Mode</dt><dd>Preview</dd></dl>
+      <details><summary>More details</summary><p>Extra information with <mark>highlighting</mark> and <kbd>Enter</kbd>.</p></details>
+      <p><label>Progress <progress value="6" max="10"></progress></label> <meter min="0" max="10" value="7">7 of 10</meter></p>
+      <div role="tablist" aria-label="Views"><button role="tab" aria-selected="true">Overview</button><button role="tab" aria-selected="false">Activity</button></div>
+      <div role="tablist" hidden><button role="tab">Hidden tab</button></div>
+      <p role="tooltip">Helpful context</p>
+      <button onclick="document.querySelector('dialog').showModal()">Open information</button>
+      <dialog aria-label="Widget information"><h4>Widget information</h4><p>Shared colors, native interaction.</p><button onclick="this.closest('dialog').close()">Close information</button></dialog>
+      </main>`
+    await mockViews(page, { htmlArtifact, html: htmlArtifact ? content : appHtml.replace('<div id="result"></div>', content) })
+    await page.goto('/tests/browser/harness.html')
+    const card = page.locator('#pm-row-a')
+    const frame = card.frameLocator('iframe').frameLocator('iframe')
+    await expect(frame.locator('#result')).toHaveText(htmlArtifact ? 'Saved chart' : 'row-a')
+    await expect(frame.locator('body')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
+    await expect(frame.locator('#increment')).toHaveCSS('background-color', 'rgb(246, 241, 229)')
+    await expect(frame.getByLabel('Note')).toHaveCSS('background-color', 'rgb(220, 210, 188)')
+    const select = frame.getByRole('combobox', { name: 'Step size' })
+    await expect(select).toHaveCSS('background-color', 'rgb(220, 210, 188)')
+    const customPicker = await select.evaluate(() => CSS.supports('appearance', 'base-select'))
+    if (customPicker) {
+      await select.click()
+      await expect(frame.getByRole('option', { name: '5', exact: true })).toBeVisible()
+      await card.screenshot({ path: test.info().outputPath('shared-select-light.png') })
+      await frame.getByRole('option', { name: '5', exact: true }).click()
+    } else await select.selectOption('5')
+    await expect(frame.locator('output')).toHaveText('5')
+    await expect(frame.getByRole('link', { name: 'Details' })).toHaveCSS('color', 'rgb(60, 75, 90)')
+    await frame.getByLabel('Note').fill('Kept across theme changes')
+    await expect(frame.getByRole('columnheader', { name: 'Resource' })).toHaveCSS('background-color', 'rgb(220, 210, 188)')
+    await expect(frame.getByRole('tab', { name: 'Hidden tab', includeHidden: true })).toBeHidden()
+    await expect(frame.getByRole('dialog', { name: 'Widget information', includeHidden: true })).toBeHidden()
+    const email = frame.getByLabel('Email')
+    await expect(email).not.toHaveCSS('border-color', 'rgb(163, 51, 50)')
+    await email.fill('invalid-address')
+    await email.press('Tab')
+    await expect(email).toHaveCSS('border-color', 'rgb(163, 51, 50)')
+    await email.fill('reader@example.com')
+    await email.press('Tab')
+    await expect(email).not.toHaveCSS('border-color', 'rgb(163, 51, 50)')
+    await frame.locator('summary').focus()
+    await frame.locator('summary').press('Enter')
+    await expect(frame.locator('details')).toHaveAttribute('open', '')
+    const loadedFonts = await frame.locator('body').evaluate(async () => {
+      await document.fonts.ready
+      return [...document.fonts].filter(font => font.status === 'loaded').map(font => font.family.replaceAll('"', ''))
+    })
+    expect(loadedFonts).toEqual(expect.arrayContaining(['Plus Jakarta Sans', 'Fira Code']))
+    await card.screenshot({ path: test.info().outputPath('shared-styles-light.png') })
+    await page.getByRole('button', { name: 'Dark', exact: true }).click()
+    await expect(frame.locator('body')).toHaveCSS('background-color', 'rgb(52, 49, 44)')
+    await expect(frame.locator('#increment')).toHaveCSS('background-color', 'rgb(63, 59, 52)')
+    await expect(frame.getByLabel('Note')).toHaveCSS('background-color', 'rgb(38, 36, 32)')
+    await expect(select).toHaveCSS('background-color', 'rgb(38, 36, 32)')
+    await expect(select).toHaveValue('5')
+    await expect(frame.getByLabel('Authored selector')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+    await expect(frame.getByLabel('Authored selector')).toHaveCSS('color', 'rgb(23, 33, 59)')
+    if (customPicker) {
+      await select.click()
+      await expect(frame.getByRole('option', { name: '5', exact: true })).toBeVisible()
+      await card.screenshot({ path: test.info().outputPath('shared-select-dark.png') })
+      await select.press('Escape')
+    }
+    await expect(frame.getByRole('link', { name: 'Details' })).toHaveCSS('color', 'rgb(210, 218, 226)')
+    await expect(frame.locator('#custom')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+    await expect(frame.locator('#custom')).toHaveCSS('color', 'rgb(23, 33, 59)')
+    await expect(frame.locator('#custom')).toHaveCSS('border-radius', '0px')
+    await frame.locator('#custom').hover()
+    await expect(frame.locator('#custom')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+    await frame.getByRole('button', { name: 'Increment', exact: true }).click()
+    await expect(frame.locator('output')).toHaveText('6')
+    await expect(frame.getByLabel('Note')).toHaveValue('Kept across theme changes')
+    await expect(frame.getByRole('button', { name: 'Disabled', exact: true })).toBeDisabled()
+    await expect(frame.locator('details')).toHaveAttribute('open', '')
+    await expect(frame.getByRole('columnheader', { name: 'Resource' })).toHaveCSS('background-color', 'rgb(38, 36, 32)')
+    await expect(frame.locator('#custom-cell')).toHaveCSS('background-color', 'rgb(255, 255, 255)')
+    await expect(frame.locator('#custom-cell')).toHaveCSS('color', 'rgb(23, 33, 59)')
+    await frame.getByRole('button', { name: 'Open information' }).click()
+    const dialog = frame.getByRole('dialog', { name: 'Widget information' })
+    await expect(dialog).toBeVisible()
+    await expect(dialog).toHaveCSS('background-color', 'rgb(63, 59, 52)')
+    await expect(dialog).toHaveCSS('color', 'rgb(236, 228, 212)')
+    await dialog.getByRole('button', { name: 'Close information' }).click()
+    await expect(dialog).toBeHidden()
+    await page.setViewportSize({ width: 390, height: 800 })
+    expect(await frame.locator('html').evaluate(el => el.scrollWidth - el.clientWidth)).toBeLessThan(2)
+    await frame.getByRole('table', { name: 'Usage' }).scrollIntoViewIfNeeded()
+    await card.screenshot({ path: test.info().outputPath('shared-styles-dark.png') })
+  })
+}
+
+test('shared document theming preserves authored app colors and standard size reports', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 1000 })
   await mockViews(page, { html: appHtml.replace('<body>', `<body><style>
-    body { margin: 0; padding: 8px; background: #111; }
+    body { margin: 0; padding: 8px; background: #111; color: #ddd; }
     #result { height: 200px; background: #1f1f1f; }
     #toolbar { height: 32px; margin-top: 8px; background: var(--color-background-secondary); }
   </style><div id="toolbar">App toolbar</div>`) })
   await page.goto('/tests/browser/harness.html')
   const app = await contentFrame(page)
   const frame = page.locator('iframe[title="row-a"]')
-  await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
+  await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(17, 17, 17)')
   await expect(app.locator('html')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
   await expect(app.locator('#toolbar')).toHaveCSS('background-color', 'rgb(220, 210, 188)')
   await page.getByRole('button', { name: 'Dark', exact: true }).click()
-  await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(52, 49, 44)')
-  await expect(app.locator('body')).toHaveCSS('color', 'rgb(236, 228, 212)')
+  await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(17, 17, 17)')
+  await expect(app.locator('body')).toHaveCSS('color', 'rgb(221, 221, 221)')
   await expect(app.locator('html')).toHaveAttribute('data-theme', 'dark')
   await expect(app.locator('html')).toHaveCSS('color-scheme', 'dark')
   await expect(app.locator('#toolbar')).toHaveCSS('background-color', 'rgb(38, 36, 32)')
@@ -749,7 +923,7 @@ test('shared document theming preserves app interiors and standard size reports'
   await app.evaluate("window.send('ui/notifications/size-changed', { height: 256 })")
   await expect(frame).toHaveCSS('height', '256px')
   await page.evaluate(() => { document.documentElement.dataset.theme = 'light' })
-  await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(237, 230, 214)')
+  await expect(app.locator('body')).toHaveCSS('background-color', 'rgb(17, 17, 17)')
   await expect(frame).toHaveCSS('height', '256px')
 })
 
@@ -774,7 +948,7 @@ test('shared theming accepts only context from the sandbox parent', async ({ pag
   await expect(app.locator('html')).toHaveAttribute('data-theme', 'light')
 })
 
-test('the card frame stays above the iframe at each interface scale after resizing', async ({ page }) => {
+test('the card border stays outside the iframe at each interface scale after resizing', async ({ page }) => {
   await mockViews(page)
   await page.goto('/tests/browser/harness.html')
   await page.addStyleTag({ content: readFileSync('src/styles/console.css', 'utf8') })
@@ -786,19 +960,17 @@ test('the card frame stays above the iframe at each interface scale after resizi
     await app.evaluate("window.send('ui/notifications/size-changed', { height: 256 })")
     await expect(page.locator('iframe[title="row-a"]')).toHaveCSS('height', '256px')
     const frame = await card.evaluate(el => {
-      const border = getComputedStyle(el, '::after')
+      const border = getComputedStyle(el)
       const rect = el.getBoundingClientRect()
       const content = el.querySelector('iframe')!.getBoundingClientRect()
       return {
         border: border.borderTopStyle, color: border.borderTopColor,
-        pointerEvents: border.pointerEvents,
         bottomGap: rect.bottom - content.bottom,
         edge: document.elementFromPoint(rect.x + rect.width / 2, rect.bottom - 0.5) === el,
       }
     })
     expect(frame.border).toBe('solid')
     expect(frame.color).toBe('rgba(83, 78, 69, 0.8)')
-    expect(frame.pointerEvents).toBe('none')
     expect(frame.bottomGap).toBeGreaterThanOrEqual(0.9)
     expect(frame.edge).toBe(true)
     await card.screenshot({ path: test.info().outputPath(`artifact-${size}.png`) })

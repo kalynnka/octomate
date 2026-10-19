@@ -14,12 +14,12 @@ const messages: ApiThreadMessage[] = Array.from({ length: 40 }, (_, index) => ({
   message_text: `Earlier message ${index}. ${'This message stays in the conversation. '.repeat(10)}`,
 }))
 
-for (const { label, readingHistory, prompt } of [
-  { label: 'at the bottom', readingHistory: false, prompt: 'Continue this conversation' },
-  { label: 'while reading history', readingHistory: true, prompt: 'Continue this conversation' },
-  { label: 'with a tall prompt', readingHistory: false, prompt: 'Continue this conversation.\n'.repeat(30) },
+for (const { label, readingHistory, prompt, clickSend } of [
+  { label: 'at the bottom', readingHistory: false, prompt: 'Continue this conversation', clickSend: false },
+  { label: 'while reading history', readingHistory: true, prompt: 'Continue this conversation', clickSend: true },
+  { label: 'with a tall prompt', readingHistory: true, prompt: 'Continue this conversation.\n'.repeat(30), clickSend: false },
 ]) {
-  test(`continuing from the composer preserves the view ${label}`, async ({ page }) => {
+  test(`continuing from the composer scrolls to the bottom without remounting history ${label}`, async ({ page }) => {
     let stream: WebSocketRoute | undefined
     let historyReads = 0
     let turns = 0
@@ -90,11 +90,11 @@ for (const { label, readingHistory, prompt } of [
       })
     })
     await composer.fill(prompt)
-    const position = await log.evaluate((el, reading) => {
+    await log.evaluate((el, reading) => {
       el.scrollTop = el.scrollHeight - el.clientHeight - (reading ? 400 : 0)
-      return el.scrollTop
     }, readingHistory)
-    await composer.press('Enter')
+    if (clickSend) await page.getByRole('button', { name: 'Send ↵', exact: true }).click()
+    else await composer.press('Enter')
     await expect(log).toContainText('The next reply.')
     await expect(log).toContainText(prompt.trim())
     stream!.send(JSON.stringify({ event_kind: 'run_result', output: 'The next reply.', usage: {
@@ -110,7 +110,6 @@ for (const { label, readingHistory, prompt } of [
     await expect(previousReply).toHaveAttribute('data-changed', 'false')
     await expect(log).toHaveAttribute('data-replayed', 'false')
     expect(historyReads).toBe(reads)
-    if (readingHistory) expect(await log.evaluate(el => el.scrollTop)).toBeCloseTo(position, 0)
-    else await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2)
+    await expect.poll(() => log.evaluate(el => el.scrollHeight - el.scrollTop - el.clientHeight)).toBeLessThan(2)
   })
 }

@@ -60,6 +60,7 @@ The server ships no CORS middleware, which is why the dev server proxies. Use
 - **Read any thread**: the chat ledger, each agent conversation and its runs, the
   handoffs, and the pending actions. A thread opens on its latest messages and
   the agent's work between them; earlier ones load as you scroll up.
+  Sending a new prompt scrolls the conversation to the bottom.
   Agent replies show the channel bot's name when available, followed by the
   agent's name in parentheses. Quoted replies use the same sender label.
   Native transcript replies show only the runtime's name, such as Codex or Claude.
@@ -240,15 +241,16 @@ MCP apps appear as interactive cards alongside tool output.
 HTML visualizations directly in chat. Widgets fit the chat panel, with wider
 layouts available for visualizations. A loading placeholder appears while a widget
 opens and respects reduced-motion settings.
-Frames and controls follow Trunkline's theme, with rounded corners. Visualizations
-keep their own colors when specified; otherwise their background follows the theme.
+The tool-style header stays above the widget. Text, tables, lists, quotes, forms,
+expandable sections, tabs, tooltips and dialogs follow Trunkline's theme.
+Widgets and MCP apps keep their own styles where specified.
+Dropdown menus follow the theme where the browser supports it.
 
-- **Open** shows the artifact on its own page.
+- **Open** shows the same viewer on its own page, always expanded.
 - **Reload** restores the saved result and discards local changes.
-- **Fold** hides the widget while preserving its current state.
-
-Hover or move keyboard focus into an HTML visualization to reveal these controls.
-They remain visible on touch devices and when folded.
+- The left disclosure button folds the widget into a tool-style bar, preserving
+  its current state. Expanding brings the header and widget into view.
+  **Open** and **Reload** remain on the right.
 
 Sign in as the artifact's owner to open it. MCP apps also require their original
 connection to remain enabled and authorized. Saved HTML visualizations remain

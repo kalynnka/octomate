@@ -270,8 +270,9 @@ function ThinkRow({ item, cardMax, i }: { item: Extract<LedgerItem, { kind: 'thi
     <div
       id={`pm-${item.uid}`}
       className="lt-entry"
-      style={{ '--i': i ?? 0, maxWidth: cardMax, border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
+      style={{ '--i': i ?? 0, maxWidth: cardMax, position: 'relative', border: '1px solid var(--line-divider)', background: 'var(--card-bg)' } as CSSProperties}
     >
+      <Brackets />
       <div onClick={() => toggleCardOpen(item.uid, item.thinking)} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 13px', cursor: 'pointer' }}>
         <Disclose open={open} style={{ ...mono(11), ...ghost3, width: 12 }} />
         <Icon name="sparkle" style={{ color: 'var(--fg-2)' }} />

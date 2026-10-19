@@ -1,13 +1,27 @@
 import type { JSONRPCMessage, Transport } from '@modelcontextprotocol/client'
 import { JSONRPCMessageSchema } from '@modelcontextprotocol/core'
 import { AppBridge, McpUiHostContextSchema, type McpUiHostContext, type McpUiStyles } from '@modelcontextprotocol/ext-apps/app-bridge'
+import sansFont from '/fonts/PlusJakartaSans.woff2?inline'
+import monoFont from '/fonts/FiraCode-400-latin.woff2?inline'
 import type { ArtifactView } from './api'
 
-/** Resolve host tokens before crossing into a document with its own stylesheet. */
+/** Resolve host tokens and embed bundled fonts without widening sandbox network access. */
 function artifactAppearance() {
   const root = document.documentElement
   const styles = getComputedStyle(root)
   const token = (name: string) => styles.getPropertyValue(name).trim()
+  const font = (name: string) => {
+    const declaration = document.createElement('span').style
+    declaration.font = token(name)
+    return declaration
+  }
+  const text = font('--ui')
+  const caption = font('--meta')
+  const smallText = font('--body-sm')
+  const largeText = font('--body')
+  const smallHeading = font('--h3')
+  const mediumHeading = font('--h2')
+  const largeHeading = font('--h1')
   return McpUiHostContextSchema.parse({
     theme: root.dataset.theme === 'dark' ? 'dark' : 'light',
     styles: { variables: {
@@ -16,34 +30,73 @@ function artifactAppearance() {
       '--color-background-tertiary': token('--surface-raised'),
       '--color-background-inverse': token('--fg-1'),
       '--color-background-ghost': 'transparent',
+      '--color-background-info': token('--info-surface'),
+      '--color-background-danger': `color-mix(in srgb, ${token('--color-red')} 12%, ${token('--card-bg')})`,
+      '--color-background-success': `color-mix(in srgb, ${token('--color-sage')} 12%, ${token('--card-bg')})`,
+      '--color-background-warning': `color-mix(in srgb, ${token('--color-gold')} 12%, ${token('--card-bg')})`,
       '--color-background-disabled': token('--surface-sunken'),
       '--color-text-primary': token('--fg-1'),
       '--color-text-secondary': token('--fg-2'),
       '--color-text-tertiary': token('--fg-3'),
       '--color-text-inverse': token('--page-bg'),
       '--color-text-ghost': token('--fg-3'),
+      '--color-text-info': token('--info-strong'),
+      '--color-text-danger': `color-mix(in srgb, ${token('--color-red')} 40%, ${token('--fg-1')})`,
+      '--color-text-success': `color-mix(in srgb, ${token('--color-sage')} 40%, ${token('--fg-1')})`,
+      '--color-text-warning': `color-mix(in srgb, ${token('--color-gold')} 30%, ${token('--fg-1')})`,
       '--color-text-disabled': token('--fg-3'),
       '--color-border-primary': token('--line-divider'),
       '--color-border-secondary': token('--line-color'),
       '--color-border-tertiary': token('--line-color'),
       '--color-border-inverse': token('--page-bg'),
       '--color-border-ghost': 'transparent',
+      '--color-border-info': token('--info-border'),
+      '--color-border-danger': token('--color-red'),
+      '--color-border-success': token('--color-sage'),
+      '--color-border-warning': token('--color-gold'),
       '--color-border-disabled': token('--line-color'),
       '--color-ring-primary': token('--color-accent'),
       '--color-ring-secondary': token('--fg-2'),
       '--color-ring-inverse': token('--page-bg'),
+      '--color-ring-info': token('--info'),
+      '--color-ring-danger': token('--color-red'),
+      '--color-ring-success': token('--color-sage'),
+      '--color-ring-warning': token('--color-gold'),
       '--font-sans': token('--font-sans'),
       '--font-mono': token('--font-mono'),
+      '--font-weight-normal': caption.fontWeight,
+      '--font-weight-medium': text.fontWeight,
+      '--font-weight-semibold': smallHeading.fontWeight,
+      '--font-weight-bold': font('--label').fontWeight,
+      '--font-text-xs-size': caption.fontSize,
+      '--font-text-sm-size': smallText.fontSize,
+      '--font-text-md-size': text.fontSize,
+      '--font-text-lg-size': largeText.fontSize,
+      '--font-text-xs-line-height': caption.lineHeight,
+      '--font-text-sm-line-height': smallText.lineHeight,
+      '--font-text-md-line-height': text.lineHeight,
+      '--font-text-lg-line-height': largeText.lineHeight,
+      '--font-heading-sm-size': smallHeading.fontSize,
+      '--font-heading-md-size': mediumHeading.fontSize,
+      '--font-heading-lg-size': largeHeading.fontSize,
+      '--font-heading-sm-line-height': smallHeading.lineHeight,
+      '--font-heading-md-line-height': mediumHeading.lineHeight,
+      '--font-heading-lg-line-height': largeHeading.lineHeight,
       '--border-radius-xs': token('--radius-small'),
       '--border-radius-sm': token('--radius-soft-sm'),
       '--border-radius-md': token('--radius-soft-md'),
       '--border-radius-lg': token('--radius-soft-lg'),
       '--border-radius-xl': token('--radius-soft-lg'),
       '--border-radius-full': token('--radius-dot'),
+      '--border-width-regular': '1px',
+      '--shadow-hairline': `0 0 0 1px ${token('--line-divider')}`,
       '--shadow-sm': token('--shadow-soft'),
       '--shadow-md': token('--shadow-soft'),
       '--shadow-lg': token('--shadow-card'),
-    } satisfies Partial<McpUiStyles> },
+    } satisfies Partial<McpUiStyles>, css: { fonts: `
+      @font-face { font-family: "Plus Jakarta Sans"; src: url("${sansFont}") format("woff2"); font-weight: 200 800; font-style: normal; font-display: swap; }
+      @font-face { font-family: "Fira Code"; src: url("${monoFont}") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+    ` } },
   })
 }
 

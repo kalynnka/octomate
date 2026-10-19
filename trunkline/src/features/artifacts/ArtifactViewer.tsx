@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { Brackets } from '@/components/Brackets'
 import { Disclose, Fold } from '@/components/Fold'
+import { Icon } from '@/components/Icon'
+import { cardKind } from '@/components/text'
 import { fetchArtifact, type ArtifactView } from './api'
 
 function ArtifactSkeleton() {
@@ -45,29 +48,42 @@ export function ArtifactViewer({ artifactId, threadId, messageId }: {
     ? `/api/trunkline/threads/${encodeURIComponent(threadId)}/artifacts/${encodeURIComponent(messageId)}`
     : `/api/artifacts/${encodeURIComponent(artifactId)}`
   const [revision, setRevision] = useState(0)
-  const [folded, setFolded] = useState(false)
+  const [collapsed, setCollapsed] = useState(false)
+  const folded = Boolean(threadId) && collapsed
+  const header = useRef<HTMLElement>(null)
   const contentId = useId()
   const view = useQuery({
     queryKey: ['artifact-view', url, revision], queryFn: ({ signal }) => fetchArtifact(url, signal),
     retry: false, gcTime: 0, staleTime: Infinity, refetchOnWindowFocus: false, refetchOnReconnect: false,
   })
-  const inlineHtml = threadId && view.data?.artifact.kind === 'html'
   const wide = view.data?.artifact.kind === 'html' && view.data.artifact.mode === 'wide'
-  return <section className={`trk-artifact${inlineHtml ? ' trk-artifact-inline-html' : ''}`} data-wide={wide ? '' : undefined} data-folded={folded ? '' : undefined} aria-label="Artifact">
-    <header className="trk-artifact-header">
-      <strong>{view.data?.artifact.title ?? 'Artifact'}</strong>
+  const title = view.data?.artifact.title ?? 'Artifact'
+  return <section className="trk-artifact" data-wide={wide ? '' : undefined} data-folded={folded ? '' : undefined} aria-label="Artifact">
+    <Brackets />
+    <header ref={header} className="trk-artifact-header">
+      {threadId ? <button className="trk-artifact-toggle" type="button" aria-label={folded ? 'Unfold' : 'Fold'} aria-expanded={!folded} aria-controls={contentId} onClick={() => {
+        setCollapsed(!folded)
+        if (folded) requestAnimationFrame(() => header.current?.scrollIntoView({ block: 'start', behavior: 'instant' }))
+      }}>
+        <Disclose open={!folded} />
+      </button> : <span className="trk-artifact-disclosure" aria-hidden="true"><Disclose open /></span>}
+      <span className="trk-artifact-heading" title={title}>
+        <Icon name="file" />
+        <span style={cardKind}>Artifact</span>
+        <strong>{title}</strong>
+      </span>
       <span className="trk-artifact-controls">
         {threadId && view.data && <a href={view.data.viewer_path} target="_blank" rel="noopener noreferrer"><span className="trk-artifact-icon" aria-hidden="true">↗</span>Open</a>}
         <button type="button" onClick={() => setRevision((value) => value + 1)}>
           <span className="trk-artifact-icon" aria-hidden="true">↻</span>Reload
         </button>
-        <button type="button" aria-expanded={!folded} aria-controls={contentId} onClick={() => setFolded((value) => !value)}>
-          {folded ? 'Unfold' : 'Fold'}
-          <span className="trk-artifact-icon" aria-hidden="true"><Disclose open={!folded} /></span>
-        </button>
       </span>
     </header>
-    <div id={contentId} inert={folded} aria-hidden={folded || undefined}>
+    <div id={contentId} inert={folded} aria-hidden={folded || undefined} onTransitionEnd={(event) => {
+      if (!folded && event.target === event.currentTarget.firstElementChild && event.propertyName === 'grid-template-rows') {
+        header.current?.scrollIntoView({ block: 'start', behavior: 'instant' })
+      }
+    }}>
       <Fold open={!folded}>
         <div className="trk-artifact-sheet">
           {view.isPending && <ArtifactSkeleton />}
