@@ -1,4 +1,4 @@
-"""Translate run output into ACP notifications without owning execution or transport.
+"""Translate ACP prompts and run output without owning execution or transport.
 
 Follows Pydantic AI Harness's ACP adapter for text, thinking and function tools,
 and adds Octomate's segment output and non-streaming results. Segments use their
@@ -41,7 +41,7 @@ from octomate.capabilities.harness.events import (
     RunStartedEvent,
     WireEvent,
 )
-from octomate.schemas.segments import ReplySegment
+from octomate.schemas.segments import MessageSegment, ReplySegment, TextSegment
 
 # Leave room for the JSON-RPC envelope in clients with a 64 KiB line buffer.
 TEXT_CHUNK_BYTES = 48 * 1024
@@ -56,6 +56,37 @@ type AcpUpdate = (
 )
 
 json_value_adapter = TypeAdapter(JsonValue)
+
+
+def prompt_segments(request: schema.PromptRequest) -> list[MessageSegment]:
+    """Translate the mandatory ACP prompt content into Octomate message segments.
+
+    Text blocks retain their whitespace and order. Resource links use Pydantic AI
+    Harness's presentation: the title or name followed by the URI, or the URI alone
+    when neither label is present. A link is context, not a local file to open or a
+    URL to fetch during translation.
+
+    Image, audio and embedded-resource blocks require optional capabilities this
+    adapter does not yet provide. Reject the whole request instead of dropping
+    unsupported content. Empty and whitespace-only prompts are rejected before a
+    caller records an inbound message or starts a run.
+    """
+    segments: list[MessageSegment] = []
+    for block in request.prompt:
+        match block:
+            case schema.TextContentBlock(text=text):
+                pass
+            case schema.ResourceContentBlock():
+                label = block.title or block.name
+                text = f"{label} ({block.uri})" if label else block.uri
+            case _:
+                raise acp.RequestError.invalid_params(
+                    {"reason": f"Unsupported prompt content: {block.type}"}
+                )
+        segments.append(TextSegment(data={"text": text}))
+    if not any(str(segment).strip() for segment in segments):
+        raise acp.RequestError.invalid_params({"reason": "Prompt carried no text"})
+    return segments
 
 
 def tool_payload(part: ToolCallPart | ToolReturnPart | RetryPromptPart) -> JsonValue:
